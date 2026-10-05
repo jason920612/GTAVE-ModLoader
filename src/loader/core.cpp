@@ -228,6 +228,7 @@ namespace loader::core
 				UpdatePauseMenuTab();
 			if (config::Get().debugWatchFile)
 				debug::PollWatchFile();
+			debug::FlushHits();
 
 			game::scrThread* host = game::script::FindThread(kHostScript);
 			game::scrThread* landing = host ? nullptr : game::script::FindThread(kLandingScript);

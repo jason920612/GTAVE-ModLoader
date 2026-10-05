@@ -34,7 +34,8 @@ namespace loader::ui
 		};
 
 		// Everything below is touched on the render thread only, except where noted.
-		std::mutex g_imguiMutex; // ImGui state is shared with the window procedure
+		// Recursive: ImGui's Win32 handler can send messages (SetCapture, ...) that re-enter WndProc.
+		std::recursive_mutex g_imguiMutex; // ImGui state is shared with the window procedure
 		IDXGISwapChain3* g_swapChain = nullptr; // the game's swap chain we draw into
 		ID3D12Device* g_device = nullptr;
 		ID3D12DescriptorHeap* g_rtvHeap = nullptr;

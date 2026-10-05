@@ -2,7 +2,7 @@
 import time, subprocess, mss, pydirectinput as d
 from PIL import Image
 def tap(k, wait=0.9):
-    d.keyDown(k); time.sleep(0.15); d.keyUp(k); time.sleep(wait)
+    d.keyDown(k); time.sleep(0.04); d.keyUp(k); time.sleep(wait)  # longer holds trigger the menu's auto-repeat
 def menu_open():
     with mss.MSS() as s:
         im = s.grab(s.monitors[1]); img = Image.frombytes("RGB", im.size, im.rgb)

@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <thread>
@@ -32,6 +33,21 @@ namespace loader::debug
 			return a >= g_game.base && a < g_game.base + g_game.size;
 		}
 
+		// Hits are recorded lock-free in the exception handler and logged later from the game
+		// thread: the handler may run on any thread, in any state, so it must not allocate or lock.
+		struct Hit
+		{
+			int watch;
+			DWORD thread;
+			uintptr_t rip;
+			uintptr_t value;
+			uintptr_t stack[12];
+		};
+		constexpr int kMaxHits = 256;
+		Hit g_hitLog[kMaxHits];
+		std::atomic_int g_hitCount = 0;
+		int g_hitsLogged = 0;
+
 		LONG CALLBACK OnException(EXCEPTION_POINTERS* info)
 		{
 			if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
@@ -46,23 +62,25 @@ namespace loader::debug
 			{
 				if (!(dr6 & (1ull << i)) || g_hits[i]++ >= kMaxHitsPerWatch)
 					continue;
-				// Return addresses into game code found near the top of the stack.
-				std::string stack;
+				const int slot = g_hitCount.fetch_add(1);
+				if (slot >= kMaxHits)
+					continue;
+				Hit& h = g_hitLog[slot];
+				h.watch = i;
+				h.thread = GetCurrentThreadId();
+				h.rip = ctx->Rip;
+				h.value = 0;
+				ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(g_watchAddr[i]), &h.value, sizeof(h.value), nullptr);
 				int found = 0;
 				const auto* sp = reinterpret_cast<const uintptr_t*>(ctx->Rsp);
-				for (int k = 0; k < 160 && found < 14; ++k)
+				for (int k = 0; k < 160 && found < 12; ++k)
 				{
 					uintptr_t v = 0;
 					if (ReadProcessMemory(GetCurrentProcess(), sp + k, &v, sizeof(v), nullptr) && InGameCode(v))
-					{
-						stack += std::format(" {:#x}", v - g_game.base);
-						++found;
-					}
+						h.stack[found++] = v;
 				}
-				uint64_t value = 0;
-				ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(g_watchAddr[i]), &value, sizeof(value), nullptr);
-				log::Info("watch[{}] {:#x} <- rip {:#x} (now {:#x}) thread {} | stack:{}", i, g_watchAddr[i],
-				    ctx->Rip - g_game.base, value, GetCurrentThreadId(), stack);
+				for (int k = found; k < 12; ++k)
+					h.stack[k] = 0;
 			}
 			return EXCEPTION_CONTINUE_EXECUTION;
 		}
@@ -148,9 +166,26 @@ namespace loader::debug
 			if (!(ls >> addr >> size))
 				continue;
 			ls >> mode;
+			if (!mode.empty() && mode.back() == '')
+				mode.pop_back();
 			watches.push_back({std::stoull(addr, nullptr, 16), static_cast<uint8_t>(size), mode == "r", true});
 		}
 		log::Info("debug: arming {} watch(es) from debug_watch.txt", watches.size());
 		std::thread([watches] { ArmWriteWatches(watches); }).detach();
+	}
+
+	void FlushHits()
+	{
+		const int count = std::min(g_hitCount.load(), kMaxHits);
+		for (; g_hitsLogged < count; ++g_hitsLogged)
+		{
+			const Hit& h = g_hitLog[g_hitsLogged];
+			std::string stack;
+			for (uintptr_t v : h.stack)
+				if (v)
+					stack += std::format(" {:#x}", v - g_game.base);
+			log::Info("watch[{}] {:#x} <- rip {:#x} (now {:#x}) thread {} | stack:{}", h.watch, g_watchAddr[h.watch], h.rip - g_game.base,
+			    h.value, h.thread, stack);
+		}
 	}
 }

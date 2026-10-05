@@ -19,4 +19,7 @@ namespace loader::debug
 	// Research aid: if ModLoader\debug_watch.txt changed, arm the watches it lists
 	// (one per line: <hex address> <size> [r]). Cheap when the file does not exist.
 	void PollWatchFile();
+
+	// Writes recorded hits to the log (call from a normal thread, e.g. the game tick).
+	void FlushHits();
 }

@@ -35,8 +35,10 @@ namespace loader::game::pausemenu
 			int32_t target;     // menu screen id
 			uint32_t label;     // text label hash
 			uint8_t pad0[8];
-			AtArray<void>* contextsPad; // +0x10 visibility contexts (atArray, 12 bytes incl. counts)
-			uint8_t pad1[0x8];
+			uint32_t* contexts;     // +0x10 visibility contexts (atArray of hashes); empty = always visible
+			uint16_t contextCount;  // +0x18
+			uint16_t contextCap;    // +0x1A
+			uint32_t pad1;
 			uint8_t pref;       // +0x20 menu preference id
 			uint8_t optionType; // +0x21
 			uint8_t action;     // +0x22
@@ -62,15 +64,15 @@ namespace loader::game::pausemenu
 			AtArray<MenuScreen> screens; // +0x10
 		};
 
-		constexpr int32_t kSettings = 6, kSettingsAudio = 22, kSettingsControls = 24, kHeader = 28;
+		constexpr int32_t kSettings = 6, kSettingsAudio = 22, kSettingsControls = 24, kHeader = 28, kSettingsFeed = 93;
 		constexpr int32_t kModsTab = 42;   // story-mode "Online" tab
-		constexpr int32_t kTestPage = 93; // SETTINGS_FEED: a plain list page; test items are appended to it
-		constexpr uint8_t kPrefToggle = 217, kPrefSlider = 218;
+		constexpr int32_t kTestPage = 132; // SETTINGS_SIXAXIS: research target
+		constexpr uint8_t kPrefToggle = 187, kPrefSlider = 188; // unused by menus, code and the apply switch
 
 		using LoadFn = bool (*)(int32_t mode);
 		LoadFn g_origLoad = nullptr;
 		MenuArray* g_menu = nullptr;
-		int32_t* g_prefs = nullptr; // research: preference values (RVA 0x3DFC2A4 on 0x6aa45f10)
+		int32_t* g_prefs = nullptr; // research: preference values (RVA 0x3DFC2A0 on 0x6aa45f10)
 
 		constexpr uint32_t Joaat(std::string_view s)
 		{
@@ -119,12 +121,13 @@ namespace loader::game::pausemenu
 			MenuScreen* header = Find(kHeader);
 			MenuScreen* modsTab = Find(kModsTab);
 			MenuScreen* page = Find(kTestPage);
-			const MenuItem* saveCategory = nullptr;
+			MenuScreen* feed = Find(kSettingsFeed);
+			const MenuItem* saveCategory = nullptr; // template: the Audio category (no visibility contexts)
 			if (settings)
 				for (uint16_t i = 0; i < settings->items.count; ++i)
-					if (settings->items.data[i].target == 32) // SETTINGS_SAVEGAME, a plain selectable category
+					if (settings->items.data[i].target == kSettingsAudio)
 						saveCategory = &settings->items.data[i];
-			if (!settings || !audio || !controls || !header || !modsTab || !page || !saveCategory || controls->items.count < 4 ||
+			if (!settings || !audio || !controls || !header || !modsTab || !page || !feed || !saveCategory || feed->items.count < 1 ||
 			    audio->items.count < 1)
 			{
 				log::Error("pausemenu: expected screens not found, skipping injection (array {} count {}, found {} {} {} {} {} {} save {})",
@@ -136,17 +139,29 @@ namespace loader::game::pausemenu
 				return;
 			}
 
-			// Append a toggle and a slider (unused preference ids) to the Feed settings page.
-			const uint16_t n = page->items.count;
-			auto* items = Alloc<MenuItem>(n + 2u);
-			std::memcpy(items, page->items.data, sizeof(MenuItem) * n);
-			items[n] = controls->items.data[3]; // vibration toggle
-			items[n].label = Joaat("ML_OPT_A");
-			items[n].pref = kPrefToggle;
-			items[n + 1] = audio->items.data[0]; // volume slider
-			items[n + 1].label = Joaat("ML_OPT_B");
-			items[n + 1].pref = kPrefSlider;
-			page->items = {items, static_cast<uint16_t>(n + 2), static_cast<uint16_t>(n + 2)};
+			// Research: our category appended to Settings, pointing at a page we fill.
+			// Research: the story "Online" tab becomes a settings-style "Mods" tab with one category.
+			for (uint16_t i = 0; i < header->items.count; ++i)
+				if (header->items.data[i].target == kModsTab)
+					header->items.data[i].label = Joaat("ML_TAB_MODS");
+			auto* categories = Alloc<MenuItem>(1);
+			categories[0] = *saveCategory;
+			categories[0].target = kTestPage;
+			categories[0].label = Joaat("ML_CAT_TEST");
+			categories[0].contextCount = 0;
+			MakeScreen(modsTab, settings, categories, 1);
+			log::Info("pausemenu: research: mods tab built from the settings layout");
+
+			auto* items = Alloc<MenuItem>(2);
+			items[0] = feed->items.data[0]; // on/off toggle
+			items[0].label = Joaat("ML_OPT_A");
+			items[0].pref = kPrefToggle;
+			items[0].contextCount = 0;
+			items[1] = audio->items.data[0]; // 0..10 slider
+			items[1].label = Joaat("ML_OPT_B");
+			items[1].pref = kPrefSlider;
+			items[1].contextCount = 0;
+			MakeScreen(page, audio, items, 2);
 			log::Info("pausemenu: test page injected (screens {}, {})", kModsTab, kTestPage);
 		}
 
@@ -170,7 +185,7 @@ namespace loader::game::pausemenu
 			return false;
 		}
 		g_menu = reinterpret_cast<MenuArray*>(pattern::Rip(*at + 0x24));
-		g_prefs = reinterpret_cast<int32_t*>(module.base + 0x3DFC2A4);
+		g_prefs = reinterpret_cast<int32_t*>(module.base + 0x3DFC2A0);
 		if (MH_CreateHook(reinterpret_cast<void*>(*at), reinterpret_cast<void*>(&HookLoad), reinterpret_cast<void**>(&g_origLoad)) != MH_OK ||
 		    MH_EnableHook(reinterpret_cast<void*>(*at)) != MH_OK)
 		{
