@@ -8,7 +8,6 @@
 #include <chrono>
 #include <format>
 #include <string>
-#include <thread>
 
 #include <imgui.h>
 
@@ -57,46 +56,17 @@ namespace loader::ui
 			return state::landing && !state::storyLoading && !g_showOriginalLanding && config::Get().replaceLandingPage;
 		}
 
-		// The Gen9 landing page is native UI that no script command can drive, so "continue story"
-		// is performed the way a player would: switch to the last tab (Story Mode) and confirm.
-		void TapKey(WORD scanCode)
-		{
-			INPUT in[2]{};
-			for (auto& i : in)
-			{
-				i.type = INPUT_KEYBOARD;
-				i.ki.wScan = scanCode;
-				i.ki.dwFlags = KEYEVENTF_SCANCODE;
-			}
-			in[1].ki.dwFlags |= KEYEVENTF_KEYUP;
-			SendInput(1, &in[0], sizeof(INPUT));
-			Sleep(150);
-			SendInput(1, &in[1], sizeof(INPUT));
-		}
-
 		void ContinueStory()
 		{
+			if (!state::canContinueStory)
+			{
+				g_showOriginalLanding = true;
+				return;
+			}
 			state::storyLoading = true;
 			g_continueFailed = false;
 			g_continueDeadline = Clock::now() + std::chrono::seconds(25);
-			log::Info("home screen: continue story mode");
-			std::thread([] {
-				constexpr WORD kScanE = 0x12, kScanEnter = 0x1C;
-				Sleep(300); // let the overlay release input first
-				HWND game = GameWindow();
-				if (GetForegroundWindow() != game)
-				{
-					log::Warn("home screen: game window is not in the foreground, not sending input");
-					return;
-				}
-				for (int i = 0; i < 5 && GetForegroundWindow() == game; ++i)
-				{
-					TapKey(kScanE);
-					Sleep(1000);
-				}
-				if (GetForegroundWindow() == game)
-					TapKey(kScanEnter);
-			}).detach();
+			state::storyRequested = true;
 		}
 
 		const char* StateLabel(mods::State s, ImVec4& color)
@@ -304,7 +274,7 @@ namespace loader::ui
 			if (ImGui::Button("顯示原本的遊戲主畫面", big))
 				g_showOriginalLanding = true;
 			if (g_continueFailed)
-				ImGui::TextColored(kWarn, "無法自動進入故事模式。\n請確認遊戲視窗在最前面後再試一次，\n或改用原本的遊戲主畫面。");
+				ImGui::TextColored(kWarn, "沒有成功進入故事模式。\n請再試一次，或改用原本的遊戲主畫面。");
 			ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
 			ImGui::TextColored(kMuted, "已安裝 %zu 個模組，%lld 個已啟用", list.size(), static_cast<long long>(running));
 			ImGui::TextColored(kMuted, "GTA 線上模式已停用（BattlEye 關閉中）");

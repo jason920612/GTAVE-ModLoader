@@ -65,3 +65,11 @@
 - scrNativeCallContext：回傳指標@+0x00、參數數量@+0x08、參數陣列@+0x10（每個 8 bytes）。
 - 很多原生函式處理常式被 Arxan 切碎（jmp 到第二個 .text），用 `tools/trace.py` 追蹤。
 - 實測：hello_mod 在故事模式讀到玩家座標、F5 生成 Adder 並坐進駕駛座。
+
+## 7. 主畫面「故事模式」入口（2026-10-05，硬體寫入監看實測）
+
+- 主畫面（Gen9 landing page）是 C++ 原生 UI，原生函式（SHUTDOWN_AND_LOAD_MOST_RECENT_SAVE）對它無效。
+- `landing_pre_startup` 腳本只做：`while (native1()) WAIT(0); while (!native5()) WAIT(0);` 然後啟動 `startup`。
+- 用 `debugWatchLanding`（DR0–DR3 寫入中斷）抓到選擇故事模式時：主畫面在 RVA `0x536A06` 呼叫
+  `SetFlowState(0x18, false)`（RVA `0x10780`，寫入流程狀態 `0x29C7D30`），隨後頁面堆疊（`0x3DE2FF8+0x38`）清空、開始載入。
+- 載入器直接在腳本執行緒呼叫 `SetFlowState(<從呼叫點讀出的值>, false)`：18 秒進入故事模式，不需模擬按鍵。

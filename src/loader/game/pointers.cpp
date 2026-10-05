@@ -38,6 +38,18 @@ namespace loader::game
 			// tls->currentThread = t; g_activeThread = t; tls->threadActive = 1
 			{"ActiveThread", "48 89 B0 A0 07 00 00 48 89 35 ? ? ? ? C6 80 A8 07 00 00 01",
 			    [&](uintptr_t at) { p.ActiveThread = reinterpret_cast<scrThread**>(Rip(at + 10)); }},
+			// if ((state - 7) >= -2u || force) g_flowState = state;
+			{"SetFlowState", "8B 05 ? ? ? ? 83 C0 F9 83 F8 FE 72 05 84 D2 75 01 C3 89 0D ? ? ? ? C3",
+			    [&](uintptr_t at) { p.SetFlowState = reinterpret_cast<decltype(p.SetFlowState)>(at); }},
+			// Landing page, Story Mode branch: mov ecx, <state>; xor edx, edx; call SetFlowState
+			{"StoryFlowState", "83 7C 24 30 05 0F 85 ? ? ? ? 83 7C 24 38 0B 0F 85 ? ? ? ?",
+			    [&](uintptr_t at) {
+				    const uintptr_t site = Rip(at + 7); // target of the first jne
+				    const auto* code = reinterpret_cast<const uint8_t*>(site);
+				    if (code[0] == 0xB9 && code[5] == 0x31 && code[6] == 0xD2 && code[7] == 0xE8 &&
+				        Rip(site + 8) == reinterpret_cast<uintptr_t>(p.SetFlowState))
+					    p.StoryFlowState = *reinterpret_cast<const int32_t*>(site + 1);
+			    }},
 		};
 
 		const auto module = pattern::Module::Main();

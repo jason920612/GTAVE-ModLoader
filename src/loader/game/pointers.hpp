@@ -20,6 +20,10 @@ namespace loader::game
 		uint32_t* TlsIndex = nullptr;
 		// Global copy of the running script thread, written next to the TLS slot.
 		scrThread** ActiveThread = nullptr;
+		// void SetFlowState(int state, bool force): drives the game's boot/session flow.
+		void (*SetFlowState)(int32_t state, bool force) = nullptr;
+		// Flow state the landing page requests when the player picks Story Mode.
+		int32_t StoryFlowState = -1;
 	};
 
 	inline Pointers g_pointers;

@@ -33,6 +33,7 @@ namespace loader::config
 			c.crossmapAutoUpdate = j.value("crossmapAutoUpdate", c.crossmapAutoUpdate);
 			c.replaceLandingPage = j.value("replaceLandingPage", c.replaceLandingPage);
 			c.debugDisableScriptHook = j.value("debugDisableScriptHook", c.debugDisableScriptHook);
+			c.debugWatchLanding = j.value("debugWatchLanding", c.debugWatchLanding);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -46,6 +47,7 @@ namespace loader::config
 				{"crossmapAutoUpdate", c.crossmapAutoUpdate},
 				{"replaceLandingPage", c.replaceLandingPage},
 				{"debugDisableScriptHook", c.debugDisableScriptHook},
+				{"debugWatchLanding", c.debugWatchLanding},
 			};
 		}
 	}

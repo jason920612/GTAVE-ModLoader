@@ -8,6 +8,7 @@
 
 #include "config.hpp"
 #include "crossmap_update.hpp"
+#include "debug/watch.hpp"
 #include "game/natives.hpp"
 #include "game/pointers.hpp"
 #include "game/script.hpp"
@@ -97,7 +98,21 @@ namespace loader::core
 			game::scrThread* host = game::script::FindThread(kHostScript);
 			game::scrThread* landing = host ? nullptr : game::script::FindThread(kLandingScript);
 			state::landing = landing != nullptr;
+			static bool watchArmed = false;
+			if (landing && !watchArmed && config::Get().debugWatchLanding)
+			{
+				watchArmed = true;
+				std::thread([] {
+					debug::ArmWriteWatches({{0x3DE3030, 2}, {0x29C7D1C, 4}, {0x29C7D30, 4}, {0x3DFA798, 8}});
+				}).detach();
+			}
 			state::story = host != nullptr;
+			if (landing && state::storyRequested.exchange(false))
+			{
+				// Exactly what the landing page does when the player picks Story Mode.
+				game::g_pointers.SetFlowState(game::g_pointers.StoryFlowState, false);
+				log::Info("home screen: story mode requested (flow state {})", game::g_pointers.StoryFlowState);
+			}
 			if (!host)
 				return;
 			if (!g_hostSeen)
@@ -130,6 +145,9 @@ namespace loader::core
 			log::Error("this game build is not supported yet; loader stays inactive");
 			return;
 		}
+		state::canContinueStory = game::g_pointers.SetFlowState && game::g_pointers.StoryFlowState >= 0;
+		if (!state::canContinueStory)
+			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
 		if (config::Get().debugDisableScriptHook)
 		{
 			log::Warn("debugDisableScriptHook is set: script hook not installed");

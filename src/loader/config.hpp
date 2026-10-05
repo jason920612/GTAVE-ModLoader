@@ -19,6 +19,8 @@ namespace loader::config
 		bool replaceLandingPage = true;
 		// Diagnostics only: skip hooking the game's script loop (mods will not run).
 		bool debugDisableScriptHook = false;
+		// Research only: log writes to the landing page flow state (hardware breakpoints).
+		bool debugWatchLanding = false;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

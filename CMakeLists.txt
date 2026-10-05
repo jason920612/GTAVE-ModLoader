@@ -43,7 +43,8 @@ add_library(loader SHARED
     src/loader/game/script.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
-    src/loader/ui/menu.cpp)
+    src/loader/ui/menu.cpp
+    src/loader/debug/watch.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME version)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive->)
