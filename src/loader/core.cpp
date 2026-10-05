@@ -15,7 +15,9 @@
 #include "game/natives.hpp"
 #include "game/pointers.hpp"
 #include "game/script.hpp"
+#include "game/pausemenu.hpp"
 #include "game/text.hpp"
+#include "game/text_override.hpp"
 #include "log.hpp"
 #include "mods.hpp"
 #include "paths.hpp"
@@ -220,7 +222,12 @@ namespace loader::core
 				SetOnline(true);
 				return;
 			}
-			UpdatePauseMenuTab();
+			if (config::Get().experimentalPauseMenu)
+				game::pausemenu::Tick();
+			else
+				UpdatePauseMenuTab();
+			if (config::Get().debugWatchFile)
+				debug::PollWatchFile();
 
 			game::scrThread* host = game::script::FindThread(kHostScript);
 			game::scrThread* landing = host ? nullptr : game::script::FindThread(kLandingScript);
@@ -271,6 +278,21 @@ namespace loader::core
 		state::canContinueStory = game::g_pointers.SetRouterLink && game::g_pointers.ClearRouterLink;
 		if (!state::canContinueStory)
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
+		if (config::Get().experimentalPauseMenu && game::text_override::Init())
+			game::pausemenu::InstallHooks();
+		if (config::Get().debugWatchBoot)
+		{
+			// Pause menu screen array: data pointer and count (see research/phase0.md).
+			// Not joined: this runs under the loader lock, the thread starts once it is released.
+			// Hardware breakpoints are per thread: keep arming threads created during startup.
+			std::thread([] {
+				for (int i = 0; i < 600; ++i)
+				{
+					debug::ArmWriteWatches({{0x3DFCF30, 8}, {0x3DFCF38, 2}});
+					Sleep(100);
+				}
+			}).detach();
+		}
 		if (config::Get().debugDisableScriptHook)
 		{
 			log::Warn("debugDisableScriptHook is set: script hook not installed");

@@ -4,11 +4,17 @@
 #include <TlHelp32.h>
 
 #include <atomic>
+#include <filesystem>
+#include <thread>
 #include <format>
 #include <string>
 
 #include "../log.hpp"
+#include "../paths.hpp"
 #include "../pattern.hpp"
+
+#include <fstream>
+#include <sstream>
 
 namespace loader::debug
 {
@@ -55,7 +61,7 @@ namespace loader::debug
 				}
 				uint64_t value = 0;
 				ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(g_watchAddr[i]), &value, sizeof(value), nullptr);
-				log::Info("watch[{}] rva {:#x} <- {:#x} (now {:#x}) thread {} | stack:{}", i, g_watchAddr[i] - g_game.base,
+				log::Info("watch[{}] {:#x} <- rip {:#x} (now {:#x}) thread {} | stack:{}", i, g_watchAddr[i],
 				    ctx->Rip - g_game.base, value, GetCurrentThreadId(), stack);
 			}
 			return EXCEPTION_CONTINUE_EXECUTION;
@@ -68,7 +74,7 @@ namespace loader::debug
 			{
 				const DWORD64 len = watches[i].size == 1 ? 0 : watches[i].size == 2 ? 1 : watches[i].size == 8 ? 2 : 3;
 				dr7 |= 1ull << (i * 2);              // local enable
-				dr7 |= 1ull << (16 + i * 4);         // break on write
+				dr7 |= (watches[i].onRead ? 3ull : 1ull) << (16 + i * 4); // read/write or write
 				dr7 |= len << (18 + i * 4);          // length
 			}
 			return dr7;
@@ -79,7 +85,12 @@ namespace loader::debug
 	{
 		g_game = pattern::Module::Main();
 		for (size_t i = 0; i < watches.size() && i < 4; ++i)
-			g_watchAddr[i] = g_game.base + watches[i].rva;
+		{
+			const uintptr_t addr = (watches[i].absolute ? 0 : g_game.base) + watches[i].rva;
+			if (g_watchAddr[i] != addr)
+				g_hits[i] = 0; // re-arming the same watch keeps its hit budget
+			g_watchAddr[i] = addr;
+		}
 		if (!g_handler)
 			g_handler = AddVectoredExceptionHandler(1, OnException);
 
@@ -111,6 +122,35 @@ namespace loader::debug
 			CloseHandle(t);
 		}
 		CloseHandle(snap);
-		log::Info("debug: write watches armed on {} thread(s)", armed);
+		static int lastArmed = -1;
+		if (armed != lastArmed)
+			log::Info("debug: write watches armed on {} thread(s)", armed);
+		lastArmed = armed;
+	}
+
+	void PollWatchFile()
+	{
+		static std::filesystem::file_time_type lastWrite{};
+		const auto file = paths::Get().root / L"debug_watch.txt";
+		std::error_code ec;
+		const auto time = std::filesystem::last_write_time(file, ec);
+		if (ec || time == lastWrite)
+			return;
+		lastWrite = time;
+		std::vector<Watch> watches;
+		std::ifstream in(file);
+		std::string line;
+		while (std::getline(in, line) && watches.size() < 4)
+		{
+			std::istringstream ls(line);
+			std::string addr, mode;
+			int size = 0;
+			if (!(ls >> addr >> size))
+				continue;
+			ls >> mode;
+			watches.push_back({std::stoull(addr, nullptr, 16), static_cast<uint8_t>(size), mode == "r", true});
+		}
+		log::Info("debug: arming {} watch(es) from debug_watch.txt", watches.size());
+		std::thread([watches] { ArmWriteWatches(watches); }).detach();
 	}
 }

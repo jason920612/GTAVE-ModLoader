@@ -34,6 +34,9 @@ namespace loader::config
 			c.replaceLandingPage = j.value("replaceLandingPage", c.replaceLandingPage);
 			c.debugDisableScriptHook = j.value("debugDisableScriptHook", c.debugDisableScriptHook);
 			c.debugWatchLanding = j.value("debugWatchLanding", c.debugWatchLanding);
+			c.debugWatchFile = j.value("debugWatchFile", c.debugWatchFile);
+			c.debugWatchBoot = j.value("debugWatchBoot", c.debugWatchBoot);
+			c.experimentalPauseMenu = j.value("experimentalPauseMenu", c.experimentalPauseMenu);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -48,6 +51,9 @@ namespace loader::config
 				{"replaceLandingPage", c.replaceLandingPage},
 				{"debugDisableScriptHook", c.debugDisableScriptHook},
 				{"debugWatchLanding", c.debugWatchLanding},
+				{"debugWatchFile", c.debugWatchFile},
+				{"debugWatchBoot", c.debugWatchBoot},
+				{"experimentalPauseMenu", c.experimentalPauseMenu},
 			};
 		}
 	}

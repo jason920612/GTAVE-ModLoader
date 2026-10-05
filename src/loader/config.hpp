@@ -21,6 +21,12 @@ namespace loader::config
 		bool debugDisableScriptHook = false;
 		// Research only: log writes to the landing page flow state (hardware breakpoints).
 		bool debugWatchLanding = false;
+		// Research only: arm watches listed in ModLoader\debug_watch.txt.
+		bool debugWatchFile = false;
+		// Research only: from startup, log writes to the pause menu screen array globals.
+		bool debugWatchBoot = false;
+		// Experiment: native pause-menu page for mods (injected when pausemenu.xml loads).
+		bool experimentalPauseMenu = false;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.
