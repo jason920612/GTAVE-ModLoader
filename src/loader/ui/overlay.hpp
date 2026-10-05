@@ -5,7 +5,7 @@ struct ID3D12Device;
 
 namespace loader::ui
 {
-	// Installs the DXGI hooks. Call once, from any thread, after the game window exists.
+	// Installs the DXGI hooks (only the first call does anything). Call from any thread once the game window exists.
 	bool StartOverlay();
 
 	// True while the loader UI owns input (landing replacement or the F4 window).

@@ -57,7 +57,13 @@ add_library(loader SHARED
     src/loader/ui/menu.cpp
     src/loader/debug/watch.cpp
     src/loader/debug/dred.cpp
-    src/loader/game/dlcpacks.cpp)
+    src/loader/game/dlcpacks.cpp
+    src/loader/convert/resource.cpp
+    src/loader/convert/archive.cpp
+    src/loader/convert/effects.cpp
+    src/loader/convert/ytd.cpp
+    src/loader/convert/yft.cpp
+    src/loader/convert/packs.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive- /Zi>)

@@ -12,6 +12,8 @@
 #include <imgui.h>
 
 #include "../config.hpp"
+#include "../convert/packs.hpp"
+#include "../game/dlcpacks.hpp"
 #include "../log.hpp"
 #include "../mods.hpp"
 #include "../paths.hpp"
@@ -164,6 +166,81 @@ namespace loader::ui
 			}
 		}
 
+		void PacksTab()
+		{
+			const auto packs = game::dlcpacks::Snapshot();
+			ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
+			ImGui::TextWrapped("%s", "放在 ModLoader\\mods\\<名稱>\\dlc.rpf 的 DLC 包。含舊版資源的包會自動轉成強化版格式，存在 ModLoader\\cache。");
+			ImGui::PopStyleColor();
+			if (ImGui::Button("開啟 mods 資料夾"))
+				OpenFolder(paths::Get().mods);
+			ImGui::SameLine();
+			if (ImGui::Button("開啟轉換快取資料夾"))
+				OpenFolder(paths::Get().root / L"cache");
+			if (packs.empty())
+			{
+				ImGui::TextColored(kMuted, "目前沒有 DLC 包。");
+				return;
+			}
+			if (ImGui::BeginTable("packs", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY))
+			{
+				ImGui::TableSetupColumn("名稱", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+				ImGui::TableSetupColumn("狀態", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+				ImGui::TableSetupColumn("說明", ImGuiTableColumnFlags_WidthStretch, 2.4f);
+				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableHeadersRow();
+				for (const auto& pack : packs)
+				{
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::TextUnformatted(pack.name.c_str());
+					ImGui::TableNextColumn();
+					std::string note;
+					if (!pack.enabled)
+						ImGui::TextColored(kMuted, "已停用");
+					else if (pack.state == convert::PackState::Failed)
+					{
+						ImGui::TextColored(kError, "轉換失敗，未載入");
+						note = pack.error;
+					}
+					else if (!pack.registered)
+						ImGui::TextColored(kError, "遊戲拒絕載入");
+					else if (pack.state == convert::PackState::Converted)
+					{
+						ImGui::TextColored(kAccent, "已轉換（舊版 → 強化版）");
+						note = std::format("{} 個檔案已轉換", pack.convertedFiles);
+						if (!pack.warnings.empty())
+							note += std::format("，{} 個警告（見記錄）", pack.warnings.size());
+					}
+					else
+						ImGui::TextColored(kAccent, "已載入");
+					ImGui::TableNextColumn();
+					ImGui::TextWrapped("%s", note.c_str());
+				}
+				ImGui::EndTable();
+			}
+		}
+
+		// Shown while legacy packs are being converted (the game sits on its loading screen meanwhile).
+		void ConversionProgress()
+		{
+			const auto p = convert::CurrentProgress();
+			if (!p.active)
+				return;
+			const ImGuiViewport* vp = ImGui::GetMainViewport();
+			const float width = vp->Size.x * 0.4f;
+			ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + (vp->Size.x - width) / 2, vp->Pos.y + vp->Size.y * 0.78f));
+			ImGui::SetNextWindowSize(ImVec2(width, 0));
+			ImGui::Begin("##convert", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
+			ImGui::TextColored(kAccent, "正在轉換舊版模組：%s", p.pack.c_str());
+			const float fraction = p.total ? static_cast<float>(p.done) / static_cast<float>(p.total) : 0.0f;
+			const auto label = std::format("{} / {}", p.done, p.total);
+			ImGui::ProgressBar(fraction, ImVec2(-1, 0), label.c_str());
+			ImGui::TextColored(kMuted, "%s", p.file.c_str());
+			ImGui::TextColored(kMuted, "只有第一次載入這個包時需要轉換，之後直接使用快取。");
+			ImGui::End();
+		}
+
 		void LogTab()
 		{
 			const auto lines = log::Recent();
@@ -217,6 +294,11 @@ namespace loader::ui
 				if (ImGui::BeginTabItem("模組"))
 				{
 					ModsTab();
+					ImGui::EndTabItem();
+				}
+				if (ImGui::BeginTabItem("資源包"))
+				{
+					PacksTab();
 					ImGui::EndTabItem();
 				}
 				if (ImGui::BeginTabItem("記錄"))
@@ -388,6 +470,7 @@ namespace loader::ui
 			log::Warn("home screen: story mode did not start; showing the home screen again");
 		}
 
+		ConversionProgress();
 		if (LandingReplaced())
 			LandingScreen();
 		else if (state::storyLoading && state::landing && !g_showOriginalLanding)

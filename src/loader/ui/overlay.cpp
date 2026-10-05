@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <imgui.h>
@@ -283,7 +284,14 @@ namespace loader::ui
 
 	bool StartOverlay()
 	{
-		return dx12::Install({&OnPresent, &OnReleaseBuffers});
+		// Started early when legacy packs are converted (to show progress on the loading screen), and again
+		// on the first script tick: install once.
+		static std::mutex mutex;
+		static std::optional<bool> installed;
+		std::lock_guard lock(mutex);
+		if (!installed)
+			installed = dx12::Install({&OnPresent, &OnReleaseBuffers});
+		return *installed;
 	}
 
 	bool CapturesInput()

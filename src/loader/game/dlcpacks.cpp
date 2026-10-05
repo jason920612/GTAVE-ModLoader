@@ -1,19 +1,23 @@
 #include "dlcpacks.hpp"
 
 #include <Windows.h>
+#include <intrin.h>
 
 #include <algorithm>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
 
 #include <MinHook.h>
+#include <thread>
 
 #include "../config.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../pattern.hpp"
+#include "../ui/overlay.hpp"
 
 namespace loader::game::dlcpacks
 {
@@ -42,7 +46,31 @@ namespace loader::game::dlcpacks
 			uint8_t pad[0x40 - 10];
 		};
 
+		// NG decryption in place: (encryption, key index, data, size). Protected code: called, never hooked.
+		using DecryptFn = void (*)(uint32_t encryption, uint32_t key, uint8_t* data, uint32_t size);
+
+		// The game's hang watchdog crashes the game when the main thread stops for ~60 s, unless this counter is
+		// non-zero (the game raises it around long operations itself). Raised while packs are converted.
+		volatile long* g_watchdogPause = nullptr;
+
+		struct WatchdogPause
+		{
+			WatchdogPause()
+			{
+				if (g_watchdogPause)
+					_InterlockedIncrement(g_watchdogPause);
+			}
+			~WatchdogPause()
+			{
+				if (g_watchdogPause)
+					_InterlockedDecrement(g_watchdogPause);
+			}
+		};
+
 		RegisterFn g_register = nullptr;
+		DecryptFn g_decrypt = nullptr;
+		convert::Decryptor g_decryptor;
+		std::unordered_map<std::string, convert::PackResult> g_prepared; // by pack name, first processing only
 		ProcessFn g_origProcess = nullptr;
 		CacheLookupFn g_origLookup = nullptr;
 
@@ -275,8 +303,7 @@ namespace loader::game::dlcpacks
 					continue;
 				Pack pack;
 				pack.name = Utf8(entry.path().filename().u8string());
-				// RAGE paths are UTF-8, use forward slashes and end with a separator.
-				pack.path = Utf8(entry.path().generic_u8string()) + "/";
+				pack.source = entry.path();
 				pack.dir = entry.path();
 				pack.enabled = !disabled.contains(pack.name);
 				packs.push_back(std::move(pack));
@@ -296,8 +323,45 @@ namespace loader::game::dlcpacks
 			return g_origLookup(device, path);
 		}
 
+		// Converts the pack if it has legacy resources (once per session; later processing reuses the result).
+		void Prepare(Pack& pack)
+		{
+			auto it = g_prepared.find(pack.name);
+			if (it == g_prepared.end())
+			{
+				WatchdogPause pause;
+				const auto showProgress = [] { std::thread([] { ui::StartOverlay(); }).detach(); };
+				it = g_prepared.emplace(pack.name, convert::PreparePack(pack.name, pack.source, g_decrypt ? &g_decryptor : nullptr, showProgress)).first;
+			}
+			const convert::PackResult& r = it->second;
+			pack.state = r.state;
+			pack.dir = r.dir;
+			pack.convertedFiles = r.convertedFiles;
+			pack.error = r.error;
+			pack.warnings = r.warnings;
+		}
+
+		// Research aid: ModLoader\debug_convert.txt lists archives (one dlc.rpf path per line) to convert into the
+		// cache without loading them, to test the converters on many legacy files.
+		void DebugConvert()
+		{
+			WatchdogPause pause;
+			std::ifstream list(paths::Get().root / L"debug_convert.txt");
+			std::string line;
+			for (int n = 0; list && std::getline(list, line); ++n)
+			{
+				if (line.empty())
+					continue;
+				const std::filesystem::path file(std::u8string(line.begin(), line.end()));
+				const auto r = convert::PreparePack(std::format("debug_{}", n), file.parent_path(), g_decrypt ? &g_decryptor : nullptr, {});
+				log::Info("debug convert {}: state {}, {} converted, {} warning(s) {}", line, static_cast<int>(r.state), r.convertedFiles, r.warnings.size(), r.error);
+			}
+		}
+
 		void HookProcess(void* manager)
 		{
+			static std::once_flag debug;
+			std::call_once(debug, DebugConvert);
 			auto packs = Discover();
 			for (Pack& pack : packs)
 			{
@@ -306,6 +370,11 @@ namespace loader::game::dlcpacks
 					log::Info("dlc pack {}: disabled", pack.name);
 					continue;
 				}
+				Prepare(pack);
+				if (pack.state == convert::PackState::Failed)
+					continue;
+				// RAGE paths are UTF-8, use forward slashes and end with a separator.
+				pack.path = Utf8(pack.dir.generic_u8string()) + "/";
 				// The game processes the list again when a session starts: reuse what we read.
 				bool known;
 				{
@@ -347,6 +416,19 @@ namespace loader::game::dlcpacks
 			return false;
 		}
 		g_register = reinterpret_cast<RegisterFn>(*reg);
+		// Optional: without it, encrypted legacy packs cannot be converted.
+		if (const auto decrypt = find("56 57 55 53 48 81 EC 28 02 00 00 44 89 CE 4C 89 C7 89 D5 89 CB 89 8C 24 10 02 00 00"))
+		{
+			g_decrypt = reinterpret_cast<DecryptFn>(*decrypt);
+			g_decryptor = [](uint32_t key, uint8_t* data, uint32_t size) { g_decrypt(kEncryptionNg, key, data, size); };
+		}
+		else
+			log::Warn("dlc packs: decryption not found; encrypted legacy packs cannot be converted");
+		// Watchdog loop: mov eax, [pause counter]; test eax, eax; jnz ...; mov rax, [heartbeat]; cmp rsi, rax
+		if (const auto watchdog = find("8B 05 ? ? ? ? 85 C0 75 E2 48 8B 05 ? ? ? ? 48 39 C6"))
+			g_watchdogPause = reinterpret_cast<volatile long*>(pattern::Rip(*watchdog + 2));
+		else
+			log::Warn("dlc packs: hang watchdog not found; converting large packs may crash the game");
 		if (!Hook(*lookup, reinterpret_cast<void*>(&HookLookup), reinterpret_cast<void**>(&g_origLookup)) ||
 		    !Hook(*process, reinterpret_cast<void*>(&HookProcess), reinterpret_cast<void**>(&g_origProcess)))
 		{

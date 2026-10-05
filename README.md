@@ -1,0 +1,49 @@
+# GTAVE-ModLoader
+
+GTA V Enhanced（故事模式）的單一 DLL 模組載入器。
+
+> 本專案僅供**故事模式**使用。載入器只在以 `-nobattleye` 啟動時運作，偵測到 GTA 線上模式會暫停所有模組。
+> 不依賴 ScriptHookV；所有遊戲內部結構都是本專案自行逆向分析的結果（見 `research/phase0.md`）。
+
+## 功能
+
+- **放入即用**：遊戲資料夾放入 `version.dll`（小型代理）與 `ModLoader\ModLoader.dll`。
+- **程式模組**：自動載入 `ModLoader\mods\*.dll`，每個模組有自己的資料夾；SDK 位於 `sdk/include/modloader`。
+- **遊戲內管理**：F4 開啟管理視窗（模組、資源包、記錄、設定）；也可取代遊戲主畫面。
+- **暫停選單「模組」分頁**：模組設定（開關、滑桿、自訂文字的選項列表）直接出現在遊戲的暫停選單。
+- **DLC 包**：`ModLoader\mods\<名稱>\dlc.rpf` 會加入遊戲的 DLC 清單，支援未加密（OPEN）與加密（NG）的封裝檔。
+- **舊版（Legacy）資源自動轉換**：含舊版貼圖字典（ytd v13）或模型（yft v162）的包，會在第一次載入時轉成
+  Enhanced 格式（ytd v5、yft v171）並存到 `ModLoader\cache`，載入畫面上會顯示進度條；之後直接使用快取。
+
+## 建置
+
+需要 Visual Studio 2022（MSVC）與 CMake 3.24 以上。
+
+```
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+輸出：`build/Release/version.dll`（代理）、`build/Release/ModLoader.dll`（載入器）、範例模組。
+
+## 目錄
+
+| 路徑 | 內容 |
+| --- | --- |
+| `src/stub` | `version.dll` 代理，只在 GTA5_Enhanced.exe 中載入 ModLoader.dll |
+| `src/loader` | 載入器本體（模組、原生函式呼叫、介面、暫停選單、DLC 包） |
+| `src/loader/convert` | 舊版 → Enhanced 資源轉換（RPF 讀寫、ytd、yft、效果參數表） |
+| `sdk/include/modloader` | 模組 SDK |
+| `examples` | 範例模組 |
+| `tools` | 研究與離線轉換工具（Python） |
+| `research/phase0.md` | 逆向分析筆記 |
+
+## 目前限制
+
+- 只轉換 ytd 與 yft；其他舊版資源（ydr、ydd 等）照原樣保留。
+- 舊版貼圖參數依效果的貼圖順序對應（舊版以取樣器命名，與 Enhanced 貼圖名稱沒有直接關聯）。
+- 遊戲版本 build stamp `0x6aa45f10` 上驗證；其他版本的特徵碼可能需要更新。
+
+## 授權
+
+MIT，見 `LICENSE`。GTA V 與相關商標屬於 Rockstar Games / Take-Two Interactive；本專案與其無關，也不包含任何遊戲檔案。
