@@ -12,6 +12,7 @@ Formats (research/phase0.md §12-13, derived from the game and its own files):
               +0x18 u16 width, +0x1A height, +0x1C depth, +0x1E dimension (1 = 2D), +0x1F DXGI
               format, +0x20 0xFF, +0x22 mip count, +0x26 1, +0x28 name, +0x30 -> view (+0x58,
               0x28 bytes, filled by the game), +0x38 pixel data, +0x40 u16 usage, +0x42/+0x44.
+              Render targets ("script_rt_*"): flags 0x01A60228, usage 0x21A, +0x42 0x40.
   Pointers: virtual 0x50000000 + offset, physical 0x60000000 + offset.
 """
 import struct, sys, zlib
@@ -196,12 +197,18 @@ def convert(virtual, physical, only=None):
         struct.pack_into("<Q", virt, off_ptrs + 8 * i, VIRTUAL + o)
         struct.pack_into("<I", virt, off_hashes + 4 * i, joaat(t["name"]))
         struct.pack_into("<IHH", virt, o + 0x08, t["stored"] // t["unit"], t["unit"], 0)
-        struct.pack_into("<I", virt, o + 0x10, 0x01A70208)
+        # "script_rt_*" textures become render targets (vehicle dials drawn by scripts): the game's own files
+        # mark them render-target capable; creating a render target view of a plain texture removes the device.
+        render_target = t["name"].lower().startswith("script_rt_")
+        struct.pack_into("<I", virt, o + 0x10, 0x01A60228 if render_target else 0x01A70208)
         struct.pack_into("<HHHBB", virt, o + 0x18, t["width"], t["height"], t["depth"], 1, t["dxgi"])
         struct.pack_into("<BBBBBBBB", virt, o + 0x20, 0xFF, 0, t["mips"], 0, 0, 0, 1, 0)
         struct.pack_into("<QQQ", virt, o + 0x28, VIRTUAL + t["name_off"], VIRTUAL + o + 0x58, PHYSICAL + t["offset"])
-        usage = 0x216 if t["name"].lower().endswith("_n") else 0x214
-        struct.pack_into("<HHH", virt, o + 0x40, usage, 0x80, 2)
+        if render_target:
+            struct.pack_into("<HHH", virt, o + 0x40, 0x21A, 0x40, 2)
+        else:
+            usage = 0x216 if t["name"].lower().endswith("_n") else 0x214
+            struct.pack_into("<HHH", virt, o + 0x40, usage, 0x80, 2)
     struct.pack_into("<BB", virt, off_pagemap + 8, page_count(vflags), page_count(pflags))
     virt[off_names:off_names + len(names)] = names
 

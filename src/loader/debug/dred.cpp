@@ -9,7 +9,6 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
-#include <vector>
 #include <string>
 #include <thread>
 
@@ -135,33 +134,12 @@ namespace loader::debug
 			allocator->Release();
 		}
 
-		// Logs new debug-layer errors (only when the layer was enabled).
-		void LogInfoQueue(ID3D12Device* device, UINT64& next)
-		{
-			ID3D12InfoQueue* queue = nullptr;
-			if (FAILED(device->QueryInterface(IID_PPV_ARGS(&queue))))
-				return;
-			const UINT64 count = queue->GetNumStoredMessages();
-			for (; next < count; ++next)
-			{
-				SIZE_T size = 0;
-				if (FAILED(queue->GetMessage(next, nullptr, &size)) || !size)
-					continue;
-				std::vector<char> buffer(size);
-				auto* message = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
-				if (SUCCEEDED(queue->GetMessage(next, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
-					log::Warn("d3d12 debug: [{}] {}", static_cast<int>(message->ID), message->pDescription);
-			}
-			queue->Release();
-		}
-
 		void Watch()
 		{
-			UINT64 nextMessage = 0;
 			bool hooked = false;
 			for (;;)
 			{
-				Sleep(500);
+				Sleep(100);
 				ID3D12Device* device = ui::Device();
 				if (!device)
 					continue;
@@ -170,7 +148,6 @@ namespace loader::debug
 					HookCommandLists(device);
 					hooked = true;
 				}
-				LogInfoQueue(device, nextMessage);
 				const HRESULT reason = device->GetDeviceRemovedReason();
 				if (reason == S_OK)
 					continue;
