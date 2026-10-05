@@ -131,3 +131,8 @@
 - 實作：hook `0xC2A1C0` 先登記 `ModLoader/mods/<包>/`；hook 快取查詢，對未加密的包回傳我們讀好的明文目錄（加密值改為合法的 AES，檔案本身未加密所以不會真的解密）。
   `IS_DLC_PRESENT(joaat(nameHash))` 實測為 1。
 - setup2.xml / content.xml 格式：由遊戲讀取自己的 DLC 時擷取（SSetupData、CDataFileMgr__ContentsOfDataFileXml）。
+- 內嵌封裝檔（例如 OpenIV 產生的附加車輛包裡的 `x64/vehicles.rpf`）的快取查詢路徑是 `<setup2.xml 的 deviceName>:/<包內路徑>`；
+  載入器讀外層目錄時一併登記（`setup2.xml` 若有壓縮，用遊戲自帶的 zlib1.dll 解壓）。明文目錄的加密值填 NG（與遊戲自身封裝相同）。
+- 封裝檔 vtable `+0x2488E90`：OpenBulk `+0x10`、ReadBulk `+0x38` 只做位移換算後交給上層裝置，不解密。
+- **資源格式版本**：Enhanced 的 `vehicles.rpf` 內 yft = 171、ytd = 5（1105 個）；舊版（Legacy）附加車輛為 yft 162、ytd 13，
+  遊戲會登記模型（IS_MODEL_IN_CDIMAGE = 1）但不會載入資源。舊版資源需要轉成 Enhanced 格式才能用。
