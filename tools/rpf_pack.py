@@ -32,7 +32,9 @@ def build(folder):
         entries[i]["first"], entries[i]["count"] = len(entries), len(children)
         for c in children:
             full = os.path.join(path, c)
-            if os.path.isdir(full):
+            if os.path.isdir(full) and c.lower().endswith(".rpf"):  # nested archive (rpf_unpack.py output)
+                entries.append({"dir": False, "name": c.lower(), "data": build(full), "rsc": False})
+            elif os.path.isdir(full):
                 entries.append({"dir": True, "name": c.lower(), "path": full}); queue.append(len(entries) - 1)
             else:
                 data = open(full, "rb").read()

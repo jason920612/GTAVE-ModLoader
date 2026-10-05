@@ -6,6 +6,7 @@
 #include "bootstrap.hpp"
 #include "config.hpp"
 #include "core.hpp"
+#include "debug/dred.hpp"
 #include "log.hpp"
 #include "paths.hpp"
 
@@ -60,6 +61,7 @@ namespace
 		log::Info("mods dir: {}", paths::Get().mods.string());
 		log::Info("assets dir: {}", paths::Get().assets.string());
 
+		debug::StartDred();
 		core::StartBackgroundTasks();
 		bootstrap::Install(&core::OnGameUnpacked);
 	}

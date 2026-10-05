@@ -56,6 +56,7 @@ add_library(loader SHARED
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
     src/loader/debug/watch.cpp
+    src/loader/debug/dred.cpp
     src/loader/game/dlcpacks.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

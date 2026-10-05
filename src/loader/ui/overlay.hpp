@@ -1,6 +1,8 @@
 #pragma once
 #include <Windows.h>
 
+struct ID3D12Device;
+
 namespace loader::ui
 {
 	// Installs the DXGI hooks. Call once, from any thread, after the game window exists.
@@ -11,4 +13,7 @@ namespace loader::ui
 
 	// The window the game presents into (nullptr until the overlay attached).
 	HWND GameWindow();
+
+	// The game's D3D12 device (nullptr until the overlay attached).
+	ID3D12Device* Device();
 }

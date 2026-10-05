@@ -295,4 +295,9 @@ namespace loader::ui
 	{
 		return g_window;
 	}
+
+	ID3D12Device* Device()
+	{
+		return g_device;
+	}
 }
