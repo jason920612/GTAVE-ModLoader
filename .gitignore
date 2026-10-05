@@ -1,0 +1,6 @@
+research/dump/
+research/*.png
+build/
+out/
+.vs/
+__pycache__/
