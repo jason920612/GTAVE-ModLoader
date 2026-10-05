@@ -22,14 +22,32 @@ add_library(loader SHARED
     src/loader/paths.cpp
     src/loader/config.cpp
     src/loader/pattern.cpp
-    src/loader/bootstrap.cpp)
+    src/loader/bootstrap.cpp
+    src/loader/core.cpp
+    src/loader/mods.cpp
+    src/loader/game/pointers.cpp
+    src/loader/game/natives.cpp
+    src/loader/game/script.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME version)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive->)
+target_include_directories(loader PRIVATE sdk/include)
 target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json)
+
+# SDK: header-only, used by mods.
+add_library(modloader_sdk INTERFACE)
+target_include_directories(modloader_sdk INTERFACE sdk/include)
+target_compile_features(modloader_sdk INTERFACE cxx_std_20)
+
+add_library(hello_mod SHARED examples/hello_mod/main.cpp)
+target_link_libraries(hello_mod PRIVATE modloader_sdk)
+target_compile_options(hello_mod PRIVATE /W4 /utf-8 /bigobj)
 
 # Optional: GTAV_DIR=<game dir> copies version.dll there after each build.
 if(GTAV_DIR)
     add_custom_command(TARGET loader POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:loader> "${GTAV_DIR}/version.dll")
+    add_custom_command(TARGET hello_mod POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader/mods"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:hello_mod> "${GTAV_DIR}/ModLoader/mods/")
 endif()

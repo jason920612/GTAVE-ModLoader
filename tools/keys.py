@@ -25,9 +25,11 @@ elif cmd == "key":
     hold = float(sys.argv[3]) if len(sys.argv) > 3 else 0.08
     d.keyDown(sys.argv[2]); time.sleep(hold); d.keyUp(sys.argv[2])
 elif cmd == "click":
-    focus(); time.sleep(0.2); d.click(int(sys.argv[2]), int(sys.argv[3]))
+    focus(); time.sleep(0.2)
+    d.moveTo(int(sys.argv[2]), int(sys.argv[3])); time.sleep(0.15)
+    d.mouseDown(); time.sleep(0.12); d.mouseUp()
 elif cmd == "seq":
     focus(); time.sleep(0.2)
     spec, _, delay = sys.argv[2].partition(":")
     for k in spec.split(","):
-        d.press(k); time.sleep(float(delay or 0.4))
+        d.keyDown(k); time.sleep(0.1); d.keyUp(k); time.sleep(float(delay or 0.4))

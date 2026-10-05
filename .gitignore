@@ -4,3 +4,6 @@ build/
 out/
 .vs/
 __pycache__/
+research/nativedb.json
+research/natives_live.csv
+research/crossmap_oracle.txt

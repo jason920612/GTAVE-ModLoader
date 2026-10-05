@@ -5,6 +5,7 @@
 
 #include "bootstrap.hpp"
 #include "config.hpp"
+#include "core.hpp"
 #include "log.hpp"
 #include "paths.hpp"
 #include "proxy.hpp"
@@ -60,7 +61,7 @@ namespace
 		log::Info("mods dir: {}", paths::Get().mods.string());
 		log::Info("assets dir: {}", paths::Get().assets.string());
 
-		bootstrap::Install();
+		bootstrap::Install(&core::OnGameUnpacked);
 	}
 }
 

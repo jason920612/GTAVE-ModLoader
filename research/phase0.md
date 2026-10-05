@@ -53,3 +53,15 @@
 
 - YimMenuV2（GPL-2.0）：invoker / InitNativeTables / RunScriptThreads 的做法。
 - RageOpenV（GPL-3.0）：fiDevice 重導、rpf.cache、OPEN RPF 的做法。
+
+## 6. 階段 2 補充驗證（2026-10-05）
+
+- 原生函式註冊表 RVA `0x3ED4C20`：256 桶；節點 next@+0x00（XOR 節點位址混淆）、7 個 handler@+0x10、
+  數量@+0x48、雜湊@+0x54+i*16（皆 XOR 混淆）。執行期共 6,748 個原生函式（`tools/natives_dump.py`）。
+- 公開雜湊 → 執行期雜湊必須用 crossmap；`SYSTEM`（BUILTIN）類維持不變。
+  以「處理函式位址順序」自行推導：各命名空間內順序一致率 96.6%，不足以作為正式資料（錯 3% 會呼叫錯函式）。
+- 目前腳本執行緒：`TLS[_tls_index]+0x7A0`，執行中旗標 `+0x7A8`，另有全域副本（特徵碼 `ActiveThread`）。
+- scrThread：id@+0x08、state@+0x18、名稱雜湊@+0x150（= joaat(名稱)）、名稱@+0x154。
+- scrNativeCallContext：回傳指標@+0x00、參數數量@+0x08、參數陣列@+0x10（每個 8 bytes）。
+- 很多原生函式處理常式被 Arxan 切碎（jmp 到第二個 .text），用 `tools/trace.py` 追蹤。
+- 實測：hello_mod 在故事模式讀到玩家座標、F5 生成 Adder 並坐進駕駛座。
