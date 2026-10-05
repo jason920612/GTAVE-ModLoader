@@ -25,11 +25,19 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS UNICODE _UNICODE)
 
+# version.dll: tiny proxy that loads ModLoader\ModLoader.dll (see src/stub/main.cpp).
+add_library(stub SHARED
+    src/stub/main.cpp
+    src/stub/proxy.cpp
+    src/stub/proxy_version.asm
+    src/stub/version.def)
+set_target_properties(stub PROPERTIES OUTPUT_NAME version)
+target_compile_definitions(stub PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(stub PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive->)
+
+# ModLoader.dll: the loader itself.
 add_library(loader SHARED
     src/loader/dllmain.cpp
-    src/loader/proxy.cpp
-    src/loader/proxy_version.asm
-    src/loader/version.def
     src/loader/log.cpp
     src/loader/paths.cpp
     src/loader/config.cpp
@@ -47,8 +55,9 @@ add_library(loader SHARED
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
-    src/loader/debug/watch.cpp)
-set_target_properties(loader PROPERTIES OUTPUT_NAME version)
+    src/loader/debug/watch.cpp
+    src/loader/game/dlcpacks.cpp)
+set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive- /Zi>)
 target_include_directories(loader PRIVATE sdk/include)
@@ -68,10 +77,13 @@ foreach(example IN LISTS EXAMPLE_MODS)
     target_compile_options(${example} PRIVATE /W4 /utf-8 /bigobj)
 endforeach()
 
-# Optional: GTAV_DIR=<game dir> copies version.dll there after each build.
+# Optional: GTAV_DIR=<game dir> installs the loader there after each build.
 if(GTAV_DIR)
+    add_custom_command(TARGET stub POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:stub> "${GTAV_DIR}/version.dll")
     add_custom_command(TARGET loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:loader> "${GTAV_DIR}/version.dll")
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:loader> "${GTAV_DIR}/ModLoader/ModLoader.dll")
     foreach(example IN LISTS EXAMPLE_MODS)
         add_custom_command(TARGET ${example} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader/mods"

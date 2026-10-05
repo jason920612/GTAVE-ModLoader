@@ -8,7 +8,6 @@
 #include "core.hpp"
 #include "log.hpp"
 #include "paths.hpp"
-#include "proxy.hpp"
 
 namespace
 {
@@ -51,7 +50,7 @@ namespace
 
 		if (!IsBattlEyeDisabled())
 		{
-			// Story-mode only: with BattlEye active the loader stays a plain version.dll proxy.
+			// Story-mode only: with BattlEye active the loader stays idle (version.dll still proxies).
 			log::Warn("game was not started with -nobattleye; loader disabled");
 			return;
 		}
@@ -66,14 +65,12 @@ namespace
 	}
 }
 
+// Loaded by version.dll (src/stub) inside GTA5_Enhanced.exe only.
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
 	if (reason == DLL_PROCESS_ATTACH)
 	{
 		DisableThreadLibraryCalls(module);
-		if (!loader::proxy::LoadRealVersionDll())
-			return FALSE;
-		// The same version.dll is also picked up by PlayGTAV.exe and the BattlEye launcher.
 		if (IsGameProcess())
 			Start();
 	}

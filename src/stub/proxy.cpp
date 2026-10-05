@@ -9,7 +9,7 @@
 
 extern "C" void* g_versionExports[std::size(kVersionExportNames)] = {};
 
-namespace loader::proxy
+namespace stub::proxy
 {
 	bool LoadRealVersionDll()
 	{

@@ -15,6 +15,7 @@
 #include "game/natives.hpp"
 #include "game/pointers.hpp"
 #include "game/script.hpp"
+#include "game/dlcpacks.hpp"
 #include "game/pausemenu.hpp"
 #include "game/text.hpp"
 #include "game/text_override.hpp"
@@ -278,6 +279,7 @@ namespace loader::core
 		state::canContinueStory = game::g_pointers.SetRouterLink && game::g_pointers.ClearRouterLink;
 		if (!state::canContinueStory)
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
+		game::dlcpacks::InstallHooks();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())
 			game::pausemenu::InstallHooks();
 		if (config::Get().debugWatchBoot)

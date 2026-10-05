@@ -119,3 +119,15 @@
 - 選項列表：`CMenuArray+0x20`（`0x3DFCF40`）atArray，每筆 0x18：`{u32 id; u32* labels @+8; u16 count @+0x10}`。
   項目 optionType = 列表 id（0 = 滑桿）；建構時對每個標籤雜湊查 TheText（`0x51D620`），所以文字覆寫表可直接提供選項文字。
   遊戲自己的 id 都 < 100；我們在第一次開啟前追加 id 100..250 的列表給 ML_SETTING_LIST 使用。
+
+## 11. DLC 包與未加密 RPF（2026-10-05，build 0x6aa45f10）
+
+- RPF7 標頭 `{magic 'RPF7', 項目數, 名稱長度（bit 28-30 名稱位移）, 加密}`；遊戲檔案皆為 NG（`0x0FEFFFFF`）。
+- 封裝開啟 `0x10FCB0`：先查 rpf.cache（`0x1100E0(裝置, 路徑)`），命中時 `[0]` = 明文目錄（標頭+項目+名稱），`+9` = 已解密 → 完全不解密。
+- 解密分派 `0xAAADC0(加密, 金鑰索引, 資料, 大小)` 與上下文初始化 `0xAA9FE0`：只接受 NG/AES，其他值（含 'OPEN'）執行 int3。
+  **這兩個函式受執行檔保護，hook 會被還原**（實測開頭位元組恢復原狀）。
+- 項目格式（讀檔 `0x110D60` 確認）：檔案 `u64 = 名稱偏移 | 壓縮大小<<16（0=未壓縮） | (資料位置/512)<<40 | 資源旗標 bit63`，`+8` 原始大小，`+0xC` 加密旗標；目錄 `+4 = 0x7FFFFF00`、`+8` 第一個子項、`+0xC` 子項數。
+- DLC 清單：`0xC29A50` 讀 dlclist.xml → 每條路徑 `0xC29FC0(管理器, 路徑)`（接 `%sdlc.rpf` 掛載）→ `0xC2A1C0(管理器)` 處理（也會掃 `platform:/dlcPacks/`）。進入故事模式時會再處理一次。
+- 實作：hook `0xC2A1C0` 先登記 `ModLoader/mods/<包>/`；hook 快取查詢，對未加密的包回傳我們讀好的明文目錄（加密值改為合法的 AES，檔案本身未加密所以不會真的解密）。
+  `IS_DLC_PRESENT(joaat(nameHash))` 實測為 1。
+- setup2.xml / content.xml 格式：由遊戲讀取自己的 DLC 時擷取（SSetupData、CDataFileMgr__ContentsOfDataFileXml）。
