@@ -71,6 +71,23 @@ namespace loader::game::pausemenu
 
 		using LoadFn = bool (*)(int32_t mode);
 		LoadFn g_origLoad = nullptr;
+
+		// Scaleform -> game menu events (RVA 0x5EF9E0 on 0x6aa45f10). `args` is an array of GFx values
+		// (0x18 bytes each, starting at +0x18: type at +8, double at +0x10).
+		using EventFn = void (*)(const uint32_t* event, uint8_t* args, uintptr_t a3, uintptr_t a4);
+		EventFn g_origEvent = nullptr;
+		// "option changed" (args: pref id, new value). The game only stores the value when the
+		// current header tab is SETTINGS, so for our Mods tab we store it ourselves.
+		constexpr uint32_t kEventSetPref = 0x610E6168;
+
+		// Header tab stack: entries of 16 bytes, screen id first; the last entry is the current tab.
+		struct TabEntry
+		{
+			int32_t id;
+			uint8_t pad[12];
+		};
+		TabEntry** g_tabStack = nullptr;
+		uint16_t* g_tabCount = nullptr;
 		MenuArray* g_menu = nullptr;
 		int32_t* g_prefs = nullptr; // research: preference values (RVA 0x3DFC2A0 on 0x6aa45f10)
 
@@ -165,6 +182,33 @@ namespace loader::game::pausemenu
 			log::Info("pausemenu: test page injected (screens {}, {})", kModsTab, kTestPage);
 		}
 
+		int32_t CurrentTab()
+		{
+			const uint16_t n = *g_tabCount;
+			return n && *g_tabStack ? (*g_tabStack)[n - 1].id : -1;
+		}
+
+		bool IsOurPref(int32_t pref)
+		{
+			return pref == kPrefToggle || pref == kPrefSlider;
+		}
+
+		void HookEvent(const uint32_t* event, uint8_t* args, uintptr_t a3, uintptr_t a4)
+		{
+			if (event && args && *event == kEventSetPref && CurrentTab() == kModsTab)
+			{
+				const auto isNumber = [&](int i) { return (*reinterpret_cast<uint32_t*>(args + 0x20 + 0x18 * i) & 0x8F) == 3; };
+				if (isNumber(0) && isNumber(1))
+				{
+					const auto pref = static_cast<int32_t>(*reinterpret_cast<double*>(args + 0x28));
+					const auto value = static_cast<int32_t>(*reinterpret_cast<double*>(args + 0x40));
+					if (IsOurPref(pref))
+						g_prefs[pref] = value;
+				}
+			}
+			g_origEvent(event, args, a3, a4);
+		}
+
 		bool HookLoad(int32_t mode)
 		{
 			const bool ok = g_origLoad(mode);
@@ -193,6 +237,25 @@ namespace loader::game::pausemenu
 			return false;
 		}
 		log::Info("pausemenu: loader hooked");
+
+		const auto ev = pattern::Find(module.text, pattern::Pattern::Parse(
+		    "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC 28 02 00 00 80 3D ? ? ? ? 00 0F 84 ? ? ? ? 45 89 C6 49 89 D4 49 89 CD"));
+		const auto tabs = pattern::Find(module.text,
+		    pattern::Pattern::Parse("0F B7 05 ? ? ? ? 48 85 C0 0F 84 ? ? ? ? 48 8B 0D ? ? ? ? 48 C1 E0 04 83 7C 08 F0 06"));
+		if (!ev || !tabs)
+		{
+			log::Error("pausemenu: menu event handler not found ({} {})", ev.has_value(), tabs.has_value());
+			return false;
+		}
+		g_tabCount = reinterpret_cast<uint16_t*>(pattern::Rip(*tabs + 3));
+		g_tabStack = reinterpret_cast<TabEntry**>(pattern::Rip(*tabs + 0x13));
+		if (MH_CreateHook(reinterpret_cast<void*>(*ev), reinterpret_cast<void*>(&HookEvent), reinterpret_cast<void**>(&g_origEvent)) != MH_OK ||
+		    MH_EnableHook(reinterpret_cast<void*>(*ev)) != MH_OK)
+		{
+			log::Error("pausemenu: could not hook the menu event handler");
+			return false;
+		}
+		log::Info("pausemenu: menu event handler hooked");
 		return true;
 	}
 
