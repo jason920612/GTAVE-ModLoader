@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <deque>
 #include <mutex>
 
 namespace loader::log
@@ -14,6 +15,8 @@ namespace loader::log
 		FILE* g_file = nullptr;
 		Level g_level = Level::Info;
 		const auto g_start = std::chrono::steady_clock::now();
+		constexpr size_t kRecentLines = 500;
+		std::deque<Line> g_recent;
 
 		constexpr const char* Name(Level level)
 		{
@@ -50,11 +53,20 @@ namespace loader::log
 		const auto line = std::format("[{:>8}ms] [{}] [T{:>5}] {}\n", ms, Name(level), GetCurrentThreadId(), message);
 
 		std::lock_guard lock(g_mutex);
+		g_recent.push_back({level, line.substr(0, line.size() - 1)});
+		if (g_recent.size() > kRecentLines)
+			g_recent.pop_front();
 		if (g_file)
 		{
 			fwrite(line.data(), 1, line.size(), g_file);
 			fflush(g_file);
 		}
 		OutputDebugStringA(line.c_str());
+	}
+
+	std::vector<Line> Recent()
+	{
+		std::lock_guard lock(g_mutex);
+		return {g_recent.begin(), g_recent.end()};
 	}
 }

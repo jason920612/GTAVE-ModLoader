@@ -17,7 +17,10 @@ results = []
 for i in range(runs):
     for p in procs(GAME): p.terminate()
     wait_gone((GAME,), 30) or [p.kill() for p in procs(GAME)]
-    wait_gone(("PlayGTAV.exe", "Launcher.exe"), 60)
+    # Start every run from a clean launcher state; a lingering launcher often never starts the game.
+    for p in procs("PlayGTAV.exe", "Launcher.exe", "RockstarErrorHandler.exe"): p.kill()
+    wait_gone(("PlayGTAV.exe", "Launcher.exe"), 30)
+    time.sleep(5)
     before = set(glob.glob(DUMPS))
     subprocess.Popen([STEAM, "-applaunch", "3240220", "-nobattleye"])
     start = time.time(); game = None
@@ -30,6 +33,10 @@ for i in range(runs):
         if not game.is_running() or set(glob.glob(DUMPS)) - before:
             outcome = f"crash@{int(time.time()-t0)}s"; break
         time.sleep(1)
+    if outcome != "ok":
+        # Let the game finish writing its crash dump and exit on its own.
+        end = time.time() + 90
+        while time.time() < end and game.is_running(): time.sleep(1)
     results.append(outcome); print(f"[{label}] run {i+1}: {outcome}", flush=True)
 for p in procs(GAME): p.terminate()
 print(f"[{label}] SUMMARY: {sum(r=='ok' for r in results)}/{len(results)} ok -> {results}", flush=True)

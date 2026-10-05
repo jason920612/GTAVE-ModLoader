@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <thread>
 
 #include "config.hpp"
 #include "crossmap_update.hpp"
@@ -13,6 +14,8 @@
 #include "log.hpp"
 #include "mods.hpp"
 #include "paths.hpp"
+#include "state.hpp"
+#include "ui/overlay.hpp"
 
 namespace loader::core
 {
@@ -24,51 +27,66 @@ namespace loader::core
 		constexpr uint32_t kHostScript = Joaat("main_persistent");
 		// Only present in GTA Online.
 		constexpr uint32_t kOnlineScript = Joaat("freemode");
+
+		// Runs the game's landing page; continue-story is issued from its context.
+		constexpr uint32_t kLandingScript = Joaat("landing_pre_startup");
 		constexpr uint64_t kNetworkIsSessionStarted = 0x9DE624D2FC4B603F;
+		constexpr uint64_t kDisableAllControlActions = 0x5F4B6931816E599B;
 
 		DWORD g_gameThreadId = 0;
+		bool g_hostSeen = false;
+		game::natives::Invocation g_loaderCall;
 
 		std::filesystem::path CrossmapPath()
 		{
 			return paths::Get().root / L"crossmap.txt";
 		}
-		bool g_online = false;
-		bool g_hostSeen = false;
-		game::natives::Invocation g_loaderCall;
 
-		bool NetworkSessionStarted()
+		template<class... Args>
+		bool CallNative(uint64_t hash, Args... args)
 		{
-			g_loaderCall.Begin(kNetworkIsSessionStarted);
-			return game::natives::Call(g_loaderCall) == game::natives::CallStatus::Ok && g_loaderCall.result[0] != 0;
+			g_loaderCall.Begin(hash);
+			(g_loaderCall.Push(static_cast<uint64_t>(args)), ...);
+			const auto status = game::natives::Call(g_loaderCall);
+			if (status != game::natives::CallStatus::Ok)
+				log::Error("loader native {:#018x} failed ({})", hash, static_cast<int>(status));
+			return status == game::natives::CallStatus::Ok;
 		}
 
 		void SetOnline(bool online)
 		{
-			if (online == g_online)
+			if (online == state::online)
 				return;
-			g_online = online;
+			state::online = online;
 			if (online)
 				log::Warn("GTA Online detected: all mods are paused");
 			else
 				log::Info("left GTA Online: mods resume");
 		}
 
+		void FirstTick()
+		{
+			g_gameThreadId = GetCurrentThreadId();
+			log::Info("first script tick on thread {}", g_gameThreadId);
+			if (!crossmap::WaitForUpdate(std::chrono::seconds(15)))
+				log::Warn("crossmap: download still running, using the existing file");
+			game::natives::LoadCrossmap(CrossmapPath());
+			game::natives::ResolveHandlers();
+			mods::LoadAll();
+
+			// The probe device and DXGI patching must not stall the game thread.
+			std::thread([] {
+				if (!ui::StartOverlay())
+					log::Error("ui: overlay unavailable");
+			}).detach();
+		}
+
 		void OnTick()
 		{
 			if (!g_gameThreadId)
-			{
-				g_gameThreadId = GetCurrentThreadId();
-				log::Info("first script tick on thread {}", g_gameThreadId);
-				if (!crossmap::WaitForUpdate(std::chrono::seconds(15)))
-					log::Warn("crossmap: download still running, using the existing file");
-				game::natives::LoadCrossmap(CrossmapPath());
-				game::natives::ResolveHandlers();
-				mods::LoadAll();
-			}
+				FirstTick();
 			else if (GetCurrentThreadId() != g_gameThreadId)
-			{
 				return; // mods only ever run on the thread they were loaded on
-			}
 
 			if (game::script::FindThread(kOnlineScript))
 			{
@@ -77,17 +95,25 @@ namespace loader::core
 			}
 
 			game::scrThread* host = game::script::FindThread(kHostScript);
+			game::scrThread* landing = host ? nullptr : game::script::FindThread(kLandingScript);
+			state::landing = landing != nullptr;
+			state::story = host != nullptr;
 			if (!host)
 				return;
 			if (!g_hostSeen)
 			{
 				g_hostSeen = true;
+				state::storyLoading = false;
 				log::Info("story mode is running, starting mods");
 			}
 
 			game::script::ScopedThread scope(host);
-			SetOnline(NetworkSessionStarted());
-			if (!g_online)
+			g_loaderCall.Begin(kNetworkIsSessionStarted);
+			SetOnline(game::natives::Call(g_loaderCall) == game::natives::CallStatus::Ok && g_loaderCall.result[0] != 0);
+			// The loader menu owns keyboard/mouse while it is open.
+			if (ui::CapturesInput())
+				CallNative(kDisableAllControlActions, 0);
+			if (!state::online)
 				mods::Tick();
 		}
 	}

@@ -31,6 +31,7 @@ namespace loader::config
 			c.disabledAssets = j.value("disabledAssets", c.disabledAssets);
 			c.crossmapUrl = j.value("crossmapUrl", c.crossmapUrl);
 			c.crossmapAutoUpdate = j.value("crossmapAutoUpdate", c.crossmapAutoUpdate);
+			c.replaceLandingPage = j.value("replaceLandingPage", c.replaceLandingPage);
 			c.debugDisableScriptHook = j.value("debugDisableScriptHook", c.debugDisableScriptHook);
 		}
 
@@ -43,6 +44,7 @@ namespace loader::config
 				{"disabledAssets", c.disabledAssets},
 				{"crossmapUrl", c.crossmapUrl},
 				{"crossmapAutoUpdate", c.crossmapAutoUpdate},
+				{"replaceLandingPage", c.replaceLandingPage},
 				{"debugDisableScriptHook", c.debugDisableScriptHook},
 			};
 		}

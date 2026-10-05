@@ -15,6 +15,8 @@ namespace loader::config
 		// Public -> Enhanced native hash table, refreshed on every launch (kept if the download fails).
 		std::string crossmapUrl = "https://raw.githubusercontent.com/YimMenu/YimMenuV2/enhanced/src/game/gta/invoker/crossmap.txt";
 		bool crossmapAutoUpdate = true;
+		// Show the loader's home screen instead of the game's (online-focused) landing page.
+		bool replaceLandingPage = true;
 		// Diagnostics only: skip hooking the game's script loop (mods will not run).
 		bool debugDisableScriptHook = false;
 	};

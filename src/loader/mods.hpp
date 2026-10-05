@@ -51,5 +51,15 @@ namespace loader::mods
 	void Tick();
 
 	const std::vector<std::unique_ptr<Mod>>& All();
+
+	// Thread-safe copy of what the UI needs.
+	struct ModView
+	{
+		std::string fileName, name, version, author, description, error;
+		std::filesystem::path dir;
+		State state;
+	};
+	std::vector<ModView> Snapshot();
+	bool Loaded(); // LoadAll has run
 	const char* ToString(State state);
 }

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <mutex>
 
 #include "config.hpp"
 #include "log.hpp"
@@ -15,6 +16,8 @@ namespace loader::mods
 	namespace
 	{
 		std::vector<std::unique_ptr<Mod>> g_mods;
+		std::mutex g_modsMutex; // guards g_mods structure and each mod's state/error
+		std::atomic_bool g_loaded = false;
 		Mod* g_current = nullptr;     // mod whose fiber is running right now
 		void* g_schedulerFiber = nullptr;
 		DWORD g_gameThreadId = 0;
@@ -52,8 +55,11 @@ namespace loader::mods
 		// Parks a mod that must never run again and returns control to the scheduler.
 		[[noreturn]] void AbandonCurrentFiber(Mod* mod, std::string error)
 		{
-			mod->state = State::Faulted;
-			mod->error = std::move(error);
+			{
+				std::lock_guard lock(g_modsMutex);
+				mod->state = State::Faulted;
+				mod->error = std::move(error);
+			}
 			log::Error("mod {} stopped: {}", mod->name, mod->error);
 			for (;;)
 				SwitchToFiber(g_schedulerFiber);
@@ -179,7 +185,10 @@ namespace loader::mods
 			auto* mod = static_cast<Mod*>(param);
 			if (SafeMain(mod->main))
 			{
-				mod->state = State::Finished;
+				{
+					std::lock_guard lock(g_modsMutex);
+					mod->state = State::Finished;
+				}
 				ModLog(mod, ML_LOG_INFO, "MLMain returned");
 				for (;;)
 					SwitchToFiber(g_schedulerFiber);
@@ -277,7 +286,8 @@ namespace loader::mods
 		}
 		std::sort(files.begin(), files.end());
 
-		const auto& disabled = config::Get().disabledMods;
+		const auto disabled = config::Get().disabledMods;
+		std::lock_guard lock(g_modsMutex);
 		for (const auto& file : files)
 		{
 			// Registered before loading so logging from MLOnLoad can find the mod by address.
@@ -298,6 +308,7 @@ namespace loader::mods
 				log::Info("mod {}: {} {} by {} [{}]", mod->fileName, mod->name, mod->version, mod->author, ToString(mod->state));
 		}
 		log::Info("{} mod(s) found", g_mods.size());
+		g_loaded = true;
 	}
 
 	void Tick()
@@ -307,7 +318,11 @@ namespace loader::mods
 		{
 			if (!mod->fiber || (mod->state != State::Loaded && mod->state != State::Running) || now < mod->wakeAt)
 				continue;
-			mod->state = State::Running;
+			if (mod->state == State::Loaded)
+			{
+				std::lock_guard lock(g_modsMutex);
+				mod->state = State::Running;
+			}
 			g_current = mod.get();
 			SwitchToFiber(mod->fiber);
 			g_current = nullptr;
@@ -317,6 +332,21 @@ namespace loader::mods
 	const std::vector<std::unique_ptr<Mod>>& All()
 	{
 		return g_mods;
+	}
+
+	std::vector<ModView> Snapshot()
+	{
+		std::lock_guard lock(g_modsMutex);
+		std::vector<ModView> out;
+		out.reserve(g_mods.size());
+		for (const auto& m : g_mods)
+			out.push_back({m->fileName, m->name, m->version, m->author, m->description, m->error, m->dir, m->state});
+		return out;
+	}
+
+	bool Loaded()
+	{
+		return g_loaded;
 	}
 
 	const char* ToString(State state)

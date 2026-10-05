@@ -1,7 +1,9 @@
 #pragma once
 #include <filesystem>
 #include <format>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace loader::log
 {
@@ -10,6 +12,14 @@ namespace loader::log
 	void Init(const std::filesystem::path& file);
 	void SetLevel(Level level);
 	void Write(Level level, std::string_view message);
+
+	struct Line
+	{
+		Level level;
+		std::string text;
+	};
+	// The most recent lines (oldest first), for the in-game log viewer.
+	std::vector<Line> Recent();
 
 	template<class... Args>
 	void Debug(std::format_string<Args...> fmt, Args&&... args) { Write(Level::Debug, std::format(fmt, std::forward<Args>(args)...)); }

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../log.hpp"
+#include "../state.hpp"
 #include "pointers.hpp"
 
 namespace loader::game::natives
@@ -118,6 +119,8 @@ namespace loader::game::natives
 				g_handlers[publicHashes[i]] = reinterpret_cast<Handler>(table[i]);
 		}
 		log::Info("natives: {} resolved, {} not registered in this build", g_handlers.size(), missing);
+		state::nativesResolved = static_cast<uint32_t>(g_handlers.size());
+		state::crossmapEntries = static_cast<uint32_t>(g_crossmap.size());
 		if (g_crossmap.empty())
 			log::Error("natives: no crossmap loaded; most natives will be unavailable to mods");
 		else if (missing * 20 > g_crossmap.size())
