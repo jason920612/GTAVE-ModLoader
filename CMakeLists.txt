@@ -61,15 +61,20 @@ add_library(modloader_sdk INTERFACE)
 target_include_directories(modloader_sdk INTERFACE sdk/include)
 target_compile_features(modloader_sdk INTERFACE cxx_std_20)
 
-add_library(hello_mod SHARED examples/hello_mod/main.cpp)
-target_link_libraries(hello_mod PRIVATE modloader_sdk)
-target_compile_options(hello_mod PRIVATE /W4 /utf-8 /bigobj)
+set(EXAMPLE_MODS hello_mod settings_demo)
+foreach(example IN LISTS EXAMPLE_MODS)
+    add_library(${example} SHARED examples/${example}/main.cpp)
+    target_link_libraries(${example} PRIVATE modloader_sdk)
+    target_compile_options(${example} PRIVATE /W4 /utf-8 /bigobj)
+endforeach()
 
 # Optional: GTAV_DIR=<game dir> copies version.dll there after each build.
 if(GTAV_DIR)
     add_custom_command(TARGET loader POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:loader> "${GTAV_DIR}/version.dll")
-    add_custom_command(TARGET hello_mod POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader/mods"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:hello_mod> "${GTAV_DIR}/ModLoader/mods/")
+    foreach(example IN LISTS EXAMPLE_MODS)
+        add_custom_command(TARGET ${example} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader/mods"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${example}> "${GTAV_DIR}/ModLoader/mods/")
+    endforeach()
 endif()

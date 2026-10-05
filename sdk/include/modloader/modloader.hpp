@@ -1,5 +1,6 @@
 // C++ convenience layer over modloader.h. Include this (and natives.hpp) in your mod.
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -80,6 +81,34 @@ namespace ml
 	}
 
 	inline void Wait(uint32_t ms) { Api().Wait(ms); }
+
+	// True when the loader supports settings (AddSetting/GetSetting).
+	inline bool HasSettings() { return Api().size >= offsetof(MLApi, GetSetting) + sizeof(void*); }
+
+	// A value the player changes in the pause menu ("Mods" tab). Cheap to read every frame.
+	class Setting
+	{
+	public:
+		Setting() = default;
+		explicit Setting(int32_t handle) : m_handle(handle) {}
+		bool Valid() const { return m_handle >= 0; }
+		int32_t Value() const { return Valid() ? Api().GetSetting(m_handle) : 0; }
+		explicit operator bool() const { return Value() != 0; }
+
+	private:
+		int32_t m_handle = -1;
+	};
+
+	// Call in MLOnLoad (after Init). On/off switch.
+	inline Setting AddToggle(const char* id, const char* label, bool defaultValue = false)
+	{
+		return Setting(HasSettings() ? Api().AddSetting(ML_SETTING_TOGGLE, id, label, defaultValue ? 1 : 0) : -1);
+	}
+	// Call in MLOnLoad (after Init). Slider with values 0..10.
+	inline Setting AddSlider(const char* id, const char* label, int32_t defaultValue = 5)
+	{
+		return Setting(HasSettings() ? Api().AddSetting(ML_SETTING_SLIDER, id, label, defaultValue) : -1);
+	}
 	inline uint64_t TickMs() { return Api().GetTickMs(); }
 
 	template<class... Args>

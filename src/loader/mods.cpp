@@ -4,12 +4,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <array>
+#include <fstream>
 #include <format>
 #include <mutex>
 
 #include "config.hpp"
 #include "log.hpp"
 #include "paths.hpp"
+
+#include <nlohmann/json.hpp>
 
 namespace loader::mods
 {
@@ -19,6 +23,10 @@ namespace loader::mods
 		std::mutex g_modsMutex; // guards g_mods structure and each mod's state/error
 		std::atomic_bool g_loaded = false;
 		Mod* g_current = nullptr;     // mod whose fiber is running right now
+		Mod* g_loading = nullptr;     // mod whose MLOnLoad is running right now
+		// Handle = index. Fixed storage: GetSetting may run on any thread while other mods register.
+		std::array<Setting, 4096> g_settings;
+		std::atomic<int32_t> g_settingCount = 0;
 		void* g_schedulerFiber = nullptr;
 		DWORD g_gameThreadId = 0;
 		const auto g_start = std::chrono::steady_clock::now();
@@ -140,6 +148,94 @@ namespace loader::mods
 			return NowMs();
 		}
 
+		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
+		{
+			Mod* mod = g_loading;
+			if (!mod || GetCurrentThreadId() != g_gameThreadId)
+			{
+				ModLog(ModFromAddress(_ReturnAddress()), ML_LOG_ERROR, "AddSetting called outside MLOnLoad; ignored");
+				return -1;
+			}
+			if (type != ML_SETTING_TOGGLE && type != ML_SETTING_SLIDER)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: unknown type {}", static_cast<int>(type)));
+				return -1;
+			}
+			if (!id || !*id || !label || !*label)
+			{
+				ModLog(mod, ML_LOG_ERROR, "AddSetting: id and label are required");
+				return -1;
+			}
+			if (mod->settings.size() >= ML_MAX_SETTINGS)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: at most {} settings per mod; '{}' ignored", ML_MAX_SETTINGS, id));
+				return -1;
+			}
+			for (const Setting* s : mod->settings)
+				if (s->id == id)
+				{
+					ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: duplicate id '{}'", id));
+					return -1;
+				}
+
+			const int32_t handle = g_settingCount.load();
+			if (handle >= static_cast<int32_t>(g_settings.size()))
+			{
+				ModLog(mod, ML_LOG_ERROR, "AddSetting: too many settings in total");
+				return -1;
+			}
+			Setting& s = g_settings[handle];
+			s.owner = mod;
+			s.id = id;
+			s.label = label;
+			s.type = type;
+			s.defaultValue = std::clamp(defaultValue, 0, s.Max());
+			s.value = s.defaultValue;
+			mod->settings.push_back(&s);
+			g_settingCount = handle + 1; // publish after the entry is complete
+			return handle;
+		}
+
+		int32_t ApiGetSetting(int32_t handle)
+		{
+			return handle >= 0 && handle < g_settingCount.load() ? g_settings[handle].value.load() : 0;
+		}
+
+		std::filesystem::path SettingsFile(const Mod& mod)
+		{
+			return mod.dir / L"settings.json";
+		}
+
+		void LoadSettings(Mod& mod)
+		{
+			if (mod.settings.empty())
+				return;
+			std::ifstream in(SettingsFile(mod));
+			if (!in)
+				return;
+			const auto j = nlohmann::json::parse(in, nullptr, false);
+			if (!j.is_object())
+			{
+				ModLog(&mod, ML_LOG_WARN, "settings.json is not valid JSON; using defaults");
+				return;
+			}
+			for (Setting* s : mod.settings)
+				if (const auto it = j.find(s->id); it != j.end() && it->is_number_integer())
+					s->value = std::clamp(it->get<int32_t>(), 0, s->Max());
+		}
+
+		void SaveSettings(const Mod& mod)
+		{
+			nlohmann::json j = nlohmann::json::object();
+			for (const Setting* s : mod.settings)
+				j[s->id] = s->value.load();
+			std::ofstream out(SettingsFile(mod), std::ios::trunc);
+			if (out)
+				out << j.dump(2) << "\n";
+			else
+				log::Warn("mod {}: could not write settings.json", mod.name);
+		}
+
 		const MLApi g_api{
 			.apiVersion = ML_API_VERSION,
 			.size = sizeof(MLApi),
@@ -149,6 +245,8 @@ namespace loader::mods
 			.Wait = ApiWait,
 			.Log = ApiLog,
 			.GetTickMs = ApiGetTickMs,
+			.AddSetting = ApiAddSetting,
+			.GetSetting = ApiGetSetting,
 		};
 
 		// ---- loading --------------------------------------------------------------------------
@@ -243,7 +341,10 @@ namespace loader::mods
 			mod.description = info->description ? info->description : "";
 
 			int accepted = 0;
-			if (!SafeOnLoad(onLoad, &mod.context, &accepted))
+			g_loading = &mod;
+			const bool survived = SafeOnLoad(onLoad, &mod.context, &accepted);
+			g_loading = nullptr;
+			if (!survived)
 			{
 				mod.state = State::Faulted;
 				mod.error = "crashed in MLOnLoad";
@@ -253,8 +354,10 @@ namespace loader::mods
 			{
 				mod.state = State::Failed;
 				mod.error = "MLOnLoad returned 0";
+				mod.settings.clear(); // a cancelled mod gets no page
 				return;
 			}
+			LoadSettings(mod);
 
 			if (mod.main)
 			{
@@ -360,5 +463,12 @@ namespace loader::mods
 		case State::Finished: return "finished";
 		default: return "faulted";
 		}
+	}
+
+	void SetSettingValue(Setting& setting, int32_t value)
+	{
+		value = std::clamp(value, 0, setting.Max());
+		if (setting.value.exchange(value) != value && setting.owner)
+			SaveSettings(*setting.owner);
 	}
 }

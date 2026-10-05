@@ -36,7 +36,7 @@ namespace loader::config
 			c.debugWatchLanding = j.value("debugWatchLanding", c.debugWatchLanding);
 			c.debugWatchFile = j.value("debugWatchFile", c.debugWatchFile);
 			c.debugWatchBoot = j.value("debugWatchBoot", c.debugWatchBoot);
-			c.experimentalPauseMenu = j.value("experimentalPauseMenu", c.experimentalPauseMenu);
+			c.pauseMenuModsTab = j.value("pauseMenuModsTab", c.pauseMenuModsTab);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -53,7 +53,7 @@ namespace loader::config
 				{"debugWatchLanding", c.debugWatchLanding},
 				{"debugWatchFile", c.debugWatchFile},
 				{"debugWatchBoot", c.debugWatchBoot},
-				{"experimentalPauseMenu", c.experimentalPauseMenu},
+				{"pauseMenuModsTab", c.pauseMenuModsTab},
 			};
 		}
 	}

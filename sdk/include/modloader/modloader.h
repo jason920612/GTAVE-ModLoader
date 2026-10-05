@@ -8,6 +8,9 @@
  *   void MLMain(void);     // runs as a game script; loop forever and call api->Wait()
  *   void MLOnUnload(void); // called when the game exits
  *
+ * Settings registered in MLOnLoad appear on the mod's page in the pause menu (story mode,
+ * "Mods" tab) and are saved to <modDir>\settings.json.
+ *
  * Natives may only be called from MLMain (it runs on the game's script thread).
  * MLOnLoad runs before the world exists: use it for setup, not for natives.
  */
@@ -45,6 +48,14 @@ typedef enum MLLogLevel
 	ML_LOG_ERROR = 3,
 } MLLogLevel;
 
+typedef enum MLSettingType
+{
+	ML_SETTING_TOGGLE = 0, /* value 0 (off) or 1 (on) */
+	ML_SETTING_SLIDER = 1, /* value 0..10 */
+} MLSettingType;
+
+#define ML_MAX_SETTINGS 15 /* per mod */
+
 typedef struct MLApi
 {
 	uint32_t apiVersion;
@@ -63,6 +74,15 @@ typedef struct MLApi
 
 	/* Milliseconds since the loader started. */
 	uint64_t (*GetTickMs)(void);
+
+	/* ---- added after the first release: check `size` before use (see modloader.hpp) ---- */
+
+	/* Adds a setting to the mod's pause menu page. MLOnLoad only. `id` is the key in
+	 * settings.json (ASCII), `label` is shown in the menu (UTF-8). The saved value, if any,
+	 * replaces `defaultValue`. Returns a handle for GetSetting, or -1 on error. */
+	int32_t (*AddSetting)(MLSettingType type, const char* id, const char* label, int32_t defaultValue);
+	/* Current value of a setting. Any thread. */
+	int32_t (*GetSetting)(int32_t handle);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

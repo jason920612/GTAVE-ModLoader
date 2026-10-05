@@ -1,6 +1,8 @@
 #pragma once
 #include <Windows.h>
 
+#include <atomic>
+
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -23,6 +25,20 @@ namespace loader::mods
 		Faulted,  // crashed; never scheduled again
 	};
 
+	struct Mod;
+
+	// A value registered with MLApi::AddSetting, shown on the mod's pause menu page.
+	struct Setting
+	{
+		Mod* owner = nullptr;
+		std::string id, label;
+		MLSettingType type = ML_SETTING_TOGGLE;
+		int32_t defaultValue = 0;
+		std::atomic<int32_t> value = 0;
+
+		int32_t Max() const { return type == ML_SETTING_SLIDER ? 10 : 1; }
+	};
+
 	struct Mod
 	{
 		std::filesystem::path file; // ModLoader\mods\<name>.dll
@@ -43,6 +59,8 @@ namespace loader::mods
 		uint64_t wakeAt = 0;
 		game::natives::Invocation invocation;
 		FILE* log = nullptr;
+
+		std::vector<Setting*> settings; // in registration order; fixed once MLOnLoad returned
 	};
 
 	// Scans ModLoader\mods, creates each mod's folder and loads it. Game thread only.
@@ -62,4 +80,7 @@ namespace loader::mods
 	std::vector<ModView> Snapshot();
 	bool Loaded(); // LoadAll has run
 	const char* ToString(State state);
+
+	// Stores a value changed in the pause menu and saves the owner's settings.json. Game thread.
+	void SetSettingValue(Setting& setting, int32_t value);
 }

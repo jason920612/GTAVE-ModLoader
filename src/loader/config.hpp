@@ -25,8 +25,8 @@ namespace loader::config
 		bool debugWatchFile = false;
 		// Research only: from startup, log writes to the pause menu screen array globals.
 		bool debugWatchBoot = false;
-		// Experiment: native pause-menu page for mods (injected when pausemenu.xml loads).
-		bool experimentalPauseMenu = false;
+		// Story-mode pause menu: the "Online" tab becomes a "Mods" tab with each mod's settings.
+		bool pauseMenuModsTab = true;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

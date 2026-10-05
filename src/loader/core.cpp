@@ -222,9 +222,8 @@ namespace loader::core
 				SetOnline(true);
 				return;
 			}
-			if (config::Get().experimentalPauseMenu)
-				game::pausemenu::Tick();
-			else
+			// Without settings to show, the tab falls back to the loader's status text.
+			if (!game::pausemenu::Tick())
 				UpdatePauseMenuTab();
 			if (config::Get().debugWatchFile)
 				debug::PollWatchFile();
@@ -279,7 +278,7 @@ namespace loader::core
 		state::canContinueStory = game::g_pointers.SetRouterLink && game::g_pointers.ClearRouterLink;
 		if (!state::canContinueStory)
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
-		if (config::Get().experimentalPauseMenu && game::text_override::Init())
+		if (config::Get().pauseMenuModsTab && game::text_override::Init())
 			game::pausemenu::InstallHooks();
 		if (config::Get().debugWatchBoot)
 		{
