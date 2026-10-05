@@ -86,8 +86,11 @@ namespace loader::game::dlcpacks
 				error = "corrupt header";
 				return nullptr;
 			}
-			// Never freed: the game keeps using the table for the whole session.
-			auto* toc = static_cast<uint8_t*>(HeapAlloc(GetProcessHeap(), 0, size));
+			// Never freed: the game keeps using the table for the whole session. A cached table is
+			// followed by a u16 parent index per entry, which the game fills itself (0x110060) only
+			// when it decrypts a table; paths of files inside the archive are built from it.
+			const uint32_t count = header[1];
+			auto* toc = static_cast<uint8_t*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size + count * sizeof(uint16_t)));
 			std::memcpy(toc, header, 16);
 			if (!in.read(reinterpret_cast<char*>(toc + 16), static_cast<std::streamsize>(size - 16)))
 			{
@@ -96,6 +99,18 @@ namespace loader::game::dlcpacks
 				return nullptr;
 			}
 			reinterpret_cast<uint32_t*>(toc)[3] = kEncryptionNg;
+			auto* parents = reinterpret_cast<uint16_t*>(toc + size);
+			for (uint32_t i = 0; i < count; ++i)
+			{
+				uint32_t marker, first, children;
+				std::memcpy(&marker, toc + 16 + 16 * static_cast<size_t>(i) + 4, 4);
+				std::memcpy(&first, toc + 16 + 16 * static_cast<size_t>(i) + 8, 4);
+				std::memcpy(&children, toc + 16 + 16 * static_cast<size_t>(i) + 12, 4);
+				if (marker != 0x7FFFFF00) // not a directory
+					continue;
+				for (uint32_t c = first; c < first + children && c < count; ++c)
+					parents[c] = static_cast<uint16_t>(i);
+			}
 			auto* entry = static_cast<CacheEntry*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(CacheEntry)));
 			entry->toc = toc;
 			entry->plain = 1;
