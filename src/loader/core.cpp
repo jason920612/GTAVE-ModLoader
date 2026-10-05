@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <format>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -13,6 +15,7 @@
 #include "game/natives.hpp"
 #include "game/pointers.hpp"
 #include "game/script.hpp"
+#include "game/text.hpp"
 #include "log.hpp"
 #include "mods.hpp"
 #include "paths.hpp"
@@ -86,6 +89,97 @@ namespace loader::core
 			log::Info("home screen: requested story mode ({})", built);
 		}
 
+		// ---- pause menu: the story-mode "Online" tab becomes the loader's "Mods" tab ----------
+
+		// Text labels used by that tab (GXT2 hashes, same in every language).
+		constexpr uint32_t kTabLabel = 0x8D0A157E;  // header tab
+		constexpr uint32_t kTabTitle = 0x07B8D6CB;  // page title
+		constexpr uint32_t kTabBody = 0xD615A27B;   // page text
+		constexpr uint64_t kGetCurrentLanguage = 0x2BDD44CC428A7EAE;
+
+		struct TabTexts
+		{
+			const char* label;
+			const char* title;
+			std::string body;
+		};
+
+		TabTexts BuildTabTexts(int language)
+		{
+			int active = 0, disabled = 0, failed = 0;
+			for (const auto& m : mods::Snapshot())
+			{
+				switch (m.state)
+				{
+				case mods::State::Disabled: ++disabled; break;
+				case mods::State::Failed:
+				case mods::State::Faulted: ++failed; break;
+				default: ++active; break;
+				}
+			}
+			const auto& key = config::Get().menuKey;
+			if (language == 9) // Traditional Chinese
+			{
+				auto body = std::format("已啟用 {} 個模組", active);
+				if (disabled)
+					body += std::format("，停用 {} 個", disabled);
+				if (failed)
+					body += std::format("，{} 個發生錯誤", failed);
+				body += std::format("。按 {} 開啟模組管理。", key);
+				return {"模組", "模組載入器", body};
+			}
+			if (language == 12) // Simplified Chinese
+			{
+				auto body = std::format("已启用 {} 个模组", active);
+				if (disabled)
+					body += std::format("，停用 {} 个", disabled);
+				if (failed)
+					body += std::format("，{} 个出错", failed);
+				body += std::format("。按 {} 打开模组管理。", key);
+				return {"模组", "模组加载器", body};
+			}
+			auto body = std::format("{} mod(s) active", active);
+			if (disabled)
+				body += std::format(", {} disabled", disabled);
+			if (failed)
+				body += std::format(", {} with errors", failed);
+			body += std::format(". Press {} to manage mods.", key);
+			return {"Mods", "Mod Loader", body};
+		}
+
+		void UpdatePauseMenuTab()
+		{
+			static ULONGLONG nextUpdate = 0;
+			static std::atomic_bool locating = false;
+			const ULONGLONG now = GetTickCount64();
+			if (now < nextUpdate)
+				return;
+			nextUpdate = now + 1000;
+
+			if (!game::text::Located())
+			{
+				// Scanning for the text table takes a moment; never do it on the game thread.
+				if (!locating.exchange(true))
+					std::thread([] {
+						game::text::Locate(kTabLabel);
+						locating = false;
+					}).detach();
+				return;
+			}
+
+			g_loaderCall.Begin(kGetCurrentLanguage);
+			const int language = game::natives::Call(g_loaderCall) == game::natives::CallStatus::Ok ? static_cast<int>(g_loaderCall.result[0]) : 0;
+			const auto texts = BuildTabTexts(language);
+			const bool ok = game::text::Replace(kTabLabel, texts.label) && game::text::Replace(kTabTitle, texts.title) &&
+			                game::text::Replace(kTabBody, texts.body);
+			static bool logged = false;
+			if (ok && !logged)
+			{
+				logged = true;
+				log::Info("pause menu: Online tab now shows the loader (language {})", language);
+			}
+		}
+
 		void SetOnline(bool online)
 		{
 			if (online == state::online)
@@ -126,6 +220,7 @@ namespace loader::core
 				SetOnline(true);
 				return;
 			}
+			UpdatePauseMenuTab();
 
 			game::scrThread* host = game::script::FindThread(kHostScript);
 			game::scrThread* landing = host ? nullptr : game::script::FindThread(kLandingScript);

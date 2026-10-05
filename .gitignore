@@ -8,3 +8,5 @@ research/nativedb.json
 research/natives_live.csv
 research/crossmap_oracle.txt
 research/*.bin
+research/*.txt
+research/*.json

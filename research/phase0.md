@@ -80,3 +80,15 @@
 - ⚠️ 單獨呼叫 `SetFlowState(0x18)`（沒有請求）會走**線上**流程，被 BattlEye 擋下（已實測，勿用）。
 - 載入器做法：在腳本執行緒呼叫 `SetRouterLink({4, 2, 1})`，回讀字串確認含 `mode=SRCM_STORY`，
   否則 `ClearRouterLink()` 並退回原本主畫面。實測 17 秒進入故事模式，43 個腳本、無 `MainTransition`。
+
+## 8. 暫停選單（2026-10-05）
+
+- 畫面 ID 列舉：解析器描述元在 RVA `0x2892B70` 附近（名稱陣列 `0x28939F0`，164 個）。MAP=0、INFO=1、GAME=5、SETTINGS=6、
+  STATS=10、HEADER=28、SETTINGS_LIST=51…（完整表：`research/menu_ids.json`，不進版控）。
+- 畫面陣列（堆積）：每個畫面 0x50 bytes `{atArray items @0, ..., id @+0x38, depth @+0x3C, flags @+0x40}`，依 id 排序。
+  項目 0x28 bytes `{目標畫面 @0, 文字標籤雜湊 @4, 選項 atArray @0x10, 動作/設定編號 @0x20}`。
+- 故事模式分頁列（HEADER 28）：MAP、INFO、STATS、SETTINGS、GAME、**42（線上）**、FRIENDS、GALLERY、STORE、REPLAY_EDITOR。
+  42 的頁面只顯示「需要 BattlEye」。
+- 文字：GXT2 表（`2TXG`，74,144 筆，{hash, offset} 依 hash 排序）在堆積中、頁對齊。
+  線上分頁：標籤 `0x8D0A157E`、標題 `0x07B8D6CB`、內文 `0xD615A27B`。就地覆寫即可改名與顯示狀態。
+  注意：這些標籤可能也用在其他（線上相關）畫面。
