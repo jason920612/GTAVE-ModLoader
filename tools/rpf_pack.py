@@ -9,7 +9,9 @@ Layout as read by the game (research/phase0.md §11):
                u32 size, u32 encrypted (0)
   names   : NUL-terminated, offset 0 is the root's empty name
   data    : each file starts on a 512-byte boundary
-Resource files (RSC7, e.g. .ytd/.yft) are not supported yet."""
+    resource : u64 name offset | stored size << 16 | (data offset / 512) << 40 | 1 << 63,
+               u32 virtual (system) flags, u32 physical (graphics) flags; the data keeps its
+               16-byte RSC7 header (the game skips it) followed by one raw deflate stream."""
 import os, struct, sys
 
 OPEN = 0x4E45504F
@@ -34,9 +36,7 @@ def build(folder):
                 entries.append({"dir": True, "name": c.lower(), "path": full}); queue.append(len(entries) - 1)
             else:
                 data = open(full, "rb").read()
-                if data[:4] == b"RSC7":
-                    sys.exit(f"{full}: resource files are not supported yet")
-                entries.append({"dir": False, "name": c.lower(), "data": data})
+                entries.append({"dir": False, "name": c.lower(), "data": data, "rsc": data[:4] == b"RSC7"})
     for e in entries:
         e["noff"] = name(e["name"])
     while len(names) % 16:
@@ -56,7 +56,12 @@ def build(folder):
             out += struct.pack("<IIII", e["noff"], 0x7FFFFF00, e["first"], e["count"])
         else:
             assert e["noff"] < 1 << 16 and e["block"] < 1 << 23
-            out += struct.pack("<QII", e["noff"] | (e["block"] << 40), len(e["data"]), 0)
+            if e["rsc"]:
+                sysf, gfx = struct.unpack_from("<II", e["data"], 8)
+                assert len(e["data"]) < 0xFFFFFF, "resource too large"
+                out += struct.pack("<QII", e["noff"] | (len(e["data"]) << 16) | (e["block"] << 40) | (1 << 63), sysf, gfx)
+            else:
+                out += struct.pack("<QII", e["noff"] | (e["block"] << 40), len(e["data"]), 0)
     out += names
     out += b"\0" * (offset - len(out))
     return bytes(out + blob)
