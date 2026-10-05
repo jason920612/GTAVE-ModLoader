@@ -35,8 +35,17 @@ namespace loader::mods
 		MLSettingType type = ML_SETTING_TOGGLE;
 		int32_t defaultValue = 0;
 		std::atomic<int32_t> value = 0;
+		std::vector<std::string> options; // ML_SETTING_LIST texts
 
-		int32_t Max() const { return type == ML_SETTING_SLIDER ? 10 : 1; }
+		int32_t Max() const
+		{
+			switch (type)
+			{
+			case ML_SETTING_SLIDER: return 10;
+			case ML_SETTING_LIST: return static_cast<int32_t>(options.size()) - 1;
+			default: return 1;
+			}
+		}
 	};
 
 	struct Mod

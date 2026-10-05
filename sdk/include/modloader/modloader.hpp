@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <initializer_list>
 #include <string>
 #include <type_traits>
 
@@ -104,6 +105,18 @@ namespace ml
 	{
 		return Setting(HasSettings() ? Api().AddSetting(ML_SETTING_TOGGLE, id, label, defaultValue ? 1 : 0) : -1);
 	}
+	// True when the loader supports list settings (AddListSetting).
+	inline bool HasListSettings() { return Api().size >= offsetof(MLApi, AddListSetting) + sizeof(void*); }
+
+	// Call in MLOnLoad (after Init). The player picks one of `options`; Value() is its index.
+	//   auto difficulty = ml::AddList("difficulty", "難度", {"簡單", "普通", "困難"}, 1);
+	inline Setting AddList(const char* id, const char* label, std::initializer_list<const char*> options, int32_t defaultValue = 0)
+	{
+		if (!HasListSettings())
+			return Setting();
+		return Setting(Api().AddListSetting(id, label, options.begin(), static_cast<int32_t>(options.size()), defaultValue));
+	}
+
 	// Call in MLOnLoad (after Init). Slider with values 0..10.
 	inline Setting AddSlider(const char* id, const char* label, int32_t defaultValue = 5)
 	{

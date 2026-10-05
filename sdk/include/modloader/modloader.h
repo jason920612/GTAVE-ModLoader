@@ -52,9 +52,11 @@ typedef enum MLSettingType
 {
 	ML_SETTING_TOGGLE = 0, /* value 0 (off) or 1 (on) */
 	ML_SETTING_SLIDER = 1, /* value 0..10 */
+	ML_SETTING_LIST = 2,   /* value 0..count-1, an index into the option texts (AddListSetting) */
 } MLSettingType;
 
-#define ML_MAX_SETTINGS 15 /* per mod */
+#define ML_MAX_SETTINGS 15     /* per mod */
+#define ML_MAX_LIST_OPTIONS 32 /* per list setting */
 
 typedef struct MLApi
 {
@@ -83,6 +85,9 @@ typedef struct MLApi
 	int32_t (*AddSetting)(MLSettingType type, const char* id, const char* label, int32_t defaultValue);
 	/* Current value of a setting. Any thread. */
 	int32_t (*GetSetting)(int32_t handle);
+	/* Like AddSetting with ML_SETTING_LIST: the player picks one of `count` texts (UTF-8,
+	 * 2..ML_MAX_LIST_OPTIONS). The value is the index of the chosen text. MLOnLoad only. */
+	int32_t (*AddListSetting)(const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

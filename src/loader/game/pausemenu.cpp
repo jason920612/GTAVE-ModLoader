@@ -69,10 +69,23 @@ namespace loader::game::pausemenu
 		};
 		static_assert(sizeof(MenuScreen) == 0x50);
 
+		// Option texts for list items: an item whose optionType equals `id` shows these labels.
+		struct OptionList
+		{
+			uint32_t id;
+			uint32_t pad0;
+			uint32_t* labels;  // +0x08 text label hashes
+			uint16_t count;    // +0x10
+			uint16_t capacity;
+			uint32_t pad1;
+		};
+		static_assert(sizeof(OptionList) == 0x18);
+
 		struct MenuArray
 		{
 			uint8_t pad[0x10];
 			AtArray<MenuScreen> screens; // +0x10
+			AtArray<OptionList> lists;   // +0x20
 		};
 
 		// Header tab stack: 16-byte entries, screen id first; the last entry is the current tab.
@@ -131,11 +144,72 @@ namespace loader::game::pausemenu
 			h += h << 15;
 			return h;
 		}
+		template<class T>
+		T* Alloc(size_t count)
+		{
+			// Never freed: the menu keeps pointing at it for the whole session.
+			return static_cast<T*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(T) * count));
+		}
+
 		constexpr uint32_t kTabLabel = Joaat("ML_TAB_MODS");
+		// Our option list ids (optionType is a byte; the game's own ids are below 100).
+		constexpr uint32_t kFirstListId = 100, kLastListId = 250;
 
 		uint32_t SettingLabel(size_t page, size_t index)
 		{
 			return Joaat(std::format("ML_SET_{}_{}", page, index));
+		}
+
+		uint32_t OptionLabel(size_t page, size_t index, size_t option)
+		{
+			return Joaat(std::format("ML_OPT_{}_{}_{}", page, index, option));
+		}
+
+		// Appends one option list per list setting; returns the list id per setting (0 = none).
+		bool AddOptionLists(std::vector<std::vector<uint8_t>>& ids)
+		{
+			size_t needed = 0;
+			for (const Page& page : g_pages)
+				for (const mods::Setting* s : page.settings)
+					needed += s->type == ML_SETTING_LIST;
+			ids.assign(g_pages.size(), {});
+			for (size_t p = 0; p < g_pages.size(); ++p)
+				ids[p].assign(g_pages[p].settings.size(), 0);
+			if (!needed)
+				return true;
+
+			const uint16_t oldCount = g_menu->lists.count;
+			for (uint16_t i = 0; i < oldCount; ++i)
+				if (g_menu->lists.data[i].id >= kFirstListId)
+				{
+					log::Error("pausemenu: option list id {} already used by the game; list settings disabled", g_menu->lists.data[i].id);
+					return false;
+				}
+			if (needed > kLastListId - kFirstListId + 1)
+			{
+				log::Error("pausemenu: {} list settings, at most {} supported; list settings disabled", needed, kLastListId - kFirstListId + 1);
+				return false;
+			}
+
+			auto* lists = Alloc<OptionList>(oldCount + needed);
+			std::memcpy(lists, g_menu->lists.data, sizeof(OptionList) * oldCount);
+			uint16_t count = oldCount;
+			uint32_t nextId = kFirstListId;
+			for (size_t p = 0; p < g_pages.size(); ++p)
+				for (size_t i = 0; i < g_pages[p].settings.size(); ++i)
+				{
+					const mods::Setting* s = g_pages[p].settings[i];
+					if (s->type != ML_SETTING_LIST)
+						continue;
+					const auto n = static_cast<uint16_t>(s->options.size());
+					auto* labels = Alloc<uint32_t>(n);
+					for (uint16_t k = 0; k < n; ++k)
+						labels[k] = OptionLabel(p, i, k);
+					lists[count++] = {nextId, 0, labels, n, n, 0};
+					ids[p][i] = static_cast<uint8_t>(nextId++);
+				}
+			g_menu->lists = {lists, count, count};
+			return true;
 		}
 
 		MenuScreen* Find(int32_t id)
@@ -152,13 +226,6 @@ namespace loader::game::pausemenu
 				if (screen->items.data[i].target == target)
 					return &screen->items.data[i];
 			return nullptr;
-		}
-
-		template<class T>
-		T* Alloc(size_t count)
-		{
-			// Never freed: the menu keeps pointing at it for the whole session.
-			return static_cast<T*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(T) * count));
 		}
 
 		int32_t CurrentTab()
@@ -197,6 +264,9 @@ namespace loader::game::pausemenu
 				g_pages.clear();
 				return false;
 			}
+			std::vector<std::vector<uint8_t>> listIds;
+			const bool lists = AddOptionLists(listIds);
+
 			const int32_t firstId = g_menu->screens.data[oldCount - 1].id + 1;
 			auto* screens = Alloc<MenuScreen>(newCount);
 			auto* categories = Alloc<MenuItem>(g_pages.size());
@@ -208,18 +278,25 @@ namespace loader::game::pausemenu
 				const auto count = static_cast<uint16_t>(page.settings.size());
 
 				auto* items = Alloc<MenuItem>(count);
+				uint16_t used = 0;
 				for (size_t i = 0; i < count; ++i)
 				{
-					items[i] = page.settings[i]->type == ML_SETTING_SLIDER ? *sliderTemplate : *toggleTemplate;
-					items[i].label = SettingLabel(p, i);
-					items[i].pref = kSlots[i];
-					items[i].contextCount = 0;
+					const auto type = page.settings[i]->type;
+					if (type == ML_SETTING_LIST && !lists)
+						continue;
+					MenuItem& item = items[used++];
+					item = type == ML_SETTING_SLIDER ? *sliderTemplate : *toggleTemplate;
+					item.label = SettingLabel(p, i);
+					item.pref = kSlots[i];
+					item.contextCount = 0;
+					if (type == ML_SETTING_LIST)
+						item.optionType = listIds[p][i]; // a list item is a toggle with our own texts
 				}
 				MenuScreen& screen = screens[oldCount + p];
 				screen = *audio;
 				screen.handler = 0;
 				screen.id = page.screen;
-				screen.items = {items, count, count};
+				screen.items = {items, used, used};
 
 				categories[p] = *categoryTemplate;
 				categories[p].target = page.screen;
@@ -256,8 +333,14 @@ namespace loader::game::pausemenu
 				if (!text_override::Set(g_pages[p].labelHash, g_pages[p].name))
 					return false;
 				for (size_t i = 0; i < g_pages[p].settings.size(); ++i)
-					if (!text_override::Set(SettingLabel(p, i), g_pages[p].settings[i]->label))
+				{
+					const mods::Setting* s = g_pages[p].settings[i];
+					if (!text_override::Set(SettingLabel(p, i), s->label))
 						return false;
+					for (size_t k = 0; k < s->options.size(); ++k)
+						if (!text_override::Set(OptionLabel(p, i, k), s->options[k]))
+							return false;
+				}
 			}
 			return true;
 		}

@@ -148,15 +148,15 @@ namespace loader::mods
 			return NowMs();
 		}
 
-		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
+		int32_t AddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue, std::vector<std::string> options, void* caller)
 		{
 			Mod* mod = g_loading;
 			if (!mod || GetCurrentThreadId() != g_gameThreadId)
 			{
-				ModLog(ModFromAddress(_ReturnAddress()), ML_LOG_ERROR, "AddSetting called outside MLOnLoad; ignored");
+				ModLog(ModFromAddress(caller), ML_LOG_ERROR, "AddSetting called outside MLOnLoad; ignored");
 				return -1;
 			}
-			if (type != ML_SETTING_TOGGLE && type != ML_SETTING_SLIDER)
+			if (type != ML_SETTING_TOGGLE && type != ML_SETTING_SLIDER && type != ML_SETTING_LIST)
 			{
 				ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: unknown type {}", static_cast<int>(type)));
 				return -1;
@@ -189,11 +189,36 @@ namespace loader::mods
 			s.id = id;
 			s.label = label;
 			s.type = type;
+			s.options = std::move(options);
 			s.defaultValue = std::clamp(defaultValue, 0, s.Max());
 			s.value = s.defaultValue;
 			mod->settings.push_back(&s);
 			g_settingCount = handle + 1; // publish after the entry is complete
 			return handle;
+		}
+
+		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
+		{
+			if (type == ML_SETTING_LIST)
+			{
+				ModLog(CallerOrCurrent(_ReturnAddress()), ML_LOG_ERROR, "AddSetting: use AddListSetting for lists");
+				return -1;
+			}
+			return AddSetting(type, id, label, defaultValue, {}, _ReturnAddress());
+		}
+
+		int32_t ApiAddListSetting(const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue)
+		{
+			if (!options || count < 2 || count > ML_MAX_LIST_OPTIONS)
+			{
+				ModLog(CallerOrCurrent(_ReturnAddress()), ML_LOG_ERROR,
+				    std::format("AddListSetting '{}': needs 2..{} options", id ? id : "?", ML_MAX_LIST_OPTIONS));
+				return -1;
+			}
+			std::vector<std::string> texts;
+			for (int32_t i = 0; i < count; ++i)
+				texts.emplace_back(options[i] && *options[i] ? options[i] : "?");
+			return AddSetting(ML_SETTING_LIST, id, label, defaultValue, std::move(texts), _ReturnAddress());
 		}
 
 		int32_t ApiGetSetting(int32_t handle)
@@ -247,6 +272,7 @@ namespace loader::mods
 			.GetTickMs = ApiGetTickMs,
 			.AddSetting = ApiAddSetting,
 			.GetSetting = ApiGetSetting,
+			.AddListSetting = ApiAddListSetting,
 		};
 
 		// ---- loading --------------------------------------------------------------------------
