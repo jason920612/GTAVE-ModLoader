@@ -2,6 +2,11 @@
 
 #include <Windows.h>
 
+#include <chrono>
+#include <filesystem>
+
+#include "config.hpp"
+#include "crossmap_update.hpp"
 #include "game/natives.hpp"
 #include "game/pointers.hpp"
 #include "game/script.hpp"
@@ -22,6 +27,11 @@ namespace loader::core
 		constexpr uint64_t kNetworkIsSessionStarted = 0x9DE624D2FC4B603F;
 
 		DWORD g_gameThreadId = 0;
+
+		std::filesystem::path CrossmapPath()
+		{
+			return paths::Get().root / L"crossmap.txt";
+		}
 		bool g_online = false;
 		bool g_hostSeen = false;
 		game::natives::Invocation g_loaderCall;
@@ -49,6 +59,9 @@ namespace loader::core
 			{
 				g_gameThreadId = GetCurrentThreadId();
 				log::Info("first script tick on thread {}", g_gameThreadId);
+				if (!crossmap::WaitForUpdate(std::chrono::seconds(15)))
+					log::Warn("crossmap: download still running, using the existing file");
+				game::natives::LoadCrossmap(CrossmapPath());
 				game::natives::ResolveHandlers();
 				mods::LoadAll();
 			}
@@ -79,6 +92,11 @@ namespace loader::core
 		}
 	}
 
+	void StartBackgroundTasks()
+	{
+		crossmap::StartUpdate(CrossmapPath());
+	}
+
 	void OnGameUnpacked()
 	{
 		if (!game::ResolvePointers())
@@ -86,7 +104,11 @@ namespace loader::core
 			log::Error("this game build is not supported yet; loader stays inactive");
 			return;
 		}
-		game::natives::LoadCrossmap(paths::Get().root / L"crossmap.txt");
+		if (config::Get().debugDisableScriptHook)
+		{
+			log::Warn("debugDisableScriptHook is set: script hook not installed");
+			return;
+		}
 		if (game::script::InstallHooks(&OnTick))
 			log::Info("script hook installed");
 	}

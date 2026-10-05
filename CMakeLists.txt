@@ -24,6 +24,7 @@ add_library(loader SHARED
     src/loader/pattern.cpp
     src/loader/bootstrap.cpp
     src/loader/core.cpp
+    src/loader/crossmap_update.cpp
     src/loader/mods.cpp
     src/loader/game/pointers.cpp
     src/loader/game/natives.cpp
@@ -32,7 +33,9 @@ set_target_properties(loader PROPERTIES OUTPUT_NAME version)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive->)
 target_include_directories(loader PRIVATE sdk/include)
-target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json)
+target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json winhttp delayimp)
+# winhttp is only needed by the background crossmap download; keep it out of DllMain.
+target_link_options(loader PRIVATE /DELAYLOAD:winhttp.dll)
 
 # SDK: header-only, used by mods.
 add_library(modloader_sdk INTERFACE)

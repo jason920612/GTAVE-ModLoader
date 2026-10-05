@@ -118,6 +118,10 @@ namespace loader::game::natives
 				g_handlers[publicHashes[i]] = reinterpret_cast<Handler>(table[i]);
 		}
 		log::Info("natives: {} resolved, {} not registered in this build", g_handlers.size(), missing);
+		if (g_crossmap.empty())
+			log::Error("natives: no crossmap loaded; most natives will be unavailable to mods");
+		else if (missing * 20 > g_crossmap.size())
+			log::Warn("natives: over 5% of the crossmap did not resolve; it may be outdated for this game build");
 		g_resolved = true;
 		return true;
 	}

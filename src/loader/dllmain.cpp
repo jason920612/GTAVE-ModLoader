@@ -61,6 +61,7 @@ namespace
 		log::Info("mods dir: {}", paths::Get().mods.string());
 		log::Info("assets dir: {}", paths::Get().assets.string());
 
+		core::StartBackgroundTasks();
 		bootstrap::Install(&core::OnGameUnpacked);
 	}
 }

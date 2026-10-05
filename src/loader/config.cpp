@@ -6,18 +6,22 @@
 
 #include "paths.hpp"
 
+namespace loader::log
+{
+	// Must live in the enum's namespace so nlohmann finds it by ADL.
+	NLOHMANN_JSON_SERIALIZE_ENUM(Level, {
+		{Level::Debug, "debug"},
+		{Level::Info, "info"},
+		{Level::Warn, "warn"},
+		{Level::Error, "error"},
+	})
+}
+
 namespace loader::config
 {
 	namespace
 	{
 		Config g_config;
-
-		NLOHMANN_JSON_SERIALIZE_ENUM(log::Level, {
-			{log::Level::Debug, "debug"},
-			{log::Level::Info, "info"},
-			{log::Level::Warn, "warn"},
-			{log::Level::Error, "error"},
-		})
 
 		void FromJson(const nlohmann::json& j, Config& c)
 		{
@@ -25,6 +29,9 @@ namespace loader::config
 			c.menuKey = j.value("menuKey", c.menuKey);
 			c.disabledMods = j.value("disabledMods", c.disabledMods);
 			c.disabledAssets = j.value("disabledAssets", c.disabledAssets);
+			c.crossmapUrl = j.value("crossmapUrl", c.crossmapUrl);
+			c.crossmapAutoUpdate = j.value("crossmapAutoUpdate", c.crossmapAutoUpdate);
+			c.debugDisableScriptHook = j.value("debugDisableScriptHook", c.debugDisableScriptHook);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -34,6 +41,9 @@ namespace loader::config
 				{"menuKey", c.menuKey},
 				{"disabledMods", c.disabledMods},
 				{"disabledAssets", c.disabledAssets},
+				{"crossmapUrl", c.crossmapUrl},
+				{"crossmapAutoUpdate", c.crossmapAutoUpdate},
+				{"debugDisableScriptHook", c.debugDisableScriptHook},
 			};
 		}
 	}
@@ -51,6 +61,8 @@ namespace loader::config
 		try
 		{
 			FromJson(nlohmann::json::parse(in), g_config);
+			in.close();
+			Save(); // adds settings introduced by newer loader versions
 		}
 		catch (const std::exception& e)
 		{
