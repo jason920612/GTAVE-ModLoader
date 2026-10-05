@@ -6,6 +6,18 @@ namespace loader::game
 	struct scrProgram;
 	struct scrThread;
 
+	// Layout read by SetRouterLink (RVA 0x13C4F30 on build 0x6aa45f10).
+	struct ScriptRouterLink
+	{
+		int32_t source;  // SRCS_*
+		int32_t _pad0;
+		int32_t mode;    // SRCM_*
+		int32_t _pad1;
+		int32_t argType; // SRCA_*
+		int32_t _pad2;
+		char arg[0x80];
+	};
+
 	// Addresses resolved from signatures once the game code is decrypted.
 	struct Pointers
 	{
@@ -20,10 +32,16 @@ namespace loader::game
 		uint32_t* TlsIndex = nullptr;
 		// Global copy of the running script thread, written next to the TLS slot.
 		scrThread** ActiveThread = nullptr;
-		// void SetFlowState(int state, bool force): drives the game's boot/session flow.
-		void (*SetFlowState)(int32_t state, bool force) = nullptr;
-		// Flow state the landing page requests when the player picks Story Mode.
-		int32_t StoryFlowState = -1;
+		// Gen9 Script Router: the landing page acts on a pending "source=..,mode=..,argType=..,arg=.."
+		// request. SetRouterLink builds it from a ScriptRouterLink; ClearRouterLink drops it.
+		void (*SetRouterLink)(const ScriptRouterLink* link) = nullptr;
+		void (*ClearRouterLink)() = nullptr;
+		struct AtString
+		{
+			const char* data;
+			uint16_t length;
+			uint16_t capacity;
+		}* RouterLink = nullptr;
 	};
 
 	inline Pointers g_pointers;

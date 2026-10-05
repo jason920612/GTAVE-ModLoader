@@ -66,10 +66,17 @@
 - 很多原生函式處理常式被 Arxan 切碎（jmp 到第二個 .text），用 `tools/trace.py` 追蹤。
 - 實測：hello_mod 在故事模式讀到玩家座標、F5 生成 Adder 並坐進駕駛座。
 
-## 7. 主畫面「故事模式」入口（2026-10-05，硬體寫入監看實測）
+## 7. 主畫面「故事模式」入口（2026-10-05，硬體寫入監看 + 靜態分析）
 
 - 主畫面（Gen9 landing page）是 C++ 原生 UI，原生函式（SHUTDOWN_AND_LOAD_MOST_RECENT_SAVE）對它無效。
 - `landing_pre_startup` 腳本只做：`while (native1()) WAIT(0); while (!native5()) WAIT(0);` 然後啟動 `startup`。
-- 用 `debugWatchLanding`（DR0–DR3 寫入中斷）抓到選擇故事模式時：主畫面在 RVA `0x536A06` 呼叫
-  `SetFlowState(0x18, false)`（RVA `0x10780`，寫入流程狀態 `0x29C7D30`），隨後頁面堆疊（`0x3DE2FF8+0x38`）清空、開始載入。
-- 載入器直接在腳本執行緒呼叫 `SetFlowState(<從呼叫點讀出的值>, false)`：18 秒進入故事模式，不需模擬按鍵。
+- 主畫面的所有卡片都經過 **Gen9 Script Router**：待處理請求是字串
+  `source=<SRCS_*>,mode=<SRCM_*>,argType=<SRCA_*>,arg=<...>`，存在 atString（RVA `0x472B5A8`）。
+  - `SetRouterLink(const Link*)`（RVA `0x13C4F30`）：由 `{source@0, mode@8, argType@0x10, arg@0x18}` 組字串，已有請求時不覆蓋。
+  - `ClearRouterLink()`（RVA `0x13C4F00`）。
+  - 主畫面每幀在 `0x5368B0` 讀取請求：`mode==SRCM_LANDING_PAGE && argType==ENTRYPOINT_ID` → 開主畫面入口；
+    其他 → `SetFlowState(0x18)`（RVA `0x10780`），保留請求讓後續轉場依 `mode` 決定去處。
+  - 列舉：SRCS_LANDING_PAGE_SP=4；SRCM_FREE=1（線上）、SRCM_STORY=2；SRCA_NONE=1。
+- ⚠️ 單獨呼叫 `SetFlowState(0x18)`（沒有請求）會走**線上**流程，被 BattlEye 擋下（已實測，勿用）。
+- 載入器做法：在腳本執行緒呼叫 `SetRouterLink({4, 2, 1})`，回讀字串確認含 `mode=SRCM_STORY`，
+  否則 `ClearRouterLink()` 並退回原本主畫面。實測 17 秒進入故事模式，43 個腳本、無 `MainTransition`。

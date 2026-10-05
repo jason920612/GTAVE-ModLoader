@@ -379,6 +379,8 @@ namespace loader::ui
 		ImGui::GetStyle().FontScaleMain = std::max(0.75f, ImGui::GetIO().DisplaySize.y / 1080.0f);
 
 		// Continue-story did not get past the landing page in time: give the home screen back.
+		if (state::storyFailed.exchange(false))
+			g_continueFailed = true;
 		if (state::storyLoading && state::landing && Clock::now() > g_continueDeadline)
 		{
 			state::storyLoading = false;

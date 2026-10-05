@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <string_view>
 #include <thread>
 
 #include "config.hpp"
@@ -52,6 +53,37 @@ namespace loader::core
 			if (status != game::natives::CallStatus::Ok)
 				log::Error("loader native {:#018x} failed ({})", hash, static_cast<int>(status));
 			return status == game::natives::CallStatus::Ok;
+		}
+
+		// Same request the landing page's Story Mode card submits to the Gen9 Script Router.
+		void RequestStoryMode()
+		{
+			constexpr int32_t kSourceLandingPageSp = 4; // SRCS_LANDING_PAGE_SP
+			constexpr int32_t kModeStory = 2;           // SRCM_STORY
+			constexpr int32_t kArgNone = 1;             // SRCA_NONE
+			auto& p = game::g_pointers;
+			if (p.RouterLink->length)
+			{
+				log::Warn("home screen: a router request is already pending, not overriding it");
+				return;
+			}
+			game::ScriptRouterLink link{};
+			link.source = kSourceLandingPageSp;
+			link.mode = kModeStory;
+			link.argType = kArgNone;
+			p.SetRouterLink(&link);
+
+			// Never let a mis-built request through: anything but story mode could start GTA Online.
+			const std::string_view built(p.RouterLink->data ? p.RouterLink->data : "", p.RouterLink->length);
+			if (built.find("mode=SRCM_STORY") == std::string_view::npos)
+			{
+				p.ClearRouterLink();
+				state::storyLoading = false;
+				state::storyFailed = true;
+				log::Error("home screen: router request came out as '{}'; cleared it", built);
+				return;
+			}
+			log::Info("home screen: requested story mode ({})", built);
 		}
 
 		void SetOnline(bool online)
@@ -108,11 +140,7 @@ namespace loader::core
 			}
 			state::story = host != nullptr;
 			if (landing && state::storyRequested.exchange(false))
-			{
-				// Exactly what the landing page does when the player picks Story Mode.
-				game::g_pointers.SetFlowState(game::g_pointers.StoryFlowState, false);
-				log::Info("home screen: story mode requested (flow state {})", game::g_pointers.StoryFlowState);
-			}
+				RequestStoryMode();
 			if (!host)
 				return;
 			if (!g_hostSeen)
@@ -145,7 +173,7 @@ namespace loader::core
 			log::Error("this game build is not supported yet; loader stays inactive");
 			return;
 		}
-		state::canContinueStory = game::g_pointers.SetFlowState && game::g_pointers.StoryFlowState >= 0;
+		state::canContinueStory = game::g_pointers.SetRouterLink && game::g_pointers.ClearRouterLink;
 		if (!state::canContinueStory)
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
 		if (config::Get().debugDisableScriptHook)
