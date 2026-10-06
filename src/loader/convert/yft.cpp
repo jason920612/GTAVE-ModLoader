@@ -608,7 +608,7 @@ namespace loader::convert
 				else
 				{
 					names[i] = textureNames[i];
-					warnings.push_back(std::format("effect {:08x}: texture {:08x} has no Enhanced counterpart", effectHash, textureNames[i]));
+					warnings.push_back(std::format("效果 {:08x} 的貼圖 {:08x} 在強化版沒有對應，保留原名", effectHash, textureNames[i]));
 				}
 			}
 			std::vector<std::pair<uint32_t, uint32_t>> meta;

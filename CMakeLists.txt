@@ -64,6 +64,7 @@ add_library(loader SHARED
     src/loader/convert/effects.cpp
     src/loader/convert/ytd.cpp
     src/loader/convert/yft.cpp
+    src/loader/convert/peds.cpp
     src/loader/convert/packs.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

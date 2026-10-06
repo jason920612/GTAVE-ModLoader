@@ -8,6 +8,7 @@
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "effects.hpp"
+#include "peds.hpp"
 #include "ytd.hpp"
 #include "yft.hpp"
 
@@ -16,7 +17,7 @@ namespace loader::convert
 	namespace
 	{
 		// Bump when the converters change, so cached packs are rebuilt.
-		constexpr int kConverterVersion = 9;
+		constexpr int kConverterVersion = 11;
 
 		std::mutex g_progressMutex;
 		Progress g_progress;
@@ -116,7 +117,7 @@ namespace loader::convert
 				if (!archive.ReadFile(index, data, readError))
 				{
 					// An unreadable file (e.g. damaged, or encrypted with keys we do not have) is left out.
-					job.result->warnings.push_back(std::format("{} left out: {}", inner, readError));
+					job.result->warnings.push_back(std::format("{} 無法讀取，已略過：{}", inner, readError));
 					continue;
 				}
 				node.kind = n.resource ? WriteNode::Kind::Resource : WriteNode::Kind::File;
@@ -135,8 +136,24 @@ namespace loader::convert
 						++job.result->convertedFiles;
 					}
 					else // keep the legacy file (the game will not load it) and convert the rest
-						job.result->warnings.push_back(std::format("{} not converted: {}", inner, why));
+						job.result->warnings.push_back(std::format("{} 未轉換（遊戲不會載入它）：{}", inner, why));
 					SetProgress([&](Progress& p) { ++p.done; });
+				}
+				if (n.resource && Lower(n.name).ends_with(".ymt"))
+				{
+					// Ped variation data: the ped's drawables are in the .ydd of the same name next to it.
+					const std::string stem = Lower(n.name.substr(0, n.name.size() - 4));
+					for (const uint32_t sibling : archive.Nodes()[dir].children)
+					{
+						const Archive::Node& s = archive.Nodes()[sibling];
+						if (!s.resource || Lower(s.name) != stem + ".ydd")
+							continue;
+						Bytes dictionary;
+						std::string ignored;
+						if (archive.ReadFile(sibling, dictionary, ignored))
+							DropMissingComponents(data, dictionary, inner, job.result->warnings);
+						break;
+					}
 				}
 				node.data = std::move(data);
 				out.children.push_back(std::move(node));
@@ -218,7 +235,7 @@ namespace loader::convert
 				return;
 			it->data.assign(xml.begin(), xml.end());
 			for (const auto& ref : dropped)
-				result.warnings.push_back(std::format("content.xml lists {}, which the pack does not contain: entry removed", ref));
+				result.warnings.push_back(std::format("content.xml 引用了包內不存在的 {}，已移除該項目", ref));
 		}
 
 		std::string SourceStamp(const std::filesystem::path& file)
@@ -276,6 +293,10 @@ namespace loader::convert
 			result.state = PackState::Converted;
 			result.fromCache = true;
 			result.convertedFiles = total;
+			std::ifstream saved(cacheDir / L"warnings.txt");
+			for (std::string line; std::getline(saved, line);)
+				if (!line.empty())
+					result.warnings.push_back(line);
 			log::Info("dlc pack {}: using the converted copy ({} legacy file(s))", name, total);
 			return result;
 		}
@@ -303,7 +324,12 @@ namespace loader::convert
 			out.close();
 			ok = ok && (std::filesystem::rename(temp, cached, ec), !ec);
 			if (ok)
+			{
 				std::ofstream(stampFile, std::ios::trunc) << stamp << "\n";
+				std::ofstream saved(cacheDir / L"warnings.txt", std::ios::trunc); // shown again when the cache is used
+				for (const auto& w : result.warnings)
+					saved << w << "\n";
+			}
 			else
 				result.error = "cannot write " + std::string(reinterpret_cast<const char*>(cached.u8string().c_str()));
 		}

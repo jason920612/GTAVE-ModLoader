@@ -228,12 +228,22 @@ namespace loader::ui
 						ImGui::TextColored(kAccent, "已轉換（舊版 → 強化版）");
 						note = std::format("{} 個檔案已轉換", pack.convertedFiles);
 						if (!pack.warnings.empty())
-							note += std::format("，{} 個警告（見記錄）", pack.warnings.size());
+							note += std::format("，{} 個警告（滑鼠移到這裡查看）", pack.warnings.size());
 					}
 					else
 						ImGui::TextColored(kAccent, "已載入");
 					ImGui::TableNextColumn();
 					ImGui::TextWrapped("%s", note.c_str());
+					if (!pack.warnings.empty() && ImGui::IsItemHovered())
+					{
+						// What could not be converted as it is: degraded or left out.
+						ImGui::BeginTooltip();
+						ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40);
+						for (const auto& w : pack.warnings)
+							ImGui::TextColored(kWarn, "%s", w.c_str());
+						ImGui::PopTextWrapPos();
+						ImGui::EndTooltip();
+					}
 					ImGui::TableNextColumn();
 					if (pack.state != convert::PackState::Native && ImGui::SmallButton("重新轉換"))
 					{
