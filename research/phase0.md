@@ -407,4 +407,13 @@
   （生成包排在 DLC 最後，原版資料已讀過）。實測：兩個模組都替換 adder，`adder`（第一個模組的 Infernus 外型與操控）與
   `adder_2`（第二個模組的 Camaro 外型、原版 Adder 操控）同時存在。
   其他無法並存的衝突（非車輛的同名檔案、同一資料項目）依名稱順序第一個生效並顯示警告。
-- 已知問題：載入器自己的封存讀取器開啟 `update\update.rpf` 時會卡住（`common.rpf` 正常），尚未查明。
+- 其他檔案類型（2026-10-07）：
+  - 兩版比較：`.awc`（PAIN.rpf 63 個）完全相同；`.gfx` 相同；`.gxt2` 格式相同但強化版 `global.gxt2` 多約 4400 條；
+    `.rel`（audio_rel.rpf 17 個）全部不同（標頭 +8 的值也不同）。
+  - 開檔路徑：`.awc`、`.gxt2` 經過 Register（`audio:/sfx/RESIDENT/EXPLOSIONS.awc`、`language:/GLOBAL.gxt2`、
+    `dlcTempText:/global.gxt2`），`.rel` 與部分 `.gfx`（字型）經過 `fiStream::Open`；`scaleform_*.rpf` 的 `.gfx` 走串流。
+  - 依名稱整檔替換（`.awc`、`.gfx`、`.dat`、沒有 `<Item>` 項目的 XML）：檔案放在 `ModLoader\cache\<模組>\files`，
+    Register / Open 遇到同名檔案（優先比對所在資料夾或封存檔名稱）時改用它。`.gfx` 同時放進 overlay 串流包。
+  - `.gxt2` 逐項合併：依標籤雜湊替換遊戲文字檔中已有的字串，原版沒有的只加到同名檔案一次（GXT2：`2TXG`、數量、
+    依雜湊排序的 {雜湊, 位移}、`2TXG`、總大小、字串）。實測：ADDER 的名稱改為自訂文字。
+  - 先前以為載入器讀 `update\update.rpf` 會卡住，實際是測試腳本的等待條件寫錯、提早關掉遊戲；讀取器本身正常。
