@@ -124,7 +124,7 @@ namespace loader::game::pausemenu
 			int32_t screen = 0;
 			uint32_t labelHash = 0;
 			std::string name;
-			std::vector<mods::Setting*> settings;
+			std::vector<mods::Item*> settings;
 		};
 		std::vector<Page> g_pages;      // fixed after Inject (game thread)
 		const Page* g_active = nullptr; // page whose values are in the slots
@@ -170,8 +170,8 @@ namespace loader::game::pausemenu
 		{
 			size_t needed = 0;
 			for (const Page& page : g_pages)
-				for (const mods::Setting* s : page.settings)
-					needed += s->type == ML_SETTING_LIST;
+				for (const mods::Item* s : page.settings)
+					needed += s->kind == mods::ItemKind::List;
 			ids.assign(g_pages.size(), {});
 			for (size_t p = 0; p < g_pages.size(); ++p)
 				ids[p].assign(g_pages[p].settings.size(), 0);
@@ -198,8 +198,8 @@ namespace loader::game::pausemenu
 			for (size_t p = 0; p < g_pages.size(); ++p)
 				for (size_t i = 0; i < g_pages[p].settings.size(); ++i)
 				{
-					const mods::Setting* s = g_pages[p].settings[i];
-					if (s->type != ML_SETTING_LIST)
+					const mods::Item* s = g_pages[p].settings[i];
+					if (s->kind != mods::ItemKind::List)
 						continue;
 					const auto n = static_cast<uint16_t>(s->options.size());
 					auto* labels = Alloc<uint32_t>(n);
@@ -237,8 +237,8 @@ namespace loader::game::pausemenu
 		bool Inject()
 		{
 			for (const auto& mod : mods::All())
-				if (!mod->settings.empty())
-					g_pages.push_back({0, Joaat(std::format("ML_MOD_{}", g_pages.size())), mod->name, mod->settings});
+				if (!mod->pauseItems.empty())
+					g_pages.push_back({0, Joaat(std::format("ML_MOD_{}", g_pages.size())), mod->name, mod->pauseItems});
 			if (g_pages.empty())
 				return false;
 
@@ -281,15 +281,15 @@ namespace loader::game::pausemenu
 				uint16_t used = 0;
 				for (size_t i = 0; i < count; ++i)
 				{
-					const auto type = page.settings[i]->type;
-					if (type == ML_SETTING_LIST && !lists)
+					const auto type = page.settings[i]->kind;
+					if (type == mods::ItemKind::List && !lists)
 						continue;
 					MenuItem& item = items[used++];
-					item = type == ML_SETTING_SLIDER ? *sliderTemplate : *toggleTemplate;
+					item = type == mods::ItemKind::Number ? *sliderTemplate : *toggleTemplate;
 					item.label = SettingLabel(p, i);
 					item.pref = kSlots[i];
 					item.contextCount = 0;
-					if (type == ML_SETTING_LIST)
+					if (type == mods::ItemKind::List)
 						item.optionType = listIds[p][i]; // a list item is a toggle with our own texts
 				}
 				MenuScreen& screen = screens[oldCount + p];
@@ -334,7 +334,7 @@ namespace loader::game::pausemenu
 					return false;
 				for (size_t i = 0; i < g_pages[p].settings.size(); ++i)
 				{
-					const mods::Setting* s = g_pages[p].settings[i];
+					const mods::Item* s = g_pages[p].settings[i];
 					if (!text_override::Set(SettingLabel(p, i), s->label))
 						return false;
 					for (size_t k = 0; k < s->options.size(); ++k)
@@ -361,7 +361,7 @@ namespace loader::game::pausemenu
 				if (page.screen == static_cast<int32_t>(screen))
 				{
 					for (size_t i = 0; i < page.settings.size(); ++i)
-						g_prefs[kSlots[i]] = g_savedPrefs[kSlots[i]] = page.settings[i]->value;
+						g_prefs[kSlots[i]] = g_savedPrefs[kSlots[i]] = page.settings[i]->IntValue();
 					g_active = &page;
 					break;
 				}
@@ -382,7 +382,7 @@ namespace loader::game::pausemenu
 						if (kSlots[i] == pref)
 						{
 							mods::SetSettingValue(*g_active->settings[i], value);
-							g_prefs[pref] = g_savedPrefs[pref] = g_active->settings[i]->value; // saved right away
+							g_prefs[pref] = g_savedPrefs[pref] = g_active->settings[i]->IntValue(); // saved right away
 							break;
 						}
 				}

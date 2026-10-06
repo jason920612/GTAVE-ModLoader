@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <modloader/modloader.h>
+#include <nlohmann/json.hpp>
 
 #include "game/natives.hpp"
 
@@ -27,25 +28,44 @@ namespace loader::mods
 
 	struct Mod;
 
-	// A value registered with MLApi::AddSetting, shown on the mod's pause menu page.
-	struct Setting
+	enum class ItemKind : uint8_t
+	{
+		Page,
+		Toggle,
+		Number,
+		List,
+		Action,
+		Text,
+		Hotkey,
+	};
+
+	// A menu entry registered through MLApi (settings are items too). Handle = index; never reused.
+	// Guarded by the menu mutex, except `value`.
+	struct Item
 	{
 		Mod* owner = nullptr;
+		int32_t parent = ML_ROOT_PAGE;
+		ItemKind kind = ItemKind::Text;
+		bool removed = false;
+		bool enabled = true;
+		bool pauseMenu = false; // registered in MLOnLoad and representable there (toggle, list, 0..10 whole number)
 		std::string id, label;
-		MLSettingType type = ML_SETTING_TOGGLE;
-		int32_t defaultValue = 0;
-		std::atomic<int32_t> value = 0;
-		std::vector<std::string> options; // ML_SETTING_LIST texts
+		float min = 0, max = 1, step = 1;
+		std::atomic<float> value = 0;
+		std::vector<std::string> options; // lists
+		MLCallback fn = nullptr;          // actions and hotkeys: activation; others: value changed
+		void* user = nullptr;
+		std::vector<int32_t> children; // pages
 
-		int32_t Max() const
-		{
-			switch (type)
-			{
-			case ML_SETTING_SLIDER: return 10;
-			case ML_SETTING_LIST: return static_cast<int32_t>(options.size()) - 1;
-			default: return 1;
-			}
-		}
+		int32_t IntValue() const { return static_cast<int32_t>(value.load()); }
+	};
+
+	// A mod's fiber: MLMain, or the one that runs menu callbacks.
+	struct Task
+	{
+		void* fiber = nullptr;
+		uint64_t wakeAt = 0;
+		bool busy = false; // callback task: has work (running or waiting)
 	};
 
 	struct Mod
@@ -64,17 +84,21 @@ namespace loader::mods
 		State state = State::Loaded;
 		std::string error;
 
-		void* fiber = nullptr;
-		uint64_t wakeAt = 0;
+		Task mainTask, callbackTask;
 		game::natives::Invocation invocation;
 		FILE* log = nullptr;
 
-		std::vector<Setting*> settings; // in registration order; fixed once MLOnLoad returned
+		// Menu (menu mutex): root items in order; pages keep their own children.
+		std::vector<int32_t> rootItems;
+		std::vector<std::pair<MLCallback, void*>> pending; // callbacks waiting for the callback task
+		bool settingsDirty = false;
+		nlohmann::json saved; // settings.json as read (and as written last)
+		std::vector<Item*> pauseItems; // fixed once MLOnLoad returned
 	};
 
 	// Scans ModLoader\mods, creates each mod's folder and loads it. Game thread only.
 	void LoadAll();
-	// Runs every mod's MLMain fiber that is due. Game thread only, inside a script context.
+	// Runs every mod's fibers that are due. Game thread only, inside a script context.
 	void Tick();
 
 	const std::vector<std::unique_ptr<Mod>>& All();
@@ -85,11 +109,31 @@ namespace loader::mods
 		std::string fileName, name, version, author, description, error;
 		std::filesystem::path dir;
 		State state;
+		bool hasMenu = false;
 	};
 	std::vector<ModView> Snapshot();
 	bool Loaded(); // LoadAll has run
 	const char* ToString(State state);
 
 	// Stores a value changed in the pause menu and saves the owner's settings.json. Game thread.
-	void SetSettingValue(Setting& setting, int32_t value);
+	void SetSettingValue(Item& item, int32_t value);
+
+	// ---- loader window (any thread) ----
+	struct ItemView
+	{
+		int32_t handle;
+		ItemKind kind;
+		bool enabled;
+		std::string label;
+		float value, min, max, step;
+		std::vector<std::string> options;
+	};
+	// Items of a page (ML_ROOT_PAGE = the mod's root), in order. `mod` indexes All().
+	std::vector<ItemView> PageItems(size_t mod, int32_t page);
+	bool PageExists(size_t mod, int32_t page);
+	// The player changed a value / activated an action.
+	void UiSetValue(int32_t handle, float value);
+	void UiActivate(int32_t handle);
+	// A key went down in the game window while the loader UI is closed.
+	void OnKeyDown(uint32_t vk);
 }

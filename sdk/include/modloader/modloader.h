@@ -11,6 +11,11 @@
  * Settings registered in MLOnLoad appear on the mod's page in the pause menu (story mode,
  * "Mods" tab) and are saved to <modDir>\settings.json.
  *
+ * Menus (API additions after the first release, see AddPage and below) are shown in the loader
+ * window (F4 by default, tab "模組功能"): pages, toggles, numbers, lists, actions and hotkeys.
+ * Toggles, lists and 0..10 whole-number items registered in MLOnLoad also appear in the pause menu
+ * (at most ML_MAX_SETTINGS per mod there; the rest only in the loader window).
+ *
  * Natives may only be called from MLMain (it runs on the game's script thread).
  * MLOnLoad runs before the world exists: use it for setup, not for natives.
  */
@@ -55,8 +60,14 @@ typedef enum MLSettingType
 	ML_SETTING_LIST = 2,   /* value 0..count-1, an index into the option texts (AddListSetting) */
 } MLSettingType;
 
-#define ML_MAX_SETTINGS 15     /* per mod */
+#define ML_MAX_SETTINGS 15     /* per mod in the pause menu */
 #define ML_MAX_LIST_OPTIONS 32 /* per list setting */
+
+/* Menu callbacks run on the mod's own script fiber (natives and Wait allowed), one at a time,
+ * in the order they were triggered. They also run for mods without MLMain. */
+typedef void (*MLCallback)(void* user);
+
+#define ML_ROOT_PAGE (-1) /* the mod's own top-level page */
 
 typedef struct MLApi
 {
@@ -88,6 +99,39 @@ typedef struct MLApi
 	/* Like AddSetting with ML_SETTING_LIST: the player picks one of `count` texts (UTF-8,
 	 * 2..ML_MAX_LIST_OPTIONS). The value is the index of the chosen text. MLOnLoad only. */
 	int32_t (*AddListSetting)(const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue);
+
+	/* ---- menus: check `size` before use (see modloader.hpp) ----
+	 * Game thread only: MLOnLoad, MLMain or a menu callback. Returns an item handle, or -1.
+	 * `page` is ML_ROOT_PAGE or a handle from AddPage. `id` (ASCII) keys the value in settings.json;
+	 * NULL or "" = not saved. Labels are UTF-8. Items keep the order they were added in. */
+	int32_t (*AddPage)(int32_t page, const char* label);
+	int32_t (*AddToggle)(int32_t page, const char* id, const char* label, int32_t defaultValue);
+	/* min..max in steps of `step` (> 0; a whole number step shows whole numbers). */
+	int32_t (*AddNumber)(int32_t page, const char* id, const char* label, float min, float max, float step, float defaultValue);
+	/* 2..ML_MAX_LIST_OPTIONS texts; the value is the chosen index. */
+	int32_t (*AddList)(int32_t page, const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue);
+	/* A button: `fn(user)` runs when the player activates it. */
+	int32_t (*AddAction)(int32_t page, const char* label, MLCallback fn, void* user);
+	/* A line of text (e.g. status). */
+	int32_t (*AddText)(int32_t page, const char* label);
+	/* A key the player can rebind in the loader window; `fn(user)` runs when it is pressed in story mode
+	 * while the loader window is closed. `defaultKey` is a Windows virtual-key code (0 = unbound).
+	 * The value is the bound key. Listed on the mod's root page. */
+	int32_t (*AddHotkey)(const char* id, const char* label, uint32_t defaultKey, MLCallback fn, void* user);
+
+	/* Runs `fn(user)` when the player changes the item's value (toggles, numbers, lists, hotkeys). */
+	void (*SetCallback)(int32_t item, MLCallback fn, void* user);
+	void (*SetLabel)(int32_t item, const char* label);
+	void (*SetEnabled)(int32_t item, int32_t enabled);
+	/* Removes every item on a page (their handles become invalid); the page itself stays. */
+	void (*ClearPage)(int32_t page);
+	/* Value of any item, from any thread (toggle 0/1, list index, number, hotkey key code). */
+	float (*GetValue)(int32_t item);
+	/* Sets a value (clamped and snapped to the item's range); no callback runs. */
+	void (*SetValue)(int32_t item, float value);
+
+	/* Shows a short message on screen for a few seconds (UTF-8). Any thread. */
+	void (*Notify)(const char* text);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

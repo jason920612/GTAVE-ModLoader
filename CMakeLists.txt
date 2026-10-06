@@ -79,7 +79,7 @@ add_library(modloader_sdk INTERFACE)
 target_include_directories(modloader_sdk INTERFACE sdk/include)
 target_compile_features(modloader_sdk INTERFACE cxx_std_20)
 
-set(EXAMPLE_MODS hello_mod settings_demo)
+set(EXAMPLE_MODS hello_mod settings_demo trainer)
 foreach(example IN LISTS EXAMPLE_MODS)
     add_library(${example} SHARED examples/${example}/main.cpp)
     target_link_libraries(${example} PRIVATE modloader_sdk)

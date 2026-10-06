@@ -15,8 +15,11 @@
 
 #include "../config.hpp"
 #include "../log.hpp"
+#include "../mods.hpp"
+#include "../state.hpp"
 #include "dx12_hook.hpp"
 #include "menu.hpp"
+#include "notify.hpp"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -270,6 +273,14 @@ namespace loader::ui
 			{
 				ToggleMenu();
 				return 0;
+			}
+			if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && !(lp & (1 << 30)))
+			{
+				if (CaptureHotkey(static_cast<unsigned>(wp)))
+					return 0;
+				// Mod hotkeys: story mode only, and not while the loader UI owns the keyboard.
+				if (!g_capture && state::story && !state::online)
+					mods::OnKeyDown(static_cast<uint32_t>(wp));
 			}
 			{
 				std::lock_guard lock(g_imguiMutex);

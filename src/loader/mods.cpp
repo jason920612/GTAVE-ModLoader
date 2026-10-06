@@ -4,7 +4,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <array>
+#include <cmath>
+#include <deque>
 #include <fstream>
 #include <format>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include "config.hpp"
 #include "log.hpp"
 #include "paths.hpp"
+#include "ui/notify.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -23,10 +25,8 @@ namespace loader::mods
 		std::mutex g_modsMutex; // guards g_mods structure and each mod's state/error
 		std::atomic_bool g_loaded = false;
 		Mod* g_current = nullptr;     // mod whose fiber is running right now
+		Task* g_currentTask = nullptr; // fiber of g_current that is running
 		Mod* g_loading = nullptr;     // mod whose MLOnLoad is running right now
-		// Handle = index. Fixed storage: GetSetting may run on any thread while other mods register.
-		std::array<Setting, 4096> g_settings;
-		std::atomic<int32_t> g_settingCount = 0;
 		void* g_schedulerFiber = nullptr;
 		DWORD g_gameThreadId = 0;
 		const auto g_start = std::chrono::steady_clock::now();
@@ -134,7 +134,7 @@ namespace loader::mods
 		{
 			if (!InModFiber("Wait", _ReturnAddress()))
 				return;
-			g_current->wakeAt = NowMs() + ms;
+			g_currentTask->wakeAt = NowMs() + ms;
 			SwitchToFiber(g_schedulerFiber);
 		}
 
@@ -148,17 +148,308 @@ namespace loader::mods
 			return NowMs();
 		}
 
-		int32_t AddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue, std::vector<std::string> options, void* caller)
+		// ---- menu items ------------------------------------------------------------------------
+
+		std::recursive_mutex g_menuMutex; // items and each mod's menu fields; never held while mod code runs
+		std::deque<Item> g_items;         // handle = index; deque keeps references stable
+		int32_t g_itemCount = 0;          // menu mutex
+
+		// Mod that may add items right now: inside MLOnLoad, MLMain or a callback (game thread).
+		Mod* Registrar(const char* what, void* caller)
+		{
+			if (GetCurrentThreadId() == g_gameThreadId && (g_loading || g_current))
+				return g_loading ? g_loading : g_current;
+			ModLog(ModFromAddress(caller), ML_LOG_ERROR, std::format("{} called outside MLOnLoad/MLMain/a callback; ignored", what));
+			return nullptr;
+		}
+
+		// Menu mutex held.
+		Item* Get(int32_t handle)
+		{
+			if (handle < 0 || handle >= g_itemCount)
+				return nullptr;
+			Item& item = g_items[handle];
+			return item.removed ? nullptr : &item;
+		}
+
+		float Normalize(const Item& item, float v)
+		{
+			if (v != v) // NaN
+				v = item.min;
+			v = std::clamp(v, item.min, item.max);
+			if (item.kind == ItemKind::Number)
+				v = std::min(item.max, item.min + std::round((v - item.min) / item.step) * item.step);
+			else
+				v = std::round(v);
+			return v;
+		}
+
+		// Registers an item for `mod`. `item.value` holds the default; a saved value replaces it.
+		int32_t AddItem(Mod* mod, Item& item)
+		{
+			std::lock_guard lock(g_menuMutex);
+			if (item.parent != ML_ROOT_PAGE)
+			{
+				const Item* page = Get(item.parent);
+				if (!page || page->owner != mod || page->kind != ItemKind::Page)
+				{
+					ModLog(mod, ML_LOG_ERROR, std::format("'{}': page {} is not a page of this mod", item.label, item.parent));
+					return -1;
+				}
+			}
+			if (!item.id.empty())
+				for (int32_t h = 0; h < g_itemCount; ++h)
+					if (const Item* other = Get(h); other && other->owner == mod && other->id == item.id)
+					{
+						ModLog(mod, ML_LOG_ERROR, std::format("duplicate id '{}'", item.id));
+						return -1;
+					}
+
+			const int32_t handle = g_itemCount;
+			Item& stored = g_items.emplace_back();
+			stored.owner = mod;
+			stored.parent = item.parent;
+			stored.kind = item.kind;
+			stored.pauseMenu = g_loading == mod && item.parent == ML_ROOT_PAGE &&
+			                   (item.kind == ItemKind::Toggle || item.kind == ItemKind::List ||
+			                       (item.kind == ItemKind::Number && item.min == 0 && item.max == 10 && item.step == 1));
+			stored.id = std::move(item.id);
+			stored.label = std::move(item.label);
+			stored.min = item.min;
+			stored.max = item.max;
+			stored.step = item.step;
+			stored.options = std::move(item.options);
+			stored.fn = item.fn;
+			stored.user = item.user;
+			float value = Normalize(stored, item.value);
+			if (!stored.id.empty())
+				if (const auto it = mod->saved.find(stored.id); it != mod->saved.end() && it->is_number())
+					value = Normalize(stored, it->get<float>());
+			stored.value = value;
+			if (stored.parent == ML_ROOT_PAGE)
+				mod->rootItems.push_back(handle);
+			else
+				g_items[stored.parent].children.push_back(handle);
+			g_itemCount = handle + 1;
+			return handle;
+		}
+
+		std::string Text(const char* s)
+		{
+			return s ? s : "";
+		}
+
+		void MakeItem(Item& item, ItemKind kind, int32_t page, const char* id, const char* label)
+		{
+			item.kind = kind;
+			item.parent = page;
+			item.id = Text(id);
+			item.label = Text(label);
+		}
+
+		int32_t ApiAddPage(int32_t page, const char* label)
+		{
+			Mod* mod = Registrar("AddPage", _ReturnAddress());
+			if (!mod)
+				return -1;
+			Item item;
+			MakeItem(item, ItemKind::Page, page, nullptr, label);
+			return AddItem(mod, item);
+		}
+
+		int32_t ApiAddToggle(int32_t page, const char* id, const char* label, int32_t defaultValue)
+		{
+			Mod* mod = Registrar("AddToggle", _ReturnAddress());
+			if (!mod)
+				return -1;
+			Item item;
+			MakeItem(item, ItemKind::Toggle, page, id, label);
+			item.value = defaultValue ? 1.0f : 0.0f;
+			return AddItem(mod, item);
+		}
+
+		int32_t AddNumberItem(Mod* mod, int32_t page, const char* id, const char* label, float min, float max, float step, float defaultValue)
+		{
+			if (!(min <= max) || !(step > 0))
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("number '{}': needs min <= max and step > 0", Text(label)));
+				return -1;
+			}
+			Item item;
+			MakeItem(item, ItemKind::Number, page, id, label);
+			item.min = min;
+			item.max = max;
+			item.step = step;
+			item.value = defaultValue;
+			return AddItem(mod, item);
+		}
+
+		int32_t ApiAddNumber(int32_t page, const char* id, const char* label, float min, float max, float step, float defaultValue)
+		{
+			Mod* mod = Registrar("AddNumber", _ReturnAddress());
+			return mod ? AddNumberItem(mod, page, id, label, min, max, step, defaultValue) : -1;
+		}
+
+		int32_t AddListItem(Mod* mod, int32_t page, const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue)
+		{
+			if (!options || count < 2 || count > ML_MAX_LIST_OPTIONS)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("list '{}': needs 2..{} options", Text(label), ML_MAX_LIST_OPTIONS));
+				return -1;
+			}
+			Item item;
+			MakeItem(item, ItemKind::List, page, id, label);
+			for (int32_t i = 0; i < count; ++i)
+				item.options.emplace_back(options[i] && *options[i] ? options[i] : "?");
+			item.max = static_cast<float>(count - 1);
+			item.value = static_cast<float>(defaultValue);
+			return AddItem(mod, item);
+		}
+
+		int32_t ApiAddList(int32_t page, const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue)
+		{
+			Mod* mod = Registrar("AddList", _ReturnAddress());
+			return mod ? AddListItem(mod, page, id, label, options, count, defaultValue) : -1;
+		}
+
+		int32_t ApiAddAction(int32_t page, const char* label, MLCallback fn, void* user)
+		{
+			Mod* mod = Registrar("AddAction", _ReturnAddress());
+			if (!mod)
+				return -1;
+			Item item;
+			MakeItem(item, ItemKind::Action, page, nullptr, label);
+			item.fn = fn;
+			item.user = user;
+			return AddItem(mod, item);
+		}
+
+		int32_t ApiAddText(int32_t page, const char* label)
+		{
+			Mod* mod = Registrar("AddText", _ReturnAddress());
+			if (!mod)
+				return -1;
+			Item item;
+			MakeItem(item, ItemKind::Text, page, nullptr, label);
+			return AddItem(mod, item);
+		}
+
+		int32_t ApiAddHotkey(const char* id, const char* label, uint32_t defaultKey, MLCallback fn, void* user)
+		{
+			Mod* mod = Registrar("AddHotkey", _ReturnAddress());
+			if (!mod)
+				return -1;
+			Item item;
+			MakeItem(item, ItemKind::Hotkey, ML_ROOT_PAGE, id, label);
+			item.max = 255;
+			item.value = static_cast<float>(defaultKey & 0xFF);
+			item.fn = fn;
+			item.user = user;
+			return AddItem(mod, item);
+		}
+
+		// Item calls from mod code: only the owner may change an item. Menu mutex held.
+		Item* Owned(int32_t handle, const char* what, void* caller)
+		{
+			Item* item = Get(handle);
+			if (!item)
+				return nullptr;
+			if (Mod* mod = CallerOrCurrent(caller); item->owner != mod)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("{}: item {} belongs to another mod", what, handle));
+				return nullptr;
+			}
+			return item;
+		}
+
+		void ApiSetCallback(int32_t handle, MLCallback fn, void* user)
+		{
+			std::lock_guard lock(g_menuMutex);
+			if (Item* item = Owned(handle, "SetCallback", _ReturnAddress()))
+			{
+				item->fn = fn;
+				item->user = user;
+			}
+		}
+
+		void ApiSetLabel(int32_t handle, const char* label)
+		{
+			std::lock_guard lock(g_menuMutex);
+			if (Item* item = Owned(handle, "SetLabel", _ReturnAddress()))
+				item->label = Text(label);
+		}
+
+		void ApiSetEnabled(int32_t handle, int32_t enabled)
+		{
+			std::lock_guard lock(g_menuMutex);
+			if (Item* item = Owned(handle, "SetEnabled", _ReturnAddress()))
+				item->enabled = enabled != 0;
+		}
+
+		// Menu mutex held.
+		void Remove(std::vector<int32_t>& handles)
+		{
+			for (const int32_t h : handles)
+			{
+				Item& item = g_items[h];
+				Remove(item.children);
+				item.removed = true;
+			}
+			handles.clear();
+		}
+
+		void ApiClearPage(int32_t handle)
+		{
+			std::lock_guard lock(g_menuMutex);
+			if (handle == ML_ROOT_PAGE)
+			{
+				// Settings shown in the pause menu and hotkeys stay: they are registered once.
+				Mod* mod = CallerOrCurrent(_ReturnAddress());
+				if (!mod)
+					return;
+				std::vector<int32_t> keep, drop;
+				for (const int32_t h : mod->rootItems)
+					(g_items[h].pauseMenu || g_items[h].kind == ItemKind::Hotkey ? keep : drop).push_back(h);
+				Remove(drop);
+				mod->rootItems = std::move(keep);
+				return;
+			}
+			if (Item* page = Owned(handle, "ClearPage", _ReturnAddress()); page && page->kind == ItemKind::Page)
+				Remove(page->children);
+		}
+
+		float ApiGetValue(int32_t handle)
+		{
+			std::lock_guard lock(g_menuMutex);
+			const Item* item = Get(handle);
+			return item ? item->value.load() : 0.0f;
+		}
+
+		void ApiSetValue(int32_t handle, float value)
+		{
+			std::lock_guard lock(g_menuMutex);
+			if (Item* item = Owned(handle, "SetValue", _ReturnAddress()))
+			{
+				const float v = Normalize(*item, value);
+				if (item->value.exchange(v) != v && !item->id.empty())
+					item->owner->settingsDirty = true;
+			}
+		}
+
+		void ApiNotify(const char* text)
+		{
+			const Mod* mod = CallerOrCurrent(_ReturnAddress());
+			ui::Notify(mod ? mod->name : "", Text(text));
+		}
+
+		// ---- settings of the first release: items on the root page ------------------------------
+
+		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
 		{
 			Mod* mod = g_loading;
 			if (!mod || GetCurrentThreadId() != g_gameThreadId)
 			{
-				ModLog(ModFromAddress(caller), ML_LOG_ERROR, "AddSetting called outside MLOnLoad; ignored");
-				return -1;
-			}
-			if (type != ML_SETTING_TOGGLE && type != ML_SETTING_SLIDER && type != ML_SETTING_LIST)
-			{
-				ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: unknown type {}", static_cast<int>(type)));
+				ModLog(ModFromAddress(_ReturnAddress()), ML_LOG_ERROR, "AddSetting called outside MLOnLoad; ignored");
 				return -1;
 			}
 			if (!id || !*id || !label || !*label)
@@ -166,64 +457,40 @@ namespace loader::mods
 				ModLog(mod, ML_LOG_ERROR, "AddSetting: id and label are required");
 				return -1;
 			}
-			if (mod->settings.size() >= ML_MAX_SETTINGS)
+			switch (type)
 			{
-				ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: at most {} settings per mod; '{}' ignored", ML_MAX_SETTINGS, id));
+			case ML_SETTING_TOGGLE:
+			{
+				Item item;
+				MakeItem(item, ItemKind::Toggle, ML_ROOT_PAGE, id, label);
+				item.value = defaultValue ? 1.0f : 0.0f;
+				return AddItem(mod, item);
+			}
+			case ML_SETTING_SLIDER:
+				return AddNumberItem(mod, ML_ROOT_PAGE, id, label, 0, 10, 1, static_cast<float>(defaultValue));
+			case ML_SETTING_LIST:
+				ModLog(mod, ML_LOG_ERROR, "AddSetting: use AddListSetting for lists");
+				return -1;
+			default:
+				ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: unknown type {}", static_cast<int>(type)));
 				return -1;
 			}
-			for (const Setting* s : mod->settings)
-				if (s->id == id)
-				{
-					ModLog(mod, ML_LOG_ERROR, std::format("AddSetting: duplicate id '{}'", id));
-					return -1;
-				}
-
-			const int32_t handle = g_settingCount.load();
-			if (handle >= static_cast<int32_t>(g_settings.size()))
-			{
-				ModLog(mod, ML_LOG_ERROR, "AddSetting: too many settings in total");
-				return -1;
-			}
-			Setting& s = g_settings[handle];
-			s.owner = mod;
-			s.id = id;
-			s.label = label;
-			s.type = type;
-			s.options = std::move(options);
-			s.defaultValue = std::clamp(defaultValue, 0, s.Max());
-			s.value = s.defaultValue;
-			mod->settings.push_back(&s);
-			g_settingCount = handle + 1; // publish after the entry is complete
-			return handle;
-		}
-
-		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
-		{
-			if (type == ML_SETTING_LIST)
-			{
-				ModLog(CallerOrCurrent(_ReturnAddress()), ML_LOG_ERROR, "AddSetting: use AddListSetting for lists");
-				return -1;
-			}
-			return AddSetting(type, id, label, defaultValue, {}, _ReturnAddress());
 		}
 
 		int32_t ApiAddListSetting(const char* id, const char* label, const char* const* options, int32_t count, int32_t defaultValue)
 		{
-			if (!options || count < 2 || count > ML_MAX_LIST_OPTIONS)
+			Mod* mod = g_loading;
+			if (!mod || GetCurrentThreadId() != g_gameThreadId || !id || !*id || !label || !*label)
 			{
-				ModLog(CallerOrCurrent(_ReturnAddress()), ML_LOG_ERROR,
-				    std::format("AddListSetting '{}': needs 2..{} options", id ? id : "?", ML_MAX_LIST_OPTIONS));
+				ModLog(CallerOrCurrent(_ReturnAddress()), ML_LOG_ERROR, "AddListSetting: MLOnLoad only, id and label required; ignored");
 				return -1;
 			}
-			std::vector<std::string> texts;
-			for (int32_t i = 0; i < count; ++i)
-				texts.emplace_back(options[i] && *options[i] ? options[i] : "?");
-			return AddSetting(ML_SETTING_LIST, id, label, defaultValue, std::move(texts), _ReturnAddress());
+			return AddListItem(mod, ML_ROOT_PAGE, id, label, options, count, defaultValue);
 		}
 
 		int32_t ApiGetSetting(int32_t handle)
 		{
-			return handle >= 0 && handle < g_settingCount.load() ? g_settings[handle].value.load() : 0;
+			return static_cast<int32_t>(ApiGetValue(handle));
 		}
 
 		std::filesystem::path SettingsFile(const Mod& mod)
@@ -231,34 +498,61 @@ namespace loader::mods
 			return mod.dir / L"settings.json";
 		}
 
-		void LoadSettings(Mod& mod)
+		void ReadSettings(Mod& mod)
 		{
-			if (mod.settings.empty())
-				return;
 			std::ifstream in(SettingsFile(mod));
 			if (!in)
 				return;
-			const auto j = nlohmann::json::parse(in, nullptr, false);
+			auto j = nlohmann::json::parse(in, nullptr, false);
 			if (!j.is_object())
 			{
 				ModLog(&mod, ML_LOG_WARN, "settings.json is not valid JSON; using defaults");
 				return;
 			}
-			for (Setting* s : mod.settings)
-				if (const auto it = j.find(s->id); it != j.end() && it->is_number_integer())
-					s->value = std::clamp(it->get<int32_t>(), 0, s->Max());
+			mod.saved = std::move(j);
 		}
 
-		void SaveSettings(const Mod& mod)
+		// Values of items that are not registered (yet) are kept.
+		void SaveSettings(Mod& mod)
 		{
-			nlohmann::json j = nlohmann::json::object();
-			for (const Setting* s : mod.settings)
-				j[s->id] = s->value.load();
+			nlohmann::json j;
+			{
+				std::lock_guard lock(g_menuMutex);
+				mod.settingsDirty = false;
+				for (int32_t h = 0; h < g_itemCount; ++h)
+					if (const Item* item = Get(h); item && item->owner == &mod && !item->id.empty())
+					{
+						const float v = item->value;
+						if (item->kind == ItemKind::Number && v != std::floor(v))
+							mod.saved[item->id] = v;
+						else
+							mod.saved[item->id] = static_cast<int32_t>(v);
+					}
+				j = mod.saved;
+			}
 			std::ofstream out(SettingsFile(mod), std::ios::trunc);
 			if (out)
 				out << j.dump(2) << "\n";
 			else
 				log::Warn("mod {}: could not write settings.json", mod.name);
+		}
+
+		// The player changed a value or activated an item. Menu mutex held.
+		void Changed(Item& item, float value)
+		{
+			if (item.kind == ItemKind::Action)
+			{
+				if (item.fn && item.enabled)
+					item.owner->pending.emplace_back(item.fn, item.user);
+				return;
+			}
+			const float v = Normalize(item, value);
+			if (item.value.exchange(v) == v)
+				return;
+			if (!item.id.empty())
+				item.owner->settingsDirty = true;
+			if (item.fn && item.kind != ItemKind::Hotkey)
+				item.owner->pending.emplace_back(item.fn, item.user);
 		}
 
 		const MLApi g_api{
@@ -273,6 +567,20 @@ namespace loader::mods
 			.AddSetting = ApiAddSetting,
 			.GetSetting = ApiGetSetting,
 			.AddListSetting = ApiAddListSetting,
+			.AddPage = ApiAddPage,
+			.AddToggle = ApiAddToggle,
+			.AddNumber = ApiAddNumber,
+			.AddList = ApiAddList,
+			.AddAction = ApiAddAction,
+			.AddText = ApiAddText,
+			.AddHotkey = ApiAddHotkey,
+			.SetCallback = ApiSetCallback,
+			.SetLabel = ApiSetLabel,
+			.SetEnabled = ApiSetEnabled,
+			.ClearPage = ApiClearPage,
+			.GetValue = ApiGetValue,
+			.SetValue = ApiSetValue,
+			.Notify = ApiNotify,
 		};
 
 		// ---- loading --------------------------------------------------------------------------
@@ -301,6 +609,46 @@ namespace loader::mods
 			__except (EXCEPTION_EXECUTE_HANDLER)
 			{
 				return false;
+			}
+		}
+
+		bool SafeCallback(MLCallback fn, void* user)
+		{
+			__try
+			{
+				fn(user);
+				return true;
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return false;
+			}
+		}
+
+		// Runs the mod's queued menu/hotkey callbacks one after another, then goes idle.
+		void CALLBACK CallbackFiberProc(void* param)
+		{
+			auto* mod = static_cast<Mod*>(param);
+			for (;;)
+			{
+				std::pair<MLCallback, void*> next{};
+				{
+					std::lock_guard lock(g_menuMutex);
+					if (mod->pending.empty())
+						mod->callbackTask.busy = false;
+					else
+					{
+						next = mod->pending.front();
+						mod->pending.erase(mod->pending.begin());
+					}
+				}
+				if (!next.first)
+				{
+					SwitchToFiber(g_schedulerFiber);
+					continue;
+				}
+				if (!SafeCallback(next.first, next.second))
+					AbandonCurrentFiber(mod, "crashed in a menu or hotkey callback");
 			}
 		}
 
@@ -366,6 +714,7 @@ namespace loader::mods
 			mod.author = info->author ? info->author : "";
 			mod.description = info->description ? info->description : "";
 
+			ReadSettings(mod);
 			int accepted = 0;
 			g_loading = &mod;
 			const bool survived = SafeOnLoad(onLoad, &mod.context, &accepted);
@@ -380,15 +729,21 @@ namespace loader::mods
 			{
 				mod.state = State::Failed;
 				mod.error = "MLOnLoad returned 0";
-				mod.settings.clear(); // a cancelled mod gets no page
+				std::lock_guard lock(g_menuMutex); // a cancelled mod gets no menu
+				Remove(mod.rootItems);
 				return;
 			}
-			LoadSettings(mod);
+			{
+				std::lock_guard lock(g_menuMutex);
+				for (const int32_t h : mod.rootItems)
+					if (g_items[h].pauseMenu && mod.pauseItems.size() < ML_MAX_SETTINGS)
+						mod.pauseItems.push_back(&g_items[h]);
+			}
 
 			if (mod.main)
 			{
-				mod.fiber = CreateFiber(256 * 1024, FiberProc, &mod);
-				if (!mod.fiber)
+				mod.mainTask.fiber = CreateFiber(256 * 1024, FiberProc, &mod);
+				if (!mod.mainTask.fiber)
 				{
 					mod.state = State::Failed;
 					mod.error = "could not create fiber";
@@ -445,16 +800,50 @@ namespace loader::mods
 		const auto now = NowMs();
 		for (auto& mod : g_mods)
 		{
-			if (!mod->fiber || (mod->state != State::Loaded && mod->state != State::Running) || now < mod->wakeAt)
+			if (mod->state != State::Loaded && mod->state != State::Running && mod->state != State::Finished)
 				continue;
-			if (mod->state == State::Loaded)
+			if (mod->mainTask.fiber && mod->state != State::Finished && now >= mod->mainTask.wakeAt)
 			{
-				std::lock_guard lock(g_modsMutex);
-				mod->state = State::Running;
+				if (mod->state == State::Loaded)
+				{
+					std::lock_guard lock(g_modsMutex);
+					mod->state = State::Running;
+				}
+				g_current = mod.get();
+				g_currentTask = &mod->mainTask;
+				SwitchToFiber(mod->mainTask.fiber);
 			}
-			g_current = mod.get();
-			SwitchToFiber(mod->fiber);
+
+			// Callbacks run on their own fiber, so a callback that waits does not hold up MLMain (and the other way round).
+			bool run = false;
+			{
+				std::lock_guard lock(g_menuMutex);
+				if (!mod->callbackTask.busy && !mod->pending.empty())
+					mod->callbackTask.busy = true;
+				run = mod->callbackTask.busy && now >= mod->callbackTask.wakeAt;
+			}
+			if (run && mod->state != State::Faulted)
+			{
+				if (!mod->callbackTask.fiber)
+					mod->callbackTask.fiber = CreateFiber(256 * 1024, CallbackFiberProc, mod.get());
+				if (mod->callbackTask.fiber)
+				{
+					g_current = mod.get();
+					g_currentTask = &mod->callbackTask;
+					SwitchToFiber(mod->callbackTask.fiber);
+				}
+			}
 			g_current = nullptr;
+			g_currentTask = nullptr;
+
+			// Saved at most once per tick, not on every change.
+			bool dirty;
+			{
+				std::lock_guard lock(g_menuMutex);
+				dirty = mod->settingsDirty;
+			}
+			if (dirty)
+				SaveSettings(*mod);
 		}
 	}
 
@@ -469,7 +858,10 @@ namespace loader::mods
 		std::vector<ModView> out;
 		out.reserve(g_mods.size());
 		for (const auto& m : g_mods)
-			out.push_back({m->fileName, m->name, m->version, m->author, m->description, m->error, m->dir, m->state});
+		{
+			std::lock_guard menuLock(g_menuMutex);
+			out.push_back({m->fileName, m->name, m->version, m->author, m->description, m->error, m->dir, m->state, !m->rootItems.empty()});
+		}
 		return out;
 	}
 
@@ -491,10 +883,69 @@ namespace loader::mods
 		}
 	}
 
-	void SetSettingValue(Setting& setting, int32_t value)
+	void SetSettingValue(Item& item, int32_t value)
 	{
-		value = std::clamp(value, 0, setting.Max());
-		if (setting.value.exchange(value) != value && setting.owner)
-			SaveSettings(*setting.owner);
+		bool dirty;
+		{
+			std::lock_guard lock(g_menuMutex);
+			Changed(item, static_cast<float>(value));
+			dirty = item.owner && item.owner->settingsDirty;
+		}
+		if (dirty)
+			SaveSettings(*item.owner);
+	}
+
+	std::vector<ItemView> PageItems(size_t mod, int32_t page)
+	{
+		std::lock_guard modsLock(g_modsMutex); // g_mods grows while LoadAll runs
+		std::lock_guard lock(g_menuMutex);
+		std::vector<ItemView> out;
+		if (mod >= g_mods.size())
+			return out;
+		const std::vector<int32_t>* handles = &g_mods[mod]->rootItems;
+		if (page != ML_ROOT_PAGE)
+		{
+			const Item* p = Get(page);
+			if (!p || p->owner != g_mods[mod].get() || p->kind != ItemKind::Page)
+				return out;
+			handles = &p->children;
+		}
+		out.reserve(handles->size());
+		for (const int32_t h : *handles)
+		{
+			const Item& i = g_items[h];
+			out.push_back({h, i.kind, i.enabled, i.label, i.value.load(), i.min, i.max, i.step, i.options});
+		}
+		return out;
+	}
+
+	bool PageExists(size_t mod, int32_t page)
+	{
+		std::lock_guard modsLock(g_modsMutex); // g_mods grows while LoadAll runs
+		std::lock_guard lock(g_menuMutex);
+		const Item* p = Get(page);
+		return mod < g_mods.size() && p && p->owner == g_mods[mod].get() && p->kind == ItemKind::Page;
+	}
+
+	void UiSetValue(int32_t handle, float value)
+	{
+		std::lock_guard lock(g_menuMutex);
+		if (Item* item = Get(handle); item && item->enabled)
+			Changed(*item, value);
+	}
+
+	void UiActivate(int32_t handle)
+	{
+		std::lock_guard lock(g_menuMutex);
+		if (Item* item = Get(handle); item && item->kind == ItemKind::Action)
+			Changed(*item, 0);
+	}
+
+	void OnKeyDown(uint32_t vk)
+	{
+		std::lock_guard lock(g_menuMutex);
+		for (int32_t h = 0; h < g_itemCount; ++h)
+			if (Item* item = Get(h); item && item->kind == ItemKind::Hotkey && item->enabled && item->fn && item->IntValue() == static_cast<int32_t>(vk))
+				item->owner->pending.emplace_back(item->fn, item->user);
 	}
 }

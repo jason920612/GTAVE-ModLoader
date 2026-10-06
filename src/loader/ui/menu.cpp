@@ -6,8 +6,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <format>
+#include <map>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 
@@ -18,6 +22,7 @@
 #include "../mods.hpp"
 #include "../paths.hpp"
 #include "../state.hpp"
+#include "notify.hpp"
 #include "overlay.hpp"
 
 namespace loader::ui
@@ -82,6 +87,238 @@ namespace loader::ui
 			case mods::State::Finished: color = kMuted; return "已結束";
 			default: color = kError; return "已崩潰並停止";
 			}
+		}
+
+		// ---- notifications and hotkeys ---------------------------------------------------------
+
+		struct Notification
+		{
+			std::string source, text;
+			Clock::time_point until;
+		};
+		std::mutex g_notifyMutex;
+		std::deque<Notification> g_notifications;
+		constexpr auto kNotifyTime = std::chrono::seconds(5);
+		constexpr size_t kMaxNotifications = 5;
+
+		std::atomic<int32_t> g_binding = -1; // hotkey item waiting for a key
+
+		std::string KeyName(unsigned vk)
+		{
+			if (!vk)
+				return "未設定";
+			UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+			switch (vk)
+			{
+			case VK_INSERT: case VK_DELETE: case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+			case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_DIVIDE: case VK_RCONTROL: case VK_RMENU:
+				scan |= 0x100; // extended key
+				break;
+			}
+			wchar_t name[64]{};
+			if (!GetKeyNameTextW(static_cast<LONG>(scan << 16), name, 64))
+				return std::format("按鍵 {}", vk);
+			char utf8[192]{};
+			WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, sizeof(utf8), nullptr, nullptr);
+			return utf8;
+		}
+
+		void Notifications()
+		{
+			std::vector<Notification> shown;
+			{
+				std::lock_guard lock(g_notifyMutex);
+				const auto now = Clock::now();
+				while (!g_notifications.empty() && g_notifications.front().until < now)
+					g_notifications.pop_front();
+				shown.assign(g_notifications.begin(), g_notifications.end());
+			}
+			if (shown.empty())
+				return;
+			// Right edge below the money and wanted stars (the game's own feed is bottom left); newest at the bottom.
+			const ImGuiViewport* vp = ImGui::GetMainViewport();
+			ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.985f, vp->Pos.y + vp->Size.y * 0.22f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+			ImGui::SetNextWindowBgAlpha(0.0f);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+			ImGui::Begin("##notify", nullptr,
+			    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing |
+			        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings);
+			const float width = ImGui::GetFontSize() * 18;
+			for (size_t i = 0; i < shown.size(); ++i)
+			{
+				ImGui::PushID(static_cast<int>(i));
+				ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.06f, 0.07f, 0.94f));
+				ImGui::BeginChild("n", ImVec2(width, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+				if (!shown[i].source.empty())
+					ImGui::TextColored(kAccent, "%s", shown[i].source.c_str());
+				ImGui::PushTextWrapPos(0.0f);
+				ImGui::TextUnformatted(shown[i].text.c_str());
+				ImGui::PopTextWrapPos();
+				ImGui::EndChild();
+				ImGui::PopStyleColor();
+				ImGui::PopID();
+			}
+			ImGui::End();
+			ImGui::PopStyleVar();
+		}
+
+		// ---- mod menus ---------------------------------------------------------------------------
+
+		size_t g_menuMod = SIZE_MAX;                                     // index into mods::All()
+		std::map<size_t, std::vector<std::pair<int32_t, std::string>>> g_pageStack; // per mod: opened pages
+		char g_filter[128] = "";
+
+		bool Matches(const std::string& label)
+		{
+			if (!*g_filter)
+				return true;
+			// Case-insensitive for ASCII; other text as is.
+			std::string a = label, b = g_filter;
+			const auto lower = [](std::string& t) { std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); }); };
+			lower(a);
+			lower(b);
+			return a.find(b) != std::string::npos;
+		}
+
+		void MenuItemRow(const mods::ItemView& item, std::vector<std::pair<int32_t, std::string>>& stack)
+		{
+			ImGui::PushID(item.handle);
+			ImGui::BeginDisabled(!item.enabled);
+			const float width = ImGui::GetContentRegionAvail().x;
+			switch (item.kind)
+			{
+			case mods::ItemKind::Page:
+				if (ImGui::Selectable(std::format("{}  ›", item.label).c_str()))
+				{
+					stack.emplace_back(item.handle, item.label);
+					g_filter[0] = 0;
+				}
+				break;
+			case mods::ItemKind::Toggle:
+			{
+				bool on = item.value != 0;
+				if (ImGui::Checkbox(item.label.c_str(), &on))
+					mods::UiSetValue(item.handle, on ? 1.0f : 0.0f);
+				break;
+			}
+			case mods::ItemKind::Number:
+			{
+				ImGui::SetNextItemWidth(width * 0.5f);
+				const bool whole = item.step == std::floor(item.step) && item.min == std::floor(item.min);
+				if (whole)
+				{
+					int v = static_cast<int>(item.value);
+					if (ImGui::SliderInt(item.label.c_str(), &v, static_cast<int>(item.min), static_cast<int>(item.max)))
+						mods::UiSetValue(item.handle, static_cast<float>(v));
+				}
+				else
+				{
+					float v = item.value;
+					if (ImGui::SliderFloat(item.label.c_str(), &v, item.min, item.max, "%.2f"))
+						mods::UiSetValue(item.handle, v);
+				}
+				break;
+			}
+			case mods::ItemKind::List:
+			{
+				ImGui::SetNextItemWidth(width * 0.5f);
+				const int current = static_cast<int>(item.value);
+				if (ImGui::BeginCombo(item.label.c_str(), current >= 0 && current < static_cast<int>(item.options.size()) ? item.options[current].c_str() : "?"))
+				{
+					for (int i = 0; i < static_cast<int>(item.options.size()); ++i)
+						if (ImGui::Selectable(item.options[i].c_str(), i == current))
+							mods::UiSetValue(item.handle, static_cast<float>(i));
+					ImGui::EndCombo();
+				}
+				break;
+			}
+			case mods::ItemKind::Action:
+				if (ImGui::Button(item.label.c_str(), ImVec2(width, 0)))
+					mods::UiActivate(item.handle);
+				break;
+			case mods::ItemKind::Text:
+				ImGui::TextWrapped("%s", item.label.c_str());
+				break;
+			case mods::ItemKind::Hotkey:
+			{
+				const bool binding = g_binding == item.handle;
+				const auto text = binding ? std::string("按下新按鍵…（Esc 取消，Backspace 清除）") : KeyName(static_cast<unsigned>(item.value));
+				if (ImGui::Button(std::format("{}##key", text).c_str(), ImVec2(width * 0.5f, 0)))
+					g_binding = binding ? -1 : item.handle;
+				ImGui::SameLine();
+				ImGui::TextUnformatted(item.label.c_str());
+				break;
+			}
+			}
+			ImGui::EndDisabled();
+			ImGui::PopID();
+		}
+
+		void ModMenusTab()
+		{
+			const auto list = mods::Snapshot();
+			std::vector<size_t> withMenu;
+			for (size_t i = 0; i < list.size(); ++i)
+				if (list[i].hasMenu && list[i].state != mods::State::Failed && list[i].state != mods::State::Disabled)
+					withMenu.push_back(i);
+			if (withMenu.empty())
+			{
+				ImGui::TextColored(kMuted, "%s", mods::Loaded() ? "沒有提供選單的模組。" : "正在載入模組…");
+				return;
+			}
+			if (std::find(withMenu.begin(), withMenu.end(), g_menuMod) == withMenu.end())
+				g_menuMod = withMenu.front();
+
+			ImGui::BeginChild("mods", ImVec2(ImGui::GetFontSize() * 11, 0), ImGuiChildFlags_Borders);
+			for (const size_t i : withMenu)
+				if (ImGui::Selectable(list[i].name.c_str(), g_menuMod == i))
+				{
+					g_menuMod = i;
+					g_filter[0] = 0;
+				}
+			ImGui::EndChild();
+			ImGui::SameLine();
+
+			ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_Borders);
+			const auto& mod = list[g_menuMod];
+			auto& stack = g_pageStack[g_menuMod];
+			// A page the mod removed: go back to the nearest one that still exists.
+			while (!stack.empty() && !mods::PageExists(g_menuMod, stack.back().first))
+				stack.pop_back();
+			const auto items = mods::PageItems(g_menuMod, stack.empty() ? ML_ROOT_PAGE : stack.back().first);
+
+			if (!stack.empty())
+			{
+				if (ImGui::Button("‹ 返回"))
+				{
+					stack.pop_back();
+					g_filter[0] = 0;
+				}
+				ImGui::SameLine();
+			}
+			std::string path = mod.name;
+			for (const auto& [h, label] : stack)
+				path += "  ›  " + label;
+			ImGui::TextColored(kAccent, "%s", path.c_str());
+			if (mod.state == mods::State::Faulted)
+				ImGui::TextColored(kError, "這個模組已崩潰並停止，選單項目不會再有反應。");
+			else if (!state::story)
+				ImGui::TextColored(kMuted, "進入故事模式後，按鈕和熱鍵才會生效。");
+			ImGui::Separator();
+
+			if (items.size() > 12)
+			{
+				ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+				ImGui::InputTextWithHint("##filter", "搜尋…", g_filter, sizeof(g_filter));
+			}
+			ImGui::BeginChild("items");
+			for (const auto& item : items)
+				if (Matches(item.label) || item.kind == mods::ItemKind::Text)
+					MenuItemRow(item, stack);
+			if (items.empty())
+				ImGui::TextColored(kMuted, "（這一頁沒有項目）");
+			ImGui::EndChild();
+			ImGui::EndChild();
 		}
 
 		// ---- tabs ------------------------------------------------------------------------------
@@ -332,6 +569,11 @@ namespace loader::ui
 		{
 			if (ImGui::BeginTabBar("tabs"))
 			{
+				if (ImGui::BeginTabItem("模組功能"))
+				{
+					ModMenusTab();
+					ImGui::EndTabItem();
+				}
 				if (ImGui::BeginTabItem("模組"))
 				{
 					ModsTab();
@@ -512,6 +754,8 @@ namespace loader::ui
 		}
 
 		ConversionProgress();
+		if (!g_menuOpen)
+			g_binding = -1;
 		if (LandingReplaced())
 			LandingScreen();
 		else if (state::storyLoading && state::landing && !g_showOriginalLanding)
@@ -519,6 +763,7 @@ namespace loader::ui
 		else if (g_menuOpen)
 			MenuWindow();
 
+		Notifications();
 		if (state::online)
 			Toast("##online", kWarn, "偵測到 GTA 線上模式：所有模組已暫停");
 		else if (state::story)
@@ -557,5 +802,28 @@ namespace loader::ui
 	{
 		if (!LandingReplaced())
 			g_menuOpen = !g_menuOpen.load();
+	}
+
+	void Notify(std::string source, std::string text)
+	{
+		std::lock_guard lock(g_notifyMutex);
+		g_notifications.push_back({std::move(source), std::move(text), Clock::now() + kNotifyTime});
+		while (g_notifications.size() > kMaxNotifications)
+			g_notifications.pop_front();
+	}
+
+	bool CaptureHotkey(unsigned vk)
+	{
+		const int32_t item = g_binding;
+		if (item < 0)
+			return false;
+		if (vk == VK_ESCAPE)
+			g_binding = -1;
+		else if (vk != MenuKey())
+		{
+			mods::UiSetValue(item, vk == VK_BACK ? 0.0f : static_cast<float>(vk));
+			g_binding = -1;
+		}
+		return true;
 	}
 }

@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <initializer_list>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "modloader.h"
 
@@ -123,6 +125,112 @@ namespace ml
 		return Setting(HasSettings() ? Api().AddSetting(ML_SETTING_SLIDER, id, label, defaultValue) : -1);
 	}
 	inline uint64_t TickMs() { return Api().GetTickMs(); }
+
+	// ---- menus (loader window "模組功能" tab) ----------------------------------------------------
+
+	// True when the loader supports menus (pages, actions, hotkeys, notifications).
+	inline bool HasMenus() { return Api().size >= offsetof(MLApi, Notify) + sizeof(void*); }
+
+	namespace detail
+	{
+		// Callbacks stay alive for the whole session (items may be removed while one is queued).
+		inline void* Keep(std::function<void()> fn) { return new std::function<void()>(std::move(fn)); }
+		inline void Run(void* user) { (*static_cast<std::function<void()>*>(user))(); }
+	}
+
+	// A menu entry. Value() is cheap and works from any thread.
+	class Item
+	{
+	public:
+		Item() = default;
+		explicit Item(int32_t handle) : m_handle(handle) {}
+		bool Valid() const { return m_handle >= 0; }
+		int32_t Handle() const { return m_handle; }
+		float Value() const { return Valid() ? Api().GetValue(m_handle) : 0.0f; }
+		int32_t Int() const { return static_cast<int32_t>(Value()); }
+		explicit operator bool() const { return Value() != 0; }
+		// Sets the value (no OnChange callback).
+		void Set(float value) const { if (Valid()) Api().SetValue(m_handle, value); }
+		void Label(const std::string& label) const { if (Valid()) Api().SetLabel(m_handle, label.c_str()); }
+		void Enabled(bool enabled) const { if (Valid()) Api().SetEnabled(m_handle, enabled ? 1 : 0); }
+		// Runs `fn` on the mod's script fiber when the player changes the value.
+		const Item& OnChange(std::function<void()> fn) const
+		{
+			if (Valid())
+				Api().SetCallback(m_handle, detail::Run, detail::Keep(std::move(fn)));
+			return *this;
+		}
+
+	private:
+		int32_t m_handle = -1;
+	};
+
+	// A menu page. Root() is the mod's top-level page; Sub() adds a page that opens from this one.
+	//   auto vehicles = ml::Root().Sub("載具");
+	//   vehicles.Action("修理", [] { ... });   // runs on the mod's script fiber: natives and Wait are fine
+	class Page
+	{
+	public:
+		Page() = default;
+		explicit Page(int32_t handle) : m_handle(handle), m_valid(true) {}
+		bool Valid() const { return m_valid && HasMenus(); }
+		int32_t Handle() const { return m_handle; }
+
+		Page Sub(const char* label) const
+		{
+			const int32_t h = Valid() ? Api().AddPage(m_handle, label) : -1;
+			return h >= 0 ? Page(h) : Page();
+		}
+		Item Toggle(const char* id, const char* label, bool defaultValue = false) const
+		{
+			return Item(Valid() ? Api().AddToggle(m_handle, id, label, defaultValue ? 1 : 0) : -1);
+		}
+		Item Number(const char* id, const char* label, float min, float max, float step, float defaultValue) const
+		{
+			return Item(Valid() ? Api().AddNumber(m_handle, id, label, min, max, step, defaultValue) : -1);
+		}
+		Item List(const char* id, const char* label, const std::vector<std::string>& options, int32_t defaultValue = 0) const
+		{
+			if (!Valid())
+				return Item();
+			std::vector<const char*> texts;
+			for (const auto& o : options)
+				texts.push_back(o.c_str());
+			return Item(Api().AddList(m_handle, id, label, texts.data(), static_cast<int32_t>(texts.size()), defaultValue));
+		}
+		Item Action(const char* label, std::function<void()> fn) const
+		{
+			return Item(Valid() ? Api().AddAction(m_handle, label, detail::Run, detail::Keep(std::move(fn))) : -1);
+		}
+		Item Text(const char* label) const { return Item(Valid() ? Api().AddText(m_handle, label) : -1); }
+		// Removes every item on the page (for lists that change). On Root() settings and hotkeys stay.
+		void Clear() const
+		{
+			if (Valid())
+				Api().ClearPage(m_handle);
+		}
+
+	private:
+		int32_t m_handle = ML_ROOT_PAGE;
+		bool m_valid = false;
+	};
+
+	inline Page Root() { return Page(ML_ROOT_PAGE); }
+
+	// A key the player can rebind in the loader window; `fn` runs on the mod's script fiber when it is pressed.
+	// `defaultKey` is a Windows virtual-key code, e.g. VK_F6 (0x75); 0 = unbound.
+	inline Item Hotkey(const char* id, const char* label, uint32_t defaultKey, std::function<void()> fn)
+	{
+		return Item(HasMenus() ? Api().AddHotkey(id, label, defaultKey, detail::Run, detail::Keep(std::move(fn))) : -1);
+	}
+
+	// Short on-screen message.
+	template<class... Args>
+	void Notify(std::format_string<Args...> fmt, Args&&... args)
+	{
+		if (HasMenus())
+			Api().Notify(std::format(fmt, std::forward<Args>(args)...).c_str());
+	}
 
 	template<class... Args>
 	void Log(std::format_string<Args...> fmt, Args&&... args)
