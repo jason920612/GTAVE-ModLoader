@@ -375,3 +375,25 @@
   但這 12 次修正都沒有觸發，也沒有產生卡住 dump，表示這段期間死結根本沒發生；原本約 1/6 的機率下連續 12 次都正常約有 11% 機率，
   所以還不能證明修正有效。推測死結和記憶體吃緊有關（GPU 工作被分頁拖慢）。修正與診斷保留，之後若再發生，日誌會出現
   `fix:` 或 `hang:` 紀錄。
+
+## 25. 替換型模組（2026-10-06）
+
+- 放法：`ModLoader\mods\<名稱>\` 裡沒有 `dlc.rpf`、但有遊戲檔案（散裝檔案或 `.rpf`）的資料夾。同名的 `<名稱>.dll`
+  存在時，那是程式模組自己的資料夾，不算。載入器把它打包成 `ModLoader\cache\<名稱>\dlc.rpf`，再走既有的 DLC 包流程。
+- **串流檔案覆蓋**：DLC 的 `RPF_FILE` 預設不會蓋過原版同名檔案；`content.xml` 中加上 `<overlay value="true" />` 就會
+  （以 Infernus 的檔案改名成 adder.* 實測，兩次啟動）。封裝檔名稱與路徑不必和原版相同，所以全部放進 `x64/ml_stream.rpf`。
+  舊版資源照 §16–23 轉換。
+- **資料檔**：DLC 的 `HANDLING_FILE`、`VEHICLE_METADATA_FILE` 中與原版同名的項目會被忽略（`overlay` 也無效），
+  所以逐項覆蓋由載入器處理：
+  - 資料檔由 `Register(path, size*, flags)`（`0x1275a40`）依名稱登記成串流代號；它先用搜尋路徑解析
+    （`0x1021d0`，參數為搜尋路徑物件與空字串），再取得裝置。Hook 這裡：先用遊戲的 `fiStream`
+    （Open `0x102620`、Read `0x1037e0`、Close `0x1014c0`）讀出原檔，套用覆蓋後寫到 `ModLoader\cache\datafiles`，
+    再把那個本機路徑交給原函式。原版與所有 DLC 的資料檔都經過這裡（base `handling.meta` 約在 DLC 清單處理後 40 秒才登記）。
+  - 項目 = `<Item>` 元素；鍵 = 上層標籤路徑 + 第一個子元素與其文字或 `value` 屬性，例如
+    `CHandlingDataMgr/HandlingData|handlingName=adder`（不分大小寫）。已有鍵的項目裡面的 `<Item>` 屬於該項目
+    （例如 `SubHandlingData`），不另外比對；同一檔案內重複的鍵不覆蓋。
+  - 模組的資料檔也會依根元素登記成 DLC 資料檔（handling、vehicles、carcols、carvariations、vehiclelayouts、weapons、
+    peds、weaponanimations），讓原版沒有的新項目加入。
+  - 實測：只含 Adder 一項的 handling（動力 0.32 → 0.9）與 vehicles（gameName → INFERNUS）在遊戲中生效。
+- 多個模組替換同一個串流檔案、或覆蓋同一個資料項目時，目前依名稱順序第一個生效並顯示警告（後綴並存在下一步）。
+- 已知問題：載入器自己的封存讀取器開啟 `update\update.rpf` 時會卡住（`common.rpf` 正常），尚未查明。

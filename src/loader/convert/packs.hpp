@@ -43,6 +43,12 @@ namespace loader::convert
 	};
 	Progress CurrentProgress();
 
+	// Whether a resource file (with its RSC7 header) is a legacy one that ConvertResourceFile converts.
+	bool IsLegacyResource(const std::string& name, const Bytes& data);
+
+	// Changes whenever the converters change; part of every cache stamp so older caches are rebuilt.
+	std::string ConverterStamp();
+
 	// One legacy resource file (research aid): converted by its name and version like inside a pack.
 	// Returns false with `error` when it is not a legacy resource this converter handles or the conversion failed.
 	bool ConvertResourceFile(const std::string& name, const Bytes& data, Bytes& out, std::vector<std::string>& warnings, std::string& error);

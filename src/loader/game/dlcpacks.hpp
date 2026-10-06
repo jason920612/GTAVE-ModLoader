@@ -7,7 +7,8 @@
 
 // DLC packs shipped by mods: ModLoader\mods\<name>\dlc.rpf is added to the game's DLC list
 // (as if it were in dlcpacks). Archives may be unencrypted ("OPEN"). Packs with legacy resources are converted
-// first (convert/packs.hpp). See research/phase0.md §11.
+// first (convert/packs.hpp). See research/phase0.md §11. A mod folder without a dlc.rpf that holds game files is a
+// replacement mod: it is packed into a generated pack first (convert/replace.hpp, §25).
 namespace loader::game::dlcpacks
 {
 	// Hooks the DLC list processing and the archive decryption. Call once the game is decrypted.
@@ -19,6 +20,7 @@ namespace loader::game::dlcpacks
 		std::string path; // as given to the game (UTF-8): D:/.../ModLoader/mods/<name>/
 		std::filesystem::path source; // ModLoader\mods\<name>
 		std::filesystem::path dir;    // folder of the dlc.rpf the game loads (source, or the converted copy)
+		bool replacement = false; // a replacement mod: loose files / archives packed into a generated pack
 		bool enabled = true;
 		bool registered = false; // the game accepted it
 		convert::PackState state = convert::PackState::Native;

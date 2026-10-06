@@ -51,6 +51,7 @@ add_library(loader SHARED
     src/loader/game/script.cpp
     src/loader/game/text.cpp
     src/loader/game/text_override.cpp
+    src/loader/game/datafiles.cpp
     src/loader/game/fixes.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
@@ -70,7 +71,9 @@ add_library(loader SHARED
     src/loader/convert/ytd.cpp
     src/loader/convert/yft.cpp
     src/loader/convert/peds.cpp
-    src/loader/convert/packs.cpp)
+    src/loader/convert/packs.cpp
+    src/loader/convert/replace.cpp
+    src/loader/convert/xmlmerge.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive- /Zi>)

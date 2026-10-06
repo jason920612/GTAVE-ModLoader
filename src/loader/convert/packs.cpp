@@ -389,6 +389,24 @@ namespace loader::convert
 		return g_progress;
 	}
 
+	bool IsLegacyResource(const std::string& name, const Bytes& data)
+	{
+		if (data.size() < 16 || Get<uint32_t>(data, 0) != 0x37435352) // "RSC7"
+			return false;
+		Archive::Node n;
+		n.name = Lower(name);
+		n.resource = true;
+		n.flags[0] = Get<uint32_t>(data, 8);
+		n.flags[1] = Get<uint32_t>(data, 12);
+		const Legacy kind = LegacyKind(n);
+		return kind != Legacy::None && kind != Legacy::Unsupported;
+	}
+
+	std::string ConverterStamp()
+	{
+		return std::format("converter {}", kConverterVersion);
+	}
+
 	bool ConvertResourceFile(const std::string& name, const Bytes& data, Bytes& out, std::vector<std::string>& warnings, std::string& error)
 	{
 		if (data.size() < 16 || Get<uint32_t>(data, 0) != 0x37435352) // "RSC7"

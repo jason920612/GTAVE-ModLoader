@@ -19,6 +19,7 @@
 #include "game/models.hpp"
 #include "game/scripts.hpp"
 #include "debug/hangdump.hpp"
+#include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/pools.hpp"
 #include "game/pausemenu.hpp"
@@ -287,6 +288,7 @@ namespace loader::core
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
 		game::pools::InstallHooks();
 		game::dlcpacks::InstallHooks();
+		game::datafiles::InstallHooks();
 		game::models::Install();
 		game::scripts::Install();
 		debug::hangdump::Start();

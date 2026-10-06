@@ -1,6 +1,8 @@
 #include "dlcpacks.hpp"
 
+#include "../convert/replace.hpp"
 #include "../convert/ypt.hpp"
+#include "datafiles.hpp"
 
 #include <Windows.h>
 #include <intrin.h>
@@ -80,6 +82,10 @@ namespace loader::game::dlcpacks
 
 		std::mutex g_mutex;
 		std::vector<Pack> g_packs;
+		// Replacement mods: their data file entries, and the streaming files each one replaces.
+		convert::xmlmerge::Overrides g_overrides;
+		std::map<std::string, convert::ReplacementFiles> g_replacementFiles;
+		std::map<std::string, std::vector<std::string>> g_conflicts; // pack name -> warnings
 		std::unordered_map<std::string, CacheEntry*> g_entries; // normalized archive path as the game opens it
 
 		std::string Utf8(const std::u8string& s)
@@ -303,9 +309,18 @@ namespace loader::game::dlcpacks
 			std::error_code ec;
 			for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))
 			{
-				if (!entry.is_directory() || !std::filesystem::is_regular_file(entry.path() / L"dlc.rpf", ec))
+				if (!entry.is_directory())
 					continue;
 				Pack pack;
+				if (!std::filesystem::is_regular_file(entry.path() / L"dlc.rpf", ec))
+				{
+					// A code mod's own folder (mods\<name>.dll next to it) is never a replacement mod.
+					auto dll = entry.path();
+					dll += L".dll";
+					if (std::filesystem::exists(dll, ec) || !convert::LooksLikeReplacementMod(entry.path()))
+						continue;
+					pack.replacement = true;
+				}
 				pack.name = Utf8(entry.path().filename().u8string());
 				pack.source = entry.path();
 				pack.dir = entry.path();
@@ -327,6 +342,29 @@ namespace loader::game::dlcpacks
 			return g_origLookup(device, path);
 		}
 
+		// Files that more than one enabled replacement mod replaces: the first mod (by name) wins. Shown as warnings of
+		// the later mods.
+		void FindConflicts(const std::vector<Pack>& packs)
+		{
+			std::map<std::string, std::string> owner;
+			for (const Pack& pack : packs)
+			{
+				if (!pack.replacement || !pack.enabled)
+					continue;
+				for (const auto& file : g_replacementFiles[pack.name].streaming)
+				{
+					const auto [it, added] = owner.emplace(file, pack.name);
+					if (!added)
+					{
+						g_conflicts[pack.name].push_back(std::format("{} 也被模組 {} 替換，目前使用 {} 的版本", file, it->second, it->second));
+						log::Warn("replacement mod {}: {} is also replaced by {}; {} is used", pack.name, file, it->second, it->second);
+					}
+				}
+			}
+			for (const auto& c : g_overrides.Conflicts())
+				log::Warn("replacement mods: data entry {} is overridden by more than one mod; the first one is used", c);
+		}
+
 		// Converts the pack if it has legacy resources (once per session; later processing reuses the result).
 		void Prepare(Pack& pack)
 		{
@@ -335,7 +373,10 @@ namespace loader::game::dlcpacks
 			{
 				WatchdogPause pause;
 				const auto showProgress = [] { std::thread([] { ui::StartOverlay(); }).detach(); };
-				it = g_prepared.emplace(pack.name, convert::PreparePack(pack.name, pack.source, g_decrypt ? &g_decryptor : nullptr, showProgress)).first;
+				it = g_prepared.emplace(pack.name, pack.replacement
+				        ? convert::PrepareReplacement(pack.name, pack.source, g_decrypt ? &g_decryptor : nullptr, showProgress, g_overrides,
+				              g_replacementFiles[pack.name])
+				        : convert::PreparePack(pack.name, pack.source, g_decrypt ? &g_decryptor : nullptr, showProgress)).first;
 			}
 			const convert::PackResult& r = it->second;
 			pack.state = r.state;
@@ -523,6 +564,18 @@ namespace loader::game::dlcpacks
 				else
 					log::Error("dlc pack {}: the game rejected {}dlc.rpf", pack.name, pack.path);
 			}
+			static std::once_flag overrides;
+			std::call_once(overrides, [&] {
+				FindConflicts(packs);
+				if (!g_overrides.Empty())
+				{
+					log::Info("replacement mods: {} data file entr{} to override", g_overrides.Size(), g_overrides.Size() == 1 ? "y" : "ies");
+					datafiles::SetOverrides(g_overrides);
+				}
+			});
+			for (Pack& pack : packs)
+				if (const auto it = g_conflicts.find(pack.name); it != g_conflicts.end())
+					pack.warnings.insert(pack.warnings.end(), it->second.begin(), it->second.end());
 			{
 				std::lock_guard lock(g_mutex);
 				g_packs = std::move(packs);
