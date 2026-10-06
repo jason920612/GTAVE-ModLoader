@@ -294,7 +294,7 @@ namespace loader::convert
 			if (!it->is_regular_file(ec))
 				continue;
 			const std::string ext = Extension(Utf8(it->path().filename().u8string()));
-			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || ext == ".gxt2" || std::find(kNamed.begin(), kNamed.end(), ext) != kNamed.end() ||
+			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || ext == ".gxt2" || ext == ".rel" || ext == ".ysc" || std::find(kNamed.begin(), kNamed.end(), ext) != kNamed.end() ||
 			    std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
 				return true;
 		}
@@ -474,7 +474,10 @@ namespace loader::convert
 			}
 			if (ext == ".rel")
 			{
-				result.warnings.push_back(std::format("{} 是音效資料（.rel），兩版內容不同，目前無法套用，已略過", in.path));
+				const size_t before = files.named.size();
+				AddNamed(in);
+				if (files.named.size() > before)
+					files.named.back().merge = true;
 				continue;
 			}
 			if (ext == ".ysc")

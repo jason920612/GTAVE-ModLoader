@@ -13,6 +13,7 @@
 
 #include <MinHook.h>
 
+#include "../convert/rel.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../pattern.hpp"
@@ -284,7 +285,7 @@ namespace loader::game::datafiles
 			const size_t dot = name.rfind('.');
 			const std::string_view ext = dot == std::string_view::npos ? std::string_view() : name.substr(dot);
 			const bool data = ext == ".meta" || ext == ".xml";
-			if (!data && ext != ".gxt2" && ext != ".awc" && ext != ".gfx" && ext != ".dat")
+			if (!data && ext != ".gxt2" && ext != ".awc" && ext != ".gfx" && ext != ".dat" && ext != ".rel")
 				return {};
 			// Our own copies (and generated packs' files read back through the game) are never redirected again.
 			if (p.starts_with(g_ownRoot))
@@ -310,6 +311,32 @@ namespace loader::game::datafiles
 						if (f.folder == parent)
 							break;
 					}
+				if (match && match->merge)
+				{
+					// Audio game data: every mod's entries merged into the game's own file.
+					char resolved[256] = {};
+					std::string original;
+					if (!g_resolve(g_searchPaths, resolved, sizeof(resolved), path, g_noExtension) || !ReadGameFile(resolved, original))
+						return {};
+					std::vector<convert::rel::Mod> mods;
+					for (const auto& f : g_named)
+						if (f.merge && f.name == name && (f.folder.empty() || f.folder == parent))
+						{
+							std::ifstream in(f.file, std::ios::binary);
+							mods.push_back({f.mod, std::string((std::istreambuf_iterator<char>(in)), {})});
+						}
+					int replaced = 0, added = 0;
+					std::string error;
+					const std::string merged = convert::rel::Merge(original, mods, replaced, added, error);
+					if (!error.empty())
+						log::Warn("datafiles: {}: {}", path, error);
+					if (merged.empty())
+						return {};
+					redirect = WriteCopy(p, merged);
+					log::Info("datafiles: {} -> {} entr{} replaced, {} added (audio data of {} mod(s))", path, replaced, replaced == 1 ? "y" : "ies",
+					    added, mods.size());
+					return redirect;
+				}
 				if (match)
 				{
 					redirect = GamePath(match->file);

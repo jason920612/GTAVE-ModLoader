@@ -644,7 +644,7 @@ namespace loader::game::dlcpacks
 					for (const auto& f : files.named)
 					{
 						const auto other = std::find_if(named.begin(), named.end(), [&](const convert::NamedFile& n) { return n.name == f.name && n.folder == f.folder; });
-						if (other == named.end())
+						if (other == named.end() || f.merge) // merged files: every mod's entries are used
 							named.push_back(f);
 						else
 						{

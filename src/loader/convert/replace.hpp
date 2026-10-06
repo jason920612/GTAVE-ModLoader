@@ -24,6 +24,7 @@ namespace loader::convert
 		std::string folder; // the folder (or archive, without ".rpf") it belongs in, lower case; "" = any
 		std::filesystem::path file;
 		std::string mod;
+		bool merge = false; // audio game data (.rel): merged per entry into the game's file, all mods together
 	};
 
 	// A .gxt2 entry of a mod: replaces the game's text with that label hash in every text file, and is added to the

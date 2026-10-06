@@ -73,6 +73,7 @@ add_library(loader SHARED
     src/loader/convert/peds.cpp
     src/loader/convert/packs.cpp
     src/loader/convert/oiv.cpp
+    src/loader/convert/rel.cpp
     src/loader/convert/replace.cpp
     src/loader/convert/xmlmerge.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
