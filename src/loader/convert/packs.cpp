@@ -16,7 +16,7 @@ namespace loader::convert
 	namespace
 	{
 		// Bump when the converters change, so cached packs are rebuilt.
-		constexpr int kConverterVersion = 4;
+		constexpr int kConverterVersion = 9;
 
 		std::mutex g_progressMutex;
 		Progress g_progress;
@@ -40,7 +40,7 @@ namespace loader::convert
 
 		// Legacy resources this converter handles, recognised by extension and the version in the entry flags
 		// (version = (virtual flags >> 28) << 4 | physical flags >> 28).
-		enum class Legacy { None, TextureDictionary, Fragment };
+		enum class Legacy { None, TextureDictionary, Fragment, Drawable };
 		Legacy LegacyKind(const Archive::Node& n)
 		{
 			if (!n.resource)
@@ -51,6 +51,8 @@ namespace loader::convert
 				return Legacy::TextureDictionary;
 			if (name.ends_with(".yft") && version == kLegacyFragmentVersion)
 				return Legacy::Fragment;
+			if ((name.ends_with(".ydr") || name.ends_with(".ydd")) && version == kLegacyDrawableVersion)
+				return Legacy::Drawable;
 			return Legacy::None;
 		}
 
@@ -110,8 +112,13 @@ namespace loader::convert
 					log::Warn("convert {}: {} kept as it is ({})", job.pack, inner, nestedError);
 				}
 				Bytes data;
-				if (!archive.ReadFile(index, data, error))
-					return false;
+				std::string readError;
+				if (!archive.ReadFile(index, data, readError))
+				{
+					// An unreadable file (e.g. damaged, or encrypted with keys we do not have) is left out.
+					job.result->warnings.push_back(std::format("{} left out: {}", inner, readError));
+					continue;
+				}
 				node.kind = n.resource ? WriteNode::Kind::Resource : WriteNode::Kind::File;
 				const Legacy kind = LegacyKind(n);
 				if (kind != Legacy::None)
@@ -120,7 +127,8 @@ namespace loader::convert
 					Bytes converted;
 					std::string why;
 					const bool ok = kind == Legacy::TextureDictionary ? ConvertTextureDictionary(data, converted, why)
-					                                                 : ConvertFragment(data, *job.effects, converted, job.result->warnings, why);
+					                : kind == Legacy::Fragment ? ConvertDrawableResource(data, kLegacyFragmentVersion, kEnhancedFragmentVersion, *job.effects, converted, job.result->warnings, why)
+					                                           : ConvertDrawableResource(data, kLegacyDrawableVersion, kEnhancedDrawableVersion, *job.effects, converted, job.result->warnings, why);
 					if (ok)
 					{
 						data = std::move(converted);

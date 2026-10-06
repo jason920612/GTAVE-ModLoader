@@ -19,6 +19,59 @@ namespace loader::convert
 		// Legacy declaration bit -> Enhanced slot: position, weights, indices, normal, colour 0/1, UV 0-7, tangent, binormal.
 		constexpr std::array<int, 16> kBitToSlot = {0, 16, 20, 4, 24, 25, 28, 29, 30, 31, 32, 33, 34, 35, 8, 12};
 
+		// Legacy texture parameter (sampler) name -> Enhanced texture name. Learned by pairing legacy files with
+		// the game's own Enhanced conversions of the same files through the textures they reference
+		// (tools/learn_texture_names.py, research/phase0.md §18); DamageSampler from the vehicle effects.
+		// The mapping does not depend on the effect.
+		constexpr std::pair<uint32_t, uint32_t> kTextureNames[] = {
+			{0x09bbebe0, 0xf9c0e345},
+			{0x0ad3a268, 0x0df47048},
+			{0x2420afd1, 0xd883aa9e},
+			{0x2e8e5039, 0xf6acd6d8},
+			{0x2f0b625e, 0xe8de684f},
+			{0x31934ab6, 0x32b9df09},
+			{0x3fff9563, 0x27dbd2be},
+			{0x46b7c64f, 0x1e77bf4c},
+			{0x50022388, 0x1f385efc},
+			{0x54cdbeff, 0x7e1f7f44},
+			{0x608799c6, 0xc6f46e79},
+			{0x65df0bce, 0x6c3fb130},
+			{0x78b758fd, 0x3d10f3b7},
+			{0x7a141f5c, 0xca588abf},
+			{0x7e9a27fe, 0xa6f4cf58},
+			{0x7f354429, 0xf5805ad5},
+			{0x85b0fe81, 0x1761183c},
+			{0x86cb389d, 0xf19d5b70},
+			{0x883768d9, 0x0ce80993},
+			{0x88cc3d90, 0xc075f9b6},
+			{0x8be08ae0, 0x4041e9fd},
+			{0x92bc3625, 0xd5a68397},
+			{0x9936a58c, 0x31f34d60},
+			{0xa3a2dca8, 0x4c759bf1},
+			{0xab98831e, 0x340f6e97},
+			{0xb0660bce, 0xf04e58de},
+			{0xb1597815, 0xde84c011},
+			{0xbb302c18, 0xca3af504},
+			{0xbbf891f0, 0x91cae00c},
+			{0xbc38845d, 0x3959fca2},
+			{0xbda82652, 0xe1f3bc29},
+			{0xca4299e4, 0x8dc1631c},
+			{0xd4a3d449, 0x020efc53},
+			{0xd52b11df, 0xce7b968e},
+			{0xd5588afc, 0xdf186a0e},
+			{0xf165e62b, 0xf7864a2a},
+			{0xf1fe2b71, 0xc8e8c282},
+			{0xf648a067, 0x2c8d7182},
+		};
+
+		std::optional<uint32_t> EnhancedTextureName(uint32_t legacy)
+		{
+			for (const auto& [from, to] : kTextureNames)
+				if (from == legacy)
+					return to;
+			return std::nullopt;
+		}
+
 		struct LegacyType
 		{
 			uint32_t size;
@@ -505,11 +558,13 @@ namespace loader::convert
 			Bytes constants;
 			std::vector<std::pair<uint32_t, uint32_t>> entries; // (name hash, info)
 			std::vector<std::optional<size_t>> textures;
+			std::vector<uint32_t> textureNames;
 			for (const Param& p : params)
 			{
 				if (p.type == 0)
 				{
 					textures.push_back(p.data);
+					textureNames.push_back(p.name);
 					continue;
 				}
 				const uint32_t size = 16u * p.type;
@@ -526,16 +581,39 @@ namespace loader::convert
 				error = std::format("shader {:08x}: {:#x} bytes of constants", effectHash, constants.size());
 				return std::nullopt;
 			}
-			// Textures: legacy parameters are named after samplers, which have no link to Enhanced texture names;
-			// the game's own conversion kept their order (new textures were appended), so take the effect's order.
-			if (textures.size() > effect.textures.size())
+			// Textures: legacy parameters are named after samplers. Known names are renamed from the table; the rest
+			// take the effect's textures that are still free, in order (the game's own conversion kept that order).
+			// Every legacy texture goes into the table: names the effect does not have are simply not matched.
+			std::vector<uint32_t> names(textures.size());
+			std::vector<bool> used(effect.textures.size());
+			for (size_t i = 0; i < textures.size(); ++i)
+				if (const auto name = EnhancedTextureName(textureNames[i]))
+				{
+					names[i] = *name;
+					for (size_t k = 0; k < effect.textures.size(); ++k)
+						if (effect.textures[k] == *name)
+							used[k] = true;
+				}
+			for (size_t i = 0, next = 0; i < textures.size(); ++i)
 			{
-				warnings.push_back(std::format("effect {:08x}: {} legacy textures, {} in Enhanced", effectHash, textures.size(), effect.textures.size()));
-				textures.resize(effect.textures.size());
+				if (names[i])
+					continue;
+				while (next < used.size() && used[next])
+					++next;
+				if (next < used.size())
+				{
+					names[i] = effect.textures[next];
+					used[next] = true;
+				}
+				else
+				{
+					names[i] = textureNames[i];
+					warnings.push_back(std::format("effect {:08x}: texture {:08x} has no Enhanced counterpart", effectHash, textureNames[i]));
+				}
 			}
 			std::vector<std::pair<uint32_t, uint32_t>> meta;
 			for (size_t i = 0; i < textures.size(); ++i)
-				meta.emplace_back(effect.textures[i], static_cast<uint32_t>(i << 2));
+				meta.emplace_back(names[i], static_cast<uint32_t>(i << 2));
 			meta.insert(meta.end(), entries.begin(), entries.end());
 
 			// +0x08 points at the parameter block: our pointer array and data at first, which the game reads
@@ -581,15 +659,15 @@ namespace loader::convert
 		}
 	}
 
-	bool ConvertFragment(const Bytes& legacy, const std::unordered_map<uint32_t, Effect>& effects, Bytes& out,
-	    std::vector<std::string>& warnings, std::string& error)
+	bool ConvertDrawableResource(const Bytes& legacy, uint32_t legacyVersion, uint32_t enhancedVersion,
+	    const std::unordered_map<uint32_t, Effect>& effects, Bytes& out, std::vector<std::string>& warnings, std::string& error)
 	{
 		Resource in;
 		if (!Read(legacy, in, error))
 			return false;
-		if (in.version != kLegacyFragmentVersion)
+		if (in.version != legacyVersion)
 		{
-			error = std::format("not a legacy fragment (version {})", in.version);
+			error = std::format("unexpected resource version {}", in.version);
 			return false;
 		}
 		Block blk;
@@ -601,6 +679,18 @@ namespace loader::convert
 		for (size_t g : groupOffsets)
 			if (const auto dict = blk.Ptr(blk.U64(g + 8)); dict && !ConvertEmbeddedDictionary(blk, *dict, error))
 				return false;
+
+		// Drawables (+0x10 shader group, +0x50 LOD models): legacy files repeat the LOD pointer at +0xA0 with a count
+		// at +0x9A; the game's own Enhanced files have zeros there, and peds stay invisible otherwise.
+		const std::set<size_t> groupSet(groupOffsets.begin(), groupOffsets.end());
+		for (size_t o = 0; o + 0xA8 <= blk.data.size(); o += 16)
+		{
+			const auto group = blk.Ptr(blk.U64(o + 0x10));
+			if (!group || !groupSet.contains(*group) || !blk.Ptr(blk.U64(o + 0x50)) || blk.U64(o + 0xA0) != blk.U64(o + 0x50))
+				continue;
+			Put<uint16_t>(blk.data, o + 0x9A, 0);
+			Put<uint64_t>(blk.data, o + 0xA0, 0);
+		}
 
 		std::map<size_t, Declaration> declarations;
 		std::set<size_t> doneVb, doneIb;
@@ -683,9 +773,9 @@ namespace loader::convert
 		const auto newPageMap = static_cast<size_t>(Get<uint64_t>(res.virtualBlock, 8) - kVirtual);
 		res.virtualBlock[newPageMap + 8] = static_cast<uint8_t>(pageCount);
 		res.virtualBlock[newPageMap + 9] = 0;
-		res.version = kEnhancedFragmentVersion;
-		res.virtualFlags |= (kEnhancedFragmentVersion >> 4) << 28;
-		res.physicalFlags = (kEnhancedFragmentVersion & 0xF) << 28;
+		res.version = enhancedVersion;
+		res.virtualFlags |= (enhancedVersion >> 4) << 28;
+		res.physicalFlags = (enhancedVersion & 0xF) << 28;
 		return Write(res, out, error);
 	}
 }

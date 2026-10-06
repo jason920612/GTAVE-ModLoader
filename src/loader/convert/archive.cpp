@@ -111,7 +111,8 @@ namespace loader::convert
 			else
 			{
 				n.size = a;
-				n.encrypted = encrypted_ && b != 0;
+				// Tools sometimes copy encrypted files into unencrypted archives as they are, flag included.
+				n.encrypted = b != 0 && (encrypted_ || decrypt_);
 			}
 		}
 		return true;

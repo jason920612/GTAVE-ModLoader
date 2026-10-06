@@ -177,21 +177,39 @@ namespace loader::ui
 			ImGui::SameLine();
 			if (ImGui::Button("開啟轉換快取資料夾"))
 				OpenFolder(paths::Get().root / L"cache");
+			if (g_restartNeeded)
+				ImGui::TextColored(kWarn, "設定已儲存，重新啟動遊戲後生效。");
 			if (packs.empty())
 			{
 				ImGui::TextColored(kMuted, "目前沒有 DLC 包。");
 				return;
 			}
-			if (ImGui::BeginTable("packs", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY))
+			auto& cfg = config::Get();
+			if (ImGui::BeginTable("packs", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY))
 			{
+				ImGui::TableSetupColumn("啟用", ImGuiTableColumnFlags_WidthFixed);
 				ImGui::TableSetupColumn("名稱", ImGuiTableColumnFlags_WidthStretch, 1.2f);
 				ImGui::TableSetupColumn("狀態", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-				ImGui::TableSetupColumn("說明", ImGuiTableColumnFlags_WidthStretch, 2.4f);
+				ImGui::TableSetupColumn("說明", ImGuiTableColumnFlags_WidthStretch, 2.2f);
+				ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed);
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableHeadersRow();
-				for (const auto& pack : packs)
+				for (int i = 0; i < static_cast<int>(packs.size()); ++i)
 				{
+					const auto& pack = packs[i];
+					ImGui::PushID(i);
 					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					bool enabled = !cfg.disabledAssets.contains(pack.name);
+					if (ImGui::Checkbox("##on", &enabled))
+					{
+						if (enabled)
+							cfg.disabledAssets.erase(pack.name);
+						else
+							cfg.disabledAssets.insert(pack.name);
+						config::Save();
+						g_restartNeeded = true;
+					}
 					ImGui::TableNextColumn();
 					ImGui::TextUnformatted(pack.name.c_str());
 					ImGui::TableNextColumn();
@@ -216,6 +234,15 @@ namespace loader::ui
 						ImGui::TextColored(kAccent, "已載入");
 					ImGui::TableNextColumn();
 					ImGui::TextWrapped("%s", note.c_str());
+					ImGui::TableNextColumn();
+					if (pack.state != convert::PackState::Native && ImGui::SmallButton("重新轉換"))
+					{
+						// The cached copy is rebuilt on the next start.
+						std::error_code ec;
+						std::filesystem::remove_all(paths::Get().root / L"cache" / pack.source.filename(), ec);
+						g_restartNeeded = true;
+					}
+					ImGui::PopID();
 				}
 				ImGui::EndTable();
 			}

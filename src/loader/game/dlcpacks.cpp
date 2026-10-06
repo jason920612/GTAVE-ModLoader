@@ -7,6 +7,8 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <map>
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 
@@ -341,8 +343,34 @@ namespace loader::game::dlcpacks
 			pack.warnings = r.warnings;
 		}
 
-		// Research aid: ModLoader\debug_convert.txt lists archives (one dlc.rpf path per line) to convert into the
-		// cache without loading them, to test the converters on many legacy files.
+		// Walks an archive and its nested archives (research aid).
+		void WalkArchive(const convert::Archive& archive, const std::string& prefix,
+		    const std::function<void(const convert::Archive&, uint32_t, const std::string&)>& visit)
+		{
+			for (uint32_t i = 0; i < archive.Nodes().size(); ++i)
+			{
+				const auto& n = archive.Nodes()[i];
+				if (n.directory)
+					continue;
+				const std::string path = prefix + n.name;
+				if (!n.resource && !n.stored && path.ends_with(".rpf"))
+				{
+					convert::Archive nested;
+					std::string error;
+					if (archive.OpenNested(i, nested, error))
+						WalkArchive(nested, path + "/", visit);
+					continue;
+				}
+				visit(archive, i, path);
+			}
+		}
+
+		// Research aid: ModLoader\debug_convert.txt, one command per line:
+		//   <dlc.rpf path>                         convert into the cache without loading it
+		//   list <archive>                         log resource versions per extension
+		//   extract <archive>|<file name>|<out>    write one file (resources with their RSC7 header)
+		//   find <archive>|<text>                  log paths containing the text
+		//   extractall <archive>|<ext>|<dir>       write every file with that extension into the folder
 		void DebugConvert()
 		{
 			WatchdogPause pause;
@@ -352,6 +380,86 @@ namespace loader::game::dlcpacks
 			{
 				if (line.empty())
 					continue;
+				if (line.starts_with("list ") || line.starts_with("extract ") || line.starts_with("find ") || line.starts_with("extractall "))
+				{
+					const std::string command = line.substr(0, line.find(' '));
+					std::string rest = line.substr(command.size() + 1), archivePath = rest, wanted, out;
+					if (command == "extractall")
+					{
+						const size_t a = rest.find('|'), b = rest.find('|', a + 1);
+						archivePath = rest.substr(0, a);
+						wanted = rest.substr(a + 1, b - a - 1); // extension, e.g. ".ydd"
+						out = rest.substr(b + 1);
+					}
+					if (command == "find")
+					{
+						const size_t a = rest.find('|');
+						archivePath = rest.substr(0, a);
+						wanted = rest.substr(a + 1);
+					}
+					if (command == "extract")
+					{
+						const size_t a = rest.find('|'), b = rest.find('|', a + 1);
+						archivePath = rest.substr(0, a);
+						wanted = rest.substr(a + 1, b - a - 1);
+						out = rest.substr(b + 1);
+					}
+					const std::filesystem::path file(std::u8string(archivePath.begin(), archivePath.end()));
+					auto in = std::make_shared<std::ifstream>(file, std::ios::binary);
+					std::error_code ec;
+					convert::Archive archive;
+					std::string error;
+					if (!archive.Open(in, 0, std::filesystem::file_size(file, ec), Utf8(file.filename().u8string()), g_decrypt ? &g_decryptor : nullptr, error))
+					{
+						log::Warn("debug {}: {}", archivePath, error);
+						continue;
+					}
+					std::map<std::string, std::string> versions; // ext:version -> count and example
+					std::map<std::string, int> counts;
+					WalkArchive(archive, "", [&](const convert::Archive& a, uint32_t i, const std::string& path) {
+						const auto& node = a.Nodes()[i];
+						if (command == "extractall")
+						{
+							if (!node.name.ends_with(wanted))
+								return;
+							convert::Bytes data;
+							std::string e;
+							if (a.ReadFile(i, data, e))
+								std::ofstream(std::filesystem::path(std::u8string(out.begin(), out.end())) / std::filesystem::path(std::u8string(node.name.begin(), node.name.end())),
+								    std::ios::binary)
+								    .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+							return;
+						}
+						if (command == "find")
+						{
+							if (path.find(wanted) != std::string::npos)
+								log::Info("debug find {}: {}", file.filename().string(), path);
+							return;
+						}
+						if (command == "extract")
+						{
+							if (node.name != wanted)
+								return;
+							convert::Bytes data;
+							std::string e;
+							if (a.ReadFile(i, data, e))
+								std::ofstream(std::filesystem::path(std::u8string(out.begin(), out.end())), std::ios::binary)
+								    .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+							log::Info("debug extract {}: {} bytes {}", path, data.size(), e);
+							return;
+						}
+						if (!node.resource)
+							return;
+						const auto dot = node.name.rfind('.');
+						const std::string key = std::format("{} v{}", dot == std::string::npos ? node.name : node.name.substr(dot),
+						    ((node.flags[0] >> 28) << 4) | (node.flags[1] >> 28));
+						if (!counts[key]++)
+							versions[key] = path;
+					});
+					for (const auto& [key, count] : counts)
+						log::Info("debug list {}: {} x{} (e.g. {})", file.filename().string(), key, count, versions[key]);
+					continue;
+				}
 				const std::filesystem::path file(std::u8string(line.begin(), line.end()));
 				const auto r = convert::PreparePack(std::format("debug_{}", n), file.parent_path(), g_decrypt ? &g_decryptor : nullptr, {});
 				log::Info("debug convert {}: state {}, {} converted, {} warning(s) {}", line, static_cast<int>(r.state), r.convertedFiles, r.warnings.size(), r.error);

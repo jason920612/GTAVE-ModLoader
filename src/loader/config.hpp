@@ -11,7 +11,7 @@ namespace loader::config
 		log::Level logLevel = log::Level::Info;
 		std::string menuKey = "F4";
 		std::set<std::string> disabledMods;   // file names in ModLoader\mods
-		std::set<std::string> disabledAssets; // folder names in ModLoader\assets
+		std::set<std::string> disabledAssets; // DLC pack folder names in ModLoader\mods
 		// Public -> Enhanced native hash table, refreshed on every launch (kept if the download fails).
 		std::string crossmapUrl = "https://raw.githubusercontent.com/YimMenu/YimMenuV2/enhanced/src/game/gta/invoker/crossmap.txt";
 		bool crossmapAutoUpdate = true;

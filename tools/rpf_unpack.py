@@ -34,7 +34,10 @@ def unpack(data, out):
         if resource and blob[:4] != b"RSC7":
             print(f"  {path}: resource without RSC7 header")
         if stored and not resource:  # compressed binary file: raw deflate
-            blob = zlib.decompressobj(-15).decompress(blob)
+            try:
+                blob = zlib.decompressobj(-15).decompress(blob)
+            except zlib.error as e:  # e.g. encrypted inside an OPEN archive: keep as it is
+                print(f"  {path}: {e}")
         if path.lower().endswith(".rpf") and unpack(blob, path):
             return
         with open(path, "wb") as f:

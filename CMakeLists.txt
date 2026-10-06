@@ -58,6 +58,7 @@ add_library(loader SHARED
     src/loader/debug/watch.cpp
     src/loader/debug/dred.cpp
     src/loader/game/dlcpacks.cpp
+    src/loader/game/pools.cpp
     src/loader/convert/resource.cpp
     src/loader/convert/archive.cpp
     src/loader/convert/effects.cpp

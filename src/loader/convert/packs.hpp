@@ -6,8 +6,9 @@
 #include "archive.hpp"
 
 // Legacy DLC packs: a pack whose dlc.rpf contains legacy resources (texture dictionaries version 13,
-// fragments version 162) is converted once into ModLoader\cache\<name>\dlc.rpf (unencrypted), and that
-// copy is what the game loads. The original is never modified.
+// fragments version 162, drawables and drawable dictionaries version 165) is converted once into
+// ModLoader\cache\<name>\dlc.rpf (unencrypted), and that copy is what the game loads. The original is never
+// modified.
 namespace loader::convert
 {
 	enum class PackState
