@@ -19,6 +19,9 @@ namespace loader::game::datafiles
 	// Vehicles that replacement mods add under a new name (see convert::VehicleClone).
 	void SetClones(std::vector<convert::VehicleClone> clones);
 
+	// Files replaced as a whole when the game opens a file of that name, and .gxt2 text entries (first mod wins).
+	void SetFiles(std::vector<convert::NamedFile> files, std::map<uint32_t, convert::TextEntry> text);
+
 	// Files merged so far, as "path: n entries".
 	std::vector<std::string> Merged();
 }

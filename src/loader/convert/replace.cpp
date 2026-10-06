@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <array>
 #include <format>
 #include <fstream>
@@ -39,11 +40,15 @@ namespace loader::convert
 		}
 
 		// Files the streaming system loads by name.
-		constexpr std::array<std::string_view, 14> kStreaming{".yft", ".ytd", ".ydr", ".ydd", ".ycd", ".ybn", ".ypt", ".ymap", ".ytyp",
+		constexpr std::array<std::string_view, 15> kStreaming{".gfx", ".yft", ".ytd", ".ydr", ".ydd", ".ycd", ".ybn", ".ypt", ".ymap", ".ytyp",
 		    ".ynv", ".ynd", ".yld", ".yed", ".ymt"};
 		// Not game data (readme files, pictures, ...): skipped without a warning.
 		constexpr std::array<std::string_view, 12> kIgnored{".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".url", ".ini", ".json",
 		    ".html", ".log"};
+
+		// Files the game opens by path that are the same in both versions: replaced as a whole. Scaleform movies are
+		// streamed from the scaleform archives and opened by path elsewhere (fonts), so they are both.
+		constexpr std::array<std::string_view, 3> kNamed{".awc", ".gfx", ".dat"};
 
 		// Data file types by root element (content.xml fileType). Other XML files only override entries.
 		constexpr std::array<std::pair<std::string_view, std::string_view>, 8> kDataFileTypes{{
@@ -224,6 +229,46 @@ namespace loader::convert
 			return std::string((std::istreambuf_iterator<char>(in)), {});
 		}
 
+		// The folder a file belongs in, from where it sits inside an archive or an .oiv target path
+		// ("x64/audio/sfx/RESIDENT.rpf/EXPLOSIONS.awc" -> "resident"). Loose files have none: they replace every file of
+		// that name.
+		std::string FolderHint(const std::string& path)
+		{
+			if (path.find(".rpf/") == std::string::npos && path.find(':') == std::string::npos)
+				return {};
+			std::string p = path;
+			for (auto& c : p)
+				if (c == '\\' || c == ':')
+					c = '/';
+			const size_t slash = p.rfind('/');
+			if (slash == std::string::npos || slash == 0)
+				return {};
+			const size_t start = p.rfind('/', slash - 1);
+			std::string folder = Lower(p.substr(start == std::string::npos ? 0 : start + 1, slash - (start == std::string::npos ? 0 : start + 1)));
+			if (folder.ends_with(".rpf"))
+				folder.resize(folder.size() - 4);
+			return folder;
+		}
+
+		// GXT2 text: "2TXG", count, {hash, offset} * count, "2TXG", size, then NUL-terminated UTF-8 strings.
+		bool ReadText(const Bytes& data, const std::string& file, const std::string& mod, std::map<uint32_t, TextEntry>& out)
+		{
+			if (data.size() < 8 || std::memcmp(data.data(), "2TXG", 4) != 0)
+				return false;
+			const uint32_t count = Get<uint32_t>(data, 4);
+			if (8 + uint64_t(count) * 8 > data.size())
+				return false;
+			for (uint32_t i = 0; i < count; ++i)
+			{
+				const uint32_t hash = Get<uint32_t>(data, 8 + i * 8), offset = Get<uint32_t>(data, 12 + i * 8);
+				if (offset >= data.size())
+					return false;
+				const char* s = reinterpret_cast<const char*>(data.data() + offset);
+				out.emplace(hash, TextEntry{std::string(s, strnlen(s, data.size() - offset)), file, mod});
+			}
+			return true;
+		}
+
 		WriteNode Folder(std::string name)
 		{
 			WriteNode n;
@@ -249,7 +294,8 @@ namespace loader::convert
 			if (!it->is_regular_file(ec))
 				continue;
 			const std::string ext = Extension(Utf8(it->path().filename().u8string()));
-			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
+			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || ext == ".gxt2" || std::find(kNamed.begin(), kNamed.end(), ext) != kNamed.end() ||
+			    std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
 				return true;
 		}
 		return false;
@@ -335,12 +381,35 @@ namespace loader::convert
 		}
 		WriteNode stream = Folder("ml_stream.rpf");
 		stream.kind = WriteNode::Kind::Archive;
+		// Files the game opens by path: copied to the cache (when changed) and handed over when the game opens them.
+		const auto filesDir = ModCache(name) / L"files";
+		const auto AddNamed = [&](const Input& in) {
+			NamedFile f{in.name, FolderHint(in.path), filesDir / std::filesystem::path(std::u8string(in.name.begin(), in.name.end())), name};
+			if (std::any_of(files.named.begin(), files.named.end(), [&](const NamedFile& n) { return n.name == f.name && n.folder == f.folder; }))
+			{
+				result.warnings.push_back(std::format("{} 和模組內另一個同名檔案重複，只使用第一個", in.path));
+				return;
+			}
+			if (!f.folder.empty())
+				f.file = filesDir / std::filesystem::path(std::u8string(f.folder.begin(), f.folder.end())) /
+				         std::filesystem::path(std::u8string(in.name.begin(), in.name.end()));
+			std::error_code ec;
+			if (!std::filesystem::is_regular_file(f.file, ec) || std::filesystem::file_size(f.file, ec) != in.data.size() || ReadAll(f.file) !=
+			        std::string_view(reinterpret_cast<const char*>(in.data.data()), in.data.size()))
+			{
+				std::filesystem::create_directories(f.file.parent_path(), ec);
+				std::ofstream(f.file, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(in.data.data()), static_cast<std::streamsize>(in.data.size()));
+			}
+			files.named.push_back(std::move(f));
+		};
 		std::vector<std::pair<std::string, std::string>> dataFiles; // pack path, fileType
 		WriteNode dataDir = Folder("ml");
 		int legacy = 0;
 		for (Input& in : inputs)
 		{
 			const std::string ext = Extension(in.name);
+			if (ext == ".gfx")
+				AddNamed(in);
 			if (std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
 			{
 				if (std::any_of(stream.children.begin(), stream.children.end(), [&](const WriteNode& n) { return n.name == in.name; }))
@@ -388,8 +457,29 @@ namespace loader::convert
 					node.data = std::move(in.data);
 					dataDir.children.push_back(std::move(node));
 				}
-				else if (entries == 0)
-					result.warnings.push_back(std::format("{}（{}）沒有可覆蓋的項目，已略過", in.path, root));
+				else if (entries == 0) // not a list of entries (e.g. a timecycle or weather file): replaces the whole file
+					AddNamed(in);
+				continue;
+			}
+			if (std::find(kNamed.begin(), kNamed.end(), ext) != kNamed.end())
+			{
+				AddNamed(in);
+				continue;
+			}
+			if (ext == ".gxt2")
+			{
+				if (!ReadText(in.data, in.name, name, files.text))
+					result.warnings.push_back(std::format("{} 不是可讀的文字檔，已略過", in.path));
+				continue;
+			}
+			if (ext == ".rel")
+			{
+				result.warnings.push_back(std::format("{} 是音效資料（.rel），兩版內容不同，目前無法套用，已略過", in.path));
+				continue;
+			}
+			if (ext == ".ysc")
+			{
+				result.warnings.push_back(std::format("{} 是遊戲腳本，目前無法套用，已略過", in.path));
 				continue;
 			}
 			if (std::find(kIgnored.begin(), kIgnored.end(), ext) == kIgnored.end())

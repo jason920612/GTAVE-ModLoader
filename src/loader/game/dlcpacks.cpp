@@ -561,7 +561,7 @@ namespace loader::game::dlcpacks
 						}
 						if (command == "extract")
 						{
-							if (node.name != wanted)
+							if (node.name != wanted && !path.ends_with(wanted))
 								return;
 							convert::Bytes data;
 							std::string e;
@@ -633,8 +633,43 @@ namespace loader::game::dlcpacks
 				}
 				if (!g_clones.empty())
 					datafiles::SetClones(g_clones);
+				// Files replaced by name and text entries: the first mod (by name) wins.
+				std::vector<convert::NamedFile> named;
+				std::map<uint32_t, convert::TextEntry> text;
+				for (const Pack& pack : packs)
+				{
+					if (!pack.replacement || !pack.enabled)
+						continue;
+					const auto& files = g_replacementFiles[pack.name];
+					for (const auto& f : files.named)
+					{
+						const auto other = std::find_if(named.begin(), named.end(), [&](const convert::NamedFile& n) { return n.name == f.name && n.folder == f.folder; });
+						if (other == named.end())
+							named.push_back(f);
+						else
+						{
+							g_conflicts[pack.name].push_back(std::format("{} 也被模組 {} 替換，目前使用 {} 的版本", f.name, other->mod, other->mod));
+							log::Warn("replacement mod {}: {} is also replaced by {}; {} is used", pack.name, f.name, other->mod, other->mod);
+						}
+					}
+					int clashes = 0;
+					for (const auto& [hash, entry] : files.text)
+						if (const auto [it, added] = text.emplace(hash, entry); !added && it->second.text != entry.text)
+							++clashes;
+					if (clashes)
+						g_conflicts[pack.name].push_back(std::format("{} 條文字也被其他模組修改，目前使用名稱排在前面的模組的版本", clashes));
+				}
+				if (!named.empty() || !text.empty())
+				{
+					log::Info("replacement mods: {} file(s) replaced by name, {} text entr{}", named.size(), text.size(), text.size() == 1 ? "y" : "ies");
+					datafiles::SetFiles(std::move(named), std::move(text));
+				}
 			});
-			std::erase_if(packs, [](const Pack& p) { return p.empty; });
+			// Nothing at all to load (e.g. .oiv packages that only held DLC packs, listed on their own).
+			std::erase_if(packs, [](const Pack& p) {
+				const auto& files = g_replacementFiles[p.name];
+				return p.empty && files.named.empty() && files.text.empty();
+			});
 			for (Pack& pack : packs)
 				if (const auto it = g_conflicts.find(pack.name); it != g_conflicts.end())
 					pack.warnings.insert(pack.warnings.end(), it->second.begin(), it->second.end());

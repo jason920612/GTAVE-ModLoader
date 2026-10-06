@@ -458,6 +458,15 @@ namespace loader::ui
 						ImGui::TextColored(kError, "轉換失敗，未載入");
 						note = pack.error;
 					}
+					else if (pack.replacement && (pack.empty || pack.registered))
+					{
+						// Replacement mods: files packed into a generated pack, or only files / text replaced by name.
+						ImGui::TextColored(kAccent, "已套用（替換型）");
+						if (pack.convertedFiles)
+							note = std::format("{} 個舊版檔案已轉換", pack.convertedFiles);
+						if (!pack.warnings.empty())
+							note += std::format("{}{} 個警告（滑鼠移到這裡查看）", note.empty() ? "" : "，", pack.warnings.size());
+					}
 					else if (!pack.registered)
 						ImGui::TextColored(kError, "遊戲拒絕載入");
 					else if (pack.state == convert::PackState::Converted)

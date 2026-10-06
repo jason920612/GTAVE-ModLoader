@@ -1,9 +1,12 @@
 #include "datafiles.hpp"
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
+#include <set>
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
@@ -207,18 +210,129 @@ namespace loader::game::datafiles
 			    items);
 		}
 
+		std::vector<convert::NamedFile> g_named;
+		std::map<uint32_t, convert::TextEntry> g_text;
+		std::string g_ownRoot; // ModLoader folder as a lower case game path
+		std::set<uint32_t> g_textAdded; // labels already found in (or added to) one of the game's text files
+
+		// GXT2 text with the mods' entries: replaced where the label exists, added to the file the mod's entry came from.
+		// Layout: "2TXG", count, {hash, offset} * count sorted by hash, "2TXG", total size, NUL-terminated strings.
+		std::string MergeText(const std::string& original, const std::string& file, int& replaced, int& added)
+		{
+			const auto u32 = [&](size_t at) {
+				uint32_t v = 0;
+				if (at + 4 <= original.size())
+					memcpy(&v, original.data() + at, 4);
+				return v;
+			};
+			if (original.size() < 8 || original.compare(0, 4, "2TXG") != 0)
+				return {};
+			const uint32_t count = u32(4);
+			if (8 + uint64_t(count) * 8 > original.size())
+				return {};
+			std::map<uint32_t, std::string> entries;
+			for (uint32_t i = 0; i < count; ++i)
+			{
+				const uint32_t offset = u32(12 + i * 8);
+				if (offset >= original.size())
+					return {};
+				entries[u32(8 + i * 8)] = std::string(original.c_str() + offset, strnlen(original.c_str() + offset, original.size() - offset));
+			}
+			for (const auto& [hash, entry] : g_text)
+			{
+				const auto it = entries.find(hash);
+				if (it != entries.end())
+				{
+					g_textAdded.insert(hash); // the game has it: replaced, never added elsewhere
+					if (it->second != entry.text)
+					{
+						it->second = entry.text;
+						++replaced;
+					}
+				}
+				else if (entry.file == file && !g_textAdded.contains(hash))
+				{
+					g_textAdded.insert(hash);
+					entries.emplace(hash, entry.text);
+					++added;
+				}
+			}
+			std::string out = "2TXG";
+			const auto put = [&](uint32_t v) { out.append(reinterpret_cast<const char*>(&v), 4); };
+			put(static_cast<uint32_t>(entries.size()));
+			uint32_t offset = static_cast<uint32_t>(8 + entries.size() * 8 + 8);
+			for (const auto& [hash, text] : entries)
+			{
+				put(hash);
+				put(offset);
+				offset += static_cast<uint32_t>(text.size() + 1);
+			}
+			out += "2TXG";
+			put(offset);
+			for (const auto& [hash, text] : entries)
+				out.append(text.c_str(), text.size() + 1);
+			return out;
+		}
+
 		// The merged (or generated) copy of `path`, or "" to load the original.
 		std::string Redirect(const char* path)
 		{
-			const std::string_view p = path;
-			if (!p.ends_with(".meta") && !p.ends_with(".xml"))
+			const std::string lower = Lower(path);
+			const std::string_view p = lower;
+			const size_t cut = p.find_last_of(":/\\");
+			const std::string_view name = cut == std::string_view::npos ? p : p.substr(cut + 1);
+			const size_t dot = name.rfind('.');
+			const std::string_view ext = dot == std::string_view::npos ? std::string_view() : name.substr(dot);
+			const bool data = ext == ".meta" || ext == ".xml";
+			if (!data && ext != ".gxt2" && ext != ".awc" && ext != ".gfx" && ext != ".dat")
+				return {};
+			// Our own copies (and generated packs' files read back through the game) are never redirected again.
+			if (p.starts_with(g_ownRoot))
 				return {};
 			std::lock_guard lock(g_mutex);
-			if (g_overrides.Empty() && g_clones.empty())
+			if (g_overrides.Empty() && g_clones.empty() && g_named.empty() && g_text.empty())
 				return {};
-			if (const auto it = g_redirects.find(path); it != g_redirects.end())
+			if (const auto it = g_redirects.find(lower); it != g_redirects.end())
 				return it->second;
-			std::string& redirect = g_redirects[path];
+			std::string& redirect = g_redirects[lower];
+			// Whole files replaced by name: the one meant for this folder, else one for any folder.
+			if (!g_named.empty())
+			{
+				std::string_view parent = cut == std::string_view::npos ? std::string_view() : p.substr(0, cut);
+				parent = parent.substr(parent.find_last_of(":/\\") == std::string_view::npos ? 0 : parent.find_last_of(":/\\") + 1);
+				if (parent.ends_with(".rpf"))
+					parent.remove_suffix(4);
+				const convert::NamedFile* match = nullptr;
+				for (const auto& f : g_named)
+					if (f.name == name && (f.folder == parent || (f.folder.empty() && !match)))
+					{
+						match = &f;
+						if (f.folder == parent)
+							break;
+					}
+				if (match)
+				{
+					redirect = GamePath(match->file);
+					log::Info("datafiles: {} -> {} of mod {}", path, match->name, match->mod);
+					return redirect;
+				}
+			}
+			if (ext == ".gxt2" && !g_text.empty())
+			{
+				char resolved[256] = {};
+				std::string original;
+				if (!g_resolve(g_searchPaths, resolved, sizeof(resolved), path, g_noExtension) || !ReadGameFile(resolved, original))
+					return {};
+				int replaced = 0, added = 0;
+				const std::string merged = MergeText(original, std::string(name), replaced, added);
+				if (replaced + added == 0)
+					return {};
+				redirect = WriteCopy(p, merged);
+				log::Info("datafiles: {} -> {} text entr{} replaced, {} added", path, replaced, replaced == 1 ? "y" : "ies", added);
+				return redirect;
+			}
+			if (!data || (g_overrides.Empty() && g_clones.empty()))
+				return {};
 			// The packs generated for replacement mods hold the overrides themselves; their clones_*.meta are generated.
 			if (p.starts_with("dlc_mlr"))
 			{
@@ -256,6 +370,16 @@ namespace loader::game::datafiles
 				if (const std::string redirect = Redirect(path); !redirect.empty())
 					return g_origRegister(redirect.c_str(), size, flags);
 			return g_origRegister(path, size, flags);
+		}
+
+		OpenFn g_origOpen = nullptr;
+
+		void* HookOpen(const char* path, bool readOnly)
+		{
+			if (path && readOnly)
+				if (const std::string redirect = Redirect(path); !redirect.empty())
+					return g_origOpen(redirect.c_str(), readOnly);
+			return g_origOpen(path, readOnly);
 		}
 	}
 
@@ -296,6 +420,13 @@ namespace loader::game::datafiles
 			log::Warn("datafiles: could not hook the data file registration; data file overrides are not active");
 			return false;
 		}
+		// Files opened as streams (Scaleform movies, audio game data, ...). Our own reads use the original.
+		if (MH_CreateHook(reinterpret_cast<void*>(*open), reinterpret_cast<void*>(&HookOpen), reinterpret_cast<void**>(&g_origOpen)) == MH_OK &&
+		    MH_EnableHook(reinterpret_cast<void*>(*open)) == MH_OK)
+			g_open = g_origOpen;
+		else
+			log::Warn("datafiles: could not hook the stream open; files opened as streams are not replaced");
+		g_ownRoot = Lower(GamePath(paths::Get().root));
 		// Merged copies are written again whenever the game asks for them; drop those of earlier sessions.
 		std::error_code ec;
 		std::filesystem::remove_all(paths::Get().root / L"cache" / L"datafiles", ec);
@@ -316,6 +447,14 @@ namespace loader::game::datafiles
 	{
 		std::lock_guard lock(g_mutex);
 		g_clones = std::move(clones);
+		g_redirects.clear();
+	}
+
+	void SetFiles(std::vector<convert::NamedFile> files, std::map<uint32_t, convert::TextEntry> text)
+	{
+		std::lock_guard lock(g_mutex);
+		g_named = std::move(files);
+		g_text = std::move(text);
 		g_redirects.clear();
 	}
 
