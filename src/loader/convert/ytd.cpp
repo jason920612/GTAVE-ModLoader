@@ -148,6 +148,7 @@ namespace loader::convert
 	void WriteTextureHeader(Bytes& b, size_t o, uint64_t self, const TextureHeader& t)
 	{
 		std::fill(b.begin() + o, b.begin() + o + 0x80, uint8_t{0});
+		Put<uint64_t>(b, o, 0x1406B7940); // file-form type id of the game's own textures
 		Put<uint32_t>(b, o + 0x08, t.stored / t.format.unit);
 		Put<uint16_t>(b, o + 0x0C, static_cast<uint16_t>(t.format.unit));
 		// "script_rt_*" textures become render targets (vehicle dials drawn by scripts): the game's own files

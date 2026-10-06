@@ -1,6 +1,7 @@
 #include "packs.hpp"
 
 #include <algorithm>
+#include <array>
 #include <format>
 #include <mutex>
 #include <unordered_map>
@@ -11,13 +12,14 @@
 #include "peds.hpp"
 #include "ytd.hpp"
 #include "yft.hpp"
+#include "ypt.hpp"
 
 namespace loader::convert
 {
 	namespace
 	{
 		// Bump when the converters change, so cached packs are rebuilt.
-		constexpr int kConverterVersion = 12;
+		constexpr int kConverterVersion = 13;
 
 		std::mutex g_progressMutex;
 		Progress g_progress;
@@ -42,8 +44,8 @@ namespace loader::convert
 		// Legacy resources this converter handles, recognised by extension and the version in the entry flags
 		// (version = (virtual flags >> 28) << 4 | physical flags >> 28).
 		// Unsupported: legacy versions the game cannot load and there is no converter for yet.
-		enum class Legacy { None, TextureDictionary, Fragment, Drawable, Unsupported };
-		constexpr std::pair<std::string_view, uint32_t> kUnsupported[] = {{".ypt", 68}}; // particle effects
+		enum class Legacy { None, TextureDictionary, Fragment, Drawable, Particles, Unsupported };
+		constexpr std::array<std::pair<std::string_view, uint32_t>, 0> kUnsupported{}; // none at the moment
 		Legacy LegacyKind(const Archive::Node& n)
 		{
 			if (!n.resource)
@@ -56,6 +58,8 @@ namespace loader::convert
 				return Legacy::Fragment;
 			if ((name.ends_with(".ydr") || name.ends_with(".ydd")) && version == kLegacyDrawableVersion)
 				return Legacy::Drawable;
+			if (name.ends_with(".ypt") && version == kLegacyParticleVersion)
+				return Legacy::Particles;
 			for (const auto& [extension, legacy] : kUnsupported)
 				if (name.ends_with(extension) && version == legacy)
 					return Legacy::Unsupported;
@@ -150,6 +154,7 @@ namespace loader::convert
 					Bytes converted;
 					std::string why;
 					const bool ok = kind == Legacy::TextureDictionary ? ConvertTextureDictionary(data, converted, why)
+					                : kind == Legacy::Particles ? ConvertParticleResource(data, *job.effects, converted, job.result->warnings, why)
 					                : kind == Legacy::Fragment ? ConvertDrawableResource(data, kLegacyFragmentVersion, kEnhancedFragmentVersion, *job.effects, converted, job.result->warnings, why)
 					                                           : ConvertDrawableResource(data, kLegacyDrawableVersion, kEnhancedDrawableVersion, *job.effects, converted, job.result->warnings, why);
 					if (ok)
@@ -382,5 +387,28 @@ namespace loader::convert
 	{
 		std::lock_guard lock(g_progressMutex);
 		return g_progress;
+	}
+
+	bool ConvertResourceFile(const std::string& name, const Bytes& data, Bytes& out, std::vector<std::string>& warnings, std::string& error)
+	{
+		if (data.size() < 16 || Get<uint32_t>(data, 0) != 0x37435352) // "RSC7"
+		{
+			error = "not a resource file";
+			return false;
+		}
+		Archive::Node n;
+		n.name = Lower(name);
+		n.resource = true;
+		n.flags[0] = Get<uint32_t>(data, 8);
+		n.flags[1] = Get<uint32_t>(data, 12);
+		const auto* effects = Effects();
+		switch (LegacyKind(n))
+		{
+		case Legacy::TextureDictionary: return ConvertTextureDictionary(data, out, error);
+		case Legacy::Particles: return effects && ConvertParticleResource(data, *effects, out, warnings, error);
+		case Legacy::Fragment: return effects && ConvertDrawableResource(data, kLegacyFragmentVersion, kEnhancedFragmentVersion, *effects, out, warnings, error);
+		case Legacy::Drawable: return effects && ConvertDrawableResource(data, kLegacyDrawableVersion, kEnhancedDrawableVersion, *effects, out, warnings, error);
+		default: error = "not a legacy resource this converter handles"; return false;
+		}
 	}
 }

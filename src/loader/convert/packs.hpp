@@ -42,4 +42,8 @@ namespace loader::convert
 		int total = 0;
 	};
 	Progress CurrentProgress();
+
+	// One legacy resource file (research aid): converted by its name and version like inside a pack.
+	// Returns false with `error` when it is not a legacy resource this converter handles or the conversion failed.
+	bool ConvertResourceFile(const std::string& name, const Bytes& data, Bytes& out, std::vector<std::string>& warnings, std::string& error);
 }

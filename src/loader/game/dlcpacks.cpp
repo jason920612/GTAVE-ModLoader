@@ -1,5 +1,7 @@
 #include "dlcpacks.hpp"
 
+#include "../convert/ypt.hpp"
+
 #include <Windows.h>
 #include <intrin.h>
 
@@ -380,6 +382,27 @@ namespace loader::game::dlcpacks
 			{
 				if (line.empty())
 					continue;
+				if (line.starts_with("convertfile "))
+				{
+					// convertfile <legacy resource>|<output>[|<particle skip bits>]
+					std::string rest = line.substr(12);
+					const size_t bar = rest.find('|'), bar2 = rest.find('|', bar + 1);
+					convert::g_particleDebugSkip = bar2 == std::string::npos ? 0 : std::atoi(rest.c_str() + bar2 + 1);
+					if (bar2 != std::string::npos)
+						rest.resize(bar2);
+					const std::filesystem::path in(std::u8string(rest.begin(), rest.begin() + bar)), outPath(std::u8string(rest.begin() + bar + 1, rest.end()));
+					std::ifstream f(in, std::ios::binary);
+					convert::Bytes data((std::istreambuf_iterator<char>(f)), {}), converted;
+					std::vector<std::string> warnings;
+					std::string error;
+					const bool ok = convert::ConvertResourceFile(Utf8(in.filename().u8string()), data, converted, warnings, error);
+					if (ok)
+						std::ofstream(outPath, std::ios::binary).write(reinterpret_cast<const char*>(converted.data()), static_cast<std::streamsize>(converted.size()));
+					log::Info("debug convertfile {}: {} {} ({} warning(s))", in.filename().string(), ok ? "ok" : "failed", error, warnings.size());
+					for (const auto& w : warnings)
+						log::Info("  {}", w);
+					continue;
+				}
 				if (line.starts_with("list ") || line.starts_with("extract ") || line.starts_with("find ") || line.starts_with("extractall "))
 				{
 					const std::string command = line.substr(0, line.find(' '));

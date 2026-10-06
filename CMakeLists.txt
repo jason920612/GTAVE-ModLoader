@@ -64,6 +64,7 @@ add_library(loader SHARED
     src/loader/convert/resource.cpp
     src/loader/convert/archive.cpp
     src/loader/convert/effects.cpp
+    src/loader/convert/ypt.cpp
     src/loader/convert/ytd.cpp
     src/loader/convert/yft.cpp
     src/loader/convert/peds.cpp
