@@ -1,6 +1,7 @@
 #pragma once
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,26 @@ namespace loader::convert
 		std::vector<std::string> streaming; // file names (lower case) this mod replaces or adds
 	};
 
+	// A vehicle of a replacement mod that another mod (earlier by name) replaces too: this mod's files are renamed
+	// (`from` -> `to`) and the vehicle is added as a new model. Its data entries come from the mod when it has them, or
+	// are copied from the game's entries of `from` while the game loads them (game/datafiles).
+	struct VehicleClone
+	{
+		std::string from, to;  // model names, lower case
+		std::string mod;
+		std::string device;    // the generated pack's device, e.g. "dlc_mlr1234abcd"
+		std::string vehicles;  // the mod's own entries, already renamed ("" = copy the game's)
+		std::string variation;
+		std::string handling;
+		std::string handlingId; // set when the mod brings its own handling for the clone
+	};
+
+	// Names of the streaming files a replacement mod holds (lower case).
+	std::vector<std::string> ListStreamingFiles(const std::filesystem::path& dir, const Decryptor* decrypt);
+
+	// Files of the vehicle model `name` (fragment, high detail fragment, textures).
+	bool IsVehicleFileOf(const std::string& file, const std::string& name, std::string* suffix = nullptr);
+
 	// DLC packs inside the .oiv packages of a mod folder, extracted to ModLoader\cache\<mod>\oiv\<pack>\dlc.rpf.
 	struct OivPack
 	{
@@ -31,7 +52,9 @@ namespace loader::convert
 	// Whether the folder holds files a replacement mod could contain.
 	bool LooksLikeReplacementMod(const std::filesystem::path& dir);
 
-	// Builds (or reuses) the generated pack. The mod's data file entries are added to `overrides`.
+	// Builds (or reuses) the generated pack. The mod's data file entries are added to `overrides`. Vehicles in
+	// `renames` (model name -> new name) are renamed and returned in `clones`.
 	PackResult PrepareReplacement(const std::string& name, const std::filesystem::path& dir, const Decryptor* decrypt,
-	    const std::function<void()>& onConvert, xmlmerge::Overrides& overrides, ReplacementFiles& files);
+	    const std::function<void()>& onConvert, xmlmerge::Overrides& overrides, ReplacementFiles& files,
+	    const std::map<std::string, std::string>& renames, std::vector<VehicleClone>& clones);
 }

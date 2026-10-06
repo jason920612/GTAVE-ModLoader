@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 
+#include "../convert/replace.hpp"
 #include "../convert/xmlmerge.hpp"
 
 // Per-entry overrides of the game's XML data files (research/phase0.md §25). Data files are registered by name
@@ -14,6 +15,9 @@ namespace loader::game::datafiles
 
 	// Sets the entries to override (before the game loads its data files; later calls replace the set).
 	void SetOverrides(convert::xmlmerge::Overrides overrides);
+
+	// Vehicles that replacement mods add under a new name (see convert::VehicleClone).
+	void SetClones(std::vector<convert::VehicleClone> clones);
 
 	// Files merged so far, as "path: n entries".
 	std::vector<std::string> Merged();

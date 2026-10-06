@@ -14,6 +14,7 @@
 #include <map>
 #include <functional>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 
 #include <MinHook.h>
@@ -86,6 +87,8 @@ namespace loader::game::dlcpacks
 		convert::xmlmerge::Overrides g_overrides;
 		std::map<std::string, convert::ReplacementFiles> g_replacementFiles;
 		std::map<std::string, std::vector<std::string>> g_conflicts; // pack name -> warnings
+		std::map<std::string, std::map<std::string, std::string>> g_renames; // pack name -> vehicle renames
+		std::vector<convert::VehicleClone> g_clones;
 		std::unordered_map<std::string, CacheEntry*> g_entries; // normalized archive path as the game opens it
 
 		std::string Utf8(const std::u8string& s)
@@ -378,6 +381,46 @@ namespace loader::game::dlcpacks
 				log::Warn("replacement mods: data entry {} is overridden by more than one mod; the first one is used", c);
 		}
 
+		// Vehicles that more than one enabled replacement mod replaces: the first mod (by name) replaces the vehicle, each
+		// later one adds its version as a new model with a suffix (adder -> adder_2) so they all coexist.
+		void FindRenames(const std::vector<Pack>& packs)
+		{
+			std::map<std::string, std::string> owner; // model -> mod
+			std::set<std::string> taken;              // every streaming file name of every mod
+			std::map<std::string, std::vector<std::string>> names;
+			for (const Pack& pack : packs)
+				if (pack.replacement && pack.enabled)
+				{
+					names[pack.name] = convert::ListStreamingFiles(pack.source, g_decrypt ? &g_decryptor : nullptr);
+					taken.insert(names[pack.name].begin(), names[pack.name].end());
+				}
+			for (const Pack& pack : packs)
+			{
+				if (!pack.replacement || !pack.enabled)
+					continue;
+				for (const auto& file : names[pack.name])
+				{
+					if (!file.ends_with(".yft") || file.ends_with("_hi.yft"))
+						continue;
+					const std::string model = file.substr(0, file.size() - 4);
+					const auto [it, added] = owner.emplace(model, pack.name);
+					if (added)
+						continue;
+					std::string renamed;
+					for (int n = 2;; ++n)
+					{
+						renamed = std::format("{}_{}", model, n);
+						if (!owner.contains(renamed) && !taken.contains(renamed + ".yft"))
+							break;
+					}
+					owner.emplace(renamed, pack.name);
+					g_renames[pack.name][model] = renamed;
+					g_conflicts[pack.name].push_back(std::format("{} 也被模組 {} 替換；此模組的版本改成新增的車輛 {}", model, it->second, renamed));
+					log::Warn("replacement mod {}: {} is also replaced by {}; this mod's {} is added as {}", pack.name, model, it->second, model, renamed);
+				}
+			}
+		}
+
 		// Converts the pack if it has legacy resources (once per session; later processing reuses the result).
 		void Prepare(Pack& pack)
 		{
@@ -388,7 +431,7 @@ namespace loader::game::dlcpacks
 				const auto showProgress = [] { std::thread([] { ui::StartOverlay(); }).detach(); };
 				it = g_prepared.emplace(pack.name, pack.replacement
 				        ? convert::PrepareReplacement(pack.name, pack.source, g_decrypt ? &g_decryptor : nullptr, showProgress, g_overrides,
-				              g_replacementFiles[pack.name])
+				              g_replacementFiles[pack.name], g_renames[pack.name], g_clones)
 				        : convert::PreparePack(pack.name, pack.source, g_decrypt ? &g_decryptor : nullptr, showProgress)).first;
 			}
 			const convert::PackResult& r = it->second;
@@ -551,6 +594,8 @@ namespace loader::game::dlcpacks
 			static std::once_flag debug;
 			std::call_once(debug, DebugConvert);
 			auto packs = Discover();
+			static std::once_flag renames;
+			std::call_once(renames, [&] { FindRenames(packs); });
 			for (Pack& pack : packs)
 			{
 				if (!pack.enabled)
@@ -586,6 +631,8 @@ namespace loader::game::dlcpacks
 					log::Info("replacement mods: {} data file entr{} to override", g_overrides.Size(), g_overrides.Size() == 1 ? "y" : "ies");
 					datafiles::SetOverrides(g_overrides);
 				}
+				if (!g_clones.empty())
+					datafiles::SetClones(g_clones);
 			});
 			std::erase_if(packs, [](const Pack& p) { return p.empty; });
 			for (Pack& pack : packs)

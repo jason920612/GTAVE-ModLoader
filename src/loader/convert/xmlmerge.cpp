@@ -192,7 +192,44 @@ namespace loader::convert::xmlmerge
 		}
 	}
 
-	int Overrides::AddFile(std::string_view xml, const std::string& source, std::string& error)
+	std::map<std::string, std::string> Entries(std::string_view xml)
+	{
+		std::map<std::string, std::string> out;
+		std::vector<Element> els;
+		if (!Parse(xml, els))
+			return out;
+		for (const auto& [key, index] : KeyedItems(xml, els))
+			if (index >= 0)
+				out.emplace(key, std::string(xml.substr(els[index].start, els[index].end - els[index].start)));
+		return out;
+	}
+
+	std::string RenameValue(std::string text, std::string_view tag, std::string_view from, std::string_view to)
+	{
+		const std::string open = "<" + std::string(tag) + ">", close = "</" + std::string(tag) + ">";
+		for (size_t at = 0; (at = text.find(open, at)) != std::string::npos;)
+		{
+			const size_t start = at + open.size(), end = text.find(close, start);
+			if (end == std::string::npos)
+				break;
+			if (Lower(Trim(std::string_view(text).substr(start, end - start))) == Lower(from))
+				text.replace(start, end - start, to);
+			at = start;
+		}
+		return text;
+	}
+
+	std::string ElementText(std::string_view text, std::string_view tag)
+	{
+		const std::string open = "<" + std::string(tag) + ">", close = "</" + std::string(tag) + ">";
+		const size_t at = text.find(open);
+		if (at == std::string_view::npos)
+			return {};
+		const size_t end = text.find(close, at + open.size());
+		return end == std::string_view::npos ? std::string() : std::string(Trim(text.substr(at + open.size(), end - at - open.size())));
+	}
+
+	int Overrides::AddFile(std::string_view xml, const std::string& source, std::string& error, const std::set<std::string>* skip)
 	{
 		std::vector<Element> els;
 		if (!Parse(xml, els))
@@ -203,7 +240,7 @@ namespace loader::convert::xmlmerge
 		int added = 0;
 		for (const auto& [key, index] : KeyedItems(xml, els))
 		{
-			if (index < 0)
+			if (index < 0 || (skip && skip->contains(key)))
 				continue;
 			const Element& el = els[index];
 			const auto [it, inserted] = entries_.emplace(key, Entry{std::string(xml.substr(el.start, el.end - el.start)), source});

@@ -59,31 +59,10 @@ namespace loader::game::datafiles
 			return std::string(u8.begin(), u8.end());
 		}
 
-		// The merged copy of `path`, or "" to load the original.
-		std::string Redirect(const char* path)
+		// One file per original path in ModLoader\cache\datafiles: device and path, with the separators flattened.
+		std::string WriteCopy(std::string_view path, const std::string& text)
 		{
-			const std::string_view p = path;
-			// The packs generated for replacement mods hold the overrides themselves.
-			if ((!p.ends_with(".meta") && !p.ends_with(".xml")) || p.starts_with("dlc_mlr"))
-				return {};
-			std::lock_guard lock(g_mutex);
-			if (g_overrides.Empty())
-				return {};
-			if (const auto it = g_redirects.find(path); it != g_redirects.end())
-				return it->second;
-			std::string& redirect = g_redirects[path];
-			char resolved[256] = {};
-			if (!g_resolve(g_searchPaths, resolved, sizeof(resolved), path, g_noExtension))
-				return {};
-			std::string original, merged;
-			if (!ReadGameFile(resolved, original))
-				return {};
-			std::vector<std::string> keys;
-			const int replaced = g_overrides.Apply(original, merged, &keys);
-			if (replaced == 0)
-				return {};
-			// One file per original path: device and path, with the separators flattened.
-			std::string name(p);
+			std::string name(path);
 			for (auto& c : name)
 				if (c == ':' || c == '/' || c == '\\')
 					c = '_';
@@ -91,8 +70,180 @@ namespace loader::game::datafiles
 			std::error_code ec;
 			std::filesystem::create_directories(dir, ec);
 			const auto file = dir / std::filesystem::path(std::u8string(name.begin(), name.end()));
-			std::ofstream(file, std::ios::binary).write(merged.data(), static_cast<std::streamsize>(merged.size()));
-			redirect = GamePath(file);
+			std::ofstream(file, std::ios::binary).write(text.data(), static_cast<std::streamsize>(text.size()));
+			return GamePath(file);
+		}
+
+		// The game's own entries of the vehicles that replacement mods add under a new name.
+		struct Captured
+		{
+			std::string vehicles, variation, txdParent;
+			std::string handling; // the game's handling named like the model, before any override
+		};
+		std::vector<convert::VehicleClone> g_clones;
+		std::unordered_map<std::string, Captured> g_captured; // by model name
+
+		void Capture(const std::string& text)
+		{
+			const auto entries = convert::xmlmerge::Entries(text);
+			for (const auto& clone : g_clones)
+			{
+				Captured& c = g_captured[clone.from];
+				if (c.vehicles.empty())
+					if (const auto it = entries.find("CVehicleModelInfo__InitDataList/InitDatas|modelName=" + clone.from); it != entries.end())
+						c.vehicles = it->second;
+				if (c.variation.empty())
+					if (const auto it = entries.find("CVehicleModelInfoVariation/variationData|modelName=" + clone.from); it != entries.end())
+						c.variation = it->second;
+				if (c.handling.empty())
+					if (const auto it = entries.find("CHandlingDataMgr/HandlingData|handlingName=" + clone.from); it != entries.end())
+						c.handling = it->second;
+				// <txdRelationships><Item><parent>vehshare</parent><child>adder</child></Item>: not keyed (parents repeat).
+				if (c.txdParent.empty())
+					for (size_t at = 0; (at = text.find("<child>", at)) != std::string::npos; at += 7)
+					{
+						const size_t end = text.find("</child>", at);
+						const size_t item = text.rfind("<Item>", at);
+						if (end == std::string::npos || item == std::string::npos)
+							break;
+						std::string child = text.substr(at + 7, end - at - 7);
+						for (auto& ch : child)
+							ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+						if (child == clone.from)
+						{
+							c.txdParent = convert::xmlmerge::ElementText(std::string_view(text).substr(item, end - item), "parent");
+							break;
+						}
+					}
+			}
+		}
+
+		std::string Lower(std::string s)
+		{
+			for (auto& c : s)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return s;
+		}
+
+		std::string Upper(std::string s)
+		{
+			for (auto& c : s)
+				c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+			return s;
+		}
+
+		std::string SetElement(std::string text, std::string_view tag, std::string_view value)
+		{
+			const std::string open = "<" + std::string(tag) + ">", close = "</" + std::string(tag) + ">";
+			const size_t at = text.find(open);
+			const size_t end = at == std::string::npos ? std::string::npos : text.find(close, at);
+			if (end != std::string::npos)
+				text.replace(at + open.size(), end - at - open.size(), value);
+			return text;
+		}
+
+		// Contents of a placeholder of a replacement mod's pack (clones_*.meta), or "" when it has nothing.
+		std::string Generate(std::string_view device, std::string_view file)
+		{
+			std::string items, relationships;
+			int count = 0;
+			for (const auto& clone : g_clones)
+			{
+				if (clone.device != device)
+					continue;
+				const Captured& c = g_captured[clone.from];
+				// Without its own handling the new model gets a copy of the game's (unmodified) one, so another mod's
+				// handling changes for the old model do not apply to it.
+				std::string handlingId = clone.handlingId;
+				const bool copyHandling = handlingId.empty() && !c.handling.empty() &&
+				                          (c.vehicles.empty() || Lower(convert::xmlmerge::ElementText(c.vehicles, "handlingId")) == clone.from);
+				if (copyHandling)
+					handlingId = Upper(clone.to);
+				if (file == "clones_handling.meta" && (!clone.handling.empty() || copyHandling))
+					items += (clone.handling.empty() ? convert::xmlmerge::RenameValue(c.handling, "handlingName", clone.from, handlingId) : clone.handling) + "\n";
+				else if (file == "clones_vehicles.meta")
+				{
+					std::string entry = clone.vehicles;
+					if (entry.empty() && !c.vehicles.empty())
+						entry = convert::xmlmerge::RenameValue(convert::xmlmerge::RenameValue(c.vehicles, "modelName", clone.from, clone.to), "txdName",
+						    clone.from, clone.to);
+					if (entry.empty())
+					{
+						log::Warn("datafiles: {} of mod {} is not a vehicle the game knows; only the first mod's {} is used", clone.from, clone.mod,
+						    clone.from);
+						continue;
+					}
+					if (!handlingId.empty())
+						entry = SetElement(entry, "handlingId", handlingId);
+					items += entry + "\n";
+					if (!c.txdParent.empty())
+						relationships += std::format("    <Item>\n      <parent>{}</parent>\n      <child>{}</child>\n    </Item>\n", c.txdParent, clone.to);
+					log::Info("datafiles: mod {} adds its {} as {} (entry copied from {})", clone.mod, clone.from, clone.to,
+					    clone.vehicles.empty() ? "the game's entry" : "the mod's entry");
+				}
+				else if (file == "clones_carvariations.meta")
+				{
+					std::string entry = clone.variation;
+					if (entry.empty() && !c.variation.empty())
+						entry = convert::xmlmerge::RenameValue(c.variation, "modelName", clone.from, clone.to);
+					if (!entry.empty())
+						items += entry + "\n";
+				}
+				else
+					continue;
+				++count;
+			}
+			if (count == 0)
+				return {};
+			if (file == "clones_handling.meta")
+				return std::format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CHandlingDataMgr>\n  <HandlingData>\n{}  </HandlingData>\n</CHandlingDataMgr>\n", items);
+			if (file == "clones_vehicles.meta")
+				return std::format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CVehicleModelInfo__InitDataList>\n  <residentTxd>vehshare</residentTxd>\n"
+				                   "  <residentAnims />\n  <InitDatas>\n{}  </InitDatas>\n  <txdRelationships>\n{}  </txdRelationships>\n"
+				                   "</CVehicleModelInfo__InitDataList>\n",
+				    items, relationships);
+			return std::format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CVehicleModelInfoVariation>\n  <variationData>\n{}  </variationData>\n"
+			                   "</CVehicleModelInfoVariation>\n",
+			    items);
+		}
+
+		// The merged (or generated) copy of `path`, or "" to load the original.
+		std::string Redirect(const char* path)
+		{
+			const std::string_view p = path;
+			if (!p.ends_with(".meta") && !p.ends_with(".xml"))
+				return {};
+			std::lock_guard lock(g_mutex);
+			if (g_overrides.Empty() && g_clones.empty())
+				return {};
+			if (const auto it = g_redirects.find(path); it != g_redirects.end())
+				return it->second;
+			std::string& redirect = g_redirects[path];
+			// The packs generated for replacement mods hold the overrides themselves; their clones_*.meta are generated.
+			if (p.starts_with("dlc_mlr"))
+			{
+				const size_t colon = p.find(':'), slash = p.rfind('/');
+				const std::string_view file = p.substr(slash + 1);
+				if (colon == std::string_view::npos || !file.starts_with("clones_"))
+					return {};
+				const std::string text = Generate(p.substr(0, colon), file);
+				if (!text.empty())
+					redirect = WriteCopy(p, text);
+				return redirect;
+			}
+			char resolved[256] = {};
+			if (!g_resolve(g_searchPaths, resolved, sizeof(resolved), path, g_noExtension))
+				return {};
+			std::string original, merged;
+			if (!ReadGameFile(resolved, original))
+				return {};
+			if (!g_clones.empty())
+				Capture(original);
+			std::vector<std::string> keys;
+			const int replaced = g_overrides.Apply(original, merged, &keys);
+			if (replaced == 0)
+				return {};
+			redirect = WriteCopy(p, merged);
 			g_merged.push_back(std::format("{}: {} entr{}", p, replaced, replaced == 1 ? "y" : "ies"));
 			log::Info("datafiles: {} -> {} entr{} overridden ({}{})", p, replaced, replaced == 1 ? "y" : "ies", keys.front(),
 			    keys.size() > 1 ? ", ..." : "");
@@ -158,6 +309,13 @@ namespace loader::game::datafiles
 	{
 		std::lock_guard lock(g_mutex);
 		g_overrides = std::move(overrides);
+		g_redirects.clear();
+	}
+
+	void SetClones(std::vector<convert::VehicleClone> clones)
+	{
+		std::lock_guard lock(g_mutex);
+		g_clones = std::move(clones);
 		g_redirects.clear();
 	}
 

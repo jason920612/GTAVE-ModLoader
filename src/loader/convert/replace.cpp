@@ -6,7 +6,9 @@
 #include <array>
 #include <format>
 #include <fstream>
+#include <set>
 #include <string_view>
+#include <tuple>
 
 #include "../log.hpp"
 #include "../paths.hpp"
@@ -76,7 +78,8 @@ namespace loader::convert
 			return {};
 		}
 
-		void CollectArchive(const Archive& archive, uint32_t dir, const std::string& prefix, std::vector<Input>& out, std::vector<std::string>& warnings)
+		void CollectArchive(const Archive& archive, uint32_t dir, const std::string& prefix, std::vector<Input>& out, std::vector<std::string>& warnings,
+		    bool withData)
 		{
 			for (const uint32_t i : archive.Nodes()[dir].children)
 			{
@@ -84,7 +87,7 @@ namespace loader::convert
 				const std::string path = prefix + n.name;
 				if (n.directory)
 				{
-					CollectArchive(archive, i, path + "/", out, warnings);
+					CollectArchive(archive, i, path + "/", out, warnings, withData);
 					continue;
 				}
 				if (!n.resource && !n.stored && Lower(n.name).ends_with(".rpf"))
@@ -92,14 +95,14 @@ namespace loader::convert
 					Archive nested;
 					std::string error;
 					if (archive.OpenNested(i, nested, error))
-						CollectArchive(nested, 0, path + "/", out, warnings);
+						CollectArchive(nested, 0, path + "/", out, warnings, withData);
 					else
 						warnings.push_back(std::format("{} 無法開啟，已略過：{}", path, error));
 					continue;
 				}
 				Input in{path, Lower(n.name), {}};
 				std::string error;
-				if (archive.ReadFile(i, in.data, error))
+				if (!withData || archive.ReadFile(i, in.data, error))
 					out.push_back(std::move(in));
 				else
 					warnings.push_back(std::format("{} 無法讀取，已略過：{}", path, error));
@@ -113,7 +116,7 @@ namespace loader::convert
 
 		// The files an .oiv package adds, except DLC packs (ExtractOivPacks). Archives are read like loose ones.
 		void CollectOiv(const std::filesystem::path& file, const std::string& path, const Decryptor* decrypt, std::vector<Input>& out,
-		    std::vector<std::string>& warnings)
+		    std::vector<std::string>& warnings, bool withData)
 		{
 			Oiv oiv;
 			std::string error;
@@ -129,6 +132,11 @@ namespace loader::convert
 				if (f.dlcPack)
 					continue;
 				Input in{path + ":" + f.target, f.name, {}};
+				if (!withData && Extension(f.name) != ".rpf")
+				{
+					out.push_back(std::move(in));
+					continue;
+				}
 				if (!ReadOivFile(file, f.source, in.data, error))
 				{
 					warnings.push_back(std::format("{}：{} 無法讀取，已略過：{}", path, f.source, error));
@@ -147,7 +155,7 @@ namespace loader::convert
 					auto stream = std::make_shared<std::ifstream>(temp, std::ios::binary);
 					Archive archive;
 					if (archive.Open(stream, 0, in.data.size(), f.name, decrypt, error))
-						CollectArchive(archive, 0, in.path + "/", out, warnings);
+						CollectArchive(archive, 0, in.path + "/", out, warnings, withData);
 					else
 						warnings.push_back(std::format("{} 無法開啟，已略過：{}", in.path, error));
 				}
@@ -157,7 +165,7 @@ namespace loader::convert
 		}
 
 		// Every file of the mod: loose files, and the files inside .rpf archives and .oiv packages.
-		std::vector<Input> Collect(const std::filesystem::path& dir, const Decryptor* decrypt, std::vector<std::string>& warnings)
+		std::vector<Input> Collect(const std::filesystem::path& dir, const Decryptor* decrypt, std::vector<std::string>& warnings, bool withData = true)
 		{
 			std::vector<Input> out;
 			std::error_code ec;
@@ -169,7 +177,7 @@ namespace loader::convert
 				const std::string name = Lower(Utf8(it->path().filename().u8string()));
 				if (Extension(name) == ".oiv")
 				{
-					CollectOiv(it->path(), path, decrypt, out, warnings);
+					CollectOiv(it->path(), path, decrypt, out, warnings, withData);
 					continue;
 				}
 				if (Extension(name) == ".rpf")
@@ -178,9 +186,14 @@ namespace loader::convert
 					Archive archive;
 					std::string error;
 					if (*in && archive.Open(in, 0, std::filesystem::file_size(it->path(), ec), name, decrypt, error))
-						CollectArchive(archive, 0, path + "/", out, warnings);
+						CollectArchive(archive, 0, path + "/", out, warnings, withData);
 					else
 						warnings.push_back(std::format("{} 無法開啟，已略過：{}", path, error));
+					continue;
+				}
+				if (!withData)
+				{
+					out.push_back({path, name, {}});
 					continue;
 				}
 				std::ifstream f(it->path(), std::ios::binary);
@@ -242,13 +255,84 @@ namespace loader::convert
 		return false;
 	}
 
+	bool IsVehicleFileOf(const std::string& file, const std::string& name, std::string* suffix)
+	{
+		for (const char* s : {".yft", "_hi.yft", ".ytd", "+hi.ytd"})
+			if (file == name + s)
+			{
+				if (suffix)
+					*suffix = s;
+				return true;
+			}
+		return false;
+	}
+
+	std::vector<std::string> ListStreamingFiles(const std::filesystem::path& dir, const Decryptor* decrypt)
+	{
+		std::vector<std::string> warnings, names;
+		for (const Input& in : Collect(dir, decrypt, warnings, false))
+			if (std::find(kStreaming.begin(), kStreaming.end(), Extension(in.name)) != kStreaming.end())
+				names.push_back(in.name);
+		return names;
+	}
+
 	PackResult PrepareReplacement(const std::string& name, const std::filesystem::path& dir, const Decryptor* decrypt,
-	    const std::function<void()>& onConvert, xmlmerge::Overrides& overrides, ReplacementFiles& files)
+	    const std::function<void()>& onConvert, xmlmerge::Overrides& overrides, ReplacementFiles& files,
+	    const std::map<std::string, std::string>& renames, std::vector<VehicleClone>& clones)
 	{
 		PackResult result;
 		std::vector<Input> inputs = Collect(dir, decrypt, result.warnings);
 
 		const std::string device = std::format("dlc_mlr{:08x}", Joaat(name));
+
+		// Renamed vehicles: their files get the new name; their data entries in the mod's files belong to the new
+		// model (not overrides of the old one).
+		std::set<std::string> cloneKeys;
+		for (const auto& [from, to] : renames)
+		{
+			VehicleClone clone{from, to, name, device};
+			const std::string vehiclesKey = "CVehicleModelInfo__InitDataList/InitDatas|modelName=" + from;
+			const std::string variationKey = "CVehicleModelInfoVariation/variationData|modelName=" + from;
+			std::string handlingId;
+			for (const Input& in : inputs)
+			{
+				if (Extension(in.name) != ".meta")
+					continue;
+				const auto entries = xmlmerge::Entries(std::string_view(reinterpret_cast<const char*>(in.data.data()), in.data.size()));
+				if (const auto it = entries.find(vehiclesKey); it != entries.end() && clone.vehicles.empty())
+				{
+					clone.vehicles = xmlmerge::RenameValue(xmlmerge::RenameValue(it->second, "modelName", from, to), "txdName", from, to);
+					handlingId = xmlmerge::ElementText(it->second, "handlingId");
+					cloneKeys.insert(vehiclesKey);
+				}
+				if (const auto it = entries.find(variationKey); it != entries.end() && clone.variation.empty())
+				{
+					clone.variation = xmlmerge::RenameValue(it->second, "modelName", from, to);
+					cloneKeys.insert(variationKey);
+				}
+			}
+			// The mod's handling for the vehicle (by the handling id of its vehicle entry, or the model name).
+			if (handlingId.empty())
+				handlingId = from;
+			const std::string handlingKey = "CHandlingDataMgr/HandlingData|handlingName=" + Lower(handlingId);
+			for (const Input& in : inputs)
+			{
+				if (Extension(in.name) != ".meta")
+					continue;
+				const auto entries = xmlmerge::Entries(std::string_view(reinterpret_cast<const char*>(in.data.data()), in.data.size()));
+				if (const auto it = entries.find(handlingKey); it != entries.end())
+				{
+					std::string upper = to;
+					for (auto& c : upper)
+						c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+					clone.handling = xmlmerge::RenameValue(it->second, "handlingName", handlingId, upper);
+					clone.handlingId = upper;
+					cloneKeys.insert(handlingKey);
+					break;
+				}
+			}
+			clones.push_back(std::move(clone));
+		}
 		WriteNode stream = Folder("ml_stream.rpf");
 		stream.kind = WriteNode::Kind::Archive;
 		std::vector<std::pair<std::string, std::string>> dataFiles; // pack path, fileType
@@ -264,6 +348,12 @@ namespace loader::convert
 					result.warnings.push_back(std::format("{} 和模組內另一個同名檔案重複，只使用第一個", in.path));
 					continue;
 				}
+				for (const auto& [from, to] : renames)
+					if (std::string suffix; IsVehicleFileOf(in.name, from, &suffix))
+					{
+						in.name = to + suffix;
+						break;
+					}
 				WriteNode node;
 				node.name = in.name;
 				const bool resource = in.data.size() >= 16 && *reinterpret_cast<const uint32_t*>(in.data.data()) == 0x37435352;
@@ -280,7 +370,7 @@ namespace loader::convert
 					continue; // pack files of the mod's archive; this pack has its own
 				const std::string_view xml(reinterpret_cast<const char*>(in.data.data()), in.data.size());
 				std::string error;
-				const int entries = overrides.AddFile(xml, name, error);
+				const int entries = overrides.AddFile(xml, name, error, &cloneKeys);
 				if (!error.empty())
 				{
 					result.warnings.push_back(std::format("{} 不是可讀的 XML，已略過", in.path));
@@ -315,9 +405,21 @@ namespace loader::convert
 			return result;
 		}
 
+		// Placeholders for the renamed vehicles' entries, generated while the game loads (game/datafiles).
+		if (!renames.empty())
+			for (const auto& [file, type, root, list] : {std::tuple{"clones_handling.meta", "HANDLING_FILE", "CHandlingDataMgr", "HandlingData"},
+			         std::tuple{"clones_vehicles.meta", "VEHICLE_METADATA_FILE", "CVehicleModelInfo__InitDataList", "InitDatas"},
+			         std::tuple{"clones_carvariations.meta", "VEHICLE_VARIATION_FILE", "CVehicleModelInfoVariation", "variationData"}})
+			{
+				dataFiles.emplace_back(std::string("common/data/ml/") + file, type);
+				dataDir.children.push_back(TextFile(file, std::format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<{0}>\n  <{1} />\n</{0}>\n", root, list)));
+			}
+
 		const auto cacheDir = ModCache(name);
 		const auto cached = cacheDir / L"dlc.rpf";
-		const std::string stamp = FolderStamp(dir);
+		std::string stamp = FolderStamp(dir);
+		for (const auto& [from, to] : renames)
+			stamp += std::format("\nrename {} {}", from, to);
 		result.dir = cacheDir;
 		result.state = PackState::Converted;
 		result.convertedFiles = legacy;
