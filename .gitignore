@@ -10,3 +10,4 @@ research/crossmap_oracle.txt
 research/*.bin
 research/*.txt
 research/*.json
+tools/stress_logs/

@@ -51,12 +51,14 @@ add_library(loader SHARED
     src/loader/game/script.cpp
     src/loader/game/text.cpp
     src/loader/game/text_override.cpp
+    src/loader/game/fixes.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
+    src/loader/debug/hangdump.cpp
     src/loader/debug/watch.cpp
     src/loader/debug/dred.cpp
     src/loader/game/dlcpacks.cpp
