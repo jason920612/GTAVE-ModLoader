@@ -282,3 +282,13 @@
   部位模型名稱為 `<部位>_<編號>_<u|r|m|f>`（head、berd、hair、uppr、lowr、hand、feet、teef、accs、task、decl、jbib），
   放在同名 ydd。宣告了卻完全沒有模型的部位：舊版遊戲略過，強化版整個角色不畫；轉換時把該部位標為 0xFF 並警告。
 - 驗證：Hulk 模組（只有 head_000_r）完整顯示。
+
+## 20. 粒子效果 ypt（2026-10-06，尚未轉換）
+
+- 版本：舊版 68 → 強化版 71。比對 mpchristmas2017、mpbattle 中 24 組同名 ypt（舊版 NG 包 vs 強化版內建）。
+- 根物件 ptxFxList 的欄位位置相同：`+0x20` 貼圖字典、`+0x30` 可繪物件、`+0x38` 粒子規則、`+0x48` 效果規則、`+0x50` 發射器規則。
+- 內層容器與物件大幅改變（例如粒子規則字典的容器結構不同、強化版名稱字串多了 "ptfx_sprite" 等），
+  完整轉換需要逐一逆向 ptxParticleRule / ptxEffectRule / ptxEmitterRule 與各種行為（behaviour）物件。
+- 目前做法：轉換器辨識舊版 ypt（以及日後列入的其他類型），保留原檔並警告「遊戲不會載入它」；
+  不需要其他轉換的原生包也會顯示這類警告。
+
