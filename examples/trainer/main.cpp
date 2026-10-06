@@ -11,6 +11,8 @@
 
 #include <modloader/natives.hpp>
 
+#include "mission.hpp"
+
 ML_MOD_INFO("修改器", "0.1.0", "ModLoader", "玩家、載具、武器、傳送與世界選項")
 
 namespace
@@ -474,6 +476,11 @@ namespace
 				ml::Notify("已傳送到 {}", l.name);
 			});
 
+		const ml::Page missions = root.Sub("任務");
+		missions.Text("讓目前的任務直接完成：由任務自己的「任務完成」流程結束，劇情照常推進；所有目標視為達成（金牌）。");
+		missions.Action("直接完成任務（金牌）", [] { mission::Pass(true); });
+		missions.Action("傳送到任務目標", TeleportToObjective);
+
 		const ml::Page world = root.Sub("世界");
 		g_hour = world.Number(nullptr, "時間（時）", 0, 23, 1, 12); // shows the game clock (see MLMain)
 		g_hour.OnChange([] { CLOCK::SET_CLOCK_TIME(g_hour.Int(), 0, 0); });
@@ -491,6 +498,7 @@ namespace
 
 		ml::Hotkey("hkObjective", "傳送到任務目標", 0x75 /* F6 */, TeleportToObjective);
 		ml::Hotkey("hkWaypoint", "傳送到地圖標記點", 0x76 /* F7 */, TeleportToWaypoint);
+		ml::Hotkey("hkPass", "直接完成任務（金牌）", 0, [] { mission::Pass(true); });
 		ml::Hotkey("hkHeal", "補滿血量與護甲", 0, Heal);
 		ml::Hotkey("hkRepair", "修理載具", 0, [] {
 			if (const Vehicle v = RequireVehicle())
@@ -600,6 +608,7 @@ extern "C" __declspec(dllexport) void MLMain()
 			nextClock = ml::TickMs() + 1000;
 		}
 		Frame(applied);
+		mission::Frame();
 		ml::Wait(0);
 	}
 }

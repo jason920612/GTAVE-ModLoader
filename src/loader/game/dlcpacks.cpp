@@ -424,7 +424,9 @@ namespace loader::game::dlcpacks
 								return;
 							convert::Bytes data;
 							std::string e;
-							if (a.ReadFile(i, data, e))
+							if (!a.ReadFile(i, data, e))
+								log::Warn("debug extractall {}: {}", path, e);
+							else
 								std::ofstream(std::filesystem::path(std::u8string(out.begin(), out.end())) / std::filesystem::path(std::u8string(node.name.begin(), node.name.end())),
 								    std::ios::binary)
 								    .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <deque>
 #include <tuple>
 #include <fstream>
@@ -14,6 +15,7 @@
 #include "config.hpp"
 #include "log.hpp"
 #include "game/models.hpp"
+#include "game/scripts.hpp"
 #include "paths.hpp"
 #include "ui/notify.hpp"
 
@@ -459,6 +461,50 @@ namespace loader::mods
 			return n;
 		}
 
+		int64_t* ApiScriptGlobal(uint32_t index)
+		{
+			return InModFiber("ScriptGlobal", _ReturnAddress()) ? game::scripts::Global(index) : nullptr;
+		}
+
+		int32_t ApiEnumScripts(void (*fn)(int32_t, const char*, void*), void* user)
+		{
+			if (!InModFiber("EnumScripts", _ReturnAddress()) || !fn)
+				return 0;
+			const auto threads = game::scripts::Threads();
+			for (const auto& t : threads)
+				fn(t.id, t.name.c_str(), user);
+			return static_cast<int32_t>(threads.size());
+		}
+
+		int32_t ApiGetScriptCode(int32_t id, uint8_t* buffer, int32_t size)
+		{
+			if (!InModFiber("GetScriptCode", _ReturnAddress()))
+				return 0;
+			const auto code = game::scripts::Code(id);
+			if (buffer && size > 0)
+				std::memcpy(buffer, code.data(), std::min<size_t>(code.size(), static_cast<size_t>(size)));
+			return static_cast<int32_t>(code.size());
+		}
+
+		int32_t ApiRedirectScript(int32_t id, uint32_t address, const int64_t* args, int32_t count, int32_t mainFrame)
+		{
+			if (!InModFiber("RedirectScript", _ReturnAddress()) || count < 0 || (count && !args))
+				return 0;
+			std::string error;
+			const bool ok = game::scripts::RedirectThread(id, address, {args, static_cast<size_t>(count)},
+			    mainFrame ? game::scripts::Redirect::MainFrame : game::scripts::Redirect::Call, error);
+			if (!ok)
+				ModLog(g_current, ML_LOG_WARN, std::format("RedirectScript({}, {}): {}", id, address, error));
+			return ok ? 1 : 0;
+		}
+
+		int32_t ApiScriptNativeIndex(int32_t id, uint64_t hash)
+		{
+			if (!InModFiber("ScriptNativeIndex", _ReturnAddress()))
+				return -1;
+			return game::scripts::NativeIndex(id, reinterpret_cast<const void*>(game::natives::FindHandler(hash)));
+		}
+
 		// ---- settings of the first release: items on the root page ------------------------------
 
 		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
@@ -599,6 +645,11 @@ namespace loader::mods
 			.SetValue = ApiSetValue,
 			.Notify = ApiNotify,
 			.EnumModels = ApiEnumModels,
+			.ScriptGlobal = ApiScriptGlobal,
+			.EnumScripts = ApiEnumScripts,
+			.GetScriptCode = ApiGetScriptCode,
+			.RedirectScript = ApiRedirectScript,
+			.ScriptNativeIndex = ApiScriptNativeIndex,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

@@ -148,6 +148,24 @@ typedef struct MLApi
 	 * MLMain or a callback only. Returns the number of models, or -1 while the loader is still reading the
 	 * model names (shortly after the game starts; try again later). */
 	int32_t (*EnumModels)(MLModelType type, MLModelVisitor fn, void* user);
+
+	/* ---- game scripts (advanced): check `size` before use; MLMain or a callback only ----
+	 * They run between the game's script updates, so a script is never in the middle of an instruction. */
+	/* Address of script global `index` (8-byte slots), or NULL when its block is not allocated. */
+	int64_t* (*ScriptGlobal)(uint32_t index);
+	/* Calls `fn(id, name)` for every running script thread. Returns the count. */
+	int32_t (*EnumScripts)(void (*fn)(int32_t id, const char* name, void* user), void* user);
+	/* Copies up to `size` bytes of the thread's program bytecode; returns the code size (0 = no such thread).
+	 * Decode it with modloader/script.hpp. */
+	int32_t (*GetScriptCode)(int32_t id, uint8_t* buffer, int32_t size);
+	/* Makes the thread continue at `address` from its next update; the frames it was in are abandoned, so the
+	 * code there must not return (it should end the script). mainFrame = 0: `address` is a function (its ENTER),
+	 * called with the `count` values in `args`. mainFrame = 1: `address` is inside the script's main function,
+	 * which continues there with an empty operand stack. Returns 1 on success. */
+	int32_t (*RedirectScript)(int32_t id, uint32_t address, const int64_t* args, int32_t count, int32_t mainFrame);
+	/* Index of a native (public hash) in the thread's program native table, as used by its NATIVE
+	 * instructions; -1 when the program does not use it. */
+	int32_t (*ScriptNativeIndex)(int32_t id, uint64_t hash);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

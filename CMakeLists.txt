@@ -53,6 +53,7 @@ add_library(loader SHARED
     src/loader/game/text_override.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
+    src/loader/game/scripts.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
@@ -82,7 +83,8 @@ target_compile_features(modloader_sdk INTERFACE cxx_std_20)
 
 set(EXAMPLE_MODS hello_mod settings_demo trainer)
 foreach(example IN LISTS EXAMPLE_MODS)
-    add_library(${example} SHARED examples/${example}/main.cpp)
+    file(GLOB example_sources CONFIGURE_DEPENDS examples/${example}/*.cpp)
+    add_library(${example} SHARED ${example_sources})
     target_link_libraries(${example} PRIVATE modloader_sdk)
     target_compile_options(${example} PRIVATE /W4 /utf-8 /bigobj)
 endforeach()

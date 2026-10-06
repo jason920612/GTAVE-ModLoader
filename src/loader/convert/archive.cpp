@@ -137,7 +137,17 @@ namespace loader::convert
 			// The game's own archives keep a 16-byte header that is not "RSC7" (the flags are in the entry)
 			// followed by the plain deflate stream: rebuild a normal resource file.
 			const size_t expected = static_cast<size_t>(BlockSize(n.flags[0])) + BlockSize(n.flags[1]);
-			if (raw.size() > 16 && InflatedSize(raw.data() + 16, raw.size() - 16, std::min<size_t>(expected, 0x1000)))
+			const auto inflates = [&] { return raw.size() > 16 && InflatedSize(raw.data() + 16, raw.size() - 16, std::min<size_t>(expected, 0x1000)); };
+			// Scripts (.ysc) are stored NG-encrypted, header included; the key comes from the stored size.
+			if (!inflates() && decrypt_ && raw.size() > 16)
+			{
+				Bytes plain = raw;
+				(*decrypt_)((Joaat(n.name) + static_cast<uint32_t>(raw.size())) % 101, plain.data(), static_cast<uint32_t>(plain.size()));
+				std::swap(raw, plain);
+				if (!inflates())
+					std::swap(raw, plain);
+			}
+			if (inflates())
 			{
 				Put<uint32_t>(raw, 0, kRscMagic);
 				Put<uint32_t>(raw, 4, ((n.flags[0] >> 28) << 4) | (n.flags[1] >> 28));

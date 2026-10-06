@@ -17,6 +17,7 @@
 #include "game/script.hpp"
 #include "game/dlcpacks.hpp"
 #include "game/models.hpp"
+#include "game/scripts.hpp"
 #include "game/pools.hpp"
 #include "game/pausemenu.hpp"
 #include "game/text.hpp"
@@ -285,6 +286,7 @@ namespace loader::core
 		game::pools::InstallHooks();
 		game::dlcpacks::InstallHooks();
 		game::models::Install();
+		game::scripts::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())
 			game::pausemenu::InstallHooks();
 		if (config::Get().debugWatchBoot)

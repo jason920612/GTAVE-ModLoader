@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
 #include <format>
 #include <functional>
 #include <initializer_list>
@@ -245,6 +246,49 @@ namespace ml
 		if (ready)
 			*ready = n >= 0;
 		return out;
+	}
+
+	// ---- game scripts (advanced) ----
+	namespace scripts
+	{
+		inline bool Available() { return Api().size >= offsetof(MLApi, ScriptNativeIndex) + sizeof(void*); }
+
+		// Script global `index`, or nullptr. MLMain or a callback only.
+		inline int64_t* Global(uint32_t index) { return Available() ? Api().ScriptGlobal(index) : nullptr; }
+
+		struct Thread
+		{
+			int32_t id;
+			std::string name;
+		};
+		inline std::vector<Thread> Threads()
+		{
+			std::vector<Thread> out;
+			if (Available())
+				Api().EnumScripts([](int32_t id, const char* name, void* user) { static_cast<std::vector<Thread>*>(user)->push_back({id, name}); }, &out);
+			return out;
+		}
+		inline std::vector<uint8_t> Code(int32_t id)
+		{
+			std::vector<uint8_t> code;
+			if (!Available())
+				return code;
+			code.resize(static_cast<size_t>((std::max)(0, Api().GetScriptCode(id, nullptr, 0))));
+			if (!code.empty())
+				Api().GetScriptCode(id, code.data(), static_cast<int32_t>(code.size()));
+			return code;
+		}
+		// See MLApi::RedirectScript.
+		inline bool Redirect(int32_t id, uint32_t address, std::initializer_list<int64_t> args = {}, bool mainFrame = false)
+		{
+			return Available() && Api().RedirectScript(id, address, args.begin(), static_cast<int32_t>(args.size()), mainFrame ? 1 : 0) != 0;
+		}
+	}
+
+	namespace scripts
+	{
+		// Index of a native in the thread's program (see MLApi::ScriptNativeIndex).
+		inline int32_t NativeIndex(int32_t id, uint64_t hash) { return Available() ? Api().ScriptNativeIndex(id, hash) : -1; }
 	}
 
 	// Short on-screen message.
