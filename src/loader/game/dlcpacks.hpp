@@ -23,6 +23,7 @@ namespace loader::game::dlcpacks
 		bool replacement = false; // a replacement mod: loose files / archives packed into a generated pack
 		bool enabled = true;
 		bool registered = false; // the game accepted it
+		bool empty = false;      // a replacement mod with nothing to load (e.g. only DLC packs in its .oiv)
 		convert::PackState state = convert::PackState::Native;
 		int convertedFiles = 0;
 		std::string error;

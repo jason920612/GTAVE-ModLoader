@@ -20,6 +20,14 @@ namespace loader::convert
 		std::vector<std::string> streaming; // file names (lower case) this mod replaces or adds
 	};
 
+	// DLC packs inside the .oiv packages of a mod folder, extracted to ModLoader\cache\<mod>\oiv\<pack>\dlc.rpf.
+	struct OivPack
+	{
+		std::string name; // "<mod>-<pack folder name>"
+		std::filesystem::path dir;
+	};
+	std::vector<OivPack> ExtractOivPacks(const std::string& mod, const std::filesystem::path& dir, std::vector<std::string>& warnings);
+
 	// Whether the folder holds files a replacement mod could contain.
 	bool LooksLikeReplacementMod(const std::filesystem::path& dir);
 

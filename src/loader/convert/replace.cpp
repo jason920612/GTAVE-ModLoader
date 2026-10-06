@@ -1,5 +1,7 @@
 #include "replace.hpp"
 
+#include <Windows.h>
+
 #include <algorithm>
 #include <array>
 #include <format>
@@ -9,6 +11,7 @@
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "archive.hpp"
+#include "oiv.hpp"
 
 namespace loader::convert
 {
@@ -103,7 +106,57 @@ namespace loader::convert
 			}
 		}
 
-		// Every file of the mod: loose files, and the files inside .rpf archives.
+		std::filesystem::path ModCache(const std::string& mod)
+		{
+			return paths::Get().root / L"cache" / std::filesystem::path(std::u8string(mod.begin(), mod.end()));
+		}
+
+		// The files an .oiv package adds, except DLC packs (ExtractOivPacks). Archives are read like loose ones.
+		void CollectOiv(const std::filesystem::path& file, const std::string& path, const Decryptor* decrypt, std::vector<Input>& out,
+		    std::vector<std::string>& warnings)
+		{
+			Oiv oiv;
+			std::string error;
+			if (!ReadOiv(file, oiv, error))
+			{
+				warnings.push_back(std::format("{} 不是可讀的安裝包，已略過：{}", path, error));
+				return;
+			}
+			for (const auto& w : oiv.warnings)
+				warnings.push_back(std::format("{}：{}", path, w));
+			for (const OivFile& f : oiv.files)
+			{
+				if (f.dlcPack)
+					continue;
+				Input in{path + ":" + f.target, f.name, {}};
+				if (!ReadOivFile(file, f.source, in.data, error))
+				{
+					warnings.push_back(std::format("{}：{} 無法讀取，已略過：{}", path, f.source, error));
+					continue;
+				}
+				if (Extension(f.name) != ".rpf")
+				{
+					out.push_back(std::move(in));
+					continue;
+				}
+				// The archive reader works on files.
+				auto temp = std::filesystem::temp_directory_path() / std::filesystem::path(std::u8string(f.name.begin(), f.name.end()));
+				temp += std::format(".{}.tmp", GetCurrentProcessId());
+				std::ofstream(temp, std::ios::binary).write(reinterpret_cast<const char*>(in.data.data()), static_cast<std::streamsize>(in.data.size()));
+				{
+					auto stream = std::make_shared<std::ifstream>(temp, std::ios::binary);
+					Archive archive;
+					if (archive.Open(stream, 0, in.data.size(), f.name, decrypt, error))
+						CollectArchive(archive, 0, in.path + "/", out, warnings);
+					else
+						warnings.push_back(std::format("{} 無法開啟，已略過：{}", in.path, error));
+				}
+				std::error_code ec;
+				std::filesystem::remove(temp, ec);
+			}
+		}
+
+		// Every file of the mod: loose files, and the files inside .rpf archives and .oiv packages.
 		std::vector<Input> Collect(const std::filesystem::path& dir, const Decryptor* decrypt, std::vector<std::string>& warnings)
 		{
 			std::vector<Input> out;
@@ -114,6 +167,11 @@ namespace loader::convert
 					continue;
 				const std::string path = Utf8(std::filesystem::relative(it->path(), dir, ec).generic_u8string());
 				const std::string name = Lower(Utf8(it->path().filename().u8string()));
+				if (Extension(name) == ".oiv")
+				{
+					CollectOiv(it->path(), path, decrypt, out, warnings);
+					continue;
+				}
 				if (Extension(name) == ".rpf")
 				{
 					auto in = std::make_shared<std::ifstream>(it->path(), std::ios::binary);
@@ -178,7 +236,7 @@ namespace loader::convert
 			if (!it->is_regular_file(ec))
 				continue;
 			const std::string ext = Extension(Utf8(it->path().filename().u8string()));
-			if (ext == ".rpf" || ext == ".meta" || std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
+			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
 				return true;
 		}
 		return false;
@@ -248,7 +306,16 @@ namespace loader::convert
 				result.warnings.push_back(std::format("{} 的檔案類型目前不支援，已略過", in.path));
 		}
 
-		const auto cacheDir = paths::Get().root / L"cache" / std::filesystem::path(std::u8string(name.begin(), name.end()));
+		if (stream.children.empty() && dataFiles.empty())
+		{
+			result.empty = true;
+			result.state = PackState::Native;
+			for (const auto& w : result.warnings)
+				log::Warn("replacement mod {}: {}", name, w);
+			return result;
+		}
+
+		const auto cacheDir = ModCache(name);
 		const auto cached = cacheDir / L"dlc.rpf";
 		const std::string stamp = FolderStamp(dir);
 		result.dir = cacheDir;
@@ -358,5 +425,44 @@ namespace loader::convert
 		log::Info("replacement mod {}: generated a pack ({} streaming file(s), {} legacy converted, {} data file(s))", name,
 		    files.streaming.size(), legacy, dataFiles.size());
 		return result;
+	}
+
+	std::vector<OivPack> ExtractOivPacks(const std::string& mod, const std::filesystem::path& dir, std::vector<std::string>& warnings)
+	{
+		std::vector<OivPack> packs;
+		std::error_code ec;
+		for (auto it = std::filesystem::recursive_directory_iterator(dir, ec); !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+		{
+			if (!it->is_regular_file(ec) || Extension(Utf8(it->path().filename().u8string())) != ".oiv")
+				continue;
+			Oiv oiv;
+			std::string error;
+			if (!ReadOiv(it->path(), oiv, error))
+				continue; // reported by PrepareReplacement
+			const std::string stamp = std::format("{} {} {}", Utf8(it->path().generic_u8string()), it->file_size(ec),
+			    it->last_write_time(ec).time_since_epoch().count());
+			for (const OivFile& f : oiv.files)
+			{
+				if (!f.dlcPack)
+					continue;
+				OivPack pack{std::format("{}-{}", mod, f.packName), ModCache(mod) / L"oiv" / std::filesystem::path(std::u8string(f.packName.begin(), f.packName.end()))};
+				const auto file = pack.dir / L"dlc.rpf";
+				if (!std::filesystem::is_regular_file(file, ec) || ReadAll(pack.dir / L"source.txt") != stamp)
+				{
+					Bytes data;
+					if (!ReadOivFile(it->path(), f.source, data, error))
+					{
+						warnings.push_back(std::format("{}：{} 無法讀取，已略過：{}", Utf8(it->path().filename().u8string()), f.source, error));
+						continue;
+					}
+					std::filesystem::create_directories(pack.dir, ec);
+					std::ofstream(file, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+					std::ofstream(pack.dir / L"source.txt", std::ios::binary | std::ios::trunc) << stamp;
+					log::Info("replacement mod {}: extracted DLC pack {} from {}", mod, f.packName, Utf8(it->path().filename().u8string()));
+				}
+				packs.push_back(std::move(pack));
+			}
+		}
+		return packs;
 	}
 }

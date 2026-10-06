@@ -24,6 +24,7 @@ namespace loader::convert
 		std::filesystem::path dir;          // folder holding the dlc.rpf to load
 		int convertedFiles = 0;
 		bool fromCache = false;
+		bool empty = false;                 // replacement mods: nothing to load (e.g. a package holding only DLC packs)
 		std::string error;
 		std::vector<std::string> warnings;
 	};

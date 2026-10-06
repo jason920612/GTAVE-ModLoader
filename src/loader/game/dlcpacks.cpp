@@ -320,6 +320,19 @@ namespace loader::game::dlcpacks
 					if (std::filesystem::exists(dll, ec) || !convert::LooksLikeReplacementMod(entry.path()))
 						continue;
 					pack.replacement = true;
+					// DLC packs that .oiv packages install are packs of their own.
+					std::vector<std::string> warnings;
+					for (auto& oiv : convert::ExtractOivPacks(Utf8(entry.path().filename().u8string()), entry.path(), warnings))
+					{
+						Pack added;
+						added.name = std::move(oiv.name);
+						added.source = oiv.dir;
+						added.dir = oiv.dir;
+						added.enabled = !disabled.contains(added.name);
+						packs.push_back(std::move(added));
+					}
+					for (const auto& w : warnings)
+						log::Warn("dlc pack {}: {}", Utf8(entry.path().filename().u8string()), w);
 				}
 				pack.name = Utf8(entry.path().filename().u8string());
 				pack.source = entry.path();
@@ -384,6 +397,7 @@ namespace loader::game::dlcpacks
 			pack.convertedFiles = r.convertedFiles;
 			pack.error = r.error;
 			pack.warnings = r.warnings;
+			pack.empty = r.empty;
 		}
 
 		// Walks an archive and its nested archives (research aid).
@@ -545,7 +559,7 @@ namespace loader::game::dlcpacks
 					continue;
 				}
 				Prepare(pack);
-				if (pack.state == convert::PackState::Failed)
+				if (pack.state == convert::PackState::Failed || pack.empty)
 					continue;
 				// RAGE paths are UTF-8, use forward slashes and end with a separator.
 				pack.path = Utf8(pack.dir.generic_u8string()) + "/";
@@ -573,6 +587,7 @@ namespace loader::game::dlcpacks
 					datafiles::SetOverrides(g_overrides);
 				}
 			});
+			std::erase_if(packs, [](const Pack& p) { return p.empty; });
 			for (Pack& pack : packs)
 				if (const auto it = g_conflicts.find(pack.name); it != g_conflicts.end())
 					pack.warnings.insert(pack.warnings.end(), it->second.begin(), it->second.end());

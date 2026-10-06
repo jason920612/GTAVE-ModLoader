@@ -395,5 +395,10 @@
   - 模組的資料檔也會依根元素登記成 DLC 資料檔（handling、vehicles、carcols、carvariations、vehiclelayouts、weapons、
     peds、weaponanimations），讓原版沒有的新項目加入。
   - 實測：只含 Adder 一項的 handling（動力 0.32 → 0.9）與 vehicles（gameName → INFERNUS）在遊戲中生效。
+- 輸入形式：散裝檔案；`.rpf`（取出裡面的檔案，含巢狀封裝檔）；`.oiv`（zip：`assembly.xml` + `content/`，自己讀）。
+  `.oiv` 中 `<add source="X">目標</add>` 依目標檔名處理；目標是 `...\<名稱>\dlc.rpf` 的是附加 DLC 包，解出到
+  `ModLoader\cache\<模組>\oiv\<名稱>\dlc.rpf` 並當成獨立的包（`<模組>-<名稱>`，照常轉換舊版資源）。對 `dlclist.xml` 的
+  文字修改不需要（包由載入器註冊）；其他 `<text>`、`<xml>` 修改與 `<delete>` 無法套用，顯示警告。
+  實測：gta5-mods 的 2019 Copo Camaro（`.oiv` 附加包 + 散裝替換 sultan.*，舊版格式）兩者都能在遊戲中生成並正常顯示。
 - 多個模組替換同一個串流檔案、或覆蓋同一個資料項目時，目前依名稱順序第一個生效並顯示警告（後綴並存在下一步）。
 - 已知問題：載入器自己的封存讀取器開啟 `update\update.rpf` 時會卡住（`common.rpf` 正常），尚未查明。
