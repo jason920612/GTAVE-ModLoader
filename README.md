@@ -14,6 +14,7 @@ GTA V Enhanced（故事模式）的單一 DLL 模組載入器。
 - **DLC 包**：`ModLoader\mods\<名稱>\dlc.rpf` 會加入遊戲的 DLC 清單，支援未加密（OPEN）與加密（NG）的封裝檔。
 - **舊版（Legacy）資源自動轉換**：含舊版貼圖字典（ytd v13）或模型（yft v162）的包，會在第一次載入時轉成
   Enhanced 格式（ytd v5、yft v171）並存到 `ModLoader\cache`，載入畫面上會顯示進度條；之後直接使用快取。
+  加密（NG）的舊版包透過遊戲本身的解密函式讀取；content.xml 中指向不存在檔案的項目會被移除（否則無法進入故事模式）。
 
 ## 建置
 

@@ -39,5 +39,8 @@ namespace loader::convert
 	// Writes an Enhanced texture (0x80, view at +0x58) at `offset`; `self` is its own pointer.
 	void WriteTextureHeader(Bytes& b, size_t offset, uint64_t self, const TextureHeader& t);
 	bool IsRenderTargetName(std::string_view name);
+	// Render targets cannot use block-compressed formats (the game asserts): decodes mip 0 of a BC1/BC2/BC3
+	// texture to B8G8R8A8 (other compressed formats become blank) and keeps a single mip.
+	void MakeRenderTargetFormat(TextureFormat& format, uint8_t& mips, uint16_t width, uint16_t height, Bytes& pixels);
 	bool IsNormalMapName(std::string_view name);
 }

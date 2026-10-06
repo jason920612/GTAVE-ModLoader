@@ -49,6 +49,97 @@ namespace loader::convert
 		return LowerText(name).starts_with("script_rt_");
 	}
 
+	namespace
+	{
+		void Colour565(uint16_t c, uint8_t out[4])
+		{
+			out[2] = static_cast<uint8_t>(((c >> 11) & 31) * 255 / 31); // B G R A order below
+			out[1] = static_cast<uint8_t>(((c >> 5) & 63) * 255 / 63);
+			out[0] = static_cast<uint8_t>((c & 31) * 255 / 31);
+			out[3] = 255;
+		}
+
+		// One 4x4 colour block (BC1 layout) into BGRA texels.
+		void DecodeColourBlock(const uint8_t* block, bool allowTransparent, uint8_t texels[16][4])
+		{
+			const uint16_t c0 = static_cast<uint16_t>(block[0] | block[1] << 8), c1 = static_cast<uint16_t>(block[2] | block[3] << 8);
+			uint8_t palette[4][4];
+			uint8_t a[4], b[4];
+			Colour565(c0, a);
+			Colour565(c1, b);
+			for (int k = 0; k < 4; ++k)
+			{
+				palette[0][k] = a[k];
+				palette[1][k] = b[k];
+				if (c0 > c1 || !allowTransparent)
+				{
+					palette[2][k] = static_cast<uint8_t>((2 * a[k] + b[k]) / 3);
+					palette[3][k] = static_cast<uint8_t>((a[k] + 2 * b[k]) / 3);
+				}
+				else
+				{
+					palette[2][k] = static_cast<uint8_t>((a[k] + b[k]) / 2);
+					palette[3][k] = 0;
+				}
+			}
+			if (!(c0 > c1 || !allowTransparent))
+				palette[3][3] = 0;
+			const uint32_t bits = static_cast<uint32_t>(block[4] | block[5] << 8 | block[6] << 16 | block[7] << 24);
+			for (int i = 0; i < 16; ++i)
+				memcpy(texels[i], palette[(bits >> (2 * i)) & 3], 4);
+		}
+	}
+
+	void MakeRenderTargetFormat(TextureFormat& format, uint8_t& mips, uint16_t width, uint16_t height, Bytes& pixels)
+	{
+		if (!format.block)
+			return;
+		Bytes out(static_cast<size_t>(width) * height * 4, 0);
+		const uint32_t blocksX = std::max(1u, (width + 3u) / 4), blocksY = std::max(1u, (height + 3u) / 4);
+		for (uint32_t by = 0; by < blocksY; ++by)
+			for (uint32_t bx = 0; bx < blocksX; ++bx)
+			{
+				const size_t at = (static_cast<size_t>(by) * blocksX + bx) * format.unit;
+				if (at + format.unit > pixels.size())
+					continue;
+				const uint8_t* block = pixels.data() + at;
+				uint8_t texels[16][4] = {};
+				if (format.dxgi == 71) // BC1
+					DecodeColourBlock(block, true, texels);
+				else if (format.dxgi == 74) // BC2: explicit 4-bit alpha, then colour
+				{
+					DecodeColourBlock(block + 8, false, texels);
+					for (int i = 0; i < 16; ++i)
+						texels[i][3] = static_cast<uint8_t>(((block[i / 2] >> (4 * (i & 1))) & 15) * 17);
+				}
+				else if (format.dxgi == 77) // BC3: interpolated alpha, then colour
+				{
+					DecodeColourBlock(block + 8, false, texels);
+					const uint8_t a0 = block[0], a1 = block[1];
+					uint8_t alpha[8] = {a0, a1};
+					for (int k = 2; k < 8; ++k)
+						alpha[k] = a0 > a1 ? static_cast<uint8_t>(((8 - k) * a0 + (k - 1) * a1) / 7)
+						                   : k < 6 ? static_cast<uint8_t>(((6 - k) * a0 + (k - 1) * a1) / 5) : (k == 6 ? 0 : 255);
+					uint64_t bits = 0;
+					for (int k = 0; k < 6; ++k)
+						bits |= static_cast<uint64_t>(block[2 + k]) << (8 * k);
+					for (int i = 0; i < 16; ++i)
+						texels[i][3] = alpha[(bits >> (3 * i)) & 7];
+				}
+				else
+					continue; // other compressed formats: left blank
+				for (int i = 0; i < 16; ++i)
+				{
+					const uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+					if (x < width && y < height)
+						memcpy(out.data() + (static_cast<size_t>(y) * width + x) * 4, texels[i], 4);
+				}
+			}
+		pixels = std::move(out);
+		format = TextureFormat{87, 4, false}; // B8G8R8A8_UNORM, as the game's own dial textures
+		mips = 1;
+	}
+
 	bool IsNormalMapName(std::string_view name)
 	{
 		return LowerText(name).ends_with("_n");
@@ -148,7 +239,9 @@ namespace loader::convert
 				return false;
 			}
 			t.pixels.assign(in.physicalBlock.begin() + start, in.physicalBlock.begin() + start + size);
-			t.stored = static_cast<uint32_t>((size + 0xFFF) & ~size_t{0xFFF});
+			if (IsRenderTargetName(t.name))
+				MakeRenderTargetFormat(t.format, t.mips, t.width, t.height, t.pixels);
+			t.stored = static_cast<uint32_t>((t.pixels.size() + 0xFFF) & ~size_t{0xFFF});
 			textures.push_back(std::move(t));
 		}
 		std::sort(textures.begin(), textures.end(), [](const Texture& a, const Texture& b) { return Joaat(a.name) < Joaat(b.name); });

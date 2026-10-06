@@ -468,15 +468,20 @@ namespace loader::convert
 					error = std::format("embedded texture {}: pixel data out of range", name);
 					return false;
 				}
-				const uint32_t stored = static_cast<uint32_t>((size + 0xFFF) & ~size_t{0xFFF});
+				Bytes texels(blk.data.begin() + *pixels, blk.data.begin() + *pixels + size);
+				TextureFormat fmt = *format;
+				uint8_t levels = mips;
+				if (IsRenderTargetName(name))
+					MakeRenderTargetFormat(fmt, levels, width, height, texels);
+				const uint32_t stored = static_cast<uint32_t>((texels.size() + 0xFFF) & ~size_t{0xFFF});
 				const auto at = blk.Alloc(stored, 0x1000);
 				if (!at)
 				{
 					error = "out of space for texture data";
 					return false;
 				}
-				std::copy(blk.data.begin() + *pixels, blk.data.begin() + *pixels + size, blk.data.begin() + *at);
-				WriteTextureHeader(blk.data, *o, kVirtual + *o, {namePtr, width, height, depth, mips, *format, stored, kVirtual + *at,
+				std::copy(texels.begin(), texels.end(), blk.data.begin() + *at);
+				WriteTextureHeader(blk.data, *o, kVirtual + *o, {namePtr, width, height, depth, levels, fmt, stored, kVirtual + *at,
 				    IsRenderTargetName(name), IsNormalMapName(name)});
 			}
 			return true;

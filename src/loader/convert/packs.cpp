@@ -16,7 +16,7 @@ namespace loader::convert
 	namespace
 	{
 		// Bump when the converters change, so cached packs are rebuilt.
-		constexpr int kConverterVersion = 3;
+		constexpr int kConverterVersion = 4;
 
 		std::mutex g_progressMutex;
 		Progress g_progress;
@@ -136,6 +136,83 @@ namespace loader::convert
 			return true;
 		}
 
+		void CollectPaths(const WriteNode& node, const std::string& prefix, std::vector<std::string>& out)
+		{
+			for (const WriteNode& c : node.children)
+			{
+				const std::string path = prefix + Lower(c.name);
+				out.push_back(path);
+				if (c.kind == WriteNode::Kind::Directory || c.kind == WriteNode::Kind::Archive)
+					CollectPaths(c, path + "/", out);
+			}
+		}
+
+		// Legacy packs often list files in content.xml that they do not contain (left over from templates).
+		// The legacy game skipped them; Enhanced never finishes loading story mode. Drop those entries.
+		void DropMissingContent(WriteNode& root, PackResult& result)
+		{
+			auto it = std::find_if(root.children.begin(), root.children.end(), [](const WriteNode& n) { return Lower(n.name) == "content.xml"; });
+			if (it == root.children.end())
+				return;
+			std::vector<std::string> paths;
+			CollectPaths(root, "", paths);
+			const auto exists = [&](std::string ref) {
+				ref = Lower(ref);
+				const size_t device = ref.find(":/");
+				if (device != std::string::npos)
+					ref = ref.substr(device + 2);
+				if (const size_t platform = ref.find("%platform%"); platform != std::string::npos)
+					ref.replace(platform, 10, "x64");
+				while (!ref.empty() && ref.back() == '/')
+					ref.pop_back();
+				return ref.empty() || std::any_of(paths.begin(), paths.end(), [&](const std::string& p) { return p == ref || p.starts_with(ref + "/"); });
+			};
+			std::string xml(it->data.begin(), it->data.end());
+			std::vector<std::string> dropped;
+			// <Item> ... <filename>X</filename> ... </Item> (data files) and <Item>X</Item> (change sets).
+			for (size_t at = 0; (at = xml.find("<Item>", at)) != std::string::npos;)
+			{
+				const size_t end = xml.find("</Item>", at);
+				if (end == std::string::npos)
+					break;
+				const std::string item = xml.substr(at + 6, end - at - 6);
+				if (item.find("<Item>") != std::string::npos) // a container (e.g. a change set): look inside it
+				{
+					at += 6;
+					continue;
+				}
+				std::string ref = item;
+				if (const size_t f = item.find("<filename>"); f != std::string::npos)
+				{
+					const size_t g = item.find("</filename>", f);
+					ref = g == std::string::npos ? std::string() : item.substr(f + 10, g - f - 10);
+				}
+				const bool isPath = ref.find(":/") != std::string::npos;
+				if (isPath && !exists(ref))
+				{
+					size_t from = at;
+					while (from > 0 && (xml[from - 1] == ' ' || xml[from - 1] == '\t'))
+						--from;
+					size_t to = end + 7;
+					if (to < xml.size() && xml[to] == '\r')
+						++to;
+					if (to < xml.size() && xml[to] == '\n')
+						++to;
+					if (std::find(dropped.begin(), dropped.end(), ref) == dropped.end())
+						dropped.push_back(ref);
+					xml.erase(from, to - from);
+					at = from;
+				}
+				else
+					at = end + 7;
+			}
+			if (dropped.empty())
+				return;
+			it->data.assign(xml.begin(), xml.end());
+			for (const auto& ref : dropped)
+				result.warnings.push_back(std::format("content.xml lists {}, which the pack does not contain: entry removed", ref));
+		}
+
 		std::string SourceStamp(const std::filesystem::path& file)
 		{
 			std::error_code ec;
@@ -205,7 +282,10 @@ namespace loader::convert
 		if (!ok)
 			result.error = "the game's shader effects could not be read";
 		Bytes packed;
-		ok = ok && Build(archive, 0, root, job, "", result.error) && BuildArchive(root, packed, result.error);
+		ok = ok && Build(archive, 0, root, job, "", result.error);
+		if (ok)
+			DropMissingContent(root, result);
+		ok = ok && BuildArchive(root, packed, result.error);
 		if (ok)
 		{
 			std::filesystem::create_directories(cacheDir, ec);
