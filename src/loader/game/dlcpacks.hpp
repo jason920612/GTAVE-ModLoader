@@ -27,4 +27,7 @@ namespace loader::game::dlcpacks
 		std::vector<std::string> warnings;
 	};
 	std::vector<Pack> Snapshot();
+
+	// The game's NG decryption for reading archives, or nullptr when it was not found.
+	const convert::Decryptor* Decryptor();
 }

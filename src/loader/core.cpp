@@ -16,6 +16,7 @@
 #include "game/pointers.hpp"
 #include "game/script.hpp"
 #include "game/dlcpacks.hpp"
+#include "game/models.hpp"
 #include "game/pools.hpp"
 #include "game/pausemenu.hpp"
 #include "game/text.hpp"
@@ -204,6 +205,7 @@ namespace loader::core
 			game::natives::LoadCrossmap(CrossmapPath());
 			game::natives::ResolveHandlers();
 			mods::LoadAll();
+			game::models::StartNameScan(); // the DLC list (mod packs) is known by now
 
 			// The probe device and DXGI patching must not stall the game thread.
 			std::thread([] {
@@ -281,7 +283,8 @@ namespace loader::core
 		if (!state::canContinueStory)
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
 		game::pools::InstallHooks();
-			game::dlcpacks::InstallHooks();
+		game::dlcpacks::InstallHooks();
+		game::models::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())
 			game::pausemenu::InstallHooks();
 		if (config::Get().debugWatchBoot)

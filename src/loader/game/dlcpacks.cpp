@@ -552,4 +552,9 @@ namespace loader::game::dlcpacks
 		std::lock_guard lock(g_mutex);
 		return g_packs;
 	}
+
+	const convert::Decryptor* Decryptor()
+	{
+		return g_decrypt ? &g_decryptor : nullptr;
+	}
 }

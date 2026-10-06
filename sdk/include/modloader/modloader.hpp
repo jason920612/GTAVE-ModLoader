@@ -224,6 +224,29 @@ namespace ml
 		return Item(HasMenus() ? Api().AddHotkey(id, label, defaultKey, detail::Run, detail::Keep(std::move(fn))) : -1);
 	}
 
+	// True when the loader can list models (EnumModels).
+	inline bool HasModels() { return Api().size >= offsetof(MLApi, EnumModels) + sizeof(void*); }
+
+	struct Model
+	{
+		uint32_t hash;
+		std::string name; // empty when unknown
+		std::string pack; // ModLoader\mods pack folder, empty for the game's own
+	};
+
+	// Every vehicle or ped model, add-on packs included. MLMain or a callback only. Empty while the
+	// loader is still reading the model names (`ready` = false): try again a bit later.
+	inline std::vector<Model> Models(MLModelType type, bool* ready = nullptr)
+	{
+		std::vector<Model> out;
+		int32_t n = HasModels() ? Api().EnumModels(type, [](uint32_t hash, const char* name, const char* pack, void* user) {
+			static_cast<std::vector<Model>*>(user)->push_back({hash, name ? name : "", pack ? pack : ""});
+		}, &out) : -1;
+		if (ready)
+			*ready = n >= 0;
+		return out;
+	}
+
 	// Short on-screen message.
 	template<class... Args>
 	void Notify(std::format_string<Args...> fmt, Args&&... args)

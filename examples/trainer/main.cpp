@@ -1,6 +1,9 @@
 // Trainer: player, vehicle, weapon, teleport and world options in the loader window ("模組功能" tab).
 // Also the reference mod for the menu API (pages, toggles, numbers, lists, actions, hotkeys, notifications).
+#include <algorithm>
 #include <array>
+#include <format>
+#include <map>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -233,6 +236,174 @@ namespace
 		ml::Notify("已給予 {} 種武器", given);
 	}
 
+	// ---- models: vehicle spawning and player model ------------------------------------------------
+
+	ml::Page g_spawnPage, g_modelPage;
+	ml::Item g_warpIn;
+	Hash g_originalModel = 0;
+
+	bool LoadModel(Hash model)
+	{
+		STREAMING::REQUEST_MODEL(model);
+		for (int i = 0; i < 100 && !STREAMING::HAS_MODEL_LOADED(model); ++i) // up to 5 s
+			ml::Wait(50);
+		return STREAMING::HAS_MODEL_LOADED(model);
+	}
+
+	void SpawnVehicle(Hash model, const std::string& label)
+	{
+		if (!LoadModel(model))
+		{
+			ml::Notify("{} 載入失敗", label);
+			return;
+		}
+		const Ped ped = Self();
+		const float heading = ENTITY::GET_ENTITY_HEADING(ped);
+		const Vector3 at = ENTITY::GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(ped, 0.0f, g_warpIn ? 0.0f : 5.0f, 0.5f);
+		const Vehicle vehicle = VEHICLE::CREATE_VEHICLE(model, at.x, at.y, at.z, heading, false, false, false);
+		STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(model);
+		if (!vehicle)
+		{
+			ml::Notify("無法生成 {}", label);
+			return;
+		}
+		VEHICLE::SET_VEHICLE_ON_GROUND_PROPERLY(vehicle, 5.0f);
+		if (g_warpIn)
+			PED::SET_PED_INTO_VEHICLE(ped, vehicle, -1);
+		ml::Notify("已生成 {}", label);
+	}
+
+	void ChangeModel(Hash model, const std::string& label)
+	{
+		if (!LoadModel(model))
+		{
+			ml::Notify("{} 載入失敗", label);
+			return;
+		}
+		if (!g_originalModel)
+			g_originalModel = ENTITY::GET_ENTITY_MODEL(Self());
+		PLAYER::SET_PLAYER_MODEL(PLAYER::PLAYER_ID(), model);
+		PED::SET_PED_DEFAULT_COMPONENT_VARIATION(Self());
+		STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(model);
+		ml::Notify("已換成 {}", label);
+	}
+
+	// Localised name of a vehicle ("NULL" or empty when the label is missing: add-on packs often have none).
+	std::string VehicleLabel(const ml::Model& m)
+	{
+		const char* label = VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(m.hash);
+		std::string text = label && HUD::DOES_TEXT_LABEL_EXIST(label) ? HUD::GET_FILENAME_FOR_AUDIO_CONVERSATION(label) : "";
+		const std::string& model = m.name;
+		if (text.empty() || text == "NULL")
+			text = label && *label && std::string(label) != "CARNOTFOUND" ? label : model;
+		// The game writes a narrow no-break space as "µ" in some names ("FMJµMKµV").
+		for (size_t at; (at = text.find("\xC2\xB5")) != std::string::npos;)
+			text.replace(at, 2, " ");
+		std::string lower = text;
+		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return lower == model ? text : std::format("{}  ({})", text, model);
+	}
+
+	constexpr const char* kVehicleClasses[] = {"小型車", "轎車", "休旅車", "雙門跑車", "肌肉車", "經典跑車", "跑車", "超級跑車", "機車", "越野車",
+	    "工業用車", "工具車", "廂型車", "腳踏車", "船", "直升機", "飛機", "公務車", "緊急車輛", "軍用車", "商用車", "火車", "開輪式賽車"};
+
+	// Case-insensitive order for menu labels.
+	void SortLabels(std::vector<std::pair<std::string, Hash>>& list)
+	{
+		const auto lower = [](std::string t) {
+			std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return t;
+		};
+		std::sort(list.begin(), list.end(), [&](const auto& a, const auto& b) { return lower(a.first) < lower(b.first); });
+	}
+
+	void BuildVehicleList(const std::vector<ml::Model>& models)
+	{
+		std::map<std::string, std::vector<std::pair<std::string, Hash>>> byGroup; // group -> (label, hash)
+		for (const auto& m : models)
+		{
+			const int cls = VEHICLE::GET_VEHICLE_CLASS_FROM_NAME(m.hash);
+			std::string group = !m.pack.empty() ? "0 模組載具" : cls >= 0 && cls < static_cast<int>(std::size(kVehicleClasses))
+			                                                          ? std::format("{:02} {}", cls + 1, kVehicleClasses[cls])
+			                                                          : "99 其他";
+			byGroup[group].emplace_back(VehicleLabel(m), m.hash);
+		}
+		g_spawnPage.Clear();
+		for (auto& [group, list] : byGroup)
+		{
+			SortLabels(list);
+			const ml::Page page = g_spawnPage.Sub(std::format("{}（{}）", group.substr(group.find(' ') + 1), list.size()).c_str());
+			for (const auto& [label, hash] : list)
+				page.Action(label.c_str(), [hash, label] { SpawnVehicle(hash, label); });
+		}
+	}
+
+	// Ped groups by the game's naming scheme.
+	std::string PedGroup(const ml::Model& m)
+	{
+		const auto& n = m.name;
+		if (!m.pack.empty())
+			return "0 模組角色";
+		if (n.starts_with("a_c_"))
+			return "2 動物";
+		if (n.starts_with("a_"))
+			return "1 路人";
+		if (n.starts_with("cs_") || n.starts_with("csb_") || n.starts_with("ig_"))
+			return "3 劇情角色";
+		if (n.starts_with("g_"))
+			return "4 幫派";
+		if (n.starts_with("s_"))
+			return "5 職業";
+		if (n.starts_with("u_"))
+			return "6 特殊";
+		if (n.starts_with("player_") || n.starts_with("mp_"))
+			return "7 主角與線上角色";
+		return "8 其他";
+	}
+
+	void BuildPedList(const std::vector<ml::Model>& models)
+	{
+		std::map<std::string, std::vector<std::pair<std::string, Hash>>> byGroup;
+		for (const auto& m : models)
+			byGroup[PedGroup(m)].emplace_back(m.name, m.hash);
+		g_modelPage.Clear();
+		g_modelPage.Text("任務進行中更換角色，可能讓任務無法繼續。");
+		g_modelPage.Action("恢復原本的角色", [] {
+			if (g_originalModel)
+				ChangeModel(g_originalModel, "原本的角色");
+			else
+				ml::Notify("目前就是原本的角色");
+		});
+		for (auto& [group, list] : byGroup)
+		{
+			SortLabels(list);
+			const ml::Page page = g_modelPage.Sub(std::format("{}（{}）", group.substr(group.find(' ') + 1), list.size()).c_str());
+			for (const auto& [label, hash] : list)
+				page.Action(label.c_str(), [hash, label] { ChangeModel(hash, label); });
+		}
+	}
+
+	// The loader reads the model names in the background after the game starts: false = not yet, try later.
+	bool BuildModelLists()
+	{
+		bool ready = false;
+		auto vehicles = ml::Models(ML_MODEL_VEHICLE, &ready);
+		if (!ready)
+			return false;
+		auto peds = ml::Models(ML_MODEL_PED);
+		// A model without a name has no model file in any archive: the game registers it but cannot load it.
+		const auto loadable = [](std::vector<ml::Model>& models, const char* what) {
+			const size_t all = models.size();
+			std::erase_if(models, [](const ml::Model& m) { return m.name.empty() || !STREAMING::IS_MODEL_IN_CDIMAGE(m.hash); });
+			ml::Log("{}: {} listed, {} without model files left out", what, models.size(), all - models.size());
+		};
+		loadable(vehicles, "vehicles");
+		loadable(peds, "peds");
+		BuildVehicleList(vehicles);
+		BuildPedList(peds);
+		return true;
+	}
+
 	// ---- menu ---------------------------------------------------------------------------------------
 
 	void BuildMenu()
@@ -247,10 +418,15 @@ namespace
 		g_fastRun = player.Toggle("fastRun", "快跑");
 		g_invisible = player.Toggle("invisible", "隱形");
 		g_noRagdoll = player.Toggle("noRagdoll", "不會跌倒");
+		g_modelPage = player.Sub("更換角色");
+		g_modelPage.Text("正在讀取角色清單…");
 		player.Action("補滿血量與護甲", Heal);
 		player.Action("清除通緝", [] { PLAYER::CLEAR_PLAYER_WANTED_LEVEL(PLAYER::PLAYER_ID()); });
 
 		const ml::Page vehicle = root.Sub("載具");
+		g_spawnPage = vehicle.Sub("生成載具");
+		g_spawnPage.Text("正在讀取載具清單…");
+		g_warpIn = vehicle.Toggle("warpIn", "生成後直接坐進去", true);
 		g_vehicleGod = vehicle.Toggle("vehicleGod", "載具無敵");
 		g_autoRepair = vehicle.Toggle("autoRepair", "自動修理");
 		vehicle.Action("修理並清潔", [] {
@@ -397,7 +573,7 @@ namespace
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
 {
 	ml::Init(api, ctx);
-	if (!ml::HasMenus())
+	if (!ml::HasMenus() || !ml::HasModels())
 	{
 		ml::LogError("this loader has no menu support; update ModLoader");
 		return 0;
@@ -413,11 +589,14 @@ extern "C" __declspec(dllexport) void MLMain()
 		CLOCK::PAUSE_CLOCK(true);
 	if (const int w = g_weather.Int(); w > 0 && w < static_cast<int>(kWeathers.size()))
 		MISC::SET_WEATHER_TYPE_NOW_PERSIST(kWeathers[w]);
+	bool listsBuilt = false;
 	for (uint64_t nextClock = 0;;)
 	{
 		if (ml::TickMs() >= nextClock)
 		{
 			g_hour.Set(static_cast<float>(CLOCK::GET_CLOCK_HOURS()));
+			if (!listsBuilt)
+				listsBuilt = BuildModelLists();
 			nextClock = ml::TickMs() + 1000;
 		}
 		Frame(applied);

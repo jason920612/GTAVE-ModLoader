@@ -6,12 +6,14 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <tuple>
 #include <fstream>
 #include <format>
 #include <mutex>
 
 #include "config.hpp"
 #include "log.hpp"
+#include "game/models.hpp"
 #include "paths.hpp"
 #include "ui/notify.hpp"
 
@@ -442,6 +444,21 @@ namespace loader::mods
 			ui::Notify(mod ? mod->name : "", Text(text));
 		}
 
+		int32_t ApiEnumModels(MLModelType type, MLModelVisitor fn, void* user)
+		{
+			if (!InModFiber("EnumModels", _ReturnAddress()) || !fn)
+				return -1;
+			const auto t = type == ML_MODEL_PED ? game::models::Type::Ped : game::models::Type::Vehicle;
+			// Copied first: the visitor is mod code and must not run while the table is walked.
+			std::vector<std::tuple<uint32_t, std::string, std::string>> found;
+			const int32_t n = game::models::Enumerate(t, [&](uint32_t hash, const std::string& name, const std::string& pack) {
+				found.emplace_back(hash, name, pack);
+			});
+			for (const auto& [hash, name, pack] : found)
+				fn(hash, name.c_str(), pack.c_str(), user);
+			return n;
+		}
+
 		// ---- settings of the first release: items on the root page ------------------------------
 
 		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
@@ -581,6 +598,7 @@ namespace loader::mods
 			.GetValue = ApiGetValue,
 			.SetValue = ApiSetValue,
 			.Notify = ApiNotify,
+			.EnumModels = ApiEnumModels,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

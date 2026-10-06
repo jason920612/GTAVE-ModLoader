@@ -51,6 +51,7 @@ add_library(loader SHARED
     src/loader/game/script.cpp
     src/loader/game/text.cpp
     src/loader/game/text_override.cpp
+    src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp

@@ -69,6 +69,16 @@ typedef void (*MLCallback)(void* user);
 
 #define ML_ROOT_PAGE (-1) /* the mod's own top-level page */
 
+typedef enum MLModelType
+{
+	ML_MODEL_VEHICLE = 0,
+	ML_MODEL_PED = 1,
+} MLModelType;
+
+/* `name` is the model name ("" when unknown); `pack` is the ModLoader\mods pack folder it comes from,
+ * "" for the game's own models. */
+typedef void (*MLModelVisitor)(uint32_t hash, const char* name, const char* pack, void* user);
+
 typedef struct MLApi
 {
 	uint32_t apiVersion;
@@ -132,6 +142,12 @@ typedef struct MLApi
 
 	/* Shows a short message on screen for a few seconds (UTF-8). Any thread. */
 	void (*Notify)(const char* text);
+
+	/* ---- models: check `size` before use ----
+	 * Calls `fn` for every vehicle or ped model the game has registered, add-on packs included.
+	 * MLMain or a callback only. Returns the number of models, or -1 while the loader is still reading the
+	 * model names (shortly after the game starts; try again later). */
+	int32_t (*EnumModels)(MLModelType type, MLModelVisitor fn, void* user);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);
