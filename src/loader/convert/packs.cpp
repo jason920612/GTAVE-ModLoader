@@ -17,7 +17,7 @@ namespace loader::convert
 	namespace
 	{
 		// Bump when the converters change, so cached packs are rebuilt.
-		constexpr int kConverterVersion = 11;
+		constexpr int kConverterVersion = 12;
 
 		std::mutex g_progressMutex;
 		Progress g_progress;
@@ -41,7 +41,9 @@ namespace loader::convert
 
 		// Legacy resources this converter handles, recognised by extension and the version in the entry flags
 		// (version = (virtual flags >> 28) << 4 | physical flags >> 28).
-		enum class Legacy { None, TextureDictionary, Fragment, Drawable };
+		// Unsupported: legacy versions the game cannot load and there is no converter for yet.
+		enum class Legacy { None, TextureDictionary, Fragment, Drawable, Unsupported };
+		constexpr std::pair<std::string_view, uint32_t> kUnsupported[] = {{".ypt", 68}}; // particle effects
 		Legacy LegacyKind(const Archive::Node& n)
 		{
 			if (!n.resource)
@@ -54,25 +56,43 @@ namespace loader::convert
 				return Legacy::Fragment;
 			if ((name.ends_with(".ydr") || name.ends_with(".ydd")) && version == kLegacyDrawableVersion)
 				return Legacy::Drawable;
+			for (const auto& [extension, legacy] : kUnsupported)
+				if (name.ends_with(extension) && version == legacy)
+					return Legacy::Unsupported;
 			return Legacy::None;
 		}
 
-		int CountLegacy(const Archive& archive, std::string& error)
+		std::string UnsupportedWarning(const std::string& path)
+		{
+			return std::format("{} 是舊版格式，目前還無法轉換，遊戲不會載入它", path);
+		}
+
+		// Convertible legacy files; unsupported ones are listed in `unsupported`.
+		int CountLegacy(const Archive& archive, const std::string& path, std::vector<std::string>& unsupported)
 		{
 			int count = 0;
 			const auto& nodes = archive.Nodes();
-			for (uint32_t i = 0; i < nodes.size(); ++i)
-			{
-				if (LegacyKind(nodes[i]) != Legacy::None)
-					++count;
-				else if (IsArchive(nodes[i]))
+			const auto walk = [&](auto&& self, uint32_t dir, const std::string& prefix) -> void {
+				for (const uint32_t i : nodes[dir].children)
 				{
-					Archive nested;
-					std::string nestedError;
-					if (archive.OpenNested(i, nested, nestedError))
-						count += CountLegacy(nested, error);
+					const auto& n = nodes[i];
+					const std::string inner = prefix + n.name;
+					if (n.directory)
+						self(self, i, inner + "/");
+					else if (const Legacy kind = LegacyKind(n); kind == Legacy::Unsupported)
+						unsupported.push_back(inner);
+					else if (kind != Legacy::None)
+						++count;
+					else if (IsArchive(n))
+					{
+						Archive nested;
+						std::string ignored;
+						if (archive.OpenNested(i, nested, ignored))
+							count += CountLegacy(nested, inner + "/", unsupported);
+					}
 				}
-			}
+			};
+			walk(walk, 0, path);
 			return count;
 		}
 
@@ -122,7 +142,9 @@ namespace loader::convert
 				}
 				node.kind = n.resource ? WriteNode::Kind::Resource : WriteNode::Kind::File;
 				const Legacy kind = LegacyKind(n);
-				if (kind != Legacy::None)
+				if (kind == Legacy::Unsupported)
+					job.result->warnings.push_back(UnsupportedWarning(inner));
+				else if (kind != Legacy::None)
 				{
 					SetProgress([&](Progress& p) { p.file = inner; });
 					Bytes converted;
@@ -279,9 +301,17 @@ namespace loader::convert
 			result.error.clear();
 			return result;
 		}
-		const int total = CountLegacy(archive, result.error);
+		std::vector<std::string> unsupported;
+		const int total = CountLegacy(archive, "", unsupported);
 		if (!total)
+		{
+			// Nothing to convert; still tell about legacy files the game will not load.
+			for (const auto& path : unsupported)
+				result.warnings.push_back(UnsupportedWarning(path));
+			for (const auto& w : result.warnings)
+				log::Warn("dlc pack {}: {}", name, w);
 			return result;
+		}
 
 		const auto cacheDir = paths::Get().root / L"cache" / std::filesystem::path(std::u8string(name.begin(), name.end()));
 		const auto cached = cacheDir / L"dlc.rpf";

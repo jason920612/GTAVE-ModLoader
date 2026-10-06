@@ -231,7 +231,11 @@ namespace loader::ui
 							note += std::format("，{} 個警告（滑鼠移到這裡查看）", pack.warnings.size());
 					}
 					else
+					{
 						ImGui::TextColored(kAccent, "已載入");
+						if (!pack.warnings.empty())
+							note = std::format("{} 個警告（滑鼠移到這裡查看）", pack.warnings.size());
+					}
 					ImGui::TableNextColumn();
 					ImGui::TextWrapped("%s", note.c_str());
 					if (!pack.warnings.empty() && ImGui::IsItemHovered())
