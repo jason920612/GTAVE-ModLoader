@@ -168,16 +168,49 @@ namespace property::research
 			PED::SET_PED_INTO_VEHICLE(ped, v, -1);
 			ml::Log("spawned {} as {}", name, v);
 		}
-		// Research: ModLoader\teleport.txt ("x y z [heading]") moves the player there.
-		if (std::ifstream in("ModLoader/teleport.txt"); in)
+		// Research: ModLoader\start_script.txt ("<name> <stack> [args...]") starts a game script with integer arguments.
+		if (std::ifstream in("ModLoader/start_script.txt"); in)
 		{
-			float x = 0, y = 0, z = 0, h = 0;
-			in >> x >> y >> z >> h;
+			std::string name;
+			int stack = 1424;
+			in >> name >> stack;
+			std::vector<int64_t> args;
+			for (int64_t a; in >> a;)
+				args.push_back(a);
+			in.close();
+			std::error_code ec;
+			std::filesystem::remove("ModLoader/start_script.txt", ec);
+			SCRIPT::REQUEST_SCRIPT(name.c_str());
+			for (int i = 0; i < 200 && !SCRIPT::HAS_SCRIPT_LOADED(name.c_str()); ++i)
+				ml::Wait(10);
+			const int thread = BUILTIN::START_NEW_SCRIPT_WITH_ARGS(name.c_str(), reinterpret_cast<Any*>(args.data()), static_cast<int>(args.size()), stack);
+			SCRIPT::SET_SCRIPT_AS_NO_LONGER_NEEDED(name.c_str());
+			ml::Log("started {} with {} argument(s): thread {}", name, args.size(), thread);
+			for (int t = 1; t <= 5; ++t)
+			{
+				ml::Wait(1000);
+				ml::Log("{}: {} thread(s) after {} s", name,
+				    SCRIPT::GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH(MISC::GET_HASH_KEY(name.c_str())), t);
+			}
+		}
+		// Research: ModLoader\teleport.txt ("x y z [heading]") moves the player there.
+		float x = 0, y = 0, z = 0, h = 0;
+		if (std::ifstream in("ModLoader/teleport.txt"); in && in >> x >> y >> z) // (an empty file is still being written)
+		{
+			in >> h;
 			in.close();
 			std::error_code ec;
 			std::filesystem::remove("ModLoader/teleport.txt", ec);
 			const Ped ped = PLAYER::PLAYER_PED_ID();
 			STREAMING::REQUEST_COLLISION_AT_COORD(x, y, z);
+			if (const Interior interior = INTERIOR::GET_INTERIOR_AT_COORDS(x, y, z); interior && INTERIOR::IS_INTERIOR_DISABLED(interior))
+			{
+				INTERIOR::DISABLE_INTERIOR(interior, false);
+				INTERIOR::PIN_INTERIOR_IN_MEMORY(interior);
+				for (int i = 0; i < 100 && !INTERIOR::IS_INTERIOR_READY(interior); ++i)
+					ml::Wait(50);
+				ml::Log("teleport: enabled interior {}", interior);
+			}
 			ENTITY::SET_ENTITY_COORDS(ped, x, y, z, false, false, false, false);
 			ENTITY::SET_ENTITY_HEADING(ped, h);
 			ml::Wait(500);

@@ -29,6 +29,21 @@ namespace property
 	// Properties the character owns (with purchases not saved yet).
 	std::set<int>& Owned(int character);
 
+	struct Place
+	{
+		float x, y, z, heading;
+	};
+	bool Near(const Vector3& a, float x, float y, float z, float radius);
+	// Screen fade: out waits until black (at most 0.6 s), in returns at once.
+	void Fade(bool out);
+	// Loads the interior around a position and waits for it (at most 5 s); a disabled interior is enabled until
+	// RestoreInterior.
+	void LoadAt(float x, float y, float z);
+	void RestoreInterior();
+	void MovePlayer(const Place& to);
+	// The blue cylinder marking an interaction point (this frame).
+	void Marker(float x, float y, float z, float size = 1.2f);
+
 	// On-screen help text for this frame.
 	void Help(const std::string& text);
 	// A notification above the minimap.
@@ -46,6 +61,22 @@ namespace property::garage
 	bool Changed();
 	// The ownership or the character changed: blips are rebuilt.
 	void Refresh();
+	// Into the garage on foot (the elevator from the apartment).
+	void EnterOnFoot(int id);
+	bool Inside();
+}
+
+// Apartments: entering and leaving, sleeping and saving, the wardrobe, the elevator (apartment.cpp).
+namespace property::apartment
+{
+	// Game thread (MLMain), every frame.
+	void Tick();
+	void Refresh();
+	// Into the apartment (the elevator from the garage).
+	void Enter(int id);
+	bool Inside();
+	// The wardrobe page's functions (MLOnLoad).
+	void RegisterWebFunctions();
 }
 
 // Research aids (research.cpp).

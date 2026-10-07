@@ -20,10 +20,6 @@ namespace property::garage
 	{
 		// ---- the three Online garage interiors (startup.ysc @46170, filled per garage size) ------------
 
-		struct Place
-		{
-			float x, y, z, heading;
-		};
 		struct Layout
 		{
 			Place arrive;                  // where the player appears
@@ -241,55 +237,6 @@ namespace property::garage
 		bool g_refresh = true;
 		int g_justLeft = 0; // no prompt at this entrance until the player has moved off it
 
-		bool Near(const Vector3& a, float x, float y, float z, float radius)
-		{
-			const float dx = a.x - x, dy = a.y - y, dz = a.z - z;
-			return dx * dx + dy * dy + dz * dz < radius * radius;
-		}
-
-		void Fade(bool out)
-		{
-			if (out)
-			{
-				CAMERA::DO_SCREEN_FADE_OUT(500);
-				for (int i = 0; i < 60 && !CAMERA::IS_SCREEN_FADED_OUT(); ++i)
-					ml::Wait(10);
-			}
-			else
-				CAMERA::DO_SCREEN_FADE_IN(500);
-		}
-
-		// Story mode keeps the 2 and 6 car garage interiors disabled: enabled while the player is in one, then put back.
-		Interior g_enabled = 0;
-		void RestoreInterior()
-		{
-			if (g_enabled)
-				INTERIOR::DISABLE_INTERIOR(g_enabled, true);
-			g_enabled = 0;
-		}
-
-		// Loads the interior around a position and waits for it (at most 5 seconds).
-		void LoadAt(float x, float y, float z)
-		{
-			STREAMING::REQUEST_COLLISION_AT_COORD(x, y, z);
-			const Interior interior = INTERIOR::GET_INTERIOR_AT_COORDS(x, y, z);
-			if (interior)
-			{
-				if (INTERIOR::IS_INTERIOR_DISABLED(interior))
-				{
-					INTERIOR::DISABLE_INTERIOR(interior, false);
-					g_enabled = interior;
-				}
-				INTERIOR::PIN_INTERIOR_IN_MEMORY(interior);
-				for (int i = 0; i < 100 && !INTERIOR::IS_INTERIOR_READY(interior); ++i)
-					ml::Wait(50);
-			}
-			STREAMING::NEW_LOAD_SCENE_START_SPHERE(x, y, z, 50.0f, 0);
-			for (int i = 0; i < 100 && !STREAMING::IS_NEW_LOAD_SCENE_LOADED(); ++i)
-				ml::Wait(50);
-			STREAMING::NEW_LOAD_SCENE_STOP();
-		}
-
 		Vehicle SpawnVehicle(const Stored& s, const Place& at)
 		{
 			STREAMING::REQUEST_MODEL(s.model);
@@ -406,10 +353,10 @@ namespace property::garage
 			for (const int id : Owned(c))
 			{
 				const Vector3 at = Entrance(id);
-				if (!Set(at))
+				if (!Set(at) || TierOf(id) >= 4) // apartments: the apartment's own blip (apartment.cpp)
 					continue;
 				const Blip blip = HUD::ADD_BLIP_FOR_COORD(at.x, at.y, at.z);
-				HUD::SET_BLIP_SPRITE(blip, TierOf(id) >= 4 ? 40 : 357); // safehouse / garage
+				HUD::SET_BLIP_SPRITE(blip, 357); // garage
 				HUD::SET_BLIP_AS_SHORT_RANGE(blip, true);
 				HUD::BEGIN_TEXT_COMMAND_SET_BLIP_NAME("STRING");
 				HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(Name(id).c_str());
@@ -422,6 +369,16 @@ namespace property::garage
 	void Refresh()
 	{
 		g_refresh = true;
+	}
+
+	void EnterOnFoot(int id)
+	{
+		Enter(id, 0);
+	}
+
+	bool Inside()
+	{
+		return g_inside != 0;
 	}
 
 	bool Changed()
@@ -469,7 +426,7 @@ namespace property::garage
 			g_refresh = false;
 			RebuildBlips(c);
 		}
-		if (c < 0)
+		if (c < 0 || apartment::Inside())
 			return;
 		const Player player = PLAYER::PLAYER_ID();
 		const Ped ped = PLAYER::PLAYER_PED_ID();
@@ -511,9 +468,19 @@ namespace property::garage
 				    false, 2, false, nullptr, nullptr, false);
 				if (Near(at, layout.exit.x, layout.exit.y, layout.exit.z, 1.5f))
 				{
-					Help("按 ~INPUT_CONTEXT~ 離開車庫。");
+					const bool apartment = TierOf(g_inside) >= 4;
+					Help(apartment ? "按 ~INPUT_CONTEXT~ 離開車庫\n按 ~INPUT_CONTEXT_SECONDARY~ 搭電梯回公寓" : "按 ~INPUT_CONTEXT~ 離開車庫。");
 					if (PAD::IS_CONTROL_JUST_PRESSED(0, 51))
 						Leave(-1);
+					else if (apartment && PAD::IS_CONTROL_JUST_PRESSED(0, 52))
+					{
+						const int id = g_inside;
+						Fade(true);
+						ClearSpawned();
+						g_inside = 0;
+						RestoreInterior();
+						apartment::Enter(id);
+					}
 				}
 			}
 			return;

@@ -291,6 +291,7 @@ namespace property
 		Owned(c).insert(id);
 		g_ownedChanged = true;
 		garage::Refresh();
+		apartment::Refresh();
 		++g_purchases;
 		ml::Log("character {} bought property {} for ${} (cash ${} -> ${})", c, id, price, cash, Cash());
 		return std::format("{{\"ok\":true,\"error\":\"\",\"cash\":{}}}", Cash());
@@ -310,6 +311,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	research::OnLoad();
 	ml::web::Function("property.list", [](const std::string&) { return List(); });
 	ml::web::Function("property.buy", [](const std::string& args) { return Buy(args); });
+	apartment::RegisterWebFunctions();
 	ml::web::Function("property.cash", [](const std::string&) { return std::to_string(Cash()); });
 	return 1;
 }
@@ -338,6 +340,7 @@ extern "C" __declspec(dllexport) void MLMain()
 			{
 				DropOwnedChanges();
 				garage::Refresh();
+				apartment::Refresh();
 				ml::Log("save loaded: unsaved purchases dropped");
 			}
 			if (loading && garage::Changed())
@@ -365,6 +368,7 @@ extern "C" __declspec(dllexport) void MLMain()
 			}
 		}
 		garage::Tick();
+		apartment::Tick();
 		ml::Wait(0);
 	}
 }
