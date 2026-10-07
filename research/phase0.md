@@ -475,3 +475,20 @@
 - 準確度（`relocate eval`：一半的字串錨點留作答案）：同一版本 5382 對、0 錯、3 未找到；強化版 → 舊版 3235 對、93 錯、
   813 未找到（找到的正確率 97%）。舊版的 `fiStream::Open`（`0x1367484`）由強化版的 `0x102620` 正確找到並產生新特徵碼。
   實際的強化版小更新（同一編譯器）應接近同版本的結果。
+
+## 28. 故事模式使用線上版 Dynasty 8 地產網站（2026-10-07，進行中）
+
+- 手機 / 電腦瀏覽器是 `appinternet`（Dynasty 8 = 網站 18；Static 659 網站、661 頁面、628 瀏覽器影片）。它在
+  Global 77414 為 0 時結束；每幀的關閉檢查（`@3234013`）包含 `IS_SCREEN_FADED_OUT`，所以要等畫面淡入後再開。
+- 原生函式覆寫（新 API `OverrideScriptNative`，只對指定腳本的 native 表）：
+  - `NETWORK_IS_GAME_IN_PROGRESS` → 1：顯示線上版首頁。
+  - `NET_GAMESERVER_USE_SERVER_TRANSACTIONS` → 0（主機版的路徑）：價格改由物業表 Global 1312440[id].32 取得
+    （故事模式中已有資料，132 筆）；伺服器目錄在故事模式中無效（商品鍵算出 `FFFFFFFF`、價格 -1 → 維護中頁面）。
+  - 金錢：`NETWORK_GET_VC_BANK_BALANCE` → 目前角色的 `SPn_TOTAL_CASH`，錢包 0，`NETWORK_CAN_SPEND_MONEY(2)`
+    依此判斷；`NETWORK_BUY_PROPERTY(價格, GET_HASH_KEY("MP_PROP_<id>"), 0, 1)` 由模組扣錢並記錄物業 id。
+- 起始頁：Global 77528 = 7 時以 Global 77397（文字標籤）為網址；`WWW_DYNASTY8REALESTATE_COM_S_LOS_D_SANTOS`
+  直接建立地產列表（`@3144282`，條件 Static659 = 18、661 ∈ {1,2} 或 663、Global 80362、77588）。
+- 實測：列表（86 筆、地圖、價位分類）、詳細頁（照片、說明）、內裝選擇、資金不足提示、購買成功頁都正常；
+  購買 $87,000 公寓後富蘭克林的錢正確扣除。列表卡片多數空白（照片 / 文字未顯示，詳細頁正常），待查。
+- 追蹤工具（`src/loader/debug/scripttrace`，`ModLoader\debug_trace.txt`）：替換 native 表項目會讓部分 native
+  （含 `GET_GAME_TIMER`）行為改變，故改為讀取腳本執行緒的 static（新 API `ScriptStatic`）觀察狀態。

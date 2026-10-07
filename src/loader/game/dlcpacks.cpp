@@ -543,7 +543,10 @@ namespace loader::game::dlcpacks
 						const auto& node = a.Nodes()[i];
 						if (command == "extractall")
 						{
-							if (!node.name.ends_with(wanted))
+							// "<path fragment>*<extension>" limits it to paths containing the fragment.
+							const size_t star = wanted.find('*');
+							if (!node.name.ends_with(star == std::string::npos ? wanted : wanted.substr(star + 1)) ||
+							    (star != std::string::npos && path.find(wanted.substr(0, star)) == std::string::npos))
 								return;
 							convert::Bytes data;
 							std::string e;

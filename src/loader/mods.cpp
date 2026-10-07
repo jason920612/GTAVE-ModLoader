@@ -15,6 +15,7 @@
 #include "config.hpp"
 #include "log.hpp"
 #include "game/models.hpp"
+#include "convert/resource.hpp"
 #include "game/scripts.hpp"
 #include "paths.hpp"
 #include "ui/notify.hpp"
@@ -505,6 +506,55 @@ namespace loader::mods
 			return game::scripts::NativeIndex(id, reinterpret_cast<const void*>(game::natives::FindHandler(hash)));
 		}
 
+		int32_t ApiOverrideScriptNative(const char* script, uint64_t hash, void (*fn)(MLNativeCall*, void*), void* user)
+		{
+			Mod* mod = g_loading ? g_loading : g_current;
+			if (!mod || GetCurrentThreadId() != g_gameThreadId || !script || !fn)
+			{
+				ModLog(ModFromAddress(_ReturnAddress()), ML_LOG_ERROR, "OverrideScriptNative called outside MLOnLoad / MLMain; ignored");
+				return 0;
+			}
+			auto* handler = reinterpret_cast<void*>(game::natives::FindHandler(hash));
+			if (!handler)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("OverrideScriptNative: native {:016X} is not known", hash));
+				return 0;
+			}
+			auto id = std::make_shared<int32_t>(0);
+			*id = game::scripts::AddNativeOverride(convert::Joaat(script), handler, [mod, fn, user, id](void* context, void*) {
+				auto* ctx = static_cast<game::natives::CallContext*>(context);
+				MLNativeCall call{ctx->returnValue, ctx->argCount, ctx->args, context, *id};
+				Mod* previous = g_current;
+				g_current = mod; // natives called from the override run as this mod's
+				fn(&call, user);
+				g_current = previous;
+			});
+			if (!*id)
+				ModLog(mod, ML_LOG_ERROR, "OverrideScriptNative: too many overrides");
+			else
+				ModLog(mod, ML_LOG_INFO, std::format("native {:016X} overridden for script {}", hash, script));
+			return *id;
+		}
+
+		void ApiCallOriginalNative(MLNativeCall* call)
+		{
+			if (!call)
+				return;
+			game::scripts::CallOriginal(call->override, call->context);
+		}
+
+		void ApiRemoveScriptNativeOverride(int32_t id)
+		{
+			game::scripts::RemoveNativeOverride(id);
+		}
+
+		int64_t* ApiScriptStatic(int32_t id, uint32_t index)
+		{
+			if (!InModFiber("ScriptStatic", _ReturnAddress()))
+				return nullptr;
+			return game::scripts::Static(id, index);
+		}
+
 		// ---- settings of the first release: items on the root page ------------------------------
 
 		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
@@ -650,6 +700,10 @@ namespace loader::mods
 			.GetScriptCode = ApiGetScriptCode,
 			.RedirectScript = ApiRedirectScript,
 			.ScriptNativeIndex = ApiScriptNativeIndex,
+			.OverrideScriptNative = ApiOverrideScriptNative,
+			.CallOriginalNative = ApiCallOriginalNative,
+			.RemoveScriptNativeOverride = ApiRemoveScriptNativeOverride,
+			.ScriptStatic = ApiScriptStatic,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

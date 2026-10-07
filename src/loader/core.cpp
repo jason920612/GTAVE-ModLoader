@@ -19,6 +19,7 @@
 #include "game/models.hpp"
 #include "game/scripts.hpp"
 #include "debug/hangdump.hpp"
+#include "debug/scripttrace.hpp"
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/pools.hpp"
@@ -266,6 +267,10 @@ namespace loader::core
 			// The loader menu owns keyboard/mouse while it is open.
 			if (ui::CapturesInput())
 				CallNative(kDisableAllControlActions, 0);
+			// Mods' native overrides are taken out in GTA Online, like the mods themselves.
+			game::scripts::ApplyNativeOverrides(!state::online);
+			if (!state::online)
+				debug::scripttrace::Tick();
 			if (!state::online)
 				mods::Tick();
 		}

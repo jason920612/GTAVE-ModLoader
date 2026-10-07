@@ -79,6 +79,16 @@ typedef enum MLModelType
  * "" for the game's own models. */
 typedef void (*MLModelVisitor)(uint32_t hash, const char* name, const char* pack, void* user);
 
+/* One call of an overridden native. */
+typedef struct MLNativeCall
+{
+	uint64_t* result;  /* return value slot(s) */
+	uint32_t argCount;
+	uint64_t* args;    /* arguments: integers, floats in the low 32 bits, pointers */
+	void* context;     /* loader internal */
+	int32_t override;  /* loader internal */
+} MLNativeCall;
+
 typedef struct MLApi
 {
 	uint32_t apiVersion;
@@ -166,6 +176,18 @@ typedef struct MLApi
 	/* Index of a native (public hash) in the thread's program native table, as used by its NATIVE
 	 * instructions; -1 when the program does not use it. */
 	int32_t (*ScriptNativeIndex)(int32_t id, uint64_t hash);
+
+	/* ---- native overrides (added with OverrideScriptNative; check `size`) ----
+	 * Replaces a native (public hash) for one game script, by name (e.g. "appinternet"): whenever that script calls
+	 * it, `fn` runs instead, on the game thread, with `call` describing the call. `fn` may set *call->result, call
+	 * other natives, and run the game's own handler with CallOriginalNative. Applies to every copy of the script
+	 * that is loaded, now or later. Returns an id (> 0) for RemoveScriptNativeOverride, or 0. MLOnLoad or MLMain. */
+	int32_t (*OverrideScriptNative)(const char* script, uint64_t hash, void (*fn)(MLNativeCall* call, void* user), void* user);
+	void (*CallOriginalNative)(MLNativeCall* call);
+	void (*RemoveScriptNativeOverride)(int32_t id);
+	/* Address of static variable `index` of the script thread `id` (see EnumScripts), or NULL. Valid until the
+	 * thread ends; read it again after each Wait. */
+	int64_t* (*ScriptStatic)(int32_t id, uint32_t index);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

@@ -289,6 +289,52 @@ namespace ml
 	{
 		// Index of a native in the thread's program (see MLApi::ScriptNativeIndex).
 		inline int32_t NativeIndex(int32_t id, uint64_t hash) { return Available() ? Api().ScriptNativeIndex(id, hash) : -1; }
+
+		// Static variable of a running script thread (see MLApi::ScriptStatic), or nullptr.
+		inline int64_t* Static(int32_t id, uint32_t index)
+		{
+			return Api().size >= offsetof(MLApi, ScriptStatic) + sizeof(void*) ? Api().ScriptStatic(id, index) : nullptr;
+		}
+
+		inline bool OverridesAvailable() { return Api().size >= offsetof(MLApi, RemoveScriptNativeOverride) + sizeof(void*); }
+
+		// One call of an overridden native: arguments in, result out, and the game's own handler.
+		struct NativeCall
+		{
+			MLNativeCall* raw;
+			template<class T = int64_t>
+			T Arg(uint32_t i) const
+			{
+				T v{};
+				if (i < raw->argCount)
+					std::memcpy(&v, &raw->args[i], sizeof(T));
+				return v;
+			}
+			template<class T>
+			void Return(T value)
+			{
+				std::memcpy(raw->result, &value, sizeof(T) < 8 ? sizeof(T) : 8);
+			}
+			void CallOriginal() { Api().CallOriginalNative(raw); }
+		};
+
+		// Replaces `hash` for the game script `script` (see MLApi::OverrideScriptNative). The function lives as long as
+		// the mod. Returns the override id, or 0.
+		inline int32_t OverrideNative(const char* script, uint64_t hash, std::function<void(NativeCall&)> fn)
+		{
+			if (!OverridesAvailable())
+				return 0;
+			auto* stored = new std::function<void(NativeCall&)>(std::move(fn));
+			return Api().OverrideScriptNative(script, hash, [](MLNativeCall* call, void* user) {
+				NativeCall c{call};
+				(*static_cast<std::function<void(NativeCall&)>*>(user))(c);
+			}, stored);
+		}
+		inline void RemoveOverride(int32_t id)
+		{
+			if (OverridesAvailable())
+				Api().RemoveScriptNativeOverride(id);
+		}
 	}
 
 	// Short on-screen message.

@@ -3,6 +3,8 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
+#include <utility>
 #include <cstring>
 #include <format>
 #include <map>
@@ -158,6 +160,15 @@ namespace loader::game::scripts
 		return -1;
 	}
 
+	int64_t* Static(int32_t id, uint32_t index)
+	{
+		uint8_t* thread = Thread(id);
+		if (!thread || At<uint32_t>(thread, kState) >= 2 || index >= At<uint32_t>(thread, kStackSize))
+			return nullptr;
+		auto* stack = At<int64_t*>(thread, kStack);
+		return stack ? stack + index : nullptr;
+	}
+
 	bool RedirectThread(int32_t id, uint32_t address, std::span<const int64_t> args, Redirect mode, std::string& error)
 	{
 		uint8_t* thread = Thread(id);
@@ -223,5 +234,114 @@ namespace loader::game::scripts
 		At<uint32_t>(thread, kState) = kRunning; // a pending WAIT would stop it after its first native
 		log::Info("scripts: thread {} continues at {} ({})", id, address, mode == Redirect::Call ? "call" : "main frame");
 		return true;
+	}
+
+	namespace
+	{
+		struct Override
+		{
+			uint32_t program = 0;
+			void* original = nullptr;
+			NativeOverride fn;
+			bool used = false;
+		};
+		constexpr int kOverrideSlots = 64;
+		Override g_overrides[kOverrideSlots];
+
+		// Native handlers get the call context in rcx; the interpreter may pass more in rdx, r8 and r9, which are kept
+		// for the game's handler.
+		using NativeHandler = void (*)(void* context, void* a, void* b, void* c);
+		thread_local void* t_extra[3];
+
+		template<int N>
+		void Thunk(void* context, void* a, void* b, void* c)
+		{
+			Override& o = g_overrides[N];
+			void* saved[3] = {t_extra[0], t_extra[1], t_extra[2]};
+			t_extra[0] = a, t_extra[1] = b, t_extra[2] = c;
+			if (o.used && o.fn)
+				o.fn(context, o.original);
+			else if (o.original)
+				reinterpret_cast<NativeHandler>(o.original)(context, a, b, c);
+			t_extra[0] = saved[0], t_extra[1] = saved[1], t_extra[2] = saved[2];
+		}
+
+		template<int... N>
+		constexpr auto MakeThunks(std::integer_sequence<int, N...>)
+		{
+			return std::array<NativeHandler, sizeof...(N)>{&Thunk<N>...};
+		}
+		constexpr auto kThunks = MakeThunks(std::make_integer_sequence<int, kOverrideSlots>{});
+
+		// Replaces `from` with `to` in the program's native table.
+		void Patch(uint32_t programHash, void* from, void* to)
+		{
+			uint8_t* program = ProgramByHash(programHash);
+			if (!program)
+				return;
+			auto** natives = At<void**>(program, kNatives);
+			const uint32_t count = At<uint32_t>(program, kNativeCount);
+			for (uint32_t i = 0; natives && i < count; ++i)
+				if (natives[i] == from)
+					natives[i] = to;
+		}
+	}
+
+	uint8_t* ProgramByHash(uint32_t hash)
+	{
+		if (!g_programs)
+			return nullptr;
+		for (uint8_t i = g_programs[1 + (hash & 0x1F)]; i; i = g_programs[0x21 + i])
+		{
+			auto* p = At<uint8_t*>(g_programs, 0xD8 + 8 * static_cast<size_t>(i));
+			if (p && At<uint32_t>(p, kProgramHash) == hash)
+				return p;
+		}
+		return nullptr;
+	}
+
+	int32_t AddNativeOverride(uint32_t programHash, void* original, NativeOverride fn)
+	{
+		for (int i = 0; i < kOverrideSlots; ++i)
+			if (!g_overrides[i].used)
+			{
+				g_overrides[i] = {programHash, original, std::move(fn), true};
+				Patch(programHash, original, reinterpret_cast<void*>(kThunks[i]));
+				return i + 1;
+			}
+		return 0;
+	}
+
+	void RemoveNativeOverride(int32_t id)
+	{
+		if (id < 1 || id > kOverrideSlots || !g_overrides[id - 1].used)
+			return;
+		Override& o = g_overrides[id - 1];
+		Patch(o.program, reinterpret_cast<void*>(kThunks[id - 1]), o.original);
+		o.used = false; // the thunk keeps calling the original if the game still holds it
+		o.fn = nullptr;
+	}
+
+	void* OverrideOriginal(int32_t id)
+	{
+		return id >= 1 && id <= kOverrideSlots ? g_overrides[id - 1].original : nullptr;
+	}
+
+	void CallOriginal(int32_t id, void* context)
+	{
+		if (void* original = OverrideOriginal(id))
+			reinterpret_cast<NativeHandler>(original)(context, t_extra[0], t_extra[1], t_extra[2]);
+	}
+
+	void ApplyNativeOverrides(bool enabled)
+	{
+		for (int i = 0; i < kOverrideSlots; ++i)
+			if (g_overrides[i].used)
+			{
+				if (enabled)
+					Patch(g_overrides[i].program, g_overrides[i].original, reinterpret_cast<void*>(kThunks[i]));
+				else
+					Patch(g_overrides[i].program, reinterpret_cast<void*>(kThunks[i]), g_overrides[i].original);
+			}
 	}
 }
