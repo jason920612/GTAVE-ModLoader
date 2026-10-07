@@ -1,36 +1,113 @@
-// Property mod (work in progress): buy GTA Online apartments and garages in story mode through the phone's
-// Dynasty 8 website (research/phase0.md §28).
+// Property mod (work in progress): buy GTA Online apartments and garages in story mode on the Dynasty 8 website of
+// the loader's browser (web\www.dynasty8realestate.com; research/phase0.md §28, §29).
 //
-// The phone browser (appinternet) runs its Online Dynasty 8 pages: it is told the game is in progress, uses the
-// console-style purchase path (prices from the game's property table), sees the story character's cash as its bank
-// balance, and keeps its Online property stats in this mod's data folder, one set per story character.
+// Pages call:
+//   property.list()   -> { character, cash, properties: [ { id, name, description, price, kind, tier, cars, area,
+//                                                            x, y, z, photo, owned } ] }
+//   property.buy(id)  -> { ok, error, cash }
+// The property data is the game's own (Global 1312440, the Online property table, which story mode fills too); each
+// story character owns separately, paying with their own money. Ownership follows the game's save: it is written when
+// the game saves and dropped when a save is loaded without that, like the money paid.
 #define NOMINMAX
 #include <Windows.h>
 #include <ShlObj.h>
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <modloader/natives.hpp>
 
-ML_MOD_INFO("Property", "0.0.2", "ModLoader", "Buy apartments and garages (work in progress)")
+ML_MOD_INFO("Property", "0.1.0", "ModLoader", "Buy apartments and garages on the Dynasty 8 website")
 
 namespace
 {
-	constexpr uint64_t kNetworkIsGameInProgress = 0x10FAB35428CCC9D7ULL;
-	constexpr uint64_t kBuyProperty = 0x650A08A280870AF6ULL;
-	constexpr uint64_t kUseServerTransactions = 0x7D2708796355B20BULL;
-	constexpr uint64_t kBankBalance = 0x76EF28DA05EA395AULL;
-	constexpr uint64_t kWalletBalance = 0xA40F9C2623F6A8B5ULL;
-	constexpr uint64_t kCanSpendMoney = 0xAB3CAA6B422164DAULL;
-	constexpr uint64_t kCanSpendMoney2 = 0x7303E27CC6532080ULL;
+	// ---- the game's property table ---------------------------------------------------------------
+
+	constexpr uint32_t kPropertyTable = 1312440; // array of 1951-slot entries, index = property id
+	constexpr uint32_t kEntrySize = 1951;
+	constexpr int kLastProperty = 85;           // 1..85: apartments, houses and garages (then yachts, offices, ...)
+
+	// Category of a property type (appinternet @2376981): 6 / 5 / 4 = high / medium / low end apartment,
+	// 3 / 2 / 1 = 10 / 6 / 2 car garage.
+	int Tier(int type)
+	{
+		static const std::vector<std::pair<int, std::vector<int>>> tiers{
+		    {6, {1, 2, 3, 4, 5, 6, 7, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 61, 62, 63, 64, 65, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85}},
+		    {5, {8, 9, 10, 11, 12, 13, 14, 15, 16, 66, 67, 68, 69}},
+		    {4, {17, 18, 19, 20, 21, 22, 23, 70, 71, 72}},
+		    {3, {24, 26, 27, 54, 56, 57}},
+		    {2, {25, 28, 32, 33, 50, 52, 53, 55}},
+		    {1, {29, 30, 31, 44, 45, 46, 47, 48, 49, 51, 58, 59, 60}},
+		};
+		for (const auto& [tier, types] : tiers)
+			if (std::find(types.begin(), types.end(), type) != types.end())
+				return tier;
+		return 0;
+	}
+	// Photo texture (dictionary and texture of the same name) of a property type (appinternet @3058153).
+	std::string Photo(int type)
+	{
+		static const int numbers[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+		    31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 57, 59, 60, 61, 62, 63, 64, 65, 66, 1, 7, 40, 42, 38, 72,
+		    73, 74, 75, 76, 77, 78, 80, 81, 82, 83, 84, 85, 86, 87, 89, 90, 91, 92, 93};
+		return type > 0 && type < static_cast<int>(std::size(numbers)) ? std::format("DYN_MP_{}", numbers[type]) : std::string();
+	}
+
+	int64_t* Entry(int id)
+	{
+		return ml::scripts::Global(kPropertyTable + 1 + id * kEntrySize);
+	}
+	int Price(int id)
+	{
+		const int64_t* e = Entry(id);
+		return e ? static_cast<int>(e[32]) : 0;
+	}
+	bool Purchasable(int id)
+	{
+		const int64_t* e = Entry(id);
+		return id >= 1 && id <= kLastProperty && e && e[32] > 0 && Tier(static_cast<int>(e[31])) > 0;
+	}
+
+	// Text of a game label in the game's language ("" when there is none); "µ" (the game's non-breaking space) -> " ".
+	std::string Text(const char* label)
+	{
+		if (!label || !*label || !HUD::DOES_TEXT_LABEL_EXIST(label))
+			return {};
+		std::string s = HUD::GET_FILENAME_FOR_AUDIO_CONVERSATION(label);
+		for (size_t at; (at = s.find("\xC2\xB5")) != std::string::npos;)
+			s.replace(at, 2, " ");
+		return s;
+	}
+
+	std::string Json(const std::string& s)
+	{
+		std::string out = "\"";
+		for (const char c : s)
+			switch (c)
+			{
+			case '"': out += "\\\""; break;
+			case '\\': out += "\\\\"; break;
+			case '\n': out += "\\n"; break;
+			case '\r': break;
+			case '\t': out += "\\t"; break;
+			default:
+				if (static_cast<unsigned char>(c) < 0x20)
+					out += std::format("\\u{:04x}", c);
+				else
+					out += c;
+			}
+		return out + "\"";
+	}
+
+	// ---- the player -------------------------------------------------------------------------
 
 	// Story character of the player (0 Michael, 1 Franklin, 2 Trevor), or -1.
 	int Character()
@@ -42,7 +119,6 @@ namespace
 		return -1;
 	}
 	Hash CashStat(int character) { return MISC::GET_HASH_KEY(std::format("SP{}_TOTAL_CASH", character).c_str()); }
-	// The story character's money: the browser's Online balance.
 	int Cash()
 	{
 		const int c = Character();
@@ -51,72 +127,50 @@ namespace
 			STATS::STAT_GET_INT(CashStat(c), &value, -1);
 		return value;
 	}
-	// Property id (1..131) of an "MP_PROP_<id>" name hash, or 0.
-	int PropertyOfHash(Hash hash)
+
+	// ---- ownership: data\owned_<character>.txt, following the game's save -----------------------
+
+	std::set<int> g_owned[3]; // with changes not saved yet
+	bool g_ownedLoaded[3] = {};
+	bool g_ownedChanged = false; // since the last game save
+	std::atomic<int> g_purchases = 0;
+
+	std::filesystem::path OwnedFile(int character)
 	{
-		for (int id = 1; id <= 131; ++id)
-			if (MISC::GET_HASH_KEY(std::format("MP_PROP_{}", id).c_str()) == hash)
-				return id;
-		return 0;
+		return std::filesystem::path(ml::Context().dataDir) / std::format("owned_{}.txt", character);
 	}
-
-	std::atomic<int> g_buys = 0;
-
-	// Online character stats seen by the browser (property ownership and the like) are kept by this mod, one set per
-	// story character, in data\stats_<character>.txt ("hash value" lines). The real Online stats are never touched.
-	// Changes follow the game's save: they are written when the game saves (a story save file changes) and dropped
-	// when a save is loaded without that (a loading screen), like the money paid for them.
-	constexpr uint64_t kStatHashForCharacterStat = 0xD69CE161FE614531ULL;
-	constexpr uint64_t kStatGetInt = 0x767FBC2AC802EF3DULL;
-	constexpr uint64_t kStatSetInt = 0xB3271D7AB655B441ULL;
-	constexpr uint64_t kStatGetBool = 0x11B5E6D2AE73F48EULL;
-	constexpr uint64_t kStatSetBool = 0x4B33C4243DE0C432ULL;
-
-	std::set<uint32_t> g_onlineStats;          // hashes the browser built for Online character stats
-	std::map<uint32_t, int> g_stats[3];        // per story character, with changes not saved yet
-	bool g_statsLoaded[3] = {};
-	bool g_statsChanged = false;               // since the last game save
-
-	std::filesystem::path StatsFile(int character)
+	std::set<int>& Owned(int c)
 	{
-		return std::filesystem::path(ml::Context().dataDir) / std::format("stats_{}.txt", character);
-	}
-	std::map<uint32_t, int>* Stats()
-	{
-		const int c = Character();
-		if (c < 0)
-			return nullptr;
-		if (!g_statsLoaded[c])
+		if (!g_ownedLoaded[c])
 		{
-			g_statsLoaded[c] = true;
-			std::ifstream in(StatsFile(c));
-			for (uint32_t hash; in >> std::hex >> hash;)
-				if (int value; in >> std::dec >> value)
-					g_stats[c][hash] = value;
+			g_ownedLoaded[c] = true;
+			std::ifstream in(OwnedFile(c));
+			for (int id; in >> id;)
+				g_owned[c].insert(id);
 		}
-		return &g_stats[c];
+		return g_owned[c];
 	}
 	// The game saved: keep the changes.
-	void CommitStats()
+	void CommitOwned()
 	{
 		for (int c = 0; c < 3; ++c)
-			if (g_statsLoaded[c])
+			if (g_ownedLoaded[c])
 			{
-				std::ofstream out(StatsFile(c), std::ios::trunc);
-				for (const auto& [hash, value] : g_stats[c])
-					out << std::format("{:08X} {}\n", hash, value);
+				std::ofstream out(OwnedFile(c), std::ios::trunc);
+				for (const int id : g_owned[c])
+					out << id << "\n";
 			}
-		g_statsChanged = false;
+		g_ownedChanged = false;
 	}
 	// A save was loaded: back to what was saved.
-	void DropStatChanges()
+	void DropOwnedChanges()
 	{
 		for (int c = 0; c < 3; ++c)
 		{
-			g_stats[c].clear();
-			g_statsLoaded[c] = false;
+			g_owned[c].clear();
+			g_ownedLoaded[c] = false;
 		}
-		g_statsChanged = false;
+		g_ownedChanged = false;
 	}
 
 	// Newest change time of the story save files (Documents\Rockstar Games\GTAV Enhanced\Profiles\*\SGTA5*).
@@ -138,214 +192,107 @@ namespace
 					newest = std::max(newest, file.last_write_time(ec));
 		return newest;
 	}
-	void OverrideOnlineStats(const char* script)
+
+	// Story mode's own autosave request (what the game's scripts do, e.g. appinternet @27069): the autosave_controller
+	// script saves when it can (unless autosave is off in the settings).
+	bool RequestAutosave()
 	{
-		ml::scripts::OverrideNative(script, kStatHashForCharacterStat, [](ml::scripts::NativeCall& call) {
-			call.CallOriginal();
-			g_onlineStats.insert(static_cast<uint32_t>(*call.raw->result));
-		});
-		const auto get = [](ml::scripts::NativeCall& call) {
-			const uint32_t hash = call.Arg<uint32_t>(0);
-			auto* stats = g_onlineStats.contains(hash) ? Stats() : nullptr;
-			if (!stats)
-				return call.CallOriginal();
-			const auto it = stats->find(hash);
-			if (auto* out = call.Arg<int*>(1))
-				*out = it != stats->end() ? it->second : 0;
-			call.Return<int64_t>(1);
-		};
-		const auto set = [](ml::scripts::NativeCall& call) {
-			const uint32_t hash = call.Arg<uint32_t>(0);
-			auto* stats = g_onlineStats.contains(hash) ? Stats() : nullptr;
-			if (!stats)
-				return call.CallOriginal();
-			if (const int value = call.Arg<int>(1); (*stats)[hash] != value)
-			{
-				(*stats)[hash] = value;
-				g_statsChanged = true;
-				ml::Log("online stat {:08X} = {} (character {})", hash, value, Character());
-			}
-			call.Return<int64_t>(1);
-		};
-		ml::scripts::OverrideNative(script, kStatGetInt, get);
-		ml::scripts::OverrideNative(script, kStatGetBool, get);
-		ml::scripts::OverrideNative(script, kStatSetInt, set);
-		ml::scripts::OverrideNative(script, kStatSetBool, set);
+		int64_t* request = ml::scripts::Global(102550);
+		if (!request || ((request[8] & 0xFFFFFFFF) ? request[10] > 0 : request[10] > 1))
+			return false;
+		++request[10];
+		return true;
+	}
+
+	// ---- web functions ------------------------------------------------------------------------
+
+	std::string List()
+	{
+		const int c = Character();
+		std::string out = std::format("{{\"character\":{},\"cash\":{},\"properties\":[", c, Cash());
+		bool first = true;
+		for (int id = 1; id <= kLastProperty; ++id)
+		{
+			if (!Purchasable(id))
+				continue;
+			const int64_t* e = Entry(id);
+			const int type = static_cast<int>(e[31]);
+			const int tier = Tier(type);
+			float pos[3];
+			for (int k = 0; k < 3; ++k)
+				std::memcpy(&pos[k], e + 4 + k, 4);
+			const char* zone = ZONE::GET_NAME_OF_ZONE(pos[0], pos[1], pos[2]);
+			const bool owned = c >= 0 && Owned(c).contains(id);
+			out += std::format("{}{{\"id\":{},\"name\":{},\"description\":{},\"price\":{},\"kind\":\"{}\",\"tier\":{},\"cars\":{},\"area\":{},"
+			                   "\"x\":{:.1f},\"y\":{:.1f},\"z\":{:.1f},\"photo\":{},\"owned\":{}}}",
+			    first ? "" : ",", id, Json(Text(reinterpret_cast<const char*>(e + 16))), Json(Text(reinterpret_cast<const char*>(e + 20))), e[32],
+			    tier >= 4 ? "apartment" : "garage", tier, tier == 6 || tier == 3 ? 10 : tier == 5 || tier == 2 ? 6 : 2, Json(Text(zone)), pos[0], pos[1],
+			    pos[2], Json(Photo(type)), owned ? "true" : "false");
+			first = false;
+		}
+		return out + "]}";
+	}
+
+	std::string Buy(const std::string& args)
+	{
+		const auto fail = [](const char* error) { return std::format("{{\"ok\":false,\"error\":\"{}\",\"cash\":{}}}", error, Cash()); };
+		int id = 0;
+		if (sscanf_s(args.c_str(), "[%d", &id) != 1 || !Purchasable(id))
+			return fail("unknown");
+		const int c = Character();
+		if (c < 0)
+			return fail("character");
+		if (Owned(c).contains(id))
+			return fail("owned");
+		const int price = Price(id), cash = Cash();
+		if (cash < price)
+			return fail("money");
+		STATS::STAT_SET_INT(CashStat(c), cash - price, 1);
+		Owned(c).insert(id);
+		g_ownedChanged = true;
+		++g_purchases;
+		ml::Log("character {} bought property {} for ${} (cash ${} -> ${})", c, id, price, cash, Cash());
+		return std::format("{{\"ok\":true,\"error\":\"\",\"cash\":{}}}", Cash());
 	}
 }
 
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
 {
 	ml::Init(api, ctx);
-	const auto yes = [](ml::scripts::NativeCall& call) { call.Return<int64_t>(1); };
-	// Only on Dynasty 8 (website 18): the other sites (the stock markets and so on) stay as in story mode.
-	ml::scripts::OverrideNative("appinternet", kNetworkIsGameInProgress, [](ml::scripts::NativeCall& call) {
-		if (HUD::GET_CURRENT_WEBSITE_ID() == 18)
-			call.Return<int64_t>(1);
-		else
-			call.CallOriginal();
-	});
-	// Console-style purchases: prices from the property table instead of the game server catalog.
-	ml::scripts::OverrideNative("appinternet", kUseServerTransactions, [](ml::scripts::NativeCall& call) { call.Return<int64_t>(0); });
-	// Money: the story character's cash stands in for the Online bank account (wallet empty).
-	ml::scripts::OverrideNative("appinternet", kBankBalance, [](ml::scripts::NativeCall& call) { call.Return<int64_t>(Cash()); });
-	ml::scripts::OverrideNative("appinternet", kWalletBalance, [](ml::scripts::NativeCall& call) { call.Return<int64_t>(0); });
-	const auto canSpend = [](ml::scripts::NativeCall& call) { call.Return<int64_t>(call.Arg<int>(0) <= Cash() ? 1 : 0); };
-	ml::scripts::OverrideNative("appinternet", kCanSpendMoney, canSpend);
-	ml::scripts::OverrideNative("appinternet", kCanSpendMoney2, canSpend);
-	ml::scripts::OverrideNative("appinternet", kBuyProperty, [](ml::scripts::NativeCall& call) {
-		++g_buys;
-		const int cost = call.Arg<int>(0), c = Character();
-		const int id = PropertyOfHash(call.Arg<uint32_t>(1));
-		if (c >= 0)
-			STATS::STAT_SET_INT(CashStat(c), Cash() - cost, 1);
-		ml::Log("NETWORK_BUY_PROPERTY cost {} property {} ({:08X}) character {} -> cash {}", cost, id, call.Arg<uint32_t>(1), c, Cash());
-	});
-	OverrideOnlineStats("appinternet");
-	// Pages of the loader's browser.
+	if (!ml::web::Available())
+	{
+		ml::LogError("this loader has no web browser; the property mod needs it");
+		return 0;
+	}
+	ml::web::Function("property.list", [](const std::string&) { return List(); });
+	ml::web::Function("property.buy", [](const std::string& args) { return Buy(args); });
 	ml::web::Function("property.cash", [](const std::string&) { return std::to_string(Cash()); });
-	ml::scripts::OverrideNative("appinternet", 0xB8DFD30D6973E135ULL, yes); // NETWORK_IS_PLAYER_ACTIVE
 	return 1;
-}
-
-// Story mode's own autosave request (what the game's scripts do, e.g. appinternet @27069): the autosave_controller
-// script saves when it can. Returns false when a request is already pending.
-bool RequestAutosave()
-{
-	int64_t* request = ml::scripts::Global(102550);
-	if (!request)
-		return false;
-	if ((request[8] & 0xFFFFFFFF) ? request[10] > 0 : request[10] > 1)
-		return false;
-	++request[10];
-	return true;
-}
-
-// Starts the phone's web browser on the Dynasty 8 listing page. Game thread (MLMain).
-int OpenBrowser()
-{
-	// The browser closes itself while the screen is faded out (appinternet @3234013).
-	while (CAMERA::IS_SCREEN_FADED_OUT() || CAMERA::IS_SCREEN_FADING_IN())
-		ml::Wait(100);
-	SCRIPT::REQUEST_SCRIPT("appinternet");
-	for (int i = 0; i < 100 && !SCRIPT::HAS_SCRIPT_LOADED("appinternet"); ++i)
-		ml::Wait(50);
-	// The browser keeps running while this global is set (the phone / computer sets it when opening it).
-	if (int64_t* open = ml::scripts::Global(77414))
-		*open = 1;
-	// Start page: 77528 = 7 takes the page name from Global 77397 (a text label); the Los Santos listing page builds
-	// the property list right away (appinternet @5687).
-	if (int64_t* start = ml::scripts::Global(77528))
-		*start = 7;
-	if (auto* url = reinterpret_cast<char*>(ml::scripts::Global(77397)))
-		strcpy_s(url, 64, "WWW_DYNASTY8REALESTATE_COM_S_LOS_D_SANTOS");
-	const int thread = BUILTIN::START_NEW_SCRIPT("appinternet", 4000);
-	SCRIPT::SET_SCRIPT_AS_NO_LONGER_NEEDED("appinternet");
-	ml::Log("started appinternet: thread {}", thread);
-	return thread;
 }
 
 extern "C" __declspec(dllexport) void MLMain()
 {
-	int saved = 0;   // purchases an autosave was requested for
-	int browser = 0; // the browser's thread (appinternet: phone, computer, or open_browser.txt)
-	uint64_t nextBrowserCheck = 0;
-	bool faked = false;
-	int64_t before[3] = {}; // Online state globals the browser runs with, as they were
+	int saved = 0; // purchases an autosave was requested for
 	auto lastSave = LastGameSave();
 	uint64_t nextSaveCheck = 0;
 	bool loading = false;
-	int lastPage = -1;
 	for (;;)
 	{
-		// Research aid until the phone opens it: ModLoader\open_browser.txt starts the browser.
-		if (std::error_code ec; std::filesystem::remove("ModLoader/open_browser.txt", ec))
-			browser = OpenBrowser();
-		if (browser && !ml::scripts::Static(browser, 0))
-			browser = 0;
-		if (!browser && ml::Api().GetTickMs() >= nextBrowserCheck)
+		// A purchase changes the character's money (saved with the game) and the ownership (written when the game
+		// saves): an autosave keeps the two together.
+		if (const int purchases = g_purchases; purchases != saved && RequestAutosave())
 		{
-			nextBrowserCheck = ml::Api().GetTickMs() + 500;
-			for (const auto& thread : ml::scripts::Threads())
-				if (_stricmp(thread.name.c_str(), "appinternet") == 0) // the phone starts it as "appInternet"
-				{
-					browser = thread.id;
-					ml::Log("browser running: thread {}", browser);
-				}
-		}
-		// On the Dynasty 8 website.
-		const bool running = browser && HUD::GET_CURRENT_WEBSITE_ID() == 18;
-
-		// While the browser runs, the Online state its pages check is faked, and put back afterwards: Global 80362
-		// (in GTA Online; story scripts such as the autosave controller read it too) and the "local player is in the
-		// session" state of the purchase menus (Global 2673276 +2 / +3, appinternet @30268).
-		int64_t* online = ml::scripts::Global(80362);
-		int64_t* session = ml::scripts::Global(2673276 + 2);
-		if (online && session)
-		{
-			if (running && !faked)
-			{
-				faked = true;
-				before[0] = *online;
-				before[1] = session[0];
-				before[2] = session[1];
-			}
-			if (running)
-			{
-				*online = 1;
-				session[0] = 1;
-				session[1] = PLAYER::PLAYER_ID();
-			}
-			else if (faked)
-			{
-				faked = false;
-				*online = before[0];
-				session[0] = before[1];
-				session[1] = before[2];
-			}
-		}
-		// The Dynasty 8 listing (pages 1 and 2) is built when Global 77588 is set (appinternet @30683); set it once
-		// each time the listing is entered.
-		if (running)
-		{
-			const int page = HUD::GET_CURRENT_WEBSITE_ID() == 18 ? HUD::GET_CURRENT_WEBPAGE_ID() : -1;
-			// The site's own "browse listings" link leads to its maintenance page (page 25) outside GTA Online (the
-			// movie decides that itself); go to the listing page instead, as the browser does for its start page.
-			if (page != lastPage)
-				ml::Log("Dynasty 8 page {}", page);
-			if (page == 25 && page != lastPage)
-				if (const int64_t* movie = ml::scripts::Static(browser, 628))
-				{
-					GRAPHICS::BEGIN_SCALEFORM_MOVIE_METHOD(static_cast<int>(*movie), "GO_TO_WEBPAGE");
-					GRAPHICS::BEGIN_TEXT_COMMAND_SCALEFORM_STRING("STRING");
-					HUD::ADD_TEXT_COMPONENT_SUBSTRING_WEBSITE("WWW_DYNASTY8REALESTATE_COM_S_LOS_D_SANTOS");
-					GRAPHICS::END_TEXT_COMMAND_SCALEFORM_STRING();
-					GRAPHICS::END_SCALEFORM_MOVIE_METHOD();
-				}
-			if (page != lastPage && (page == 1 || page == 2))
-				if (int64_t* build = ml::scripts::Global(77588))
-					*build = 1;
-			lastPage = page;
-		}
-		else
-			lastPage = -1;
-
-		// A purchase changes the character's money (saved with the game) and the property stats (saved by this mod at
-		// once): an autosave keeps the two together. Requested once the browser is closed (the autosave controller
-		// drops requests while Global 80362 is set).
-		if (const int buys = g_buys; buys != saved && !browser && RequestAutosave())
-		{
-			saved = buys;
+			saved = purchases;
 			ml::Log("purchase: autosave requested");
 		}
-		// Property stats follow the game's save (see CommitStats / DropStatChanges).
+
 		if (const bool now = DLC::GET_IS_LOADING_SCREEN_ACTIVE(); now != loading)
 		{
 			loading = now;
-			if (loading && g_statsChanged)
+			if (loading && g_ownedChanged)
 			{
-				DropStatChanges();
-				ml::Log("save loaded: unsaved property changes dropped");
+				DropOwnedChanges();
+				ml::Log("save loaded: unsaved purchases dropped");
 			}
 		}
 		if (const uint64_t tick = ml::Api().GetTickMs(); tick >= nextSaveCheck)
@@ -354,13 +301,13 @@ extern "C" __declspec(dllexport) void MLMain()
 			if (const auto save = LastGameSave(); save != lastSave)
 			{
 				lastSave = save;
-				if (g_statsChanged)
+				if (g_ownedChanged)
 				{
-					CommitStats();
-					ml::Log("game saved: property changes written");
+					CommitOwned();
+					ml::Log("game saved: purchases written");
 				}
 			}
 		}
-		ml::Wait(browser ? 0 : 200);
+		ml::Wait(200);
 	}
 }

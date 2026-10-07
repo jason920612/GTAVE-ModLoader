@@ -112,6 +112,11 @@ if(GTAV_DIR)
         add_custom_command(TARGET ${example} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader/mods"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${example}> "${GTAV_DIR}/ModLoader/mods/")
+        # Web pages of the mod (examples/<mod>/web -> ModLoader\mods\<mod>\web).
+        if(EXISTS "${CMAKE_SOURCE_DIR}/examples/${example}/web")
+            add_custom_command(TARGET ${example} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/examples/${example}/web" "${GTAV_DIR}/ModLoader/mods/${example}/web")
+        endif()
     endforeach()
 endif()
 

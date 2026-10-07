@@ -527,3 +527,9 @@
   Dynasty 8 物業照片 = 字典 / 貼圖 `DYN_MP_<n>`（256×128，n 由 appinternet `@3058153` 依物業 id 對應）。
 - 物業資料：Global 1312440[id]（每筆 1951 格）：+16 名稱標籤（`MP_PROP_<n>`）、+4..6 入口座標、+31 類型、+32 價格；
   說明標籤 `MP_PROP_<n>DES`。
+- Dynasty 8 重新設計（第 2 階段）：property mod 改為只用 loader 的瀏覽器（原版網站的覆寫全部移除）。網頁在
+  `examples/property/web/www.dynasty8realestate.com`（安裝到 `mods\property\web`）。`property.list` 從物業表讀出 id 1..85 中
+  有價格的 80 筆（名稱 / 說明為遊戲語言文字，「µ」= 遊戲的不斷行空白；地區 = `GET_NAME_OF_ZONE`），等級 / 車位依類型
+  （`@2376981`：6/5/4 高中低級公寓 10/6/2 車位，3/2/1 車庫 10/6/2 車位），照片 `DYN_MP_n`（`@3058153`）。`property.buy`
+  檢查現金、扣錢、記錄擁有（`data\owned_<角色>.txt`，跟著存檔寫入 / 丟棄）並請求自動存檔。實測：列表、篩選、詳細頁、
+  確認、購買（富蘭克林 $1,225,550 → $1,200,550）、已擁有標記皆正常。

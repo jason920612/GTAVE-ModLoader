@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>朝代 8 房地產</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo">D8</div>
+    <div>
+      <div class="name">DYNASTY 8</div>
+      <div class="tag">朝代 8 房地產 · 洛聖都</div>
+    </div>
+  </div>
+  <div class="account" id="account">
+    <span class="who" id="who"></span>
+    <span class="cash" id="cash">—</span>
+  </div>
+</header>
+
+<section class="hero">
+  <h1>找到你在洛聖都的下一個家</h1>
+  <p>公寓、豪宅與私人車庫，簽約即可入住。</p>
+  <div class="filters">
+    <div class="segmented" id="kind">
+      <button data-value="all" class="on">全部</button>
+      <button data-value="apartment">公寓與住宅</button>
+      <button data-value="garage">車庫</button>
+    </div>
+    <select id="tier">
+      <option value="all">所有等級</option>
+      <option value="high">高級</option>
+      <option value="mid">中級</option>
+      <option value="low">平價</option>
+    </select>
+    <select id="sort">
+      <option value="price-asc">價格：低到高</option>
+      <option value="price-desc">價格：高到低</option>
+      <option value="name">名稱</option>
+    </select>
+    <label class="owned-only"><input type="checkbox" id="ownedOnly"> 只看我的物業</label>
+    <input id="search" type="search" placeholder="搜尋名稱或地區">
+  </div>
+</section>
+
+<main>
+  <div class="summary" id="summary"></div>
+  <div class="grid" id="grid"></div>
+  <p class="empty" id="empty" hidden>沒有符合條件的物業。</p>
+</main>
+
+<div class="overlay" id="detail" hidden>
+  <div class="panel">
+    <button class="close" id="detailClose" aria-label="關閉">×</button>
+    <img class="photo" id="dPhoto" alt="">
+    <div class="body">
+      <div class="tags" id="dTags"></div>
+      <h2 id="dName"></h2>
+      <div class="area" id="dArea"></div>
+      <p class="desc" id="dDesc"></p>
+      <div class="buy">
+        <div class="price" id="dPrice"></div>
+        <button class="primary" id="dBuy"></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="confirm" hidden>
+  <div class="dialog">
+    <h3>確認購買</h3>
+    <p id="cText"></p>
+    <div class="actions">
+      <button id="cCancel">取消</button>
+      <button class="primary" id="cOk">確認購買</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<footer>朝代 8 房地產 · 購買後請記得存檔，未存檔就讀取進度的交易不會保留。</footer>
+<script src="app.js"></script>
+</body>
+</html>
