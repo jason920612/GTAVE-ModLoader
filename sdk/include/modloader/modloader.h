@@ -79,6 +79,10 @@ typedef enum MLModelType
  * "" for the game's own models. */
 typedef void (*MLModelVisitor)(uint32_t hash, const char* name, const char* pack, void* user);
 
+/* A function web pages can call (see RegisterWebFunction): `args` is a JSON array; returns JSON text (NULL = null)
+ * that stays valid until the function is called again. */
+typedef const char* (*MLWebFunction)(const char* args, void* user);
+
 /* One call of an overridden native. */
 typedef struct MLNativeCall
 {
@@ -188,6 +192,18 @@ typedef struct MLApi
 	/* Address of static variable `index` of the script thread `id` (see EnumScripts), or NULL. Valid until the
 	 * thread ends; read it again after each Wait. */
 	int64_t* (*ScriptStatic)(int32_t id, uint32_t index);
+
+	/* ---- in-game web browser (check `size`) ----
+	 * The loader's browser shows the game's own web pages: files under ModLoader\mods\<mod>\web\<host>\ (for example
+	 * web\www.example.com\index.html), opened as https://<host>/ . Pages call  game.call(name, ...args)  (a Promise)
+	 * and listen with  game.on(event, fn) . */
+	/* Makes `name` callable from pages. `fn` runs on the mod's callback fiber (natives and Wait allowed), one call at a
+	 * time. Returns 1, or 0 when the name is taken. MLOnLoad or MLMain. */
+	int32_t (*RegisterWebFunction)(const char* name, MLWebFunction fn, void* user);
+	/* Sends an event to the open page (`json` = data as JSON text, NULL = null). Any thread. */
+	void (*WebEmit)(const char* event, const char* json);
+	/* Opens the browser at `url` (e.g. "https://www.example.com/"). Any thread. */
+	void (*OpenBrowser)(const char* url);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

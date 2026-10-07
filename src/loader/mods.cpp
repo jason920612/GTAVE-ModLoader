@@ -1,3 +1,4 @@
+#include "web/browser.hpp"
 #include "mods.hpp"
 
 #include <intrin.h>
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <tuple>
 #include <fstream>
 #include <format>
@@ -548,6 +550,58 @@ namespace loader::mods
 			game::scripts::RemoveNativeOverride(id);
 		}
 
+		// ---- in-game web browser ---------------------------------------------------------------
+
+		struct WebFunction
+		{
+			Mod* mod;
+			MLWebFunction fn;
+			void* user;
+		};
+		std::map<std::string, WebFunction> g_webFunctions; // menu mutex
+
+		// One page call waiting on its mod's callback fiber.
+		struct WebCall
+		{
+			WebFunction function;
+			std::string args;
+			int64_t id;
+		};
+		void RunWebCall(void* param)
+		{
+			std::unique_ptr<WebCall> call(static_cast<WebCall*>(param));
+			const char* result = call->function.fn(call->args.c_str(), call->function.user);
+			web::Respond(call->id, true, result);
+		}
+
+		int32_t ApiRegisterWebFunction(const char* name, MLWebFunction fn, void* user)
+		{
+			Mod* mod = g_loading ? g_loading : g_current;
+			if (!mod || GetCurrentThreadId() != g_gameThreadId || !name || !*name || !fn)
+			{
+				ModLog(ModFromAddress(_ReturnAddress()), ML_LOG_ERROR, "RegisterWebFunction called outside MLOnLoad / MLMain; ignored");
+				return 0;
+			}
+			std::lock_guard lock(g_menuMutex);
+			if (!g_webFunctions.emplace(name, WebFunction{mod, fn, user}).second)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("RegisterWebFunction: \"{}\" is already registered", name));
+				return 0;
+			}
+			return 1;
+		}
+
+		void ApiWebEmit(const char* event, const char* json)
+		{
+			if (event)
+				web::Emit(event, json);
+		}
+
+		void ApiOpenBrowser(const char* url)
+		{
+			web::Open(url ? url : "");
+		}
+
 		int64_t* ApiScriptStatic(int32_t id, uint32_t index)
 		{
 			if (!InModFiber("ScriptStatic", _ReturnAddress()))
@@ -704,6 +758,9 @@ namespace loader::mods
 			.CallOriginalNative = ApiCallOriginalNative,
 			.RemoveScriptNativeOverride = ApiRemoveScriptNativeOverride,
 			.ScriptStatic = ApiScriptStatic,
+			.RegisterWebFunction = ApiRegisterWebFunction,
+			.WebEmit = ApiWebEmit,
+			.OpenBrowser = ApiOpenBrowser,
 		};
 
 		// ---- loading --------------------------------------------------------------------------
@@ -1070,5 +1127,15 @@ namespace loader::mods
 		for (int32_t h = 0; h < g_itemCount; ++h)
 			if (Item* item = Get(h); item && item->kind == ItemKind::Hotkey && item->enabled && item->fn && item->IntValue() == static_cast<int32_t>(vk))
 				item->owner->pending.emplace_back(item->fn, item->user);
+	}
+
+	bool CallWebFunction(const std::string& name, const std::string& args, int64_t id)
+	{
+		std::lock_guard lock(g_menuMutex);
+		const auto it = g_webFunctions.find(name);
+		if (it == g_webFunctions.end() || it->second.mod->state == State::Faulted)
+			return false;
+		it->second.mod->pending.emplace_back(&RunWebCall, new WebCall{it->second, args, id});
+		return true;
 	}
 }

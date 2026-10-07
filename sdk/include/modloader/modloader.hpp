@@ -337,6 +337,42 @@ namespace ml
 		}
 	}
 
+	// In-game web browser: functions pages can call, events pages can listen to (see MLApi::RegisterWebFunction).
+	namespace web
+	{
+		inline bool Available() { return Api().size >= offsetof(MLApi, OpenBrowser) + sizeof(void*); }
+
+		// Makes `name` callable from pages as game.call(name, ...args). `fn` gets the arguments as JSON text (an array)
+		// and returns the result as JSON text ("" = null). Runs on the mod's callback fiber (natives and Wait allowed).
+		inline bool Function(const char* name, std::function<std::string(const std::string& args)> fn)
+		{
+			if (!Available())
+				return false;
+			struct Holder
+			{
+				std::function<std::string(const std::string&)> fn;
+				std::string result;
+			};
+			auto* holder = new Holder{std::move(fn), {}};
+			return Api().RegisterWebFunction(name, [](const char* args, void* user) -> const char* {
+				auto* h = static_cast<Holder*>(user);
+				h->result = h->fn(args ? args : "[]");
+				return h->result.empty() ? nullptr : h->result.c_str();
+			}, holder) != 0;
+		}
+		// Sends `event` with `json` data ("" = null) to the open page.
+		inline void Emit(const char* event, const std::string& json = {})
+		{
+			if (Available())
+				Api().WebEmit(event, json.empty() ? nullptr : json.c_str());
+		}
+		inline void Open(const char* url)
+		{
+			if (Available())
+				Api().OpenBrowser(url);
+		}
+	}
+
 	// Short on-screen message.
 	template<class... Args>
 	void Notify(std::format_string<Args...> fmt, Args&&... args)

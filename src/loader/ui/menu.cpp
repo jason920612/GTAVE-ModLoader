@@ -1,3 +1,4 @@
+#include "../web/browser.hpp"
 #include "menu.hpp"
 
 #include <Windows.h>
@@ -763,6 +764,7 @@ namespace loader::ui
 		}
 
 		ConversionProgress();
+		web::Draw();
 		if (!g_menuOpen)
 			g_binding = -1;
 		if (LandingReplaced())
@@ -792,7 +794,7 @@ namespace loader::ui
 
 	bool WantsInput()
 	{
-		return LandingReplaced() || g_menuOpen;
+		return LandingReplaced() || g_menuOpen || web::IsOpen();
 	}
 
 	unsigned MenuKey()
@@ -805,6 +807,11 @@ namespace loader::ui
 				return VK_F1 + n - 1;
 		}
 		return VK_F4;
+	}
+
+	bool MenuOpen()
+	{
+		return g_menuOpen;
 	}
 
 	void ToggleMenu()

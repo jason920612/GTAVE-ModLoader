@@ -59,6 +59,7 @@ add_library(loader SHARED
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
+    src/loader/web/browser.cpp
     src/loader/debug/hangdump.cpp
     src/loader/debug/scripttrace.cpp
     src/loader/debug/watch.cpp
@@ -141,3 +142,56 @@ add_executable(relocate EXCLUDE_FROM_ALL
 target_link_libraries(relocate PRIVATE Zydis)
 target_compile_features(relocate PRIVATE cxx_std_20)
 target_compile_options(relocate PRIVATE /utf-8 /O2)
+
+# In-game web browser (src/browser): CEF (Chromium Embedded Framework, BSD) renders the game's own web pages off-screen;
+# ModLoader.dll loads ModLoader\browser\mlbrowser.dll the first time the browser is opened.
+option(ML_BROWSER "Build the in-game web browser (downloads CEF, about 170 MB)" ON)
+if(ML_BROWSER)
+    set(CEF_VERSION "154.0.34+g14c5a08+chromium-154.0.8037.98")
+    string(REPLACE "+" "%2B" CEF_VERSION_URL "${CEF_VERSION}")
+    FetchContent_Declare(cef
+        URL https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION_URL}_windows64_minimal.tar.bz2)
+    FetchContent_GetProperties(cef)
+    if(NOT cef_POPULATED)
+        FetchContent_Populate(cef)
+    endif()
+    set(CEF_ROOT ${cef_SOURCE_DIR})
+    list(APPEND CMAKE_MODULE_PATH ${CEF_ROOT}/cmake)
+    find_package(CEF REQUIRED)
+    add_subdirectory(${CEF_LIBCEF_DLL_WRAPPER_PATH} libcef_dll_wrapper)
+    ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
+
+    # mlbrowser.dll: the browser process side, driven by ModLoader.dll through src/browser/mlbrowser.h.
+    add_library(mlbrowser SHARED src/browser/browser.cpp src/browser/app.cpp)
+    SET_LIBRARY_TARGET_PROPERTIES(mlbrowser)
+    add_dependencies(mlbrowser libcef_dll_wrapper)
+    target_link_libraries(mlbrowser PRIVATE libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS})
+    target_compile_options(mlbrowser PRIVATE /utf-8)
+
+    # ml_browser_helper.exe: Chromium's renderer / GPU / utility processes.
+    add_executable(ml_browser_helper WIN32 src/browser/helper.cpp src/browser/app.cpp)
+    SET_EXECUTABLE_TARGET_PROPERTIES(ml_browser_helper)
+    add_dependencies(ml_browser_helper libcef_dll_wrapper)
+    target_link_libraries(ml_browser_helper PRIVATE libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS})
+    target_compile_options(ml_browser_helper PRIVATE /utf-8)
+
+    if(GTAV_DIR)
+        set(ML_BROWSER_DIR "${GTAV_DIR}/ModLoader/browser")
+        add_custom_command(TARGET mlbrowser POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ML_BROWSER_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:mlbrowser> "${ML_BROWSER_DIR}/"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CEF_BINARY_DIR_RELEASE}" "${ML_BROWSER_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CEF_RESOURCE_DIR}" "${ML_BROWSER_DIR}")
+        add_custom_command(TARGET ml_browser_helper POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ML_BROWSER_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ml_browser_helper> "${ML_BROWSER_DIR}/")
+        add_custom_command(TARGET loader POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/web" "${GTAV_DIR}/ModLoader/web")
+    endif()
+endif()
+
+if(ML_BROWSER)
+    # Test host for mlbrowser.dll outside the game (tools/browser_test). Not built by default.
+    add_executable(browser_test EXCLUDE_FROM_ALL tools/browser_test/browser_test.cpp)
+    target_compile_options(browser_test PRIVATE /utf-8)
+endif()

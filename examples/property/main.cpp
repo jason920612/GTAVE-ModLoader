@@ -202,6 +202,8 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		ml::Log("NETWORK_BUY_PROPERTY cost {} property {} ({:08X}) character {} -> cash {}", cost, id, call.Arg<uint32_t>(1), c, Cash());
 	});
 	OverrideOnlineStats("appinternet");
+	// Pages of the loader's browser.
+	ml::web::Function("property.cash", [](const std::string&) { return std::to_string(Cash()); });
 	ml::scripts::OverrideNative("appinternet", 0xB8DFD30D6973E135ULL, yes); // NETWORK_IS_PLAYER_ACTIVE
 	return 1;
 }

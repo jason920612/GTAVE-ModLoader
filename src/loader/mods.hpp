@@ -136,4 +136,8 @@ namespace loader::mods
 	void UiActivate(int32_t handle);
 	// A key went down in the game window while the loader UI is closed.
 	void OnKeyDown(uint32_t vk);
+
+	// A page called game.call(name, ...args): queues the registered function on its mod's callback fiber, which
+	// answers with web::Respond(id, ...). False when no mod registered `name`. Game thread.
+	bool CallWebFunction(const std::string& name, const std::string& args, int64_t id);
 }

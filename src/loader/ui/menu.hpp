@@ -12,4 +12,6 @@ namespace loader::ui
 	// Virtual-key code that toggles the in-game menu (from loader.json "menuKey").
 	unsigned MenuKey();
 	void ToggleMenu();
+	// The loader window (F4) is open.
+	bool MenuOpen();
 }

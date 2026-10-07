@@ -17,6 +17,7 @@
 #include "../log.hpp"
 #include "../mods.hpp"
 #include "../state.hpp"
+#include "../web/browser.hpp"
 #include "dx12_hook.hpp"
 #include "menu.hpp"
 #include "notify.hpp"
@@ -83,6 +84,20 @@ namespace loader::ui
 			const UINT i = static_cast<UINT>((cpu.ptr - g_srvHeap->GetCPUDescriptorHandleForHeapStart().ptr) / inc);
 			if (i < kSrvHeapSize)
 				g_srvUsed[i] = false;
+		}
+
+		bool AllocDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* cpu, D3D12_GPU_DESCRIPTOR_HANDLE* gpu)
+		{
+			const UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			for (UINT i = 0; i < kSrvHeapSize; ++i)
+				if (!g_srvUsed[i])
+				{
+					g_srvUsed[i] = true;
+					cpu->ptr = g_srvHeap->GetCPUDescriptorHandleForHeapStart().ptr + i * inc;
+					gpu->ptr = g_srvHeap->GetGPUDescriptorHandleForHeapStart().ptr + i * inc;
+					return true;
+				}
+			return false;
 		}
 
 		// ---- GPU resources ---------------------------------------------------------------------
@@ -221,6 +236,7 @@ namespace loader::ui
 			g_commandList->ResourceBarrier(1, &barrier);
 			g_commandList->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
 			g_commandList->SetDescriptorHeaps(1, &g_srvHeap);
+			web::Upload(g_device, g_commandList, g_swapChain->GetCurrentBackBufferIndex(), static_cast<unsigned>(g_frames.size()), &AllocDescriptor);
 			ImGui_ImplDX12_RenderDrawData(drawData, g_commandList);
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			g_commandList->ResourceBarrier(1, &barrier);
@@ -282,6 +298,9 @@ namespace loader::ui
 				if (!g_capture && state::story && !state::online)
 					mods::OnKeyDown(static_cast<uint32_t>(wp));
 			}
+			// The web browser gets the page area's input (its toolbar is ImGui's).
+			if (!MenuOpen())
+				web::OnMessage(hwnd, msg, wp, lp);
 			{
 				std::lock_guard lock(g_imguiMutex);
 				ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp);

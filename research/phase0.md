@@ -502,3 +502,22 @@
 - 存檔一致：故事模式的自動存檔請求 = Global 102550+10 加一（`@27069`），由常駐的 `autosave_controller` 處理；
   設定中關閉自動存檔時（`GET_IS_AUTO_SAVE_OFF`）不會存。因此 stats 的變更先暫存，偵測到故事存檔檔案
   （`Documents\Rockstar Games\GTAV Enhanced\Profiles\*\SGTA5*`）更新才寫入；出現讀取畫面（讀檔）時丟棄未存的變更。
+
+## 29. 遊戲內網頁瀏覽器（2026-10-07，第 1 階段）
+
+- 使用者決定以自己的瀏覽器完全取代遊戲瀏覽器（頁面只在遊戲內），引擎 CEF（Chromium 154，minimal 套件建置時下載），
+  原有故事模式網站之後全部重做，mod 以資料夾 + JS API 加入網頁。
+- 結構：`ModLoader\browser\`（libcef 等 + `mlbrowser.dll` + `ml_browser_helper.exe`），ModLoader.dll 第一次開啟時才載入
+  （`src/browser/mlbrowser.h` 為唯一介面）。libcef.dll 為延遲載入，遊戲的 DLL 搜尋路徑不含該資料夾，須先以完整路徑載入
+  （否則 0xC06D007E 結束程序，無任何記錄）。CEF 在自己的執行緒初始化（multi_threaded_message_loop），離屏繪製（軟體繪製），
+  畫面每次更新複製到上傳緩衝，再由疊加層複製到 DX12 貼圖顯示；工具列（上一頁 / 下一頁 / 首頁 / 網址 / 關閉）由 ImGui 繪製。
+- 不連網：http / https 全部由自訂處理器回應，`<web root>\<host>\<path>`（資料夾 → index.html），找不到為 404。
+  Web root：`ModLoader\web`（loader 內建網站，原始檔在 repo 的 `web\`）與各 mod 的 `mods\<mod>\web`。
+- 頁面 ↔ 遊戲：渲染程序注入 `window.game`（`call(name, ...args)` → Promise、`on(event, fn)`、`close()`），經 CEF message
+  router 送到 loader，在遊戲執行緒派送給 mod 以 `RegisterWebFunction` 註冊的函式（在該 mod 的回呼 fiber 執行，可呼叫
+  natives / Wait），結果回傳頁面；`WebEmit` 推送事件，`OpenBrowser` 開啟。SDK：`ml::web::Function / Emit / Open`。
+- 取代遊戲瀏覽器（loader.json `replaceBrowser`，預設關閉直到各網站重做完成）：偵測到 `appinternet` 執行緒時把它的開啟旗標
+  Global 77414 設為 0，讓它走自己的結束清理（直接 TERMINATE_THREAD 會讓手機以為 app 仍在執行，無法再開），同時開啟我們的
+  瀏覽器蓋在上面。Esc：上一頁，第一頁時關閉。
+- 實測：手機 → 網路 → 顯示 eyefind 首頁；頁面呼叫 property mod 的 `property.cash` 得到富蘭克林的現金；連結、Esc 返回 /
+  關閉、再次從手機開啟皆正常。`tools/browser_test`：在遊戲外測試 mlbrowser.dll（渲染存成 BMP）。

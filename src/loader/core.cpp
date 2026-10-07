@@ -20,6 +20,7 @@
 #include "game/scripts.hpp"
 #include "debug/hangdump.hpp"
 #include "debug/scripttrace.hpp"
+#include "web/browser.hpp"
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/pools.hpp"
@@ -273,6 +274,10 @@ namespace loader::core
 				debug::scripttrace::Tick();
 			if (!state::online)
 				mods::Tick();
+			if (!state::online)
+				web::Tick();
+			else if (web::IsOpen())
+				web::Close();
 		}
 	}
 
