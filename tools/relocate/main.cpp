@@ -10,6 +10,7 @@
 //   relocate sig     <image> <rva>                a unique pattern for rva
 //   relocate match   <old> <new> <rva|file> ...   rva in the new build, with a pattern; a file lists "name rva" lines
 //   relocate stats   <old> <new>                  how many functions were matched, by method
+//   relocate eval    <old> <new>                  accuracy: half the string anchors are left out and looked for
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -156,6 +157,17 @@ int main(int argc, char** argv)
 		const std::string sig = MakeSignature(a.Img(), Hex(argv[3]));
 		printf("%s\n", sig.empty() ? "(no unique pattern)" : sig.c_str());
 		return sig.empty();
+	}
+	if (command == "eval" && argc >= 4)
+	{
+		Index b;
+		if (!Load(b, argv[3]))
+			return 1;
+		Matcher m(a, b, true);
+		const auto e = m.Evaluate();
+		printf("left-out anchors: %d found correctly, %d wrongly, %d not found (matched %zu functions)\n", e.correct, e.wrong, e.missing,
+		    m.Count(How::String) + m.Count(How::Exact) + m.Count(How::Graph));
+		return 0;
 	}
 	if ((command == "match" || command == "stats") && argc >= 4)
 	{

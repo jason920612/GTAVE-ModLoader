@@ -27,7 +27,9 @@ namespace relocate
 		std::string StringAt(const Image& image, uint32_t rva)
 		{
 			const uint8_t* p = image.At(rva, 8);
-			if (!p || image.IsCode(rva))
+			// Read-only data only: writable data holds what the game wrote at run time (paths, buffers).
+			const Section* section = image.SectionOf(rva);
+			if (!p || !section || section->name != ".rdata")
 				return {};
 			std::string s;
 			for (int i = 0; i < 256; ++i)
@@ -100,6 +102,8 @@ namespace relocate
 						shape = Mix(shape, op.mem.index);
 						shape = Mix(shape, op.mem.scale);
 						shape = Mix(shape, static_cast<uint64_t>(op.mem.disp.value)); // struct offsets
+						if (op.mem.disp.value >= 0x10 && op.mem.base != ZYDIS_REGISTER_RSP && op.mem.base != ZYDIS_REGISTER_RBP)
+							i.values.push_back(static_cast<uint64_t>(op.mem.disp.value));
 					}
 				}
 				else if (op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
@@ -119,7 +123,11 @@ namespace relocate
 						i.target = static_cast<uint32_t>(op.imm.value.u - base);
 					}
 					else
+					{
 						shape = Mix(shape, op.imm.value.u);
+						if (op.imm.value.u > 16 && ins.mnemonic != ZYDIS_MNEMONIC_SUB && ins.mnemonic != ZYDIS_MNEMONIC_ADD)
+							i.values.push_back(op.imm.value.u); // not stack adjustments
+					}
 				}
 			}
 			i.shape = shape;
@@ -193,9 +201,23 @@ namespace relocate
 							info.dataRefs.push_back(i.target);
 							if (std::string s = StringAt(image_, i.target); !s.empty())
 								found[t].emplace_back(static_cast<int>(f), std::move(s));
+							else if (const Section* sec = image_.SectionOf(i.target); sec && sec->name == ".rdata")
+								if (const uint8_t* v = image_.At(i.target, 8)) // a constant in read-only data (floats, masks)
+								{
+									uint64_t value;
+									memcpy(&value, v, 8);
+									info.values.push_back(value);
+								}
 						}
+						info.values.insert(info.values.end(), i.values.begin(), i.values.end());
 					}
 					info.exact = Mix(exact, ins.size());
+					std::sort(info.values.begin(), info.values.end());
+					info.values.erase(std::unique(info.values.begin(), info.values.end()), info.values.end());
+					info.valueHash.fill(UINT32_MAX);
+					for (const uint64_t v : info.values)
+						for (int h = 0; h < 16; ++h)
+							info.valueHash[h] = std::min(info.valueHash[h], static_cast<uint32_t>(Mix(v, h * 0x2545F491u) >> 9));
 				}
 			});
 		for (auto& w : workers)
@@ -250,5 +272,26 @@ namespace relocate
 		for (int h = 0; h < 16; ++h)
 			same += a.minhash[h] == b.minhash[h];
 		return same / 16.0;
+	}
+}
+
+namespace relocate
+{
+	double ValueSimilarity(const FunctionInfo& a, const FunctionInfo& b)
+	{
+		// Estimated Jaccard of the value sets (minhash), scaled by how close the call counts are.
+		double values = 0.5;
+		if (!a.values.empty() && !b.values.empty())
+		{
+			int same = 0;
+			for (int h = 0; h < 16; ++h)
+				same += a.valueHash[h] == b.valueHash[h];
+			values = same / 16.0;
+		}
+		else if (!a.values.empty() || !b.values.empty())
+			values = 0;
+		const double ca = static_cast<double>(a.callees.size()), cb = static_cast<double>(b.callees.size());
+		const double calls = (std::min(ca, cb) + 1) / (std::max(ca, cb) + 1);
+		return values * (0.5 + 0.5 * calls);
 	}
 }

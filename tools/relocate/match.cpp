@@ -1,8 +1,10 @@
 #include "match.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <format>
 #include <map>
+#include <tuple>
 #include <unordered_map>
 
 namespace relocate
@@ -58,20 +60,32 @@ namespace relocate
 		bool CloseSize(const FunctionInfo& a, const FunctionInfo& b)
 		{
 			const double r = (a.instructions + 1.0) / (b.instructions + 1.0);
-			return r > 0.5 && r < 2.0;
+			return r > 0.33 && r < 3.0; // compilers inline differently
+		}
+
+		// Tuning knobs for experiments (environment variables), with the defaults.
+		double Threshold(const char* name, double fallback)
+		{
+			char value[32];
+			size_t n = 0;
+			return getenv_s(&n, value, name) == 0 && n ? atof(value) : fallback;
+		}
+
+		// Instruction similarity (same compiler) or value similarity (any compiler), whichever is higher.
+		double Score(const FunctionInfo& a, const FunctionInfo& b)
+		{
+			return std::max(Similarity(a, b), ValueSimilarity(a, b));
 		}
 	}
 
-	Matcher::Matcher(const Index& before, const Index& after) : a_(before), b_(after)
+	Matcher::Matcher(const Index& before, const Index& after, bool holdOut) : a_(before), b_(after), holdOut_(holdOut)
 	{
 		match_.assign(a_.Functions().size(), -1);
 		reverse_.assign(b_.Functions().size(), -1);
 		how_.assign(a_.Functions().size(), How::None);
 		Strings();
 		Exact();
-		while (Propagate())
-		{
-		}
+		Propagate();
 	}
 
 	bool Matcher::Pair(int a, int b, How how)
@@ -81,6 +95,7 @@ namespace relocate
 		match_[a] = b;
 		reverse_[b] = a;
 		how_[a] = how;
+		work_.push_back(a); // its neighbours can be paired now
 		return true;
 	}
 
@@ -89,9 +104,13 @@ namespace relocate
 		return static_cast<size_t>(std::count(how_.begin(), how_.end(), how));
 	}
 
-	// Strings used by exactly one function in both builds pair those functions.
+	// Strings used by exactly one function in both builds vote for that pair of functions; a pair is taken when both
+	// functions' votes agree (compilers inline differently, so one function's strings can end up in several).
 	void Matcher::Strings()
 	{
+		std::map<std::pair<int, int>, int> votes;
+		std::unordered_map<int, int> votesOfA, votesOfB;
+		size_t anchors = 0;
 		for (size_t s = 0; s < a_.Strings().size(); ++s)
 		{
 			const auto& users = a_.StringUsers(static_cast<int>(s));
@@ -100,8 +119,44 @@ namespace relocate
 			const int other = b_.StringId(a_.Strings()[s]);
 			if (other < 0 || b_.StringUsers(other).size() != 1)
 				continue;
-			Pair(users[0], b_.StringUsers(other)[0], How::String);
+			const std::pair<int, int> pair{users[0], b_.StringUsers(other)[0]};
+			if (holdOut_ && ++anchors % 2 == 0)
+			{
+				heldOut_.push_back(pair);
+				continue;
+			}
+			++votes[pair];
+			++votesOfA[pair.first];
+			++votesOfB[pair.second];
 		}
+		for (const auto& [pair, n] : votes)
+			if (n * 2 > votesOfA[pair.first] && n * 2 > votesOfB[pair.second])
+				Pair(pair.first, pair.second, How::String);
+	}
+
+	Matcher::Evaluation Matcher::Evaluate() const
+	{
+		Evaluation e;
+		for (const auto& [a, b] : heldOut_)
+		{
+			if (match_[a] == b)
+				++e.correct;
+			else if (match_[a] >= 0)
+			{
+				if (++e.wrong <= 8 && getenv("RELOCATE_SHOW"))
+				{
+					const auto& fa = a_.Functions()[a];
+					const auto& fb = b_.Functions()[b];
+					const auto& fc = b_.Functions()[match_[a]];
+					printf("wrong: %#x (%u ins, \"%s\") expected %#x (%u ins), got %#x (%u ins, via %s, %zu strings)\n", fa.begin, fa.instructions,
+					    fa.strings.empty() ? "" : a_.Strings()[fa.strings[0]].c_str(), fb.begin, fb.instructions, fc.begin, fc.instructions,
+					    Name(how_[a]), fc.strings.size());
+				}
+			}
+			else
+				++e.missing;
+		}
+		return e;
 	}
 
 	// Functions whose instruction shapes are identical and unique in both builds.
@@ -126,8 +181,7 @@ namespace relocate
 					Pair(f, it->second, How::Exact);
 	}
 
-	// Unmatched callees (in call order) and callers of matched pairs: aligned by their instruction shapes, or by
-	// position when both lists have the same length and the functions are of a similar size.
+	// Unmatched callees and callers of matched pairs: each paired with its clearly best-scoring counterpart.
 	bool Matcher::Propagate()
 	{
 		bool changed = false;
@@ -141,36 +195,58 @@ namespace relocate
 					ub.push_back(f);
 			if (ua.empty() || ub.empty())
 				return;
+			// Identical functions in the same place of lists of the same length (copies of one function can only be told
+			// apart by where they are used).
 			if (ua.size() == ub.size())
-			{
 				for (size_t k = 0; k < ua.size(); ++k)
-					if (CloseSize(a_.Functions()[ua[k]], b_.Functions()[ub[k]]) && Similarity(a_.Functions()[ua[k]], b_.Functions()[ub[k]]) >= 0.25)
+					if (a_.Functions()[ua[k]].exact == b_.Functions()[ub[k]].exact)
 						changed |= Pair(ua[k], ub[k], How::Graph);
+			std::erase_if(ua, [&](int f) { return match_[f] >= 0; });
+			std::erase_if(ub, [&](int f) { return reverse_[f] >= 0; });
+			// Lists of very common functions (thousands of callers) carry no information.
+			if (ua.empty() || ub.empty() || ua.size() > 200 || ub.size() > 200)
 				return;
-			}
-			for (const int x : ua) // best similar candidate, when clearly the best
-			{
-				int best = -1;
-				double score = 0, second = 0;
-				for (const int y : ub)
+			// Best-scoring pairs first; the same position in both lists breaks near ties. A pair is taken when it is
+			// clearly better than every other option of both functions.
+			const double minimum = Threshold("RELOCATE_POS", 0.3), gap = Threshold("RELOCATE_GAP", 0.1);
+			std::vector<double> score(ua.size() * ub.size(), -1);
+			for (size_t i = 0; i < ua.size(); ++i)
+				for (size_t j = 0; j < ub.size(); ++j)
 				{
-					if (reverse_[y] >= 0 || !CloseSize(a_.Functions()[x], b_.Functions()[y]))
+					const FunctionInfo &x = a_.Functions()[ua[i]], &y = b_.Functions()[ub[j]];
+					if (!CloseSize(x, y))
 						continue;
-					const double s = Similarity(a_.Functions()[x], b_.Functions()[y]) + (a_.Functions()[x].exact == b_.Functions()[y].exact ? 1 : 0);
-					if (s > score)
-						second = score, score = s, best = y;
-					else if (s > second)
-						second = s;
+					double v = Score(x, y) + (x.exact == y.exact ? 1 : 0);
+					if (ua.size() == ub.size() && i == j)
+						v += 0.05;
+					score[i * ub.size() + j] = v;
 				}
-				if (best >= 0 && score >= 0.5 && score - second >= 0.2)
-					changed |= Pair(x, best, How::Graph);
+			for (size_t i = 0; i < ua.size(); ++i)
+			{
+				size_t best = 0;
+				for (size_t j = 1; j < ub.size(); ++j)
+					if (score[i * ub.size() + j] > score[i * ub.size() + best])
+						best = j;
+				const double v = score[i * ub.size() + best];
+				if (v < minimum)
+					continue;
+				double rival = 0;
+				for (size_t j = 0; j < ub.size(); ++j)
+					if (j != best)
+						rival = std::max(rival, score[i * ub.size() + j]);
+				for (size_t k = 0; k < ua.size(); ++k)
+					if (k != i)
+						rival = std::max(rival, score[k * ub.size() + best]);
+				if (v - rival >= gap)
+					changed |= Pair(ua[i], ub[best], How::Graph);
 			}
 		};
-		for (size_t f = 0; f < a_.Functions().size(); ++f)
+		// Every new pair is looked at once, until no new pairs appear.
+		while (!work_.empty())
 		{
+			const int f = work_.back();
+			work_.pop_back();
 			const int g = match_[f];
-			if (g < 0)
-				continue;
 			pairLists(a_.Functions()[f].calleeIndex, b_.Functions()[g].calleeIndex);
 			pairLists(a_.Functions()[f].callers, b_.Functions()[g].callers);
 		}
@@ -202,7 +278,7 @@ namespace relocate
 		{
 			if (reverse_[y] >= 0 || !CloseSize(f, b_.Functions()[y]))
 				continue;
-			const double s = Similarity(f, b_.Functions()[y]);
+			const double s = Score(f, b_.Functions()[y]);
 			if (s > score)
 				second = score, score = s, best = y;
 			else if (s > second)
@@ -236,6 +312,13 @@ namespace relocate
 			sa.push_back(i.shape);
 		for (const auto& i : ib)
 			sb.push_back(i.shape);
+		if (rva == fa.begin)
+		{
+			r.ok = true;
+			r.rva = fb.begin;
+			r.note = std::format("function {:#x} -> {:#x}", fa.begin, fb.begin);
+			return r;
+		}
 		size_t at = 0;
 		while (at + 1 < ia.size() && ia[at + 1].rva <= rva)
 			++at;
@@ -247,6 +330,41 @@ namespace relocate
 				r.note = std::format("function {:#x} -> {:#x}, instruction {} -> {}", fa.begin, fb.begin, x, y);
 				return r;
 			}
+		// Another compiler: the instructions differ, but calls of matched functions keep their order. A call (or the
+		// instruction right after one) is found through the sequence of its calls.
+		const auto calls = [](const Index& index, const std::vector<Instruction>& ins, const std::vector<int>* map) {
+			std::vector<std::pair<size_t, uint64_t>> out; // instruction index, token
+			for (size_t k = 0; k < ins.size(); ++k)
+				if (ins[k].ref == Ref::Call)
+				{
+					int callee = index.FunctionAt(ins[k].target);
+					if (map && callee >= 0)
+						callee = (*map)[callee];
+					out.emplace_back(k, callee >= 0 ? static_cast<uint64_t>(callee) : 0xFFFFFFFF00000000ull | k);
+				}
+			return out;
+		};
+		const auto ca = calls(a_, ia, &match_), cb = calls(b_, ib, nullptr);
+		std::vector<uint64_t> ta, tb;
+		for (const auto& [k, t] : ca)
+			ta.push_back(t);
+		for (const auto& [k, t] : cb)
+			tb.push_back(t);
+		for (const auto& [x, y] : Align(ta, tb))
+		{
+			const size_t ka = ca[x].first, kb = cb[y].first;
+			if (ka == at || ka + 1 == at)
+			{
+				const size_t k = kb + (at - ka);
+				if (k < ib.size())
+				{
+					r.ok = true;
+					r.rva = ib[k].rva + (rva - ia[at].rva);
+					r.note = std::format("function {:#x} -> {:#x}, by its calls", fa.begin, fb.begin);
+					return r;
+				}
+			}
+		}
 		r.note = std::format("function {:#x} -> {:#x}, but the instruction changed", fa.begin, fb.begin);
 		return r;
 	}

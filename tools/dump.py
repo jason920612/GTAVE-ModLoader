@@ -3,7 +3,7 @@
 Reads the whole mapped image page-by-page (unreadable pages are zero-filled),
 then rewrites section headers so raw offsets == virtual addresses, producing a
 PE file that disassemblers can load directly.
-usage: dump.py <out.exe>
+usage: dump.py <out.exe> [process name, default GTA5_Enhanced.exe]
 """
 import ctypes, ctypes.wintypes as w, struct, sys
 import pymem
@@ -11,8 +11,9 @@ import pymem
 PAGE = 0x1000
 out = sys.argv[1] if len(sys.argv) > 1 else "GTA5_Enhanced.dump.exe"
 
-pm = pymem.Pymem("GTA5_Enhanced.exe")
-mod = pymem.process.module_from_name(pm.process_handle, "GTA5_Enhanced.exe")
+name = sys.argv[2] if len(sys.argv) > 2 else "GTA5_Enhanced.exe"
+pm = pymem.Pymem(name)
+mod = pymem.process.module_from_name(pm.process_handle, name)
 base, size = mod.lpBaseOfDll, mod.SizeOfImage
 print(f"base={base:#x} size={size:#x}")
 

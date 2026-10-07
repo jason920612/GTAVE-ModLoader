@@ -27,6 +27,7 @@ namespace relocate
 		Ref ref = Ref::None;
 		uint32_t target = 0; // RVA for refs
 		uint64_t shape = 0;  // the instruction without addresses (registers, struct offsets, small constants kept)
+		std::vector<uint64_t> values; // constants and struct offsets in the instruction (compiler independent)
 	};
 
 	// Decodes the instructions in [begin, end) (stops at undecodable bytes).
@@ -46,6 +47,8 @@ namespace relocate
 		std::vector<uint32_t> dataRefs;    // rip-relative data targets
 		std::vector<int> strings;          // string ids referenced
 		std::array<uint32_t, 16> minhash{}; // of instruction mnemonic 3-grams, for similarity
+		std::vector<uint64_t> values;       // sorted unique constants, struct offsets and read-only data values used
+		std::array<uint32_t, 16> valueHash{}; // minhash of `values`
 	};
 
 	class Index
@@ -70,6 +73,9 @@ namespace relocate
 		std::vector<std::vector<int>> stringUsers_;
 	};
 
-	// Similarity of two functions' instruction 3-gram sets (0..1).
+	// Similarity of two functions' instruction 3-gram sets (0..1): good within one compiler.
 	double Similarity(const FunctionInfo& a, const FunctionInfo& b);
+	// Similarity of what two functions use (constants, struct offsets, data values, call count; 0..1): survives a change
+	// of compiler or optimisation.
+	double ValueSimilarity(const FunctionInfo& a, const FunctionInfo& b);
 }

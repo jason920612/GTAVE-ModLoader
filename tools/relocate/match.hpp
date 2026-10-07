@@ -20,7 +20,15 @@ namespace relocate
 	class Matcher
 	{
 	public:
-		Matcher(const Index& before, const Index& after);
+		// `holdOut`: every other string anchor is left out (to measure how well the rest finds those functions).
+		Matcher(const Index& before, const Index& after, bool holdOut = false);
+
+		// With holdOut: functions of left-out anchors found correctly / wrongly / not at all.
+		struct Evaluation
+		{
+			int correct = 0, wrong = 0, missing = 0;
+		};
+		Evaluation Evaluate() const;
 
 		// Matched function in the new build (index), or -1.
 		int Match(int function) const { return match_[function]; }
@@ -44,6 +52,9 @@ namespace relocate
 		std::vector<int> match_;   // old -> new
 		std::vector<int> reverse_; // new -> old
 		std::vector<How> how_;
+		std::vector<int> work_; // newly paired functions whose neighbours are still to be looked at
+		bool holdOut_ = false;
+		std::vector<std::pair<int, int>> heldOut_;
 
 		bool Pair(int a, int b, How how);
 		void Strings();
