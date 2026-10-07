@@ -15,6 +15,7 @@
 #include "../paths.hpp"
 #include "archive.hpp"
 #include "oiv.hpp"
+#include "ysc.hpp"
 
 namespace loader::convert
 {
@@ -40,7 +41,7 @@ namespace loader::convert
 		}
 
 		// Files the streaming system loads by name.
-		constexpr std::array<std::string_view, 15> kStreaming{".gfx", ".yft", ".ytd", ".ydr", ".ydd", ".ycd", ".ybn", ".ypt", ".ymap", ".ytyp",
+		constexpr std::array<std::string_view, 16> kStreaming{".ysc", ".gfx", ".yft", ".ytd", ".ydr", ".ydd", ".ycd", ".ybn", ".ypt", ".ymap", ".ytyp",
 		    ".ynv", ".ynd", ".yld", ".yed", ".ymt"};
 		// Not game data (readme files, pictures, ...): skipped without a warning.
 		constexpr std::array<std::string_view, 12> kIgnored{".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".url", ".ini", ".json",
@@ -427,7 +428,7 @@ namespace loader::convert
 				node.name = in.name;
 				const bool resource = in.data.size() >= 16 && *reinterpret_cast<const uint32_t*>(in.data.data()) == 0x37435352;
 				node.kind = resource ? WriteNode::Kind::Resource : WriteNode::Kind::File;
-				legacy += resource && IsLegacyResource(in.name, in.data);
+				legacy += resource && (IsLegacyResource(in.name, in.data) || (ext == ".ysc" && ysc::IsLegacy(in.data)));
 				node.data = std::move(in.data);
 				files.streaming.push_back(in.name);
 				stream.children.push_back(std::move(node));
@@ -480,11 +481,6 @@ namespace loader::convert
 					files.named.back().merge = true;
 				continue;
 			}
-			if (ext == ".ysc")
-			{
-				result.warnings.push_back(std::format("{} 是遊戲腳本，目前無法套用，已略過", in.path));
-				continue;
-			}
 			if (std::find(kIgnored.begin(), kIgnored.end(), ext) == kIgnored.end())
 				result.warnings.push_back(std::format("{} 的檔案類型目前不支援，已略過", in.path));
 		}
@@ -535,10 +531,24 @@ namespace loader::convert
 			onConvert();
 		for (WriteNode& node : stream.children)
 		{
-			if (node.kind != WriteNode::Kind::Resource || !IsLegacyResource(node.name, node.data))
-				continue;
 			Bytes converted;
 			std::string error;
+			if (node.kind == WriteNode::Kind::Resource && node.name.ends_with(".ysc") && ysc::IsLegacy(node.data))
+			{
+				// Legacy game script: natives and globals rewritten for Enhanced.
+				std::vector<std::string> notes;
+				if (ysc::Convert(node.data, converted, notes, error))
+				{
+					node.data = std::move(converted);
+					for (const auto& n : notes)
+						result.warnings.push_back(std::format("{}：{}", node.name, n));
+				}
+				else
+					result.warnings.push_back(std::format("{} 未轉換（遊戲不會正確執行它）：{}", node.name, error));
+				continue;
+			}
+			if (node.kind != WriteNode::Kind::Resource || !IsLegacyResource(node.name, node.data))
+				continue;
 			if (ConvertResourceFile(node.name, node.data, converted, result.warnings, error))
 				node.data = std::move(converted);
 			else // keep the legacy file (the game will not load it) and convert the rest

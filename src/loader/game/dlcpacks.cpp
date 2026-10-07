@@ -139,7 +139,9 @@ namespace loader::game::dlcpacks
 				error = "truncated table of contents";
 				return nullptr;
 			}
-			reinterpret_cast<uint32_t*>(toc)[3] = kEncryptionNg;
+			// No encryption: with NG here the game decrypts script resources (.ysc) as whole entries, which turns our
+			// plain scripts into garbage (ERR_GEN_ZLIB_1). Other files and resources load the same either way.
+			reinterpret_cast<uint32_t*>(toc)[3] = 0;
 			auto* parents = reinterpret_cast<uint16_t*>(toc + size);
 			for (uint32_t i = 0; i < count; ++i)
 			{

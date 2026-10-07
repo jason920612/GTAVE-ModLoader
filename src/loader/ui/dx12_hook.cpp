@@ -29,9 +29,72 @@ namespace loader::ui::dx12
 		ResizeBuffers1Fn g_origResizeBuffers1 = nullptr;
 		thread_local bool t_inHook = false;
 
+		void* g_queueVtable = nullptr; // vtable of the probe's command queue (the same class as the game's)
+		std::atomic<void*> g_knownSwapChain = nullptr;
+		std::atomic<ID3D12CommandQueue*> g_knownQueue = nullptr;
+
+		bool SafeReadPointer(const void* at, void*& out);
+		bool InModule(const void* address, HMODULE module);
+
+		// A COM object: its vtable lies in a loaded module (not heap data read at the wrong offset).
+		bool LooksLikeObject(void* p, void* wantedVtable = nullptr)
+		{
+			void* vtable = nullptr;
+			if (!p || !SafeReadPointer(p, vtable) || !vtable)
+				return false;
+			if (wantedVtable)
+				return vtable == wantedVtable;
+			HMODULE owner = nullptr;
+			return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			    static_cast<LPCWSTR>(vtable), &owner) != FALSE;
+		}
+
+		// The swap chain's command queue. The offset learned from the probe holds it normally; when the overlay starts
+		// early (e.g. while packs are converted on the loading screen) the game's swap chain can be laid out
+		// differently, so the queue is then looked up by its class in the object and the DXGI objects it holds.
 		ID3D12CommandQueue* QueueOf(IDXGISwapChain3* swapChain)
 		{
-			return *reinterpret_cast<ID3D12CommandQueue**>(reinterpret_cast<uint8_t*>(swapChain) + g_queueOffset);
+			if (g_knownSwapChain == swapChain)
+				return g_knownQueue;
+			void* candidate = nullptr;
+			ID3D12CommandQueue* queue = nullptr;
+			const bool readable = SafeReadPointer(reinterpret_cast<uint8_t*>(swapChain) + g_queueOffset, candidate);
+			if (readable && LooksLikeObject(candidate, g_queueVtable))
+				queue = static_cast<ID3D12CommandQueue*>(candidate);
+			const HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
+			const auto scan = [&](void* object) {
+				for (size_t off = sizeof(void*); !queue && off < 0x1000; off += sizeof(void*))
+				{
+					void* value = nullptr;
+					if (!SafeReadPointer(static_cast<uint8_t*>(object) + off, value))
+						return;
+					if (LooksLikeObject(value, g_queueVtable))
+						queue = static_cast<ID3D12CommandQueue*>(value);
+				}
+			};
+			if (!queue)
+				scan(swapChain);
+			for (size_t off = sizeof(void*); !queue && off < 0x1000; off += sizeof(void*))
+			{
+				void* inner = nullptr;
+				void* innerVtable = nullptr;
+				if (!SafeReadPointer(reinterpret_cast<uint8_t*>(swapChain) + off, inner))
+					break;
+				if (inner && SafeReadPointer(inner, innerVtable) && InModule(innerVtable, dxgi))
+					scan(inner);
+			}
+			// A wrapped queue (e.g. by an upscaler's proxy) has another class: accept any object at the learned offset.
+			if (!queue && readable && LooksLikeObject(candidate))
+				queue = static_cast<ID3D12CommandQueue*>(candidate);
+			if (!queue)
+			{
+				static std::atomic<bool> warned = false;
+				if (!warned.exchange(true))
+					log::Warn("ui: command queue of the game's swap chain not found; the overlay is not drawn");
+			}
+			g_knownQueue = queue;
+			g_knownSwapChain = swapChain;
+			return queue;
 		}
 
 		void BeforePresent(IDXGISwapChain3* swapChain)
@@ -39,7 +102,8 @@ namespace loader::ui::dx12
 			if (t_inHook)
 				return;
 			t_inHook = true;
-			g_callbacks.onPresent(swapChain, QueueOf(swapChain));
+			if (ID3D12CommandQueue* queue = QueueOf(swapChain))
+				g_callbacks.onPresent(swapChain, queue);
 			t_inHook = false;
 		}
 
@@ -201,6 +265,7 @@ namespace loader::ui::dx12
 				break;
 			}
 
+			g_queueVtable = *reinterpret_cast<void**>(queue);
 			void** vtable = *reinterpret_cast<void***>(target);
 			ok = PatchSlot(vtable, kPresent, reinterpret_cast<void*>(&HookPresent), g_origPresent) &&
 			     PatchSlot(vtable, kPresent1, reinterpret_cast<void*>(&HookPresent1), g_origPresent1) &&

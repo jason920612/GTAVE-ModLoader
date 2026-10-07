@@ -75,7 +75,8 @@ add_library(loader SHARED
     src/loader/convert/oiv.cpp
     src/loader/convert/rel.cpp
     src/loader/convert/replace.cpp
-    src/loader/convert/xmlmerge.cpp)
+    src/loader/convert/xmlmerge.cpp
+    src/loader/convert/ysc.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive- /Zi>)
@@ -110,3 +111,8 @@ if(GTAV_DIR)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${example}> "${GTAV_DIR}/ModLoader/mods/")
     endforeach()
 endif()
+
+# Research tool: learns the legacy -> Enhanced script global table (tools/learn_ysc). Not part of the default build.
+add_executable(learn_ysc EXCLUDE_FROM_ALL tools/learn_ysc/learn_ysc.cpp src/loader/convert/resource.cpp)
+target_compile_features(learn_ysc PRIVATE cxx_std_20)
+target_compile_options(learn_ysc PRIVATE /utf-8 /O2)

@@ -19,7 +19,7 @@ namespace loader::convert
 	namespace
 	{
 		// Bump when the converters change, so cached packs are rebuilt.
-		constexpr int kConverterVersion = 13;
+		constexpr int kConverterVersion = 14;
 
 		std::mutex g_progressMutex;
 		Progress g_progress;
