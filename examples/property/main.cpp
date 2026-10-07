@@ -178,7 +178,13 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 {
 	ml::Init(api, ctx);
 	const auto yes = [](ml::scripts::NativeCall& call) { call.Return<int64_t>(1); };
-	ml::scripts::OverrideNative("appinternet", kNetworkIsGameInProgress, yes);
+	// Only on Dynasty 8 (website 18): the other sites (the stock markets and so on) stay as in story mode.
+	ml::scripts::OverrideNative("appinternet", kNetworkIsGameInProgress, [](ml::scripts::NativeCall& call) {
+		if (HUD::GET_CURRENT_WEBSITE_ID() == 18)
+			call.Return<int64_t>(1);
+		else
+			call.CallOriginal();
+	});
 	// Console-style purchases: prices from the property table instead of the game server catalog.
 	ml::scripts::OverrideNative("appinternet", kUseServerTransactions, [](ml::scripts::NativeCall& call) { call.Return<int64_t>(0); });
 	// Money: the story character's cash stands in for the Online bank account (wallet empty).
@@ -240,7 +246,8 @@ int OpenBrowser()
 extern "C" __declspec(dllexport) void MLMain()
 {
 	int saved = 0;   // purchases an autosave was requested for
-	int browser = 0; // appinternet thread started by this mod
+	int browser = 0; // the browser's thread (appinternet: phone, computer, or open_browser.txt)
+	uint64_t nextBrowserCheck = 0;
 	bool faked = false;
 	int64_t before[3] = {}; // Online state globals the browser runs with, as they were
 	auto lastSave = LastGameSave();
@@ -252,9 +259,20 @@ extern "C" __declspec(dllexport) void MLMain()
 		// Research aid until the phone opens it: ModLoader\open_browser.txt starts the browser.
 		if (std::error_code ec; std::filesystem::remove("ModLoader/open_browser.txt", ec))
 			browser = OpenBrowser();
-		const bool running = browser && ml::scripts::Static(browser, 0);
-		if (!running)
+		if (browser && !ml::scripts::Static(browser, 0))
 			browser = 0;
+		if (!browser && ml::Api().GetTickMs() >= nextBrowserCheck)
+		{
+			nextBrowserCheck = ml::Api().GetTickMs() + 500;
+			for (const auto& thread : ml::scripts::Threads())
+				if (_stricmp(thread.name.c_str(), "appinternet") == 0) // the phone starts it as "appInternet"
+				{
+					browser = thread.id;
+					ml::Log("browser running: thread {}", browser);
+				}
+		}
+		// On the Dynasty 8 website.
+		const bool running = browser && HUD::GET_CURRENT_WEBSITE_ID() == 18;
 
 		// While the browser runs, the Online state its pages check is faked, and put back afterwards: Global 80362
 		// (in GTA Online; story scripts such as the autosave controller read it too) and the "local player is in the
@@ -289,6 +307,19 @@ extern "C" __declspec(dllexport) void MLMain()
 		if (running)
 		{
 			const int page = HUD::GET_CURRENT_WEBSITE_ID() == 18 ? HUD::GET_CURRENT_WEBPAGE_ID() : -1;
+			// The site's own "browse listings" link leads to its maintenance page (page 25) outside GTA Online (the
+			// movie decides that itself); go to the listing page instead, as the browser does for its start page.
+			if (page != lastPage)
+				ml::Log("Dynasty 8 page {}", page);
+			if (page == 25 && page != lastPage)
+				if (const int64_t* movie = ml::scripts::Static(browser, 628))
+				{
+					GRAPHICS::BEGIN_SCALEFORM_MOVIE_METHOD(static_cast<int>(*movie), "GO_TO_WEBPAGE");
+					GRAPHICS::BEGIN_TEXT_COMMAND_SCALEFORM_STRING("STRING");
+					HUD::ADD_TEXT_COMPONENT_SUBSTRING_WEBSITE("WWW_DYNASTY8REALESTATE_COM_S_LOS_D_SANTOS");
+					GRAPHICS::END_TEXT_COMMAND_SCALEFORM_STRING();
+					GRAPHICS::END_SCALEFORM_MOVIE_METHOD();
+				}
 			if (page != lastPage && (page == 1 || page == 2))
 				if (int64_t* build = ml::scripts::Global(77588))
 					*build = 1;
@@ -300,7 +331,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		// A purchase changes the character's money (saved with the game) and the property stats (saved by this mod at
 		// once): an autosave keeps the two together. Requested once the browser is closed (the autosave controller
 		// drops requests while Global 80362 is set).
-		if (const int buys = g_buys; buys != saved && !running && RequestAutosave())
+		if (const int buys = g_buys; buys != saved && !browser && RequestAutosave())
 		{
 			saved = buys;
 			ml::Log("purchase: autosave requested");
@@ -328,6 +359,6 @@ extern "C" __declspec(dllexport) void MLMain()
 				}
 			}
 		}
-		ml::Wait(running ? 0 : 200);
+		ml::Wait(browser ? 0 : 200);
 	}
 }
