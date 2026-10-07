@@ -60,6 +60,7 @@ add_library(loader SHARED
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
     src/loader/web/browser.cpp
+    src/loader/web/textures.cpp
     src/loader/debug/hangdump.cpp
     src/loader/debug/scripttrace.cpp
     src/loader/debug/watch.cpp

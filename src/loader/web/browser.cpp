@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../../browser/mlbrowser.h"
+#include "textures.hpp"
 #include "../config.hpp"
 #include "../game/natives.hpp"
 #include "../game/script.hpp"
@@ -46,6 +47,7 @@ namespace loader::web
 			MLB_UrlFn url = nullptr;
 			MLB_RespondFn respond = nullptr;
 			MLB_EmitFn emit = nullptr;
+			MLB_TextureReadyFn textureReady = nullptr;
 		} g_dll;
 
 		enum class Status
@@ -78,6 +80,14 @@ namespace loader::web
 		{
 			std::lock_guard lock(g_queryMutex);
 			g_queries.push_back({id, request ? request : ""});
+		}
+		void OnTexture(int64_t id, const char* dictionary, const char* texture)
+		{
+			textures::Request(dictionary ? dictionary : "", texture ? texture : "", [id](const std::wstring& file) {
+				std::string path(file.size() * 3, '\0');
+				path.resize(WideCharToMultiByte(CP_UTF8, 0, file.c_str(), static_cast<int>(file.size()), path.data(), static_cast<int>(path.size()), nullptr, nullptr));
+				g_dll.textureReady(id, path.c_str());
+			});
 		}
 		void OnLog(int level, const char* text)
 		{
@@ -112,7 +122,8 @@ namespace loader::web
 			          Resolve(module, "MLB_Frame", g_dll.frame) && Resolve(module, "MLB_MouseMove", g_dll.mouseMove) &&
 			          Resolve(module, "MLB_MouseButton", g_dll.mouseButton) && Resolve(module, "MLB_Wheel", g_dll.wheel) &&
 			          Resolve(module, "MLB_Key", g_dll.key) && Resolve(module, "MLB_Back", g_dll.back) && Resolve(module, "MLB_Forward", g_dll.forward) &&
-			          Resolve(module, "MLB_Url", g_dll.url) && Resolve(module, "MLB_Respond", g_dll.respond) && Resolve(module, "MLB_Emit", g_dll.emit);
+			          Resolve(module, "MLB_Url", g_dll.url) && Resolve(module, "MLB_Respond", g_dll.respond) && Resolve(module, "MLB_Emit", g_dll.emit) &&
+			          Resolve(module, "MLB_TextureReady", g_dll.textureReady);
 			if (!ok)
 			{
 				log::Error("browser: mlbrowser.dll does not match this loader");
@@ -137,7 +148,7 @@ namespace loader::web
 			cfg.webRoots = rootPtrs.data();
 			cfg.webRootCount = static_cast<int>(rootPtrs.size());
 			cfg.locale = "zh-TW";
-			cfg.callbacks = {&OnQuery, &OnLog};
+			cfg.callbacks = {&OnQuery, &OnLog, &OnTexture};
 			if (!g_dll.init(&cfg))
 			{
 				g_status = Status::Failed;
@@ -303,6 +314,8 @@ namespace loader::web
 				}
 			}
 		}
+
+		textures::Tick();
 
 		std::deque<Query> queries;
 		{

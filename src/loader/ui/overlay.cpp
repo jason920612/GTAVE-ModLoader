@@ -18,6 +18,7 @@
 #include "../mods.hpp"
 #include "../state.hpp"
 #include "../web/browser.hpp"
+#include "../web/textures.hpp"
 #include "dx12_hook.hpp"
 #include "menu.hpp"
 #include "notify.hpp"
@@ -226,6 +227,7 @@ namespace loader::ui
 			}
 			f.allocator->Reset();
 			g_commandList->Reset(f.allocator, nullptr);
+			web::textures::OnRender(g_device, g_commandList, f.backBuffer, g_fenceCounter + 1, g_fence->GetCompletedValue());
 
 			D3D12_RESOURCE_BARRIER barrier{};
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

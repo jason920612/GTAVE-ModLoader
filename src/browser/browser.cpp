@@ -7,6 +7,8 @@
 #include <condition_variable>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -69,6 +71,68 @@ namespace
 		       "<h1>404</h1><p>" + url + "</p></body>";
 	}
 
+	// https://gametextures/<dictionary>/<texture>.png: the loader captures the texture, then the PNG is served.
+	class TextureHandler;
+	std::mutex g_textureMutex;
+	std::map<int64_t, CefRefPtr<TextureHandler>> g_textureRequests;
+	std::atomic<int64_t> g_nextTexture = 1;
+
+	class TextureHandler : public CefResourceHandler
+	{
+	public:
+		TextureHandler(std::string dictionary, std::string texture) : m_dictionary(std::move(dictionary)), m_texture(std::move(texture)) {}
+
+		bool Open(CefRefPtr<CefRequest>, bool& handleRequest, CefRefPtr<CefCallback> callback) override
+		{
+			handleRequest = false;
+			m_callback = callback;
+			const int64_t id = g_nextTexture++;
+			{
+				std::lock_guard lock(g_textureMutex);
+				g_textureRequests[id] = this;
+			}
+			if (g_callbacks.texture)
+				g_callbacks.texture(id, m_dictionary.c_str(), m_texture.c_str());
+			else
+				Ready(id, nullptr);
+			return true;
+		}
+		void Ready(int64_t id, const char* file)
+		{
+			{
+				std::lock_guard lock(g_textureMutex);
+				g_textureRequests.erase(id);
+			}
+			if (file && *file)
+				if (std::ifstream in(std::filesystem::u8path(file), std::ios::binary); in)
+					m_data.assign(std::istreambuf_iterator<char>(in), {});
+			if (m_callback)
+				m_callback->Continue();
+			m_callback = nullptr;
+		}
+		void GetResponseHeaders(CefRefPtr<CefResponse> response, int64_t& length, CefString&) override
+		{
+			response->SetStatus(m_data.empty() ? 404 : 200);
+			response->SetMimeType("image/png");
+			length = static_cast<int64_t>(m_data.size());
+		}
+		bool Read(void* out, int bytes, int& read, CefRefPtr<CefResourceReadCallback>) override
+		{
+			read = static_cast<int>(std::min<size_t>(bytes, m_data.size() - m_at));
+			std::memcpy(out, m_data.data() + m_at, read);
+			m_at += read;
+			return read > 0;
+		}
+		void Cancel() override { m_callback = nullptr; }
+
+	private:
+		std::string m_dictionary, m_texture;
+		CefRefPtr<CefCallback> m_callback;
+		std::string m_data;
+		size_t m_at = 0;
+		IMPLEMENT_REFCOUNTING(TextureHandler);
+	};
+
 	class PageFactory : public CefSchemeHandlerFactory
 	{
 	public:
@@ -80,6 +144,17 @@ namespace
 			{
 				const std::wstring host = CefString(&parts.host).ToWString();
 				std::wstring path = CefString(&parts.path).ToWString();
+				if (host == L"gametextures")
+				{
+					// /<dictionary>/<texture>.png
+					const std::filesystem::path p = std::filesystem::path(path).relative_path();
+					auto it = p.begin();
+					if (std::distance(p.begin(), p.end()) == 2)
+					{
+						const std::string dictionary = it->string(), texture = std::next(it)->stem().string();
+						return new TextureHandler(dictionary, texture);
+					}
+				}
 				std::filesystem::path relative = std::filesystem::path(path).relative_path().lexically_normal();
 				const bool escapes = !relative.empty() && *relative.begin() == L"..";
 				for (const auto& root : g_roots)
@@ -524,6 +599,18 @@ extern "C"
 			if (g_browser)
 				g_browser->GetMainFrame()->ExecuteJavaScript(code, "", 0);
 		});
+	}
+
+	__declspec(dllexport) void MLB_TextureReady(int64_t id, const char* file)
+	{
+		CefRefPtr<TextureHandler> handler;
+		{
+			std::lock_guard lock(g_textureMutex);
+			if (auto it = g_textureRequests.find(id); it != g_textureRequests.end())
+				handler = it->second;
+		}
+		if (handler)
+			handler->Ready(id, file);
 	}
 
 	__declspec(dllexport) void MLB_Shutdown()

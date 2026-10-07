@@ -521,3 +521,9 @@
   瀏覽器蓋在上面。Esc：上一頁，第一頁時關閉。
 - 實測：手機 → 網路 → 顯示 eyefind 首頁；頁面呼叫 property mod 的 `property.cash` 得到富蘭克林的現金；連結、Esc 返回 /
   關閉、再次從手機開啟皆正常。`tools/browser_test`：在遊戲外測試 mlbrowser.dll（渲染存成 BMP）。
+- 遊戲貼圖給網頁用：`https://gametextures/<字典>/<貼圖>.png`。loader 在遊戲執行緒載入字典、以 `DRAW_SPRITE` 畫在畫面
+  中央（先黑底、再白底；瀏覽器蓋著，玩家看不到），疊加層在 4 個 Present 後把該區域從後緩衝區複製回 CPU，由兩張計算
+  透明度（a = 1 − (白 − 黑)），以 WIC 存成 PNG 快取於 `ModLoader\browser\cache\textures\`。與貼圖壓縮格式無關。
+  Dynasty 8 物業照片 = 字典 / 貼圖 `DYN_MP_<n>`（256×128，n 由 appinternet `@3058153` 依物業 id 對應）。
+- 物業資料：Global 1312440[id]（每筆 1951 格）：+16 名稱標籤（`MP_PROP_<n>`）、+4..6 入口座標、+31 類型、+32 價格；
+  說明標籤 `MP_PROP_<n>DES`。

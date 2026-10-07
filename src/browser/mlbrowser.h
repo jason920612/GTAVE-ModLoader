@@ -20,6 +20,8 @@ typedef struct MLBCallbacks
 	void (*query)(int64_t id, const char* request);
 	/* Messages for the loader log (0 debug .. 3 error). Any thread. */
 	void (*log)(int level, const char* text);
+	/* A page wants https://gametextures/<dictionary>/<texture>.png: answer with MLB_TextureReady(id, png file). */
+	void (*texture)(int64_t id, const char* dictionary, const char* texture);
 } MLBCallbacks;
 
 typedef struct MLBConfig
@@ -57,6 +59,8 @@ typedef int (*MLB_UrlFn)(char* buf, int size);
 typedef void (*MLB_RespondFn)(int64_t id, int ok, const char* result);
 /* Sends an event to the page: listeners of game.on(event) get `json` parsed (NULL = null). */
 typedef void (*MLB_EmitFn)(const char* event, const char* json);
+/* The PNG file for a texture request (UTF-8 path; NULL or "" = not found). Any thread. */
+typedef void (*MLB_TextureReadyFn)(int64_t id, const char* file);
 /* Stops CEF (at game exit). */
 typedef void (*MLB_ShutdownFn)(void);
 

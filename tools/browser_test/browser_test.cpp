@@ -47,7 +47,7 @@ int wmain(int argc, wchar_t** argv)
 		g_respond = reinterpret_cast<MLB_RespondFn>(GetProcAddress(m, "MLB_Respond"));
 		const std::wstring browserDir = dir.wstring(), cacheDir = (dir / L"cache").wstring(), web = (root / L"web").wstring();
 		const wchar_t* roots[] = {web.c_str()};
-		MLBConfig cfg{browserDir.c_str(), cacheDir.c_str(), roots, 1, "zh-TW", {&OnQuery, &OnLog}};
+		MLBConfig cfg{browserDir.c_str(), cacheDir.c_str(), roots, 1, "zh-TW", {&OnQuery, &OnLog, nullptr}};
 		std::printf("init...\n");
 		if (!init(&cfg))
 		{
