@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -316,6 +318,23 @@ namespace loader::web
 		}
 
 		textures::Tick();
+
+		// Development aid: ModLoaderrowser_open.txt holds a URL to open.
+		static uint64_t nextCheck = 0;
+		if (GetTickCount64() >= nextCheck)
+		{
+			nextCheck = GetTickCount64() + 1000;
+			const auto trigger = paths::Get().root / L"browser_open.txt";
+			std::error_code ec;
+			if (std::filesystem::exists(trigger, ec))
+			{
+				std::string url;
+				std::getline(std::ifstream(trigger), url);
+				std::filesystem::remove(trigger, ec);
+				if (!url.empty())
+					Open(url);
+			}
+		}
 
 		std::deque<Query> queries;
 		{

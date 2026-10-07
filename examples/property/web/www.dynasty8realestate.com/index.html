@@ -46,8 +46,23 @@
 </section>
 
 <main>
-  <div class="summary" id="summary"></div>
+  <div class="bar">
+    <div class="summary" id="summary"></div>
+    <div class="segmented light" id="view">
+      <button data-value="list" class="on">列表</button>
+      <button data-value="map">地圖</button>
+    </div>
+  </div>
   <div class="grid" id="grid"></div>
+  <div class="map" id="map" hidden>
+    <div class="map-inner" id="mapInner">
+      <img src="https://gametextures/www_dynasty8realestate_com/DYN_MAP_BIG_01.png" alt="">
+      <img src="https://gametextures/www_dynasty8realestate_com/DYN_MAP_BIG_02.png" alt="">
+      <div class="pins" id="pins"></div>
+    </div>
+    <div class="map-zoom"><button id="zoomIn">＋</button><button id="zoomOut">－</button></div>
+    <div class="map-tip" id="mapTip" hidden></div>
+  </div>
   <p class="empty" id="empty" hidden>沒有符合條件的物業。</p>
 </main>
 
@@ -60,6 +75,13 @@
       <h2 id="dName"></h2>
       <div class="area" id="dArea"></div>
       <p class="desc" id="dDesc"></p>
+      <div class="locator">
+        <div class="map-inner" id="dMap">
+          <img src="https://gametextures/www_dynasty8realestate_com/DYN_MAP_BIG_01.png" alt="">
+          <img src="https://gametextures/www_dynasty8realestate_com/DYN_MAP_BIG_02.png" alt="">
+          <div class="pin here" id="dPin"></div>
+        </div>
+      </div>
       <div class="buy">
         <div class="price" id="dPrice"></div>
         <button class="primary" id="dBuy"></button>

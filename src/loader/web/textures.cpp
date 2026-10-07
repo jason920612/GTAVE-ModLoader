@@ -31,6 +31,7 @@ namespace loader::web::textures
 		constexpr uint64_t kTextureResolution = 0x35736EE65BD00C11ULL;
 		constexpr uint64_t kDrawRect = 0x3A618A217E5154F0ULL;
 		constexpr uint64_t kDrawSprite = 0xE7FFAE5EBF23D890ULL;
+		constexpr uint64_t kDrawSpriteUv = 0x95812F9B26074726ULL; // DRAW_SPRITE_ARX_WITH_UV
 		constexpr uint64_t kGfxDrawOrder = 0x61BB1D9B3A95D802ULL;
 		constexpr int kPresentsBeforeCopy = 4; // frames between drawing and the frame that shows it
 
@@ -175,6 +176,14 @@ namespace loader::web::textures
 		int g_waitFrames = 0;
 		int g_texW = 0, g_texH = 0;
 		std::vector<uint8_t> g_onBlack;
+		// Textures larger than 90% of the screen are captured in tiles (drawn 1:1 with texture coordinates).
+		struct Tile
+		{
+			int x, y, w, h;
+		};
+		std::vector<Tile> g_tiles;
+		size_t g_tile = 0;
+		std::vector<uint8_t> g_image; // the whole texture, BGRA
 
 		uint64_t Bits(float f)
 		{
@@ -204,20 +213,24 @@ namespace loader::web::textures
 				done(file);
 		}
 
-		// Draws the texture over a square of `shade` in the middle of the screen (pixel aligned, at most 90% of it).
+		// Draws the current tile of the texture 1:1 over a square of `shade` in the middle of the screen.
 		void Draw(int shade)
 		{
 			const int sw = g_screenW, sh = g_screenH;
-			const float scale = std::min({1.0f, sw * 0.9f / g_texW, sh * 0.9f / g_texH});
-			const int w = std::max(1, static_cast<int>(g_texW * scale)), h = std::max(1, static_cast<int>(g_texH * scale));
+			const Tile& t = g_tiles[g_tile];
+			const int w = t.w, h = t.h;
 			const int x = (sw - w) / 2, y = (sh - h) / 2;
 			g_shotX = x, g_shotY = y, g_shotW = w, g_shotH = h;
 			const float cx = (x + w / 2.0f) / sw, cy = (y + h / 2.0f) / sh, nw = static_cast<float>(w) / sw, nh = static_cast<float>(h) / sh;
 			Call(kGfxDrawOrder, {7});
 			Call(kDrawRect, {Bits(cx), Bits(cy), Bits(nw + 8.0f / sw), Bits(nh + 8.0f / sh), static_cast<uint64_t>(shade), static_cast<uint64_t>(shade),
 			                    static_cast<uint64_t>(shade), 255, 0});
-			Call(kDrawSprite, {reinterpret_cast<uint64_t>(g_job.dictionary.c_str()), reinterpret_cast<uint64_t>(g_job.texture.c_str()), Bits(cx), Bits(cy), Bits(nw),
-			                      Bits(nh), Bits(0.0f), 255, 255, 255, 255, 0, 0});
+			const uint64_t dict = reinterpret_cast<uint64_t>(g_job.dictionary.c_str()), tex = reinterpret_cast<uint64_t>(g_job.texture.c_str());
+			if (g_tiles.size() == 1)
+				Call(kDrawSprite, {dict, tex, Bits(cx), Bits(cy), Bits(nw), Bits(nh), Bits(0.0f), 255, 255, 255, 255, 0, 0});
+			else
+				Call(kDrawSpriteUv, {dict, tex, Bits(cx), Bits(cy), Bits(nw), Bits(nh), Bits(static_cast<float>(t.x) / g_texW), Bits(static_cast<float>(t.y) / g_texH),
+				                        Bits(static_cast<float>(t.x + t.w) / g_texW), Bits(static_cast<float>(t.y + t.h) / g_texH), Bits(0.0f), 255, 255, 255, 255, 0});
 		}
 	}
 
@@ -278,6 +291,15 @@ namespace loader::web::textures
 				Finish(L"");
 				return;
 			}
+			{
+				const int tw = static_cast<int>(g_screenW * 0.9f), th = static_cast<int>(g_screenH * 0.9f);
+				g_tiles.clear();
+				for (int y = 0; y < g_texH; y += th)
+					for (int x = 0; x < g_texW; x += tw)
+						g_tiles.push_back({x, y, std::min(tw, g_texW - x), std::min(th, g_texH - y)});
+				g_tile = 0;
+				g_image.assign(size_t(g_texW) * g_texH * 4, 0);
+			}
 			g_step = Step::OnBlack;
 			g_presents = 0;
 			Draw(0);
@@ -301,21 +323,32 @@ namespace loader::web::textures
 			}
 			{
 				// Over black: c = a*t; over white: c = a*t + (1 - a)  ->  a = 1 - (white - black), t = black / a.
-				std::vector<uint8_t> image(g_pixels.size());
-				for (size_t i = 0; i + 3 < image.size(); i += 4)
+				const Tile& t = g_tiles[g_tile];
+				for (int y = 0; y < t.h; ++y)
+					for (int x = 0; x < t.w; ++x)
+					{
+						const size_t i = (size_t(y) * g_shotW + x) * 4;
+						uint8_t* o = g_image.data() + (size_t(t.y + y) * g_texW + t.x + x) * 4;
+						int a = 255;
+						for (int c = 0; c < 3; ++c)
+							a = std::min(a, 255 - (g_pixels[i + c] - g_onBlack[i + c]));
+						a = std::clamp(a, 0, 255);
+						for (int c = 0; c < 3; ++c)
+							o[c] = a ? static_cast<uint8_t>(std::min(255, g_onBlack[i + c] * 255 / a)) : 0;
+						o[3] = static_cast<uint8_t>(a);
+					}
+				if (++g_tile < g_tiles.size())
 				{
-					int a = 255;
-					for (int c = 0; c < 3; ++c)
-						a = std::min(a, 255 - (g_pixels[i + c] - g_onBlack[i + c]));
-					a = std::clamp(a, 0, 255);
-					for (int c = 0; c < 3; ++c)
-						image[i + c] = a ? static_cast<uint8_t>(std::min(255, g_onBlack[i + c] * 255 / a)) : 0;
-					image[i + 3] = static_cast<uint8_t>(a);
+					g_step = Step::OnBlack;
+					g_presents = 0;
+					Draw(0);
+					g_shot = Drawing;
+					return;
 				}
 				const auto file = CacheFile(g_job.dictionary, g_job.texture);
-				const bool ok = SavePng(file, g_shotW, g_shotH, image);
+				const bool ok = SavePng(file, g_texW, g_texH, g_image);
 				if (ok)
-					log::Info("textures: {}/{} saved ({} x {})", g_job.dictionary, g_job.texture, g_shotW, g_shotH);
+					log::Info("textures: {}/{} saved ({} x {}, {} tile(s))", g_job.dictionary, g_job.texture, g_texW, g_texH, g_tiles.size());
 				else
 					log::Warn("textures: could not save {}/{}", g_job.dictionary, g_job.texture);
 				Finish(ok ? file.wstring() : L"");

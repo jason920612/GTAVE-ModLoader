@@ -12,6 +12,7 @@
   --red: #c2453a;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--ink);
   font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; }
 button, select, input { font: inherit; }
@@ -58,7 +59,7 @@ main { padding: 28px 6% 40px; }
 
 .overlay { position: fixed; inset: 0; background: rgba(8,14,24,.6); display: grid; place-items: center; z-index: 10; }
 .overlay[hidden] { display: none; }
-.panel { width: min(880px, 92vw); max-height: 90vh; overflow: auto; background: var(--card); border-radius: 18px; position: relative; }
+.panel { width: min(760px, 92vw); max-height: 90vh; overflow: auto; background: var(--card); border-radius: 18px; position: relative; }
 .panel .photo { width: 100%; aspect-ratio: 2 / 1; object-fit: cover; display: block; background: #d9d4c7; }
 .panel .body { padding: 22px 28px 28px; }
 .panel h2 { margin: 8px 0 4px; font-size: 28px; }
@@ -84,3 +85,26 @@ button.primary:disabled { background: #d6d2c8; color: #8a8579; cursor: default; 
   padding: 14px 22px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.3); z-index: 20; }
 .toast.error { background: var(--red); }
 footer { text-align: center; color: var(--muted); font-size: 13px; padding: 20px 6% 30px; }
+
+.bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.bar .summary { margin: 0; }
+.segmented.light { background: #e7e2d6; }
+.segmented.light button { color: var(--ink); }
+
+/* Map: the game's Dynasty 8 map (two textures, 1024 x 1536 together), panned and zoomed with transforms. */
+.map { position: relative; height: 72vh; border-radius: 14px; overflow: hidden; background: #9aceff; cursor: grab; user-select: none; }
+.map.dragging { cursor: grabbing; }
+.map-inner { position: absolute; left: 0; top: 0; width: 1024px; height: 1536px; transform-origin: 0 0; }
+.map-inner img, .locator img { display: block; width: 1024px; pointer-events: none; }
+.pins { position: absolute; inset: 0; }
+.pin { position: absolute; width: 22px; height: 22px; margin: -22px 0 0 -11px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+  background: var(--gold); border: 2px solid var(--navy); box-shadow: 0 2px 6px rgba(0,0,0,.35); cursor: pointer; }
+.pin.owned { background: var(--green); }
+.pin:hover { background: #fff; }
+.map-zoom { position: absolute; right: 14px; top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.map-zoom button { width: 40px; height: 40px; border: 0; border-radius: 10px; background: var(--navy); color: #fff; font-size: 22px; cursor: pointer; }
+.map-tip { position: absolute; pointer-events: none; background: var(--navy); color: #fff; border-radius: 8px; padding: 8px 12px; font-size: 14px;
+  white-space: nowrap; transform: translate(-50%, -130%); }
+.map-tip b { color: var(--gold-2); }
+.locator { position: relative; width: 100%; height: 170px; overflow: hidden; border-radius: 12px; margin-bottom: 22px; background: #9aceff; }
+.pin.here { background: var(--red); cursor: default; }

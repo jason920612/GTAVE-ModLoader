@@ -9,6 +9,11 @@ const $ = id => document.getElementById(id);
 let data = { character: -1, cash: 0, properties: [] };
 const filter = { kind: 'all', tier: 'all', sort: 'price-asc', search: '', ownedOnly: false };
 let current = null;
+let view = 'list';
+
+// World position -> pixel on the game's map (1024 x 1536), fitted against the game's water (research/phase0.md §29).
+const mapPoint = p => ({ x: 460.5 + 0.1355 * p.x, y: 1037 - 0.1355 * p.y });
+const mapState = { scale: 0.6, x: 0, y: 0 };
 
 async function load() {
   try {
@@ -45,8 +50,66 @@ function render() {
   const owned = data.properties.filter(p => p.owned).length;
   $('summary').textContent = `共 ${list.length} 筆物業` + (owned ? `，你擁有 ${owned} 筆` : '');
   $('empty').hidden = list.length > 0;
-  const grid = $('grid');
-  grid.replaceChildren(...list.map(card));
+  $('grid').hidden = view !== 'list';
+  $('map').hidden = view !== 'map';
+  if (view === 'list')
+    $('grid').replaceChildren(...list.map(card));
+  else
+    renderPins(list);
+}
+
+function renderPins(list) {
+  $('pins').replaceChildren(...list.map(p => {
+    const pin = document.createElement('div');
+    const at = mapPoint(p);
+    pin.className = 'pin' + (p.owned ? ' owned' : '');
+    pin.style.left = at.x + 'px';
+    pin.style.top = at.y + 'px';
+    pin.addEventListener('click', e => { e.stopPropagation(); openDetail(p); });
+    pin.addEventListener('mouseenter', () => showTip(p, at));
+    pin.addEventListener('mouseleave', () => ($('mapTip').hidden = true));
+    return pin;
+  }));
+  applyMap();
+}
+
+function showTip(p, at) {
+  const tip = $('mapTip');
+  tip.innerHTML = '<span></span> · <b></b>';
+  tip.children[0].textContent = p.name;
+  tip.children[1].textContent = money(p.price);
+  tip.style.left = (mapState.x + at.x * mapState.scale) + 'px';
+  tip.style.top = (mapState.y + at.y * mapState.scale - 22) + 'px';
+  tip.hidden = false;
+}
+
+function applyMap() {
+  const box = $('map').getBoundingClientRect();
+  const w = 1024 * mapState.scale, h = 1536 * mapState.scale;
+  // Keep the map covering the view (or centred when smaller).
+  mapState.x = w <= box.width ? (box.width - w) / 2 : Math.min(0, Math.max(box.width - w, mapState.x));
+  mapState.y = h <= box.height ? (box.height - h) / 2 : Math.min(0, Math.max(box.height - h, mapState.y));
+  $('mapInner').style.transform = `translate(${mapState.x}px, ${mapState.y}px) scale(${mapState.scale})`;
+}
+
+function zoomMap(factor, cx, cy) {
+  const box = $('map').getBoundingClientRect();
+  cx ??= box.width / 2;
+  cy ??= box.height / 2;
+  const s = Math.min(3, Math.max(0.3, mapState.scale * factor));
+  mapState.x = cx - (cx - mapState.x) * s / mapState.scale;
+  mapState.y = cy - (cy - mapState.y) * s / mapState.scale;
+  mapState.scale = s;
+  applyMap();
+}
+
+function centreMapOn(p, scale) {
+  const box = $('map').getBoundingClientRect();
+  const at = mapPoint(p);
+  mapState.scale = scale;
+  mapState.x = box.width / 2 - at.x * scale;
+  mapState.y = box.height / 2 - at.y * scale;
+  applyMap();
 }
 
 function card(p) {
@@ -79,6 +142,13 @@ function openDetail(p) {
     s.textContent = t;
     return s;
   }));
+  const at = mapPoint(p);
+  $('dPin').style.left = at.x + 'px';
+  $('dPin').style.top = at.y + 'px';
+  $('detail').hidden = false;
+  const loc = $('dMap').parentElement.getBoundingClientRect();
+  const s = 0.8;
+  $('dMap').style.transform = `translate(${loc.width / 2 - at.x * s}px, ${loc.height / 2 - at.y * s + 10}px) scale(${s})`;
   const buy = $('dBuy');
   buy.disabled = p.owned || data.cash < p.price;
   buy.textContent = p.owned ? '已擁有' : data.cash < p.price ? '資金不足' : '購買';
@@ -122,6 +192,39 @@ $('kind').addEventListener('click', e => {
   for (const x of $('kind').children) x.classList.toggle('on', x === b);
   render();
 });
+$('view').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  view = b.dataset.value;
+  for (const x of $('view').children) x.classList.toggle('on', x === b);
+  render();
+  if (view === 'map' && !mapState.placed) {
+    mapState.placed = true;
+    centreMapOn({ x: -300, y: -400 }, 0.9); // Los Santos
+  }
+});
+{
+  const map = $('map');
+  let drag = null;
+  map.addEventListener('mousedown', e => { drag = { x: e.clientX, y: e.clientY, mx: mapState.x, my: mapState.y }; map.classList.add('dragging'); });
+  window.addEventListener('mousemove', e => {
+    if (!drag) return;
+    mapState.x = drag.mx + e.clientX - drag.x;
+    mapState.y = drag.my + e.clientY - drag.y;
+    applyMap();
+  });
+  window.addEventListener('mouseup', () => { drag = null; map.classList.remove('dragging'); });
+  map.addEventListener('wheel', e => {
+    e.preventDefault();
+    const box = map.getBoundingClientRect();
+    zoomMap(e.deltaY < 0 ? 1.2 : 1 / 1.2, e.clientX - box.left, e.clientY - box.top);
+  }, { passive: false });
+  $('zoomIn').addEventListener('click', e => { e.stopPropagation(); zoomMap(1.3); });
+  $('zoomOut').addEventListener('click', e => { e.stopPropagation(); zoomMap(1 / 1.3); });
+  $('zoomIn').addEventListener('mousedown', e => e.stopPropagation());
+  $('zoomOut').addEventListener('mousedown', e => e.stopPropagation());
+  window.addEventListener('resize', applyMap);
+}
 $('tier').addEventListener('change', e => { filter.tier = e.target.value; render(); });
 $('sort').addEventListener('change', e => { filter.sort = e.target.value; render(); });
 $('search').addEventListener('input', e => { filter.search = e.target.value; render(); });

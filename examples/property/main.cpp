@@ -286,6 +286,25 @@ extern "C" __declspec(dllexport) void MLMain()
 			ml::Log("purchase: autosave requested");
 		}
 
+		// Research: ModLoader\water_sample.txt samples water on a world grid into data\water.txt ("x y water" lines), to
+		// calibrate the website's map against the game world.
+		if (std::error_code ec; std::filesystem::remove("ModLoader/water_sample.txt", ec))
+		{
+			std::ofstream out(std::filesystem::path(ml::Context().dataDir) / "water.txt");
+			int n = 0;
+			for (int y = -4500; y <= 8500; y += 50)
+			{
+				for (int x = -4500; x <= 5000; x += 50)
+				{
+					float h = 0;
+					const bool water = WATER::GET_WATER_HEIGHT_NO_WAVES(static_cast<float>(x), static_cast<float>(y), 0.0f, &h);
+					out << x << ' ' << y << ' ' << (water ? 1 : 0) << '\n';
+					++n;
+				}
+				ml::Wait(0);
+			}
+			ml::Log("water samples: {}", n);
+		}
 		if (const bool now = DLC::GET_IS_LOADING_SCREEN_ACTIVE(); now != loading)
 		{
 			loading = now;
