@@ -116,3 +116,27 @@ endif()
 add_executable(learn_ysc EXCLUDE_FROM_ALL tools/learn_ysc/learn_ysc.cpp src/loader/convert/resource.cpp)
 target_compile_features(learn_ysc PRIVATE cxx_std_20)
 target_compile_options(learn_ysc PRIVATE /utf-8 /O2)
+
+# Research tool: finds code in game builds and relocates addresses between builds (tools/relocate). Not built by default.
+FetchContent_Declare(zycore
+    URL https://github.com/zyantific/zycore-c/archive/refs/tags/v1.5.0.tar.gz)
+FetchContent_Declare(zydis
+    URL https://github.com/zyantific/zydis/archive/refs/tags/v4.1.1.tar.gz)
+FetchContent_GetProperties(zycore)
+if(NOT zycore_POPULATED)
+    FetchContent_Populate(zycore)
+endif()
+set(ZYAN_ZYCORE_PATH ${zycore_SOURCE_DIR} CACHE PATH "" FORCE)
+set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(zydis)
+add_executable(relocate EXCLUDE_FROM_ALL
+    tools/relocate/main.cpp
+    tools/relocate/image.cpp
+    tools/relocate/analysis.cpp
+    tools/relocate/match.cpp
+    tools/relocate/signature.cpp)
+target_link_libraries(relocate PRIVATE Zydis)
+target_compile_features(relocate PRIVATE cxx_std_20)
+target_compile_options(relocate PRIVATE /utf-8 /O2)
