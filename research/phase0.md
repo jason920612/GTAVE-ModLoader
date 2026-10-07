@@ -492,3 +492,13 @@
   購買 $87,000 公寓後富蘭克林的錢正確扣除。列表卡片多數空白（照片 / 文字未顯示，詳細頁正常），待查。
 - 追蹤工具（`src/loader/debug/scripttrace`，`ModLoader\debug_trace.txt`）：替換 native 表項目會讓部分 native
   （含 `GET_GAME_TIMER`）行為改變，故改為讀取腳本執行緒的 static（新 API `ScriptStatic`）觀察狀態。
+- 擁有權：瀏覽器以 `_GET_STAT_HASH_FOR_CHARACTER_STAT` → `STAT_GET_INT / STAT_SET_INT` 讀寫線上角色 stats（例：
+  1279 = 第一個物業欄位）。模組在 appinternet 內攔截這些 stat（只限該函式產生的雜湊），存在模組資料夾、每個故事角色
+  一份，不碰真正的線上 stats。已擁有的物業會從列表消失（和線上一樣）。
+- 第二間起有「換購房地產？」選單（線上原版）：需要 `NETWORK_IS_PLAYER_ACTIVE` → 1，以及 `@30268` 檢查的
+  Global 2673276+2 / +3（玩家在場次中）；Global 80362（「在線上模式」，故事腳本也會讀，自動存檔控制器在它為 1 時
+  放棄存檔）。三者只在瀏覽器開著時設定，關閉後還原。
+- 列表在 Global 77588 被設定時重建（`@30683`）；每幀設定會不斷重建，造成卡片照片 / 文字空白，改為進入列表時設一次。
+- 存檔一致：故事模式的自動存檔請求 = Global 102550+10 加一（`@27069`），由常駐的 `autosave_controller` 處理；
+  設定中關閉自動存檔時（`GET_IS_AUTO_SAVE_OFF`）不會存。因此 stats 的變更先暫存，偵測到故事存檔檔案
+  （`Documents\Rockstar Games\GTAV Enhanced\Profiles\*\SGTA5*`）更新才寫入；出現讀取畫面（讀檔）時丟棄未存的變更。
