@@ -240,7 +240,7 @@ namespace property::apartment
 
 	void Tick()
 	{
-		const int c = Character();
+		const int c = ml::game::CharacterIndex();
 		if (c != g_character || g_refresh)
 		{
 			if (c != g_character)

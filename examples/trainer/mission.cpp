@@ -18,12 +18,12 @@ namespace mission
 		namespace sc = ml::script;
 
 		// Script globals of build 0x6aa45f10 (research/phase0.md §22).
-		constexpr uint32_t kFlowPassed = 65082;  // written by the story missions' shared "passed" helper
-		constexpr uint32_t kStatsPassed = 65074; // mission_stat_watcher shows the results once it is set
-		constexpr uint32_t kStatCount = 77175;   // stats the current mission tracks
-		constexpr uint32_t kStatList = 77176;    // array: entries of 9 slots (stat id, value, ..., state at +3)
-		constexpr uint32_t kStatDefs = 65305;    // array: definitions of 13 slots (type, ?, target, lower is better,
-		                                         // ..., hidden at +7)
+		constexpr uint32_t kFlowPassed = 65082;    // written by the story missions' shared "passed" helper
+		const ml::Global kStatsPassed{65074};      // mission_stat_watcher shows the results once it is set
+		const ml::Global kStatCount{77175};        // stats the current mission tracks
+		const ml::Global kStatList{77176};         // array: entries of 9 slots (stat id, value, ..., state at +3)
+		const ml::Global kStatDefs{65305};         // array: definitions of 13 slots (type, ?, target, lower is better,
+		                                           // ..., hidden at +7)
 		constexpr uint64_t kTerminateThisThread = 0x1090044AD1DA76FA;
 		constexpr int kStatTypeWatcherValue = 15; // value computed by the results screen itself
 
@@ -106,7 +106,7 @@ namespace mission
 				const size_t f = p.FunctionAt(in.address);
 				if (in.op == sc::NATIVE && in.operand == terminate)
 					terminates[f] = true;
-				if (sc::IsGlobalStore(in) && (in.operand == kFlowPassed || in.operand == kStatsPassed) && p.functions[f].params == 2)
+				if (sc::IsGlobalStore(in) && (in.operand == kFlowPassed || in.operand == kStatsPassed.Index()) && p.functions[f].params == 2)
 					helper[f] = true;
 				if (in.op == sc::CALL && in.operand < static_cast<int64_t>(p.code.size()))
 				{
@@ -181,39 +181,27 @@ namespace mission
 			return std::nullopt;
 		}
 
-		// Script integers are 32-bit; the upper half of a slot can hold anything.
-		int32_t Read(uint32_t index)
-		{
-			const int64_t* g = ml::scripts::Global(index);
-			return g ? static_cast<int32_t>(*g) : 0;
-		}
-
-		void Write(uint32_t index, int32_t value)
-		{
-			if (auto* g = reinterpret_cast<int32_t*>(ml::scripts::Global(index)))
-				*g = value;
-		}
 
 		// Sets every visible stat of the current mission to a passing value; returns how many could not be.
 		int ApplyGold(bool log = false)
 		{
 			int unsupported = 0;
-			const int32_t count = std::min(Read(kStatCount), Read(kStatList));
+			const int32_t count = std::min(kStatCount.Int(), kStatList.Size());
 			for (int32_t k = 0; k < count; ++k)
 			{
-				const uint32_t entry = kStatList + 1 + static_cast<uint32_t>(9 * k);
-				const int32_t id = Read(entry);
-				if (id < 0 || id >= Read(kStatDefs))
+				const ml::Global entry = kStatList.At(k, 9);
+				const int32_t id = entry.Int();
+				if (id < 0 || id >= kStatDefs.Size())
 					continue;
-				const uint32_t def = kStatDefs + 1 + static_cast<uint32_t>(13 * id);
-				if (Read(def + 7))
+				const ml::Global def = kStatDefs.At(id, 13);
+				if (def.Field(7).Bool())
 					continue; // not shown on the results screen
-				const int32_t type = Read(def);
-				const int32_t target = Read(def + 2);
-				const bool lowerIsBetter = Read(def + 3) != 0;
+				const int32_t type = def.Int();
+				const int32_t target = def.Field(2).Int();
+				const bool lowerIsBetter = def.Field(3).Bool();
 				// Same test as the results screen: values below 1 fail for these types (times and counts).
 				const int32_t least = type == 1 || type == 2 || type == 4 || type == 5 || type == 17 ? 1 : 0;
-				const int32_t current = Read(entry + 1);
+				const int32_t current = entry.Field(1).Int();
 				const bool passes = current >= least && current != INT32_MAX && (lowerIsBetter ? current < target : current >= target);
 				if (type == kStatTypeWatcherValue)
 				{
@@ -231,9 +219,9 @@ namespace mission
 					continue;
 				}
 				if (log)
-					ml::Log("stat {} (type {}, target {}, lower {}): {} -> {}, state {}", id, type, target, lowerIsBetter, Read(entry + 1), value, Read(entry + 3));
-				Write(entry + 1, value);
-				Write(entry + 3, 0); // state: anything else voids the stat
+					ml::Log("stat {} (type {}, target {}, lower {}): {} -> {}, state {}", id, type, target, lowerIsBetter, current, value, entry.Field(3).Int());
+				entry.Field(1).Set(value);
+				entry.Field(3).Set(0); // state: anything else voids the stat
 			}
 			return unsupported;
 		}
@@ -255,7 +243,7 @@ namespace mission
 			if (!entry)
 				continue;
 
-			ml::Log("mission {}: {} stats tracked", thread.name, Read(kStatCount));
+			ml::Log("mission {}: {} stats tracked", thread.name, kStatCount.Int());
 			const int unsupported = gold ? ApplyGold(true) : 0;
 			std::vector<int64_t> args(entry->params, 0);
 			bool ok;
@@ -287,7 +275,7 @@ namespace mission
 		if (!g_goldUntil)
 			return;
 		// Until the results screen read the stats (the pass flag is set and the list cleared afterwards).
-		if (ml::TickMs() > g_goldUntil || (Read(kStatsPassed) && Read(kStatCount) == 0))
+		if (ml::TickMs() > g_goldUntil || (kStatsPassed.Bool() && kStatCount.Int() == 0))
 		{
 			g_goldUntil = 0;
 			return;

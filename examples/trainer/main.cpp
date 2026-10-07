@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include <modloader/natives.hpp>
+#include <modloader/game.hpp>
 
 #include "mission.hpp"
 
@@ -244,17 +244,10 @@ namespace
 	ml::Item g_warpIn;
 	Hash g_originalModel = 0;
 
-	bool LoadModel(Hash model)
-	{
-		STREAMING::REQUEST_MODEL(model);
-		for (int i = 0; i < 100 && !STREAMING::HAS_MODEL_LOADED(model); ++i) // up to 5 s
-			ml::Wait(50);
-		return STREAMING::HAS_MODEL_LOADED(model);
-	}
-
 	void SpawnVehicle(Hash model, const std::string& label)
 	{
-		if (!LoadModel(model))
+		const auto loaded = ml::LoadModel(model); // released when the function returns
+		if (!loaded)
 		{
 			ml::Notify("{} 載入失敗", label);
 			return;
@@ -263,7 +256,6 @@ namespace
 		const float heading = ENTITY::GET_ENTITY_HEADING(ped);
 		const Vector3 at = ENTITY::GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(ped, 0.0f, g_warpIn ? 0.0f : 5.0f, 0.5f);
 		const Vehicle vehicle = VEHICLE::CREATE_VEHICLE(model, at.x, at.y, at.z, heading, false, false, false);
-		STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(model);
 		if (!vehicle)
 		{
 			ml::Notify("無法生成 {}", label);
@@ -277,7 +269,8 @@ namespace
 
 	void ChangeModel(Hash model, const std::string& label)
 	{
-		if (!LoadModel(model))
+		const auto loaded = ml::LoadModel(model);
+		if (!loaded)
 		{
 			ml::Notify("{} 載入失敗", label);
 			return;
@@ -286,7 +279,6 @@ namespace
 			g_originalModel = ENTITY::GET_ENTITY_MODEL(Self());
 		PLAYER::SET_PLAYER_MODEL(PLAYER::PLAYER_ID(), model);
 		PED::SET_PED_DEFAULT_COMPONENT_VARIATION(Self());
-		STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(model);
 		ml::Notify("已換成 {}", label);
 	}
 

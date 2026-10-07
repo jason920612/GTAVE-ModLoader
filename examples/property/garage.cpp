@@ -1,6 +1,6 @@
 // Garages of the properties the player owns: a marker at the garage entrance (on foot or driving), the GTA Online
 // garage interiors (story mode has them), vehicles stored with their modifications, one set per story character.
-// Stored vehicles follow the game's save like the ownership (data\garage_<character>.txt).
+// Stored vehicles are kept in the mod's save data ("garages"), so they follow the game's save like the ownership.
 #define NOMINMAX
 #include <algorithm>
 #include <array>
@@ -170,21 +170,44 @@ namespace property::garage
 			VEHICLE::SET_VEHICLE_DIRT_LEVEL(v, 0.0f);
 		}
 
-		// One line per vehicle: "<property> <slot> <model> <numbers...> <plate>" (plate spaces as '_').
-		std::string Serialize(int id, int slot, const Stored& s)
+		ml::Json ToJson(const Stored& s)
 		{
-			std::ostringstream o;
-			o << id << ' ' << slot << ' ' << s.model << ' ' << s.primary << ' ' << s.secondary << ' ' << s.pearl << ' ' << s.wheel << ' ' << s.interior
-			  << ' ' << s.dashboard << ' ' << s.customPrimary << ' ' << s.customSecondary << ' ' << s.modKit << ' ' << s.wheelType;
-			for (const int m : s.mods)
-				o << ' ' << m;
-			o << ' ' << s.frontVariation << ' ' << s.rearVariation << ' ' << s.turbo << ' ' << s.xenon << ' ' << s.tyreSmokeOn << ' ' << s.smoke << ' '
-			  << s.neon << ' ' << s.neonOn << ' ' << s.plateIndex << ' ' << s.tint << ' ' << s.livery << ' ' << s.extras << ' ' << s.bulletproof << ' ';
-			std::string plate = s.plate.empty() ? "-" : s.plate;
-			std::replace(plate.begin(), plate.end(), ' ', '_');
-			o << plate;
-			return o.str();
+			return {{"model", static_cast<int64_t>(s.model)},
+			    {"colours", std::vector<int>{s.primary, s.secondary, s.pearl, s.wheel, s.interior, s.dashboard, s.customPrimary, s.customSecondary}},
+			    {"modKit", s.modKit}, {"wheelType", s.wheelType}, {"mods", std::vector<int>(s.mods.begin(), s.mods.end())},
+			    {"variations", std::vector<int>{s.frontVariation, s.rearVariation}}, {"toggles", std::vector<int>{s.turbo, s.xenon, s.tyreSmokeOn}},
+			    {"smoke", s.smoke}, {"neon", s.neon}, {"neonOn", s.neonOn}, {"plateIndex", s.plateIndex}, {"plate", s.plate}, {"tint", s.tint},
+			    {"livery", s.livery}, {"extras", s.extras}, {"bulletproof", s.bulletproof}};
 		}
+		Stored FromJson(const ml::Json& j)
+		{
+			Stored s;
+			s.model = static_cast<Hash>(j["model"].Int64());
+			const ml::Json& c = j["colours"];
+			int* colours[] = {&s.primary, &s.secondary, &s.pearl, &s.wheel, &s.interior, &s.dashboard, &s.customPrimary, &s.customSecondary};
+			for (int i = 0; i < 8; ++i)
+				*colours[i] = c[i].Int(i >= 6 ? -1 : 0);
+			s.modKit = j["modKit"].Int();
+			s.wheelType = j["wheelType"].Int();
+			for (int i = 0; i < 50; ++i)
+				s.mods[i] = j["mods"][i].Int(-1);
+			s.frontVariation = j["variations"][0].Int();
+			s.rearVariation = j["variations"][1].Int();
+			s.turbo = j["toggles"][0].Int();
+			s.xenon = j["toggles"][1].Int();
+			s.tyreSmokeOn = j["toggles"][2].Int();
+			s.smoke = j["smoke"].Int();
+			s.neon = j["neon"].Int();
+			s.neonOn = j["neonOn"].Int();
+			s.plateIndex = j["plateIndex"].Int();
+			s.plate = j["plate"].Str();
+			s.tint = j["tint"].Int();
+			s.livery = j["livery"].Int(-1);
+			s.extras = j["extras"].Int();
+			s.bulletproof = j["bulletproof"].Int();
+			return s;
+		}
+		// A line of the old data\garage_<character>.txt: "<property> <slot> <model> <numbers...> <plate>".
 		bool Parse(const std::string& line, int& id, int& slot, Stored& s)
 		{
 			std::istringstream in(line);
@@ -204,28 +227,44 @@ namespace property::garage
 
 		using Garage = std::map<int, Stored>;
 		std::map<int, Garage> g_stored[3];
-		bool g_loaded[3] = {};
-		bool g_changed = false;
+		bool g_read[3] = {};
 
-		std::filesystem::path File(int c)
-		{
-			return std::filesystem::path(ml::Context().dataDir) / std::format("garage_{}.txt", c);
-		}
+		void Save(int c);
+
+		// The character's garages: save data "garages" = {"<property>": {"<slot>": vehicle}}.
 		std::map<int, Garage>& Stores(int c)
 		{
-			if (!g_loaded[c])
+			if (!g_read[c])
 			{
-				g_loaded[c] = true;
-				std::ifstream in(File(c));
-				for (std::string line; std::getline(in, line);)
-				{
-					int id = 0, slot = 0;
-					Stored s;
-					if (Parse(line, id, slot, s))
-						g_stored[c][id][slot] = s;
-				}
+				g_read[c] = true;
+				g_stored[c].clear();
+				const ml::Json saved = ml::save::Get("garages", c);
+				for (const auto& [id, slots] : saved.Members())
+					for (const auto& [slot, vehicle] : slots.Members())
+						g_stored[c][std::stoi(id)][std::stoi(slot)] = FromJson(vehicle);
+				// Before the mod used save data: data\garage_<character>.txt.
+				if (saved.IsNull())
+					if (std::ifstream in(ml::DataPath(std::format(L"garage_{}.txt", c))); in)
+					{
+						for (std::string line; std::getline(in, line);)
+						{
+							int id = 0, slot = 0;
+							Stored s;
+							if (Parse(line, id, slot, s))
+								g_stored[c][id][slot] = s;
+						}
+						Save(c);
+					}
 			}
 			return g_stored[c];
+		}
+		void Save(int c)
+		{
+			ml::Json garages = ml::Json::Object();
+			for (const auto& [id, garage] : Stores(c))
+				for (const auto& [slot, s] : garage)
+					garages[std::to_string(id)][std::to_string(slot)] = ToJson(s);
+			ml::save::Set("garages", garages, c);
 		}
 
 		// ---- in the garage ----------------------------------------------------------------------
@@ -239,14 +278,11 @@ namespace property::garage
 
 		Vehicle SpawnVehicle(const Stored& s, const Place& at)
 		{
-			STREAMING::REQUEST_MODEL(s.model);
-			for (int i = 0; i < 200 && !STREAMING::HAS_MODEL_LOADED(s.model); ++i)
-				ml::Wait(10);
-			if (!STREAMING::HAS_MODEL_LOADED(s.model))
+			const auto model = ml::LoadModel(s.model, 2000);
+			if (!model)
 				return 0;
 			// Placed on the garage floor as it is: the ground probe would find the street above the (underground) garage.
 			const Vehicle v = VEHICLE::CREATE_VEHICLE(s.model, at.x, at.y, at.z + 0.3f, at.heading, false, false, false);
-			STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(s.model);
 			if (!v)
 				return 0;
 			Apply(v, s);
@@ -265,7 +301,7 @@ namespace property::garage
 		// Into the garage; `drive` = the vehicle the player drives in with (stored first), or 0.
 		void Enter(int id, Vehicle drive)
 		{
-			const int c = Character();
+			const int c = ml::game::CharacterIndex();
 			Garage& garage = Stores(c)[id];
 			const Layout& layout = LayoutFor(GarageSize(id));
 			int freeSlot = -1;
@@ -282,7 +318,7 @@ namespace property::garage
 			if (drive)
 			{
 				garage[freeSlot] = Capture(drive);
-				g_changed = true;
+				Save(c);
 				ENTITY::SET_ENTITY_COORDS(ped, layout.arrive.x, layout.arrive.y, layout.arrive.z, false, false, false, false);
 				ENTITY::SET_ENTITY_AS_MISSION_ENTITY(drive, true, true);
 				VEHICLE::DELETE_VEHICLE(&drive);
@@ -316,8 +352,9 @@ namespace property::garage
 			const Place out = OutsideOnFoot(id);
 			if (vehicle)
 			{
-				Stores(Character())[id].erase(drive);
-				g_changed = true;
+				const int c = ml::game::CharacterIndex();
+				Stores(c)[id].erase(drive);
+				Save(c);
 				MISC::CLEAR_AREA_OF_VEHICLES(door.x, door.y, door.z, 6.0f, false, false, false, false, false, false, 0);
 				LoadAt(door.x, door.y, door.z);
 				ENTITY::SET_ENTITY_COORDS(vehicle, door.x, door.y, door.z, false, false, false, false);
@@ -373,7 +410,7 @@ namespace property::garage
 
 	int FreeSlots(int id)
 	{
-		const int c = Character();
+		const int c = ml::game::CharacterIndex();
 		if (c < 0)
 			return 0;
 		return GarageSize(id) - static_cast<int>(Stores(c)[id].size());
@@ -381,7 +418,7 @@ namespace property::garage
 
 	bool Deliver(int id, Hash model)
 	{
-		const int c = Character();
+		const int c = ml::game::CharacterIndex();
 		if (c < 0)
 			return false;
 		Garage& garage = Stores(c)[id];
@@ -392,21 +429,17 @@ namespace property::garage
 		if (slot < 0)
 			return false;
 		// The factory finish: a vehicle made out of sight for a moment and read back.
-		STREAMING::REQUEST_MODEL(model);
-		for (int i = 0; i < 300 && !STREAMING::HAS_MODEL_LOADED(model); ++i)
-			ml::Wait(10);
-		if (!STREAMING::HAS_MODEL_LOADED(model))
+		if (!ml::LoadModel(model, 3000))
 			return false;
 		const Vector3 at = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
 		Vehicle v = VEHICLE::CREATE_VEHICLE(model, at.x, at.y, at.z + 300.0f, 0.0f, false, false, false);
-		STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(model);
 		if (!v)
 			return false;
 		ENTITY::FREEZE_ENTITY_POSITION(v, true);
 		garage[slot] = Capture(v);
 		ENTITY::SET_ENTITY_AS_MISSION_ENTITY(v, true, true);
 		VEHICLE::DELETE_VEHICLE(&v);
-		g_changed = true;
+		Save(c);
 		ml::Log("garage {}: delivered {:08X} to slot {}", id, model, slot);
 		return true;
 	}
@@ -421,32 +454,10 @@ namespace property::garage
 		return g_inside != 0;
 	}
 
-	bool Changed()
-	{
-		return g_changed;
-	}
-
-	void Commit()
-	{
-		for (int c = 0; c < 3; ++c)
-			if (g_loaded[c])
-			{
-				std::ofstream out(File(c), std::ios::trunc);
-				for (const auto& [id, garage] : g_stored[c])
-					for (const auto& [slot, s] : garage)
-						out << Serialize(id, slot, s) << '\n';
-			}
-		g_changed = false;
-	}
-
 	void Drop()
 	{
-		for (int c = 0; c < 3; ++c)
-		{
-			g_stored[c].clear();
-			g_loaded[c] = false;
-		}
-		g_changed = false;
+		for (bool& read : g_read)
+			read = false;
 		g_spawned.clear(); // the loaded save has its own world
 		g_inside = 0;
 		g_refresh = true;
@@ -454,7 +465,7 @@ namespace property::garage
 
 	void Tick()
 	{
-		const int c = Character();
+		const int c = ml::game::CharacterIndex();
 		if (c != g_character || g_refresh)
 		{
 			if (c != g_character && g_inside)

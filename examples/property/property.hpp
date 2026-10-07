@@ -4,7 +4,7 @@
 #include <set>
 #include <string>
 
-#include <modloader/natives.hpp>
+#include <modloader/game.hpp>
 
 namespace property
 {
@@ -24,17 +24,11 @@ namespace property
 	// Text of a game label in the game's language ("" when there is none).
 	std::string Text(const char* label);
 
-	// Story character of the player (0 Michael, 1 Franklin, 2 Trevor), or -1.
-	int Character();
-	// The character's money (story mode cash stat) and its stat hash.
-	int Cash();
-	Hash CashStat(int character);
-	// A JSON string literal.
-	std::string Json(const std::string& s);
-	// Something was bought: an autosave is requested (main.cpp).
+	// Properties the character (0 Michael, 1 Franklin, 2 Trevor) owns, with purchases not saved yet. Kept in the mod's save
+	// data ("owned"), so it follows the game's save.
+	const std::set<int>& Owned(int character);
+	// Something was bought: money and ownership are saved together (an autosave is requested).
 	void NotePurchase();
-	// Properties the character owns (with purchases not saved yet).
-	std::set<int>& Owned(int character);
 
 	struct Place
 	{
@@ -62,10 +56,8 @@ namespace property::garage
 {
 	// Game thread (MLMain), every frame.
 	void Tick();
-	// The game saved: write the stored vehicles. A save was loaded: back to what was saved.
-	void Commit();
+	// A save is being loaded: back to the stored vehicles of that save (the shown ones belong to the old world).
 	void Drop();
-	bool Changed();
 	// The ownership or the character changed: blips are rebuilt.
 	void Refresh();
 	// Into the garage on foot (the elevator from the apartment).
@@ -101,7 +93,6 @@ namespace property::research
 // The vehicle shop websites (shop.cpp).
 namespace property::shop
 {
-	void RegisterWebFunctions();
-	// Game thread (MLMain): the first call scans the catalogue's pictures.
-	void Tick();
+	// MLOnLoad: the web functions, and a task that scans the catalogue's pictures once the player is in the world.
+	void Start();
 }

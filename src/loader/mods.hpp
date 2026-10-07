@@ -60,12 +60,18 @@ namespace loader::mods
 		int32_t IntValue() const { return static_cast<int32_t>(value.load()); }
 	};
 
-	// A mod's fiber: MLMain, or the one that runs menu callbacks.
+	// A mod's fiber: MLMain, the one that runs menu callbacks, or one started with StartTask.
 	struct Task
 	{
 		void* fiber = nullptr;
 		uint64_t wakeAt = 0;
 		bool busy = false; // callback task: has work (running or waiting)
+		// StartTask tasks:
+		Mod* mod = nullptr;
+		MLCallback fn = nullptr;
+		void* user = nullptr;
+		int32_t id = 0;
+		bool done = false;
 	};
 
 	struct Mod
@@ -85,6 +91,11 @@ namespace loader::mods
 		std::string error;
 
 		Task mainTask, callbackTask;
+		std::vector<std::unique_ptr<Task>> tasks; // StartTask (game thread)
+		std::vector<std::pair<int32_t, std::pair<MLCallback, void*>>> events; // OnGameEvent (menu mutex)
+		// SaveData (save mutex): as last written / with the changes since; {"shared": {...}, "0": {...}, ...}
+		nlohmann::json saveCommitted, saveWorking;
+		bool saveRead = false, saveDirty = false;
 		game::natives::Invocation invocation;
 		FILE* log = nullptr;
 

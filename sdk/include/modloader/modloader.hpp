@@ -1,4 +1,7 @@
 // C++ convenience layer over modloader.h. Include this (and natives.hpp) in your mod.
+// High-level parts: ml::StartTask / WaitUntil, ml::save (data that follows the game's save), ml::Global,
+// ml::scripts::RunFunction, typed ml::web::Function, ml::Json (json.hpp); game.hpp adds ml::game and streaming.
+// The ml::scripts calls that take raw addresses (Code, Redirect, CallFunction, Static, NativeIndex) are advanced.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -7,11 +10,15 @@
 #include <format>
 #include <functional>
 #include <initializer_list>
+#include <memory>
+#include <tuple>
+#include <utility>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 #include "modloader.h"
+#include "json.hpp"
 
 namespace ml
 {
@@ -380,6 +387,249 @@ namespace ml
 		{
 			if (Available())
 				Api().OpenBrowser(url);
+		}
+	}
+
+	// ======== high-level API ==================================================================
+	// Prefer these over the advanced script calls above; see also modloader/game.hpp (needs natives.hpp).
+
+	namespace detail
+	{
+		template<class F>
+		bool Has(F MLApi::*field)
+		{
+			return Api().size >= reinterpret_cast<size_t>(&(static_cast<const MLApi*>(nullptr)->*field)) + sizeof(void*);
+		}
+	}
+
+	// A piece of work running on its own script fiber (see StartTask).
+	class Task
+	{
+	public:
+		Task() = default;
+		explicit Task(int32_t id) : m_id(id) {}
+		bool Valid() const { return m_id > 0; }
+		bool Running() const { return Valid() && Api().TaskRunning(m_id) != 0; }
+		// Waits (on the calling fiber) until the task has finished.
+		void Join() const
+		{
+			while (Running())
+				Wait(0);
+		}
+
+	private:
+		int32_t m_id = 0;
+	};
+
+	// Runs `fn` on a new script fiber next to MLMain: it may call natives and Wait without holding anything else up.
+	//   ml::StartTask([] { auto model = ml::LoadModel(hash); ... });
+	inline Task StartTask(std::function<void()> fn)
+	{
+		if (!detail::Has(&MLApi::StartTask))
+			return Task();
+		auto* stored = new std::function<void()>(std::move(fn));
+		const int32_t id = Api().StartTask([](void* user) {
+			std::unique_ptr<std::function<void()>> f(static_cast<std::function<void()>*>(user));
+			(*f)();
+		}, stored);
+		if (!id)
+			delete stored;
+		return Task(id);
+	}
+
+	// Waits (MLMain, a callback or a task) until `done()` is true; false when `timeoutMs` passed first.
+	inline bool WaitUntil(const std::function<bool()>& done, uint32_t timeoutMs, uint32_t stepMs = 0)
+	{
+		const uint64_t end = TickMs() + timeoutMs;
+		while (!done())
+		{
+			if (TickMs() >= end)
+				return false;
+			Wait(stepMs);
+		}
+		return true;
+	}
+
+	// A data file in the mod's data folder: ml::DataPath("cache.txt").
+	inline std::wstring DataPath(std::wstring_view name)
+	{
+		return std::wstring(Context().dataDir ? Context().dataDir : L"") + std::wstring(name);
+	}
+
+	// ---- data that follows the game's save -----------------------------------------------------
+	// Values written to data\save.json when the game saves and dropped when a save is loaded, so a mod's progress stays in
+	// step with the game's (e.g. a bought property disappears again when the player reloads an older save).
+	//   ml::save::Set("owned", owned, character);        ml::Json owned = ml::save::Get("owned", character);
+	namespace save
+	{
+		inline constexpr int32_t Shared = ML_SAVE_SHARED; // one value for all characters; or 0 Michael, 1 Franklin, 2 Trevor
+
+		inline bool Available() { return detail::Has(&MLApi::SaveDataSet); }
+
+		// Null when unset.
+		inline Json Get(const char* key, int32_t slot = Shared)
+		{
+			if (!Available())
+				return Json();
+			const int32_t n = Api().SaveDataGet(slot, key, nullptr, 0);
+			if (n < 0)
+				return Json();
+			std::string text(static_cast<size_t>(n) + 1, '\0');
+			Api().SaveDataGet(slot, key, text.data(), n + 1);
+			text.resize(static_cast<size_t>(n));
+			return Json::Parse(text);
+		}
+		inline bool Set(const char* key, const Json& value, int32_t slot = Shared)
+		{
+			return Available() && Api().SaveDataSet(slot, key, value.Dump().c_str()) != 0;
+		}
+		inline void Remove(const char* key, int32_t slot = Shared)
+		{
+			if (Available())
+				Api().SaveDataSet(slot, key, nullptr);
+		}
+	}
+
+	// ---- script globals ------------------------------------------------------------------------
+	// A script global by index, with offsets and arrays instead of raw pointer arithmetic:
+	//   ml::Global gens = ml::Global(114990) + 32759;   // a field 32759 slots in
+	//   bool owned = gens.At(13).Bit(5);                  // element 13 of the array there (size slot first)
+	//   std::string name = ml::Global(1312440).At(id, 1951).Field(16).Text();
+	// Reads give 0 / false / "" when the global's block is not allocated. MLMain, a callback or a task.
+	class Global
+	{
+	public:
+		explicit Global(uint32_t index) : m_index(index) {}
+		uint32_t Index() const { return m_index; }
+		Global Field(int32_t offset) const { return Global(m_index + offset); }
+		Global operator+(int32_t offset) const { return Field(offset); }
+		// Element `i` of a script array starting here (one size slot, then `elementSize` slots per element).
+		Global At(int32_t i, int32_t elementSize = 1) const { return Global(m_index + 1 + i * elementSize); }
+		// Element count of a script array starting here.
+		int32_t Size() const { return Int(); }
+
+		int64_t* Ptr() const { return scripts::Global(m_index); }
+		bool Valid() const { return Ptr() != nullptr; }
+		int32_t Int() const { return Read<int32_t>(); }
+		int64_t Int64() const { return Read<int64_t>(); }
+		float Float() const { return Read<float>(); }
+		bool Bool() const { return Int() != 0; }
+		bool Bit(int bit) const { return (Int() >> bit & 1) != 0; }
+		// Text stored in the global's slots (a script string buffer).
+		std::string Text() const
+		{
+			const auto* p = reinterpret_cast<const char*>(Ptr());
+			return p ? std::string(p, strnlen(p, 64)) : std::string();
+		}
+		void Set(int32_t v) const { Write(static_cast<int64_t>(v)); }
+		void SetFloat(float v) const { Write(v); }
+		void SetBit(int bit, bool on) const { Set(on ? Int() | 1 << bit : Int() & ~(1 << bit)); }
+
+	private:
+		template<class T>
+		T Read() const
+		{
+			T v{};
+			if (const int64_t* p = Ptr())
+				std::memcpy(&v, p, sizeof(T));
+			return v;
+		}
+		template<class T>
+		void Write(T v) const
+		{
+			if (int64_t* p = Ptr())
+			{
+				*p = 0;
+				std::memcpy(p, &v, sizeof(T));
+			}
+		}
+		uint32_t m_index;
+	};
+
+	namespace scripts
+	{
+		enum class RunResult
+		{
+			Ran = 1,
+			NotFound = 0, // no such script, or the pattern matched nothing (game update?)
+			Timeout = -1,
+		};
+		// Runs one function of a game script by itself, found by a byte pattern of its start ("2d 04 6f ?? 00", ?? = any
+		// byte): a new thread of `script` calls it with `args` and ends when it returns. Waits for that.
+		// Arguments that are references take addresses, e.g. reinterpret_cast<int64_t>(ml::Global(77590).Ptr()).
+		//   ml::scripts::RunFunction("appinternet", "2d 04 6f 00 00 38 03", {item, character, ref, -1}, 4000);
+		inline RunResult RunFunction(const char* script, const char* pattern, std::initializer_list<int64_t> args, int32_t stackSize = 1024,
+		    uint32_t timeoutMs = 5000)
+		{
+			if (!detail::Has(&MLApi::RunScriptFunction))
+				return RunResult::NotFound;
+			const std::vector<int64_t> a(args);
+			return static_cast<RunResult>(Api().RunScriptFunction(script, pattern, stackSize, a.data(), static_cast<int32_t>(a.size()), timeoutMs));
+		}
+	}
+
+	// ---- typed web functions -------------------------------------------------------------------
+	namespace detail
+	{
+		template<class F>
+		struct Signature : Signature<decltype(&F::operator())>
+		{
+		};
+		template<class C, class R, class... A>
+		struct Signature<R (C::*)(A...) const>
+		{
+			using Ret = R;
+			using Args = std::tuple<std::decay_t<A>...>;
+		};
+		template<class C, class R, class... A>
+		struct Signature<R (C::*)(A...)>
+		{
+			using Ret = R;
+			using Args = std::tuple<std::decay_t<A>...>;
+		};
+		template<class R, class... A>
+		struct Signature<R (*)(A...)>
+		{
+			using Ret = R;
+			using Args = std::tuple<std::decay_t<A>...>;
+		};
+
+		template<class Args, class F, size_t... I>
+		auto CallWithJson(F& fn, const Json& args, std::index_sequence<I...>)
+		{
+			return fn(args[I].template Get<std::tuple_element_t<I, Args>>()...);
+		}
+	}
+
+	namespace web
+	{
+		// Typed form: the page's arguments become the function's parameters (int, double, bool, std::string, ml::Json,
+		// std::vector<...>; missing ones are 0 / "" / null) and the result is sent back as JSON.
+		//   ml::web::Function("shop.buy", [](int item, int garage) -> ml::Json { return {{"ok", true}}; });
+		//   game.call('shop.buy', 12, 31).then(r => r.ok)
+		template<class F>
+		    requires(!std::is_convertible_v<F, std::function<std::string(const std::string&)>>)
+		bool Function(const char* name, F fn)
+		{
+			using Sig = detail::Signature<F>;
+			using Args = typename Sig::Args;
+			return Function(name, std::function<std::string(const std::string&)>([fn = std::move(fn)](const std::string& text) mutable {
+				const Json args = Json::Parse(text);
+				constexpr auto indices = std::make_index_sequence<std::tuple_size_v<Args>>();
+				if constexpr (std::is_void_v<typename Sig::Ret>)
+				{
+					detail::CallWithJson<Args>(fn, args, indices);
+					return std::string();
+				}
+				else
+					return Json(detail::CallWithJson<Args>(fn, args, indices)).Dump();
+			}));
+		}
+		// Sends `event` with `data` to the open page.
+		inline void Emit(const char* event, const Json& data)
+		{
+			if (Available())
+				Api().WebEmit(event, data.Dump().c_str());
 		}
 	}
 

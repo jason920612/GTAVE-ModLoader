@@ -4,6 +4,7 @@
 #include <intrin.h>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -13,12 +14,15 @@
 #include <fstream>
 #include <format>
 #include <mutex>
+#include <set>
 
 #include "config.hpp"
 #include "log.hpp"
 #include "game/models.hpp"
 #include "convert/resource.hpp"
 #include "game/scripts.hpp"
+#include "game/story.hpp"
+#include <modloader/script.hpp>
 #include "paths.hpp"
 #include "ui/notify.hpp"
 
@@ -620,6 +624,392 @@ namespace loader::mods
 			return game::scripts::Static(id, index);
 		}
 
+		// ---- high-level API: tasks ------------------------------------------------------------
+
+		bool SafeCallback(MLCallback fn, void* user);
+
+		std::mutex g_taskMutex;
+		std::set<int32_t> g_runningTasks; // task mutex
+		int32_t g_nextTaskId = 1;         // game thread
+
+		void CALLBACK TaskFiberProc(void* param)
+		{
+			auto* task = static_cast<Task*>(param);
+			if (!SafeCallback(task->fn, task->user))
+				AbandonCurrentFiber(task->mod, "crashed in a task");
+			task->done = true;
+			{
+				std::lock_guard lock(g_taskMutex);
+				g_runningTasks.erase(task->id);
+			}
+			for (;;)
+				SwitchToFiber(g_schedulerFiber);
+		}
+
+		int32_t ApiStartTask(MLCallback fn, void* user)
+		{
+			Mod* mod = Registrar("StartTask", _ReturnAddress());
+			if (!mod || !fn)
+				return 0;
+			auto task = std::make_unique<Task>();
+			task->mod = mod;
+			task->fn = fn;
+			task->user = user;
+			task->id = g_nextTaskId++;
+			task->fiber = CreateFiber(256 * 1024, TaskFiberProc, task.get());
+			if (!task->fiber)
+			{
+				ModLog(mod, ML_LOG_ERROR, "StartTask: could not create a fiber");
+				return 0;
+			}
+			{
+				std::lock_guard lock(g_taskMutex);
+				g_runningTasks.insert(task->id);
+			}
+			const int32_t id = task->id;
+			mod->tasks.push_back(std::move(task));
+			return id;
+		}
+
+		int32_t ApiTaskRunning(int32_t id)
+		{
+			std::lock_guard lock(g_taskMutex);
+			return g_runningTasks.contains(id) ? 1 : 0;
+		}
+
+		// Runs the mod's tasks that are due, then forgets the finished ones. Game thread.
+		void RunTasks(Mod& mod, uint64_t now)
+		{
+			// By index: a task may start another one.
+			for (size_t i = 0; i < mod.tasks.size() && mod.state != State::Faulted; ++i)
+			{
+				Task* task = mod.tasks[i].get();
+				if (task->done || now < task->wakeAt)
+					continue;
+				g_current = &mod;
+				g_currentTask = task;
+				SwitchToFiber(task->fiber);
+			}
+			g_current = nullptr;
+			g_currentTask = nullptr;
+			if (mod.state == State::Faulted)
+			{
+				std::lock_guard lock(g_taskMutex);
+				for (const auto& task : mod.tasks)
+					g_runningTasks.erase(task->id);
+				return;
+			}
+			std::erase_if(mod.tasks, [](const std::unique_ptr<Task>& task) {
+				if (!task->done)
+					return false;
+				DeleteFiber(task->fiber);
+				return true;
+			});
+		}
+
+		// Parks the calling mod fiber for at least `ms`.
+		void FiberSleep(uint32_t ms)
+		{
+			g_currentTask->wakeAt = NowMs() + ms;
+			SwitchToFiber(g_schedulerFiber);
+		}
+
+		// ---- high-level API: the story game ---------------------------------------------------
+
+		int32_t ApiRequestAutosave()
+		{
+			if (!InModFiber("RequestAutosave", _ReturnAddress()))
+				return 0;
+			return game::story::RequestAutosave() ? 1 : 0;
+		}
+
+		int32_t ApiOnGameEvent(int32_t event, MLCallback fn, void* user)
+		{
+			Mod* mod = g_loading ? g_loading : g_current;
+			if (!mod || GetCurrentThreadId() != g_gameThreadId || !fn)
+			{
+				ModLog(ModFromAddress(_ReturnAddress()), ML_LOG_ERROR, "OnGameEvent called outside MLOnLoad / MLMain; ignored");
+				return 0;
+			}
+			if (event < ML_EVENT_CHARACTER_CHANGED || event > ML_EVENT_SAVE_LOADING)
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("OnGameEvent: unknown event {}", event));
+				return 0;
+			}
+			std::lock_guard lock(g_menuMutex);
+			mod->events.push_back({event, {fn, user}});
+			return 1;
+		}
+
+		// Queues the mods' handlers of `event` on their callback fibers. Game thread.
+		void Dispatch(int32_t event)
+		{
+			std::lock_guard lock(g_menuMutex);
+			for (auto& mod : g_mods)
+				if (mod->state != State::Faulted)
+					for (const auto& [e, handler] : mod->events)
+						if (e == event)
+							mod->pending.push_back(handler);
+		}
+
+		// ---- high-level API: data that follows the game's save -----------------------------
+
+		std::mutex g_saveMutex;
+
+		std::filesystem::path SaveFile(const Mod& mod)
+		{
+			return mod.dir / L"data" / L"save.json";
+		}
+
+		// Save mutex held.
+		void ReadSaveData(Mod& mod)
+		{
+			if (mod.saveRead)
+				return;
+			mod.saveRead = true;
+			if (std::ifstream in(SaveFile(mod)); in)
+			{
+				auto j = nlohmann::json::parse(in, nullptr, false);
+				if (j.is_object())
+					mod.saveCommitted = std::move(j);
+				else
+					ModLog(&mod, ML_LOG_WARN, "data\\save.json is not valid JSON; starting empty");
+			}
+			if (!mod.saveCommitted.is_object())
+				mod.saveCommitted = nlohmann::json::object();
+			mod.saveWorking = mod.saveCommitted;
+		}
+
+		std::string SlotKey(int32_t slot)
+		{
+			return slot < 0 ? "shared" : std::to_string(slot);
+		}
+
+		int32_t ApiSaveDataGet(int32_t slot, const char* key, char* buffer, int32_t size)
+		{
+			Mod* mod = CallerOrCurrent(_ReturnAddress());
+			if (!mod || !key || slot < ML_SAVE_SHARED || slot > 2)
+				return -1;
+			std::string text;
+			{
+				std::lock_guard lock(g_saveMutex);
+				ReadSaveData(*mod);
+				const auto group = mod->saveWorking.find(SlotKey(slot));
+				if (group == mod->saveWorking.end() || !group->is_object())
+					return -1;
+				const auto value = group->find(key);
+				if (value == group->end())
+					return -1;
+				text = value->dump();
+			}
+			if (buffer && size > 0)
+			{
+				const size_t n = std::min(text.size(), static_cast<size_t>(size - 1));
+				std::memcpy(buffer, text.data(), n);
+				buffer[n] = 0;
+			}
+			return static_cast<int32_t>(text.size());
+		}
+
+		int32_t ApiSaveDataSet(int32_t slot, const char* key, const char* json)
+		{
+			Mod* mod = CallerOrCurrent(_ReturnAddress());
+			if (!mod || !key || slot < ML_SAVE_SHARED || slot > 2)
+				return 0;
+			nlohmann::json value;
+			if (json)
+			{
+				value = nlohmann::json::parse(json, nullptr, false);
+				if (value.is_discarded())
+				{
+					ModLog(mod, ML_LOG_ERROR, std::format("SaveDataSet(\"{}\"): not valid JSON", key));
+					return 0;
+				}
+			}
+			std::lock_guard lock(g_saveMutex);
+			ReadSaveData(*mod);
+			auto& group = mod->saveWorking[SlotKey(slot)];
+			if (!group.is_object())
+				group = nlohmann::json::object();
+			if (json)
+				group[key] = std::move(value);
+			else
+				group.erase(key);
+			mod->saveDirty = true;
+			return 1;
+		}
+
+		// The game saved: the mods' save data is written. Game thread.
+		void CommitSaveData()
+		{
+			for (auto& mod : g_mods)
+			{
+				std::lock_guard lock(g_saveMutex);
+				if (!mod->saveDirty)
+					continue;
+				std::ofstream out(SaveFile(*mod), std::ios::trunc);
+				if (!out)
+				{
+					ModLog(mod.get(), ML_LOG_ERROR, "could not write data\\save.json");
+					continue;
+				}
+				out << mod->saveWorking.dump(1) << "\n";
+				mod->saveCommitted = mod->saveWorking;
+				mod->saveDirty = false;
+				ModLog(mod.get(), ML_LOG_INFO, "game saved: save data written");
+			}
+		}
+
+		// A save is being loaded: unsaved changes are dropped. Game thread.
+		void DropSaveData()
+		{
+			for (auto& mod : g_mods)
+			{
+				std::lock_guard lock(g_saveMutex);
+				if (!mod->saveDirty)
+					continue;
+				mod->saveWorking = mod->saveCommitted;
+				mod->saveDirty = false;
+				ModLog(mod.get(), ML_LOG_INFO, "save loading: unsaved save data dropped");
+			}
+		}
+
+		// ---- high-level API: game script functions -----------------------------------------
+
+		constexpr uint64_t kDoesScriptExist = 0xFC04745FBE67C19A;
+		constexpr uint64_t kRequestScript = 0x6EB5F71AA68F2E8E;
+		constexpr uint64_t kHasScriptLoaded = 0xE6CC9F3BA0FB9EF1;
+		constexpr uint64_t kStartNewScript = 0xE81651AD79516E48;
+		constexpr uint64_t kSetScriptAsNoLongerNeeded = 0xC90D2DCACD56184C;
+		constexpr uint64_t kIsThreadActive = 0x46E9AE36D8FA6417;
+		constexpr uint64_t kTerminateThread = 0xC8B189ED9138BCD4;
+		constexpr uint64_t kTerminateThisThread = 0x1090044AD1DA76FA;
+
+		// "2d 04 ?? 00" -> bytes, -1 = any. Empty when malformed.
+		std::vector<int> ParsePattern(std::string_view text)
+		{
+			std::vector<int> out;
+			for (size_t i = 0; i < text.size();)
+			{
+				if (text[i] == ' ')
+				{
+					++i;
+					continue;
+				}
+				if (i + 1 >= text.size())
+					return {};
+				const std::string_view byte = text.substr(i, 2);
+				if (byte == "??")
+					out.push_back(-1);
+				else
+				{
+					int v = 0;
+					if (std::from_chars(byte.data(), byte.data() + 2, v, 16).ptr != byte.data() + 2)
+						return {};
+					out.push_back(v);
+				}
+				i += 2;
+			}
+			return out;
+		}
+
+		int64_t FindPattern(const std::vector<uint8_t>& code, const std::vector<int>& pattern)
+		{
+			if (pattern.empty() || code.size() < pattern.size())
+				return -1;
+			for (size_t a = 0; a + pattern.size() <= code.size(); ++a)
+			{
+				size_t k = 0;
+				while (k < pattern.size() && (pattern[k] < 0 || code[a + k] == pattern[k]))
+					++k;
+				if (k == pattern.size())
+					return static_cast<int64_t>(a);
+			}
+			return -1;
+		}
+
+		// Address of a NATIVE TERMINATE_THIS_THREAD instruction in the thread's program, or -1.
+		int64_t FindTerminate(int32_t thread, const std::vector<uint8_t>& code)
+		{
+			const int32_t index = game::scripts::NativeIndex(thread, reinterpret_cast<const void*>(game::natives::FindHandler(kTerminateThisThread)));
+			if (index < 0)
+				return -1;
+			for (uint32_t a = 0; a < code.size();)
+			{
+				const auto in = ml::script::Decode(code, a);
+				if (!in.length)
+				{
+					++a;
+					continue;
+				}
+				if (in.op == ml::script::NATIVE && in.operand == index && code[a + 1] == 0)
+					return a;
+				a += in.length;
+			}
+			return -1;
+		}
+
+		int32_t ApiRunScriptFunction(const char* script, const char* pattern, int32_t stackSize, const int64_t* args, int32_t count, uint32_t timeoutMs)
+		{
+			if (!InModFiber("RunScriptFunction", _ReturnAddress()) || !script || !pattern || count < 0 || (count && !args))
+				return 0;
+			Mod* mod = g_current;
+			const auto bytes = ParsePattern(pattern);
+			if (bytes.empty())
+			{
+				ModLog(mod, ML_LOG_ERROR, std::format("RunScriptFunction: bad pattern \"{}\"", pattern));
+				return 0;
+			}
+			if (!game::natives::Invoke<int32_t>(kDoesScriptExist, script))
+			{
+				ModLog(mod, ML_LOG_WARN, std::format("RunScriptFunction: no script \"{}\"", script));
+				return 0;
+			}
+			const uint64_t deadline = NowMs() + timeoutMs;
+			game::natives::Invoke<void>(kRequestScript, script);
+			while (!game::natives::Invoke<int32_t>(kHasScriptLoaded, script))
+			{
+				if (NowMs() >= deadline)
+				{
+					ModLog(mod, ML_LOG_WARN, std::format("RunScriptFunction: {} did not load in time", script));
+					return -1;
+				}
+				FiberSleep(0);
+			}
+			const int32_t thread = game::natives::Invoke<int32_t>(kStartNewScript, script, stackSize > 0 ? stackSize : 1024);
+			game::natives::Invoke<void>(kSetScriptAsNoLongerNeeded, script);
+			if (!thread)
+			{
+				ModLog(mod, ML_LOG_WARN, std::format("RunScriptFunction: could not start {}", script));
+				return 0;
+			}
+			const auto code = game::scripts::Code(thread);
+			const int64_t address = FindPattern(code, bytes);
+			const int64_t terminate = address >= 0 ? FindTerminate(thread, code) : -1;
+			std::string error = address < 0 ? "pattern not found" : terminate < 0 ? "no TERMINATE_THIS_THREAD" : "";
+			if (error.empty() &&
+			    !game::scripts::RedirectThread(thread, static_cast<uint32_t>(address), {args, static_cast<size_t>(count)}, game::scripts::Redirect::Call,
+			        error, static_cast<uint32_t>(terminate)))
+				error = "redirect: " + error;
+			if (!error.empty())
+			{
+				game::natives::Invoke<void>(kTerminateThread, thread);
+				ModLog(mod, ML_LOG_WARN, std::format("RunScriptFunction({}, \"{}\"): {}", script, pattern, error));
+				return 0;
+			}
+			while (game::natives::Invoke<int32_t>(kIsThreadActive, thread))
+			{
+				if (NowMs() >= deadline)
+				{
+					game::natives::Invoke<void>(kTerminateThread, thread);
+					ModLog(mod, ML_LOG_WARN, std::format("RunScriptFunction({}): the function did not return in time", script));
+					return -1;
+				}
+				FiberSleep(0);
+			}
+			return 1;
+		}
+
 		// ---- settings of the first release: items on the root page ------------------------------
 
 		int32_t ApiAddSetting(MLSettingType type, const char* id, const char* label, int32_t defaultValue)
@@ -773,6 +1163,13 @@ namespace loader::mods
 			.WebEmit = ApiWebEmit,
 			.OpenBrowser = ApiOpenBrowser,
 			.CallScriptFunction = ApiCallScriptFunction,
+			.StartTask = ApiStartTask,
+			.TaskRunning = ApiTaskRunning,
+			.RequestAutosave = ApiRequestAutosave,
+			.OnGameEvent = ApiOnGameEvent,
+			.SaveDataGet = ApiSaveDataGet,
+			.SaveDataSet = ApiSaveDataSet,
+			.RunScriptFunction = ApiRunScriptFunction,
 		};
 
 		// ---- loading --------------------------------------------------------------------------
@@ -989,6 +1386,21 @@ namespace loader::mods
 
 	void Tick()
 	{
+		// Story state for the high-level API: save data follows the game's saves, events go to the callback fibers.
+		const auto changes = game::story::Update();
+		if (changes.saved)
+		{
+			CommitSaveData();
+			Dispatch(ML_EVENT_GAME_SAVED);
+		}
+		if (changes.loading)
+		{
+			DropSaveData();
+			Dispatch(ML_EVENT_SAVE_LOADING);
+		}
+		if (changes.character)
+			Dispatch(ML_EVENT_CHARACTER_CHANGED);
+
 		const auto now = NowMs();
 		for (auto& mod : g_mods)
 		{
@@ -1027,6 +1439,8 @@ namespace loader::mods
 			}
 			g_current = nullptr;
 			g_currentTask = nullptr;
+			if (mod->state != State::Faulted)
+				RunTasks(*mod, now);
 
 			// Saved at most once per tick, not on every change.
 			bool dirty;

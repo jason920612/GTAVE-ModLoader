@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <type_traits>
 
 namespace loader::game::natives
 {
@@ -50,4 +52,28 @@ namespace loader::game::natives
 
 	// Runs the call; on a crash inside the game, returns Crashed instead of propagating.
 	CallStatus Call(Invocation& inv);
+
+	// Loader-side call of a native by public hash (game thread, script context). Arguments are copied into 8-byte
+	// slots (pointers, integers, floats). Returns R{} when the native is unknown or crashed.
+	template<class R = uint64_t, class... A>
+	R Invoke(uint64_t publicHash, A... args)
+	{
+		Invocation inv;
+		inv.Begin(publicHash);
+		(
+		    [&] {
+			    uint64_t slot = 0;
+			    std::memcpy(&slot, &args, sizeof(A));
+			    inv.Push(slot);
+		    }(),
+		    ...);
+		const bool ok = Call(inv) == CallStatus::Ok;
+		if constexpr (!std::is_void_v<R>)
+		{
+			R value{};
+			if (ok)
+				std::memcpy(&value, inv.result, sizeof(R));
+			return value;
+		}
+	}
 }

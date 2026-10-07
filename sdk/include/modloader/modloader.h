@@ -210,7 +210,52 @@ typedef struct MLApi
 	 * for example a TERMINATE_THIS_THREAD instruction) instead of nowhere. Typical use: start a fresh thread of a
 	 * script and, before its first update, make it run one of the script's functions. Returns 1 on success. */
 	int32_t (*CallScriptFunction)(int32_t id, uint32_t address, const int64_t* args, int32_t count, uint32_t returnTo);
+
+	/* ======== high-level API (check `size`; C++ wrappers in modloader.hpp and game.hpp) ======== */
+
+	/* ---- tasks ----
+	 * Runs `fn(user)` on a new script fiber of the mod, next to MLMain and the callbacks: it may call natives and Wait,
+	 * and waiting there holds up nothing else. The task ends when `fn` returns. MLOnLoad, MLMain, a callback or a task.
+	 * Returns a task id (> 0), or 0. */
+	int32_t (*StartTask)(MLCallback fn, void* user);
+	/* 1 while the task has not finished. Any thread. */
+	int32_t (*TaskRunning)(int32_t id);
+
+	/* ---- the story game ----
+	 * Asks story mode to autosave (what the game's own scripts do after a purchase). It saves when it can, unless
+	 * autosave is off in the game settings. Returns 1 when the request was made, 0 when one is already waiting.
+	 * MLMain, a callback or a task. */
+	int32_t (*RequestAutosave)(void);
+	/* Runs `fn(user)` on the mod's callback fiber whenever `event` happens (MLGameEvent). MLOnLoad or MLMain. */
+	int32_t (*OnGameEvent)(int32_t event, MLCallback fn, void* user);
+
+	/* ---- data that follows the game's save ----
+	 * Values (JSON text) kept per mod, per story character (`slot` 0 Michael, 1 Franklin, 2 Trevor) or shared
+	 * (ML_SAVE_SHARED). Changes are written to <modDir>\data\save.json when the game saves, and dropped when a save is
+	 * loaded, so they stay in step with the game's own progress. Any thread. */
+	/* Copies the value of `key` into `buffer` (NUL-terminated when it fits); returns its length, or -1 when unset. */
+	int32_t (*SaveDataGet)(int32_t slot, const char* key, char* buffer, int32_t size);
+	/* Sets `key` to `json` (valid JSON text); NULL removes it. Returns 0 when `json` is not valid JSON. */
+	int32_t (*SaveDataSet)(int32_t slot, const char* key, const char* json);
+
+	/* ---- game script functions ----
+	 * Runs one function of a game script by itself: starts a new thread of `script` (stack size `stackSize`), finds the
+	 * function by a byte pattern of its start ("2d 04 6f ?? 00 38", ?? = any byte; the first match), calls it with the
+	 * `count` values in `args` and ends the thread when the function returns. Waits for that, at most `timeoutMs`.
+	 * Returns 1 when the function ran, 0 when the script or the pattern was not found, -1 when it did not finish in
+	 * time. MLMain, a callback or a task. */
+	int32_t (*RunScriptFunction)(const char* script, const char* pattern, int32_t stackSize, const int64_t* args, int32_t count, uint32_t timeoutMs);
 } MLApi;
+
+/* Events for OnGameEvent. */
+typedef enum MLGameEvent
+{
+	ML_EVENT_CHARACTER_CHANGED = 0, /* the player became another story character (or none) */
+	ML_EVENT_GAME_SAVED = 1,        /* the game wrote a story save (save data was written just before) */
+	ML_EVENT_SAVE_LOADING = 2,      /* a loading screen began: unsaved changes are gone (save data too) */
+} MLGameEvent;
+
+#define ML_SAVE_SHARED (-1) /* SaveData slot shared by all characters */
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);
 typedef int (*MLOnLoadFn)(const MLApi* api, const MLContext* ctx);

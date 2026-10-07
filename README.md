@@ -15,6 +15,14 @@ GTA V Enhanced（故事模式）的單一 DLL 模組載入器。
   顯示在 F4 視窗的「模組功能」分頁；在 MLOnLoad 註冊的開關、選項列表與 0–10 整數也會出現在暫停選單。
   按鈕與熱鍵的回呼在模組自己的腳本執行緒上執行，可以直接呼叫原生函式與 `Wait`。
 - **模型清單（API）**：列出遊戲中所有載具與角色模型（含 mods 資源包的 add-on），附模型名稱與來源資源包。
+- **高階 API**（`modloader.hpp`、`game.hpp`、`json.hpp`）：
+  - `ml::StartTask`：額外的腳本執行緒，可以呼叫原生函式與 `Wait`，不會卡住 MLMain；另有 `WaitUntil`。
+  - 會自動釋放的串流資源：`ml::LoadModel`、`LoadTextureDict`、`LoadAnimDict`、`LoadPtfxAsset`。
+  - `ml::save`：跟著遊戲存檔走的模組資料，每個角色一份或共用；遊戲存檔時寫入 `data\save.json`，讀檔時丟棄未存的變更。
+  - `ml::game`：目前角色、金錢（`Cash` / `AddCash`）、自動存檔請求、讀取畫面，以及事件（角色切換、遊戲存檔、讀檔）。
+  - `ml::Global`：以欄位偏移與陣列存取腳本全域變數。
+  - `ml::scripts::RunFunction`：以位元組特徵碼找到遊戲腳本的函式，在新的腳本執行緒中執行並等待結束。
+  - 網頁函式可直接用 C++ 型別參數並回傳 `ml::Json`。
 - **腳本 API（進階）**：讀寫腳本全域變數、列出執行中的腳本、讀取腳本程式碼（附反組譯用的指令解碼 `modloader/script.hpp`）、
   讓腳本從指定位置繼續執行。
 - **修改器（`examples/trainer`）**：玩家（無敵、通緝、體力、超級跳、快跑、隱形、更換角色模型）、

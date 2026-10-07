@@ -611,3 +611,21 @@
 - 自動存檔：購買後請求自動存檔（§28）；遊戲設定中自動存檔關閉時不會寫檔（`GET_IS_AUTO_SAVE_OFF`），購買與原版一樣要手動存檔才保留。
 - 研究指令（`examples/property/research.cpp`）新增：`blips.txt`（列出所有地圖圖示）、`closest_vehicle.txt`、`global_set.txt`（測試用寫入 global）、
   `autosave.txt`。
+
+## 34. SDK 高階 API（2026-10-08）
+
+- 使用者要求把過於底層的 SDK 介面包高階一些；範圍與相容性經討論決定（舊 API 保留為進階、property 與 trainer 改寫）。
+- 新增的 MLApi 欄位（附加在結尾，以 `size` 判斷）：`StartTask` / `TaskRunning`、`RequestAutosave`、`OnGameEvent`、
+  `SaveDataGet` / `SaveDataSet`、`RunScriptFunction`。C++ 包裝在 `modloader.hpp`（工作、`ml::save`、`ml::Global`、
+  `ml::scripts::RunFunction`、型別化 `ml::web::Function`）、`json.hpp`（自帶的 `ml::Json`）與 `game.hpp`（`ml::game`、串流資源）。
+- 工作：每個工作是模組的一條 fiber，與 MLMain、回呼 fiber 一起由排程器依 `wakeAt` 執行；結束後刪除 fiber。崩潰時整個模組停用。
+- 遊戲狀態（`src/loader/game/story.cpp`）：每幀以 native 讀角色（玩家模型 = player_zero/one/two）與讀取畫面；每秒檢查故事存檔
+  （`Documents\Rockstar Games\GTAV Enhanced\Profiles\*\SGTA5*`）修改時間。存檔 → 寫入各模組有變更的 `data\save.json`，再送出
+  GAME_SAVED；讀取畫面開始 → 丟棄未存的變更，再送出 SAVE_LOADING。讀檔期間模組不執行，但恢復時讀取畫面仍在，故仍偵測得到
+  （實測：讀檔後未存的車輛消失、現金恢復）。自動存檔請求 = Global 102550+10 加一（§28）。
+- `RunScriptFunction`：DOES_SCRIPT_EXIST → REQUEST_SCRIPT（等待）→ START_NEW_SCRIPT → 在程式碼中找特徵碼（`??` 萬用字元）
+  與一個 `NATIVE TERMINATE_THIS_THREAD`（native 索引比對、0 參數）→ RedirectThread（Call，返回位址 = 該指令）→ 等待執行緒結束。
+  實測：Elitás 買古邦 800 由此放入機庫。
+- 實測（2026-10-08）：商店圖片掃描改為工作（掃描期間傳送指令照常執行）；Dynasty 8 / 商店網頁的 JSON；舊的 owned_*.txt 遷移到
+  存檔資料；模擬存檔（只改 .bak 修改時間）後寫入 save.json；讀檔丟棄未存變更；修改器以 `ml::LoadModel` 生成 T20。
+  修改器的任務金牌改用 `ml::Global`，尚未在任務中重測。

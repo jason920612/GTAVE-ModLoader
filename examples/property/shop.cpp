@@ -495,22 +495,12 @@ namespace property::shop
 		// Which dictionary holds a picture of each model: every dictionary is loaded once and its pictures looked up by
 		// model name. Cached in data\shop_catalog.txt: "v4 <items>", "retry <dictionaries that did not load>", then
 		// "item site dictionary/texture" lines. Dictionaries that did not load (some belong to packs story mode never
-		// mounts) are tried again on the next start for the items still without a picture. The scan runs a step per
-		// frame (ScanStep) so the rest of the mod keeps running; a cached catalogue is usable before its retry ends.
-		struct ScanState
+		// mounts) are tried again on the next start for the items still without a picture. Runs as a task: its waiting
+		// holds nothing else up, and a cached catalogue is usable before the retry ends.
+		void Scan()
 		{
 			std::map<int, std::pair<std::string, std::string>> found; // item -> site, "dictionary/texture" ("" = none)
-			std::map<Hash, std::string> names;
-			std::vector<std::string> order, failed;
-			size_t first = 0, next = 0;
-			int waited = 0; // frames spent waiting for order[next]
-			bool full = false, named = false, requested = false, done = false;
-		};
-		ScanState g_scan;
-
-		void ScanBegin()
-		{
-			ScanState& s = g_scan;
+			std::vector<std::string> order;
 			{
 				std::ifstream in(CacheFile());
 				std::string header, retry;
@@ -518,103 +508,77 @@ namespace property::shop
 				{
 					std::istringstream words(retry.substr(std::min<size_t>(retry.size(), 6)));
 					for (std::string dict; words >> dict;)
-						s.order.push_back(dict);
+						order.push_back(dict);
 					for (int item; in >> item;)
 						if (std::string site, photo; in >> site >> photo)
-							s.found[item] = {site, photo == "-" ? "" : photo};
+							found[item] = {site, photo == "-" ? "" : photo};
 				}
 			}
-			s.full = s.found.size() != std::size(kItems);
-			if (s.full)
+			const bool full = found.size() != std::size(kItems);
+			if (full)
 			{
-				s.found.clear();
-				s.order.assign(std::begin(kDictionaries), std::end(kDictionaries));
+				found.clear();
+				order.assign(std::begin(kDictionaries), std::end(kDictionaries));
 			}
 			else
-				Publish(s.found);
-			s.first = s.order.size();
-			s.done = s.order.empty();
-		}
-
-		void ScanFinish()
-		{
-			ScanState& s = g_scan;
-			for (const Item& i : kItems)
-				if (!s.found.contains(i.item))
-					s.found[i.item] = {SiteOfKind(i), ""};
-			std::ofstream out(CacheFile(), std::ios::trunc);
-			out << std::format("v4 {}\nretry", std::size(kItems));
-			for (const std::string& dict : s.failed)
-				out << ' ' << dict;
-			out << '\n';
-			for (const auto& [item, sp] : s.found)
-				out << item << ' ' << sp.first << ' ' << (sp.second.empty() ? "-" : sp.second) << '\n';
-			const auto missing = std::ranges::count_if(s.found, [](const auto& f) { return f.second.second.empty(); });
-			ml::Log("shop: catalogue scanned ({}, {} items, {} without a picture, {} dictionaries did not load)",
-			    s.full ? "full" : "retry", s.found.size(), missing, s.failed.size());
-			Publish(s.found);
-			s = {};
-			s.done = true;
-		}
-
-		// One frame of the scan.
-		void ScanStep()
-		{
-			ScanState& s = g_scan;
-			if (s.done)
+				Publish(found);
+			if (order.empty())
 				return;
-			if (!s.named)
-			{
-				// Model names (base-game models have none in the loader's list, their display label is used instead).
+
+			// Model names (base-game models have none in the loader's list; their display label is used instead).
+			std::map<Hash, std::string> names;
+			ml::WaitUntil([&] {
 				bool ready = false;
 				for (const auto& m : ml::Models(ML_MODEL_VEHICLE, &ready))
-					s.names[m.hash] = Lower(m.name);
-				s.named = ready;
-				return;
-			}
-			if (s.next == s.order.size())
-				return ScanFinish();
-			const std::string& name = s.order[s.next];
-			const char* dict = name.c_str();
-			if (!s.requested)
+					names[m.hash] = Lower(m.name);
+				return ready;
+			}, 300000, 500);
+
+			// A dictionary that does not load in time is tried again at the end with a longer wait (large ones such as
+			// lgm_default can take a while right after the game loads).
+			std::vector<std::string> failed;
+			const size_t first = order.size();
+			for (size_t n = 0; n < order.size(); ++n)
 			{
-				GRAPHICS::REQUEST_STREAMED_TEXTURE_DICT(dict, false);
-				s.requested = true;
-				s.waited = 0;
-			}
-			if (!GRAPHICS::HAS_STREAMED_TEXTURE_DICT_LOADED(dict))
-			{
-				// A dictionary that does not load in time is tried again at the end with a longer wait (large ones such
-				// as lgm_default can take a while right after the game loads).
-				const bool retry = s.next >= s.first;
-				if (++s.waited < (retry ? 1800 : 300))
-					return;
-				if (retry)
-					s.failed.push_back(name);
-				else
-					s.order.push_back(name);
-				++s.next;
-				s.requested = false;
-				return;
-			}
-			for (const Item& i : kItems)
-			{
-				if (s.found.contains(i.item) && !s.found[i.item].second.empty())
+				const std::string name = order[n];
+				const bool retry = n >= first;
+				const auto dict = ml::LoadTextureDict(name.c_str(), retry ? 30000 : 5000);
+				if (!dict)
+				{
+					(retry ? failed : order).push_back(name);
 					continue;
-				// The picture is named after the model.
-				const std::string model = s.names.contains(i.model) ? s.names[i.model] : std::string(),
-				                  label = Lower(VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(i.model));
-				for (const std::string& texture : {model, label, label + "_tless", Alias(label)})
-					if (!texture.empty())
-						if (const Vector3 size = GRAPHICS::GET_TEXTURE_RESOLUTION(dict, texture.c_str()); size.x > 0)
-						{
-							s.found[i.item] = {SiteOfDictionary(name), name + "/" + texture};
-							break;
-						}
+				}
+				for (const Item& i : kItems)
+				{
+					if (found.contains(i.item) && !found[i.item].second.empty())
+						continue;
+					// The picture is named after the model.
+					const std::string model = names.contains(i.model) ? names[i.model] : std::string(),
+					                  label = Lower(VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(i.model));
+					for (const std::string& texture : {model, label, label + "_tless", Alias(label)})
+						if (!texture.empty())
+							if (const Vector3 size = GRAPHICS::GET_TEXTURE_RESOLUTION(name.c_str(), texture.c_str()); size.x > 0)
+							{
+								found[i.item] = {SiteOfDictionary(name), name + "/" + texture};
+								break;
+							}
+				}
 			}
-			GRAPHICS::SET_STREAMED_TEXTURE_DICT_AS_NO_LONGER_NEEDED(dict);
-			++s.next;
-			s.requested = false;
+
+			for (const Item& i : kItems)
+				if (!found.contains(i.item))
+					found[i.item] = {SiteOfKind(i), ""};
+			std::ofstream out(CacheFile(), std::ios::trunc);
+			out << std::format("v4 {}\nretry", std::size(kItems));
+			for (const std::string& dict : failed)
+				out << ' ' << dict;
+			out << '\n';
+			for (const auto& [item, sp] : found)
+				out << item << ' ' << sp.first << ' ' << (sp.second.empty() ? "-" : sp.second) << '\n';
+			const auto missing = std::ranges::count_if(found, [](const auto& f) { return f.second.second.empty(); });
+			ml::Log("shop: catalogue scanned ({}, {} items, {} without a picture, {} dictionaries did not load)", full ? "full" : "retry",
+			    found.size(), missing, failed.size());
+			Publish(found);
 		}
 
 		void Publish(std::map<int, std::pair<std::string, std::string>>& found)
@@ -640,46 +604,28 @@ namespace property::shop
 		bool HasStorage(int kind, int c)
 		{
 			const int first = kind == 1 ? 12 : kind == 2 ? 15 : kind == 3 ? 18 : -1;
-			const int64_t* gens = first >= 0 && c >= 0 ? ml::scripts::Global(114990 + 32759) : nullptr;
+			const ml::Global gens = ml::Global(114990) + 32759;
 			// Bit 5: the character owns the property (vehicle_gen_controller sets it from the property's owner).
-			return gens && first + c < gens[0] && (gens[1 + first + c] & (1 << 5));
+			return first >= 0 && c >= 0 && first + c < gens.Size() && gens.At(first + c).Bit(5);
 		}
 
-		// The game's own "store a bought vehicle" (appinternet @2941169(item, character, &Global 77590, -1)), run in a
-		// fresh appinternet thread that ends when the function returns. Found by its first bytes.
-		const uint8_t kStoreSignature[] = {0x2d, 0x04, 0x6f, 0x00, 0x00, 0x38, 0x03, 0x70, 0x58, 0x09, 0x00, 0x43, 0x25, 0x01, 0x71, 0x71};
-		const uint8_t kTerminateSignature[] = {0x31, 0x56, 0x04, 0x00, 0x2c, 0x00, 0x00}; // JZ +4, NATIVE TERMINATE_THIS_THREAD
+		// The game's own "store a bought vehicle": appinternet @2941169(item, character, &Global 77590, -1), found by its
+		// first bytes.
+		constexpr const char* kStorePattern = "2d 04 6f 00 00 38 03 70 58 09 00 43 25 01 71 71";
 		std::string StoreOwnVehicle(int item, int c)
 		{
-			SCRIPT::REQUEST_SCRIPT("appinternet");
-			for (int i = 0; i < 300 && !SCRIPT::HAS_SCRIPT_LOADED("appinternet"); ++i)
-				ml::Wait(10);
-			const int thread = BUILTIN::START_NEW_SCRIPT("appinternet", 4000);
-			SCRIPT::SET_SCRIPT_AS_NO_LONGER_NEEDED("appinternet");
-			if (!thread)
-				return "script";
-			const auto code = ml::scripts::Code(thread);
-			const auto find = [&](const uint8_t* sig, size_t n) -> int64_t {
-				const auto it = std::search(code.begin(), code.end(), sig, sig + n);
-				return it == code.end() ? -1 : it - code.begin();
-			};
-			const int64_t store = find(kStoreSignature, sizeof(kStoreSignature));
-			const int64_t terminate = find(kTerminateSignature, sizeof(kTerminateSignature));
-			int64_t* result = ml::scripts::Global(77590);
-			if (store < 0 || terminate < 0 || !result ||
-			    !ml::scripts::CallFunction(thread, static_cast<uint32_t>(store), {item, c, reinterpret_cast<int64_t>(result), -1},
-			        static_cast<uint32_t>(terminate + 4)))
+			const int64_t result = reinterpret_cast<int64_t>(ml::Global(77590).Ptr());
+			switch (ml::scripts::RunFunction("appinternet", kStorePattern, {item, c, result, -1}, 4000))
 			{
-				SCRIPT::TERMINATE_THREAD(thread);
+			case ml::scripts::RunResult::Ran:
+				ml::Log("shop: item {} stored for character {} by the game", item, c);
+				return {};
+			case ml::scripts::RunResult::Timeout:
+				return "unsupported";
+			default:
 				ml::LogError("shop: the game's vehicle storage function was not found (game update?); aircraft and boats cannot be bought");
 				return "unsupported";
 			}
-			for (int i = 0; i < 300 && SCRIPT::IS_THREAD_ACTIVE(thread); ++i)
-				ml::Wait(10);
-			if (SCRIPT::IS_THREAD_ACTIVE(thread))
-				SCRIPT::TERMINATE_THREAD(thread);
-			ml::Log("shop: item {} stored for character {} by the game", item, c);
-			return {};
 		}
 
 		const Item* Find(int item)
@@ -690,50 +636,30 @@ namespace property::shop
 			return nullptr;
 		}
 
-		std::string List(const std::string& args)
+		ml::Json List(const std::string& site)
 		{
-			std::string site;
-			if (const size_t a = args.find('"'); a != std::string::npos)
-				site = args.substr(a + 1, args.find('"', a + 1) - a - 1);
-			const int c = Character();
-			std::string out = std::format("{{\"character\":{},\"cash\":{},\"ready\":{},\"items\":[", c, Cash(), g_ready ? "true" : "false");
-			bool first = true;
+			const int c = ml::game::CharacterIndex();
+			ml::Json items = ml::Json::Array(), garages = ml::Json::Array();
 			if (g_ready)
 				for (const Item& i : kItems)
-				{
-					const Info& info = g_info[i.item];
-					if (info.site != site)
-						continue;
-					out += std::format("{}{{\"item\":{},\"name\":{},\"maker\":{},\"price\":{},\"kind\":{},\"photo\":{}}}", first ? "" : ",", i.item,
-					    Json(info.name), Json(info.maker), i.price, i.kind, Json(info.photo));
-					first = false;
-				}
-			out += "],\"garages\":[";
-			first = true;
-			if (c >= 0)
-				for (const int id : Owned(c))
-				{
-					out += std::format("{}{{\"id\":{},\"name\":{},\"free\":{}}}", first ? "" : ",", id, Json(Name(id)), garage::FreeSlots(id));
-					first = false;
-				}
-			return out + std::format("],\"storage\":{{\"hangar\":{},\"marina\":{},\"helipad\":{}}}}}", HasStorage(1, c) ? "true" : "false",
-			                 HasStorage(2, c) ? "true" : "false", HasStorage(3, c) ? "true" : "false");
+					if (const Info& info = g_info[i.item]; info.site == site)
+						items.Push({{"item", i.item}, {"name", info.name}, {"maker", info.maker}, {"price", i.price}, {"kind", i.kind}, {"photo", info.photo}});
+			for (const int id : Owned(c))
+				garages.Push({{"id", id}, {"name", Name(id)}, {"free", garage::FreeSlots(id)}});
+			return {{"character", c}, {"cash", ml::game::Cash()}, {"ready", g_ready}, {"items", items}, {"garages", garages},
+			    {"storage", {{"hangar", HasStorage(1, c)}, {"marina", HasStorage(2, c)}, {"helipad", HasStorage(3, c)}}}};
 		}
 
-		std::string Buy(const std::string& args)
+		ml::Json Buy(int item, int garageId)
 		{
-			const auto fail = [](const char* error) { return std::format("{{\"ok\":false,\"error\":\"{}\",\"cash\":{}}}", error, Cash()); };
-			int item = -1, garageId = 0;
-			if (sscanf_s(args.c_str(), "[%d,%d", &item, &garageId) < 1)
-				return fail("unknown");
+			const auto fail = [](const char* error) { return ml::Json{{"ok", false}, {"error", error}, {"cash", ml::game::Cash()}}; };
 			const Item* i = Find(item);
-			const int c = Character();
+			const int c = ml::game::CharacterIndex();
 			if (!i)
 				return fail("unknown");
 			if (c < 0)
 				return fail("character");
-			const int cash = Cash();
-			if (cash < i->price)
+			if (ml::game::Cash() < i->price)
 				return fail("money");
 			if (i->kind == 0)
 			{
@@ -749,28 +675,20 @@ namespace property::shop
 				if (const std::string error = StoreOwnVehicle(item, c); !error.empty())
 					return fail(error.c_str());
 			}
-			STATS::STAT_SET_INT(CashStat(c), cash - i->price, 1);
+			ml::game::AddCash(-i->price);
 			NotePurchase();
 			ml::Log("shop: character {} bought item {} ({:08X}) for ${}", c, item, i->model, i->price);
-			return std::format("{{\"ok\":true,\"error\":\"\",\"cash\":{}}}", Cash());
+			return {{"ok", true}, {"error", ""}, {"cash", ml::game::Cash()}};
 		}
 	}
 
-	void RegisterWebFunctions()
+	void Start()
 	{
-		ml::web::Function("shop.list", [](const std::string& args) { return List(args); });
-		ml::web::Function("shop.buy", [](const std::string& args) { return Buy(args); });
-	}
-
-	void Tick()
-	{
-		static bool started = false;
-		if (!started && Character() >= 0)
-		{
-			started = true;
-			ScanBegin();
-		}
-		if (started)
-			ScanStep();
+		ml::web::Function("shop.list", [](std::string site) { return List(site); });
+		ml::web::Function("shop.buy", [](int item, int garage) { return Buy(item, garage); });
+		ml::StartTask([] {
+			ml::WaitUntil([] { return ml::game::CharacterIndex() >= 0; }, UINT32_MAX, 500);
+			Scan();
+		});
 	}
 }

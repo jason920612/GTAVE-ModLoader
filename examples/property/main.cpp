@@ -6,14 +6,8 @@
 //                                                            x, y, z, photo, owned } ] }
 //   property.buy(id)  -> { ok, error, cash }
 // The property data is the game's own (Global 1312440, the Online property table, which story mode fills too); each
-// story character owns separately, paying with their own money. Ownership follows the game's save: it is written when
-// the game saves and dropped when a save is loaded without that, like the money paid.
-#define NOMINMAX
-#include <Windows.h>
-#include <ShlObj.h>
-#pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "ole32.lib")
-
+// story character owns separately, paying with their own money. Ownership is kept in the mod's save data (ml::save), so
+// it follows the game's save like the money paid.
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -60,14 +54,17 @@ namespace property
 		return type > 0 && type < static_cast<int>(std::size(numbers)) ? std::format("DYN_MP_{}", numbers[type]) : std::string();
 	}
 
+	ml::Global EntryGlobal(int id)
+	{
+		return ml::Global(kPropertyTable).At(id, kEntrySize);
+	}
 	int64_t* Entry(int id)
 	{
-		return ml::scripts::Global(kPropertyTable + 1 + id * kEntrySize);
+		return EntryGlobal(id).Ptr();
 	}
 	int TierOf(int id)
 	{
-		const int64_t* e = Entry(id);
-		return id >= 1 && id <= kLastProperty && e ? Tier(static_cast<int>(e[31])) : 0;
+		return id >= 1 && id <= kLastProperty ? Tier(EntryGlobal(id).Field(31).Int()) : 0;
 	}
 	int GarageSize(int id)
 	{
@@ -76,11 +73,7 @@ namespace property
 	}
 	float EntryFloat(int id, int slot)
 	{
-		const int64_t* e = Entry(id);
-		float f = 0;
-		if (e)
-			std::memcpy(&f, e + slot, 4);
-		return f;
+		return EntryGlobal(id).Field(slot).Float();
 	}
 	Vector3 EntryPosition(int id, int slot)
 	{
@@ -88,8 +81,7 @@ namespace property
 	}
 	std::string Name(int id)
 	{
-		const int64_t* e = Entry(id);
-		return e ? Text(reinterpret_cast<const char*>(e + 16)) : std::string();
+		return Text(EntryGlobal(id).Field(16).Text().c_str());
 	}
 
 	void Help(const std::string& text)
@@ -107,13 +99,11 @@ namespace property
 
 	int Price(int id)
 	{
-		const int64_t* e = Entry(id);
-		return e ? static_cast<int>(e[32]) : 0;
+		return EntryGlobal(id).Field(32).Int();
 	}
 	bool Purchasable(int id)
 	{
-		const int64_t* e = Entry(id);
-		return id >= 1 && id <= kLastProperty && e && e[32] > 0 && Tier(static_cast<int>(e[31])) > 0;
+		return TierOf(id) > 0 && Price(id) > 0;
 	}
 
 	// Text of a game label in the game's language ("" when there is none); "µ" (the game's non-breaking space) -> " ".
@@ -127,176 +117,92 @@ namespace property
 		return s;
 	}
 
-	std::string Json(const std::string& s)
-	{
-		std::string out = "\"";
-		for (const char c : s)
-			switch (c)
-			{
-			case '"': out += "\\\""; break;
-			case '\\': out += "\\\\"; break;
-			case '\n': out += "\\n"; break;
-			case '\r': break;
-			case '\t': out += "\\t"; break;
-			default:
-				if (static_cast<unsigned char>(c) < 0x20)
-					out += std::format("\\u{:04x}", c);
-				else
-					out += c;
-			}
-		return out + "\"";
-	}
+	// ---- ownership: the mod's save data, per character ("owned": [ids]) ------------------------------
 
-	// ---- the player -------------------------------------------------------------------------
+	std::set<int> g_owned[3];
+	bool g_ownedRead[3] = {};
 
-	// Story character of the player (0 Michael, 1 Franklin, 2 Trevor), or -1.
-	int Character()
+	const std::set<int>& Owned(int c)
 	{
-		const Hash model = ENTITY::GET_ENTITY_MODEL(PLAYER::PLAYER_PED_ID());
-		for (int i = 0; i < 3; ++i)
-			if (model == MISC::GET_HASH_KEY(std::format("player_{}", i == 0 ? "zero" : i == 1 ? "one" : "two").c_str()))
-				return i;
-		return -1;
-	}
-	Hash CashStat(int character) { return MISC::GET_HASH_KEY(std::format("SP{}_TOTAL_CASH", character).c_str()); }
-	int Cash()
-	{
-		const int c = Character();
-		int value = 0;
-		if (c >= 0)
-			STATS::STAT_GET_INT(CashStat(c), &value, -1);
-		return value;
-	}
-
-	// ---- ownership: data\owned_<character>.txt, following the game's save -----------------------
-
-	std::set<int> g_owned[3]; // with changes not saved yet
-	bool g_ownedLoaded[3] = {};
-	bool g_ownedChanged = false; // since the last game save
-	std::atomic<int> g_purchases = 0;
-	void NotePurchase() { ++g_purchases; }
-
-	std::filesystem::path OwnedFile(int character)
-	{
-		return std::filesystem::path(ml::Context().dataDir) / std::format("owned_{}.txt", character);
-	}
-	std::set<int>& Owned(int c)
-	{
-		if (!g_ownedLoaded[c])
+		static const std::set<int> none;
+		if (c < 0 || c > 2)
+			return none;
+		if (!g_ownedRead[c])
 		{
-			g_ownedLoaded[c] = true;
-			std::ifstream in(OwnedFile(c));
-			for (int id; in >> id;)
-				g_owned[c].insert(id);
+			g_ownedRead[c] = true;
+			g_owned[c].clear();
+			const ml::Json saved = ml::save::Get("owned", c);
+			for (const ml::Json& id : saved.Items())
+				g_owned[c].insert(id.Int());
+			// Before the mod used save data: data\owned_<character>.txt.
+			if (saved.IsNull())
+				if (std::ifstream in(ml::DataPath(std::format(L"owned_{}.txt", c))); in)
+				{
+					for (int id; in >> id;)
+						g_owned[c].insert(id);
+					ml::save::Set("owned", std::vector<int>(g_owned[c].begin(), g_owned[c].end()), c);
+				}
 		}
 		return g_owned[c];
 	}
-	// The game saved: keep the changes.
-	void CommitOwned()
+	void AddOwned(int c, int id)
 	{
-		for (int c = 0; c < 3; ++c)
-			if (g_ownedLoaded[c])
-			{
-				std::ofstream out(OwnedFile(c), std::ios::trunc);
-				for (const int id : g_owned[c])
-					out << id << "\n";
-			}
-		g_ownedChanged = false;
-	}
-	// A save was loaded: back to what was saved.
-	void DropOwnedChanges()
-	{
-		for (int c = 0; c < 3; ++c)
-		{
-			g_owned[c].clear();
-			g_ownedLoaded[c] = false;
-		}
-		g_ownedChanged = false;
+		Owned(c);
+		g_owned[c].insert(id);
+		ml::save::Set("owned", std::vector<int>(g_owned[c].begin(), g_owned[c].end()), c);
 	}
 
-	// Newest change time of the story save files (Documents\Rockstar Games\GTAV Enhanced\Profiles\*\SGTA5*).
-	std::filesystem::file_time_type LastGameSave()
+	void NotePurchase()
 	{
-		static const std::filesystem::path profiles = [] {
-			PWSTR documents = nullptr;
-			std::filesystem::path path;
-			if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents)))
-				path = std::filesystem::path(documents) / L"Rockstar Games" / L"GTAV Enhanced" / L"Profiles";
-			CoTaskMemFree(documents);
-			return path;
-		}();
-		std::filesystem::file_time_type newest{};
-		std::error_code ec;
-		for (const auto& profile : std::filesystem::directory_iterator(profiles, ec))
-			for (const auto& file : std::filesystem::directory_iterator(profile.path(), ec))
-				if (file.path().filename().wstring().starts_with(L"SGTA5"))
-					newest = std::max(newest, file.last_write_time(ec));
-		return newest;
-	}
-
-	// Story mode's own autosave request (what the game's scripts do, e.g. appinternet @27069): the autosave_controller
-	// script saves when it can (unless autosave is off in the settings).
-	bool RequestAutosave()
-	{
-		int64_t* request = ml::scripts::Global(102550);
-		if (!request || ((request[8] & 0xFFFFFFFF) ? request[10] > 0 : request[10] > 1))
-			return false;
-		++request[10];
-		return true;
+		// Money is saved with the game and ownership with the mod's save data: an autosave keeps the two together.
+		if (ml::game::RequestAutosave())
+			ml::Log("purchase: autosave requested");
 	}
 
 	// ---- web functions ------------------------------------------------------------------------
 
-	std::string List()
+	ml::Json List()
 	{
-		const int c = Character();
-		std::string out = std::format("{{\"character\":{},\"cash\":{},\"properties\":[", c, Cash());
-		bool first = true;
+		const int c = ml::game::CharacterIndex();
+		ml::Json properties = ml::Json::Array();
 		for (int id = 1; id <= kLastProperty; ++id)
 		{
 			if (!Purchasable(id))
 				continue;
-			const int64_t* e = Entry(id);
-			const int type = static_cast<int>(e[31]);
-			const int tier = Tier(type);
-			float pos[3];
-			for (int k = 0; k < 3; ++k)
-				std::memcpy(&pos[k], e + 4 + k, 4);
-			const char* zone = ZONE::GET_NAME_OF_ZONE(pos[0], pos[1], pos[2]);
-			const bool owned = c >= 0 && Owned(c).contains(id);
-			out += std::format("{}{{\"id\":{},\"name\":{},\"description\":{},\"price\":{},\"kind\":\"{}\",\"tier\":{},\"cars\":{},\"area\":{},"
-			                   "\"x\":{:.1f},\"y\":{:.1f},\"z\":{:.1f},\"photo\":{},\"owned\":{}}}",
-			    first ? "" : ",", id, Json(Text(reinterpret_cast<const char*>(e + 16))), Json(Text(reinterpret_cast<const char*>(e + 20))), e[32],
-			    tier >= 4 ? "apartment" : "garage", tier, tier == 6 || tier == 3 ? 10 : tier == 5 || tier == 2 ? 6 : 2, Json(Text(zone)), pos[0], pos[1],
-			    pos[2], Json(Photo(type)), owned ? "true" : "false");
-			first = false;
+			const ml::Global e = EntryGlobal(id);
+			const int type = e.Field(31).Int(), tier = Tier(type);
+			const Vector3 pos = EntryPosition(id, 4);
+			properties.Push({{"id", id}, {"name", Name(id)}, {"description", Text(e.Field(20).Text().c_str())}, {"price", Price(id)},
+			    {"kind", tier >= 4 ? "apartment" : "garage"}, {"tier", tier}, {"cars", GarageSize(id)},
+			    {"area", Text(ZONE::GET_NAME_OF_ZONE(pos.x, pos.y, pos.z))}, {"x", pos.x}, {"y", pos.y}, {"z", pos.z}, {"photo", Photo(type)},
+			    {"owned", Owned(c).contains(id)}});
 		}
-		return out + "]}";
+		return {{"character", c}, {"cash", ml::game::Cash()}, {"properties", properties}};
 	}
 
-	std::string Buy(const std::string& args)
+	ml::Json Buy(int id)
 	{
-		const auto fail = [](const char* error) { return std::format("{{\"ok\":false,\"error\":\"{}\",\"cash\":{}}}", error, Cash()); };
-		int id = 0;
-		if (sscanf_s(args.c_str(), "[%d", &id) != 1 || !Purchasable(id))
+		const auto fail = [](const char* error) { return ml::Json{{"ok", false}, {"error", error}, {"cash", ml::game::Cash()}}; };
+		if (!Purchasable(id))
 			return fail("unknown");
-		const int c = Character();
+		const int c = ml::game::CharacterIndex();
 		if (c < 0)
 			return fail("character");
 		if (Owned(c).contains(id))
 			return fail("owned");
-		const int price = Price(id), cash = Cash();
-		if (cash < price)
+		const int price = Price(id);
+		if (!ml::game::AddCash(-price))
 			return fail("money");
-		STATS::STAT_SET_INT(CashStat(c), cash - price, 1);
-		Owned(c).insert(id);
-		g_ownedChanged = true;
+		AddOwned(c, id);
 		garage::Refresh();
 		apartment::Refresh();
-		++g_purchases;
-		ml::Log("character {} bought property {} for ${} (cash ${} -> ${})", c, id, price, cash, Cash());
-		return std::format("{{\"ok\":true,\"error\":\"\",\"cash\":{}}}", Cash());
+		NotePurchase();
+		ml::Log("character {} bought property {} for ${} (cash now ${})", c, id, price, ml::game::Cash());
+		return {{"ok", true}, {"error", ""}, {"cash", ml::game::Cash()}};
 	}
+
+	// A save is being loaded (game event, handled in MLMain).
+	std::atomic_bool g_saveLoading = false;
 }
 
 using namespace property;
@@ -304,74 +210,36 @@ using namespace property;
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
 {
 	ml::Init(api, ctx);
-	if (!ml::web::Available())
+	if (!ml::web::Available() || !ml::save::Available())
 	{
-		ml::LogError("this loader has no web browser; the property mod needs it");
+		ml::LogError("this loader has no web browser or save data; the property mod needs them");
 		return 0;
 	}
 	research::OnLoad();
-	ml::web::Function("property.list", [](const std::string&) { return List(); });
-	ml::web::Function("property.buy", [](const std::string& args) { return Buy(args); });
+	ml::web::Function("property.list", [] { return List(); });
+	ml::web::Function("property.buy", [](int id) { return Buy(id); });
+	ml::web::Function("property.cash", [] { return ml::game::Cash(); });
 	apartment::RegisterOverrides();
-	shop::RegisterWebFunctions();
-	ml::web::Function("property.cash", [](const std::string&) { return std::to_string(Cash()); });
+	shop::Start();
+	// Loading a save takes back purchases made since it (the loader drops the unsaved save data).
+	ml::game::On(ml::game::Event::SaveLoading, [] { g_saveLoading = true; });
 	return 1;
 }
 
 extern "C" __declspec(dllexport) void MLMain()
 {
-	int saved = 0; // purchases an autosave was requested for
-	auto lastSave = LastGameSave();
-	uint64_t nextSaveCheck = 0;
-	bool loading = false;
 	for (;;)
 	{
-		// A purchase changes the character's money (saved with the game) and the ownership (written when the game
-		// saves): an autosave keeps the two together.
-		if (const int purchases = g_purchases; purchases != saved && RequestAutosave())
+		if (g_saveLoading.exchange(false))
 		{
-			saved = purchases;
-			ml::Log("purchase: autosave requested");
+			for (bool& read : g_ownedRead)
+				read = false;
+			garage::Drop();
+			apartment::Refresh();
 		}
-
 		research::Tick();
-		if (const bool now = DLC::GET_IS_LOADING_SCREEN_ACTIVE(); now != loading)
-		{
-			loading = now;
-			if (loading && g_ownedChanged)
-			{
-				DropOwnedChanges();
-				garage::Refresh();
-				apartment::Refresh();
-				ml::Log("save loaded: unsaved purchases dropped");
-			}
-			if (loading && garage::Changed())
-			{
-				garage::Drop();
-				ml::Log("save loaded: unsaved garage changes dropped");
-			}
-		}
-		if (const uint64_t tick = ml::Api().GetTickMs(); tick >= nextSaveCheck)
-		{
-			nextSaveCheck = tick + 1000;
-			if (const auto save = LastGameSave(); save != lastSave)
-			{
-				lastSave = save;
-				if (g_ownedChanged)
-				{
-					CommitOwned();
-					ml::Log("game saved: purchases written");
-				}
-				if (garage::Changed())
-				{
-					garage::Commit();
-					ml::Log("game saved: garages written");
-				}
-			}
-		}
 		garage::Tick();
 		apartment::Tick();
-		shop::Tick();
 		ml::Wait(0);
 	}
 }
