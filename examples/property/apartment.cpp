@@ -1,8 +1,9 @@
 // Apartments of the properties the player owns: the GTA Online apartment interiors (story mode has them), a door
 // marker outside, and inside: the front door (leave, or take the elevator to the garage), and the bedroom (sleep and
-// save with the game's save menu, wardrobe of saved outfits). Positions come from the property table
+// save with the game's save menu, the game's own wardrobe). Positions come from the property table
 // (research/phase0.md §32).
 #define NOMINMAX
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -37,111 +38,111 @@ namespace property::apartment
 			return TierOf(id) >= 4;
 		}
 
-		// ---- outfits: data\outfits_<character>.txt (a wardrobe, not game progress: written at once) -------
+		// ---- the game's own wardrobe -----------------------------------------------------------
+		// wardrobe_sp has a generic wardrobe (argument 7; research/phase0.md §32): stand position and heading come from the
+		// launch arguments, and it opens when its trigger area check passes. That check is answered "yes" (for this script
+		// only) while the player stands at the apartment's wardrobe; the thread is stopped when the player leaves.
+		constexpr uint64_t kIsEntityInAngledArea = 0x51210CED3DA1C78AULL;
+		int g_wardrobe = 0;    // wardrobe_sp thread started here
+		Place g_wardrobeAt{};  // its stand position
 
-		struct Outfit
+		int64_t FloatArg(float f)
 		{
-			std::string name;
-			int drawable[12]{}, texture[12]{}, palette[12]{};
-			int prop[8]{}, propTexture[8]{};
-		};
-		std::vector<Outfit> g_outfits[3];
-		bool g_outfitsLoaded[3] = {};
-
-		std::filesystem::path OutfitFile(int c)
-		{
-			return std::filesystem::path(ml::Context().dataDir) / std::format("outfits_{}.txt", c);
-		}
-		std::vector<Outfit>& Outfits(int c)
-		{
-			if (!g_outfitsLoaded[c])
-			{
-				g_outfitsLoaded[c] = true;
-				std::ifstream in(OutfitFile(c));
-				for (std::string name, numbers; std::getline(in, name) && std::getline(in, numbers);)
-				{
-					Outfit o;
-					o.name = name;
-					std::istringstream n(numbers);
-					for (int i = 0; i < 12; ++i)
-						n >> o.drawable[i] >> o.texture[i] >> o.palette[i];
-					for (int i = 0; i < 8; ++i)
-						n >> o.prop[i] >> o.propTexture[i];
-					if (n)
-						g_outfits[c].push_back(o);
-				}
-			}
-			return g_outfits[c];
-		}
-		void SaveOutfits(int c)
-		{
-			std::ofstream out(OutfitFile(c), std::ios::trunc);
-			for (const Outfit& o : g_outfits[c])
-			{
-				out << o.name << '\n';
-				for (int i = 0; i < 12; ++i)
-					out << o.drawable[i] << ' ' << o.texture[i] << ' ' << o.palette[i] << ' ';
-				for (int i = 0; i < 8; ++i)
-					out << o.prop[i] << ' ' << o.propTexture[i] << ' ';
-				out << '\n';
-			}
-		}
-		Outfit Current(const std::string& name)
-		{
-			const Ped ped = PLAYER::PLAYER_PED_ID();
-			Outfit o;
-			o.name = name;
-			for (int i = 0; i < 12; ++i)
-			{
-				o.drawable[i] = PED::GET_PED_DRAWABLE_VARIATION(ped, i);
-				o.texture[i] = PED::GET_PED_TEXTURE_VARIATION(ped, i);
-				o.palette[i] = PED::GET_PED_PALETTE_VARIATION(ped, i);
-			}
-			for (int i = 0; i < 8; ++i)
-			{
-				o.prop[i] = PED::GET_PED_PROP_INDEX(ped, i, 0);
-				o.propTexture[i] = PED::GET_PED_PROP_TEXTURE_INDEX(ped, i);
-			}
-			return o;
-		}
-		void Wear(const Outfit& o)
-		{
-			const Ped ped = PLAYER::PLAYER_PED_ID();
-			for (int i = 0; i < 12; ++i)
-				PED::SET_PED_COMPONENT_VARIATION(ped, i, o.drawable[i], o.texture[i], o.palette[i]);
-			for (int i = 0; i < 8; ++i)
-				if (o.prop[i] >= 0)
-					PED::SET_PED_PROP_INDEX(ped, i, o.prop[i], o.propTexture[i], true, 0);
-				else
-					PED::CLEAR_PED_PROP(ped, i, 0);
+			uint32_t bits;
+			std::memcpy(&bits, &f, 4);
+			return bits;
 		}
 
-		std::string Json(const std::string& s)
+		// Where Online puts the player at the apartment's wardrobe, by property type: shop_controller @2614077, run offline
+		// with the interiors' metadata (GET_BASE_ELEMENT_LOCATION_FROM_METADATA_BLOCK element 40) taken from the game;
+		// z raised to the player's centre as wardrobe_sp expects (research/phase0.md §32).
+		bool WardrobeAt(int id, Place& out)
 		{
-			std::string out = "\"";
-			for (const char ch : s)
-				if (ch == '"' || ch == '\\')
-					(out += '\\') += ch;
-				else if (static_cast<unsigned char>(ch) >= 0x20)
-					out += ch;
-			return out + "\"";
+			static const std::map<int, Place> table{
+		    {1, {-796.220f, 331.850f, 201.429f, -85.52f}},
+		    {2, {-759.797f, 325.402f, 170.612f, 94.48f}},
+		    {3, {-759.887f, 325.406f, 217.066f, 94.48f}},
+		    {4, {-796.687f, 332.242f, 153.810f, -85.52f}},
+		    {5, {-265.043f, -946.802f, 71.040f, 164.48f}},
+		    {6, {-278.143f, -961.538f, 86.319f, -15.52f}},
+		    {7, {-1468.488f, -537.865f, 63.365f, -50.52f}},
+		    {8, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {9, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {10, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {11, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {12, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {13, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {14, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {15, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {16, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {17, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {18, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {19, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {20, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {21, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {22, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {23, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {34, {-1468.488f, -537.865f, 50.737f, -50.52f}},
+		    {35, {-887.814f, -443.981f, 120.343f, 122.04f}},
+		    {36, {-910.708f, -445.961f, 115.416f, -58.83f}},
+		    {37, {-900.073f, -432.839f, 89.270f, -148.60f}},
+		    {38, {-38.929f, -583.179f, 83.923f, -105.52f}},
+		    {39, {-17.241f, -586.860f, 94.041f, 164.48f}},
+		    {40, {-902.992f, -369.223f, 79.289f, 121.41f}},
+		    {41, {-927.054f, -382.012f, 103.249f, -58.07f}},
+		    {42, {-618.466f, 56.828f, 101.836f, -85.52f}},
+		    {43, {-582.900f, 50.490f, 87.435f, 94.48f}},
+		    {61, {-793.363f, 326.289f, 210.797f, -7.76f}},
+		    {62, {-1449.641f, -548.914f, 72.844f, 117.24f}},
+		    {63, {-903.947f, -363.649f, 113.074f, -160.76f}},
+		    {64, {-594.710f, 56.309f, 97.000f, 172.24f}},
+		    {65, {-38.294f, -589.753f, 78.830f, -27.88f}},
+		    {66, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {67, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {68, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {69, {350.741f, -993.622f, -99.202f, 179.61f}},
+		    {70, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {71, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {72, {259.818f, -1003.794f, -99.009f, 307.16f}},
+		    {73, {-167.393f, 487.737f, 133.844f, -174.21f}},
+		    {74, {334.276f, 428.485f, 145.571f, 111.29f}},
+		    {75, {-767.340f, 610.911f, 140.331f, 103.29f}},
+		    {76, {-671.475f, 587.296f, 141.570f, -144.71f}},
+		    {77, {122.211f, 548.765f, 180.497f, 174.60f}},
+		    {78, {-571.145f, 649.736f, 142.032f, 154.10f}},
+		    {79, {-743.374f, 582.299f, 142.461f, 139.60f}},
+		    {80, {-855.198f, 679.968f, 149.053f, 173.10f}},
+		    {81, {-1286.031f, 438.045f, 94.095f, 168.60f}},
+		    {82, {374.508f, 411.506f, 142.101f, 154.60f}},
+		    {83, {-797.775f, 327.133f, 190.714f, -2.91f}},
+		    {84, {-797.775f, 327.133f, 220.438f, -2.91f}},
+		    {85, {-763.231f, 330.616f, 199.486f, 177.09f}},
+			};
+			const int64_t* e = Entry(id);
+			const auto it = e ? table.find(static_cast<int>(e[31])) : table.end();
+			if (it == table.end())
+				return false;
+			out = it->second;
+			return true;
 		}
-		// The first JSON string argument of a page call ("" when there is none).
-		std::string StringArg(const std::string& args)
+
+		void StartWardrobe(const Place& at)
 		{
-			const size_t a = args.find('"');
-			if (a == std::string::npos)
-				return {};
-			std::string s;
-			for (size_t i = a + 1; i < args.size() && args[i] != '"'; ++i)
-				s += args[i] == '\\' && i + 1 < args.size() ? args[++i] : args[i];
-			return s;
+			if (g_wardrobe && SCRIPT::IS_THREAD_ACTIVE(g_wardrobe))
+				return;
+			SCRIPT::REQUEST_SCRIPT("wardrobe_sp");
+			for (int i = 0; i < 200 && !SCRIPT::HAS_SCRIPT_LOADED("wardrobe_sp"); ++i)
+				ml::Wait(10);
+			int64_t args[5] = {7, FloatArg(at.x), FloatArg(at.y), FloatArg(at.z), FloatArg(at.heading)};
+			g_wardrobeAt = at;
+			g_wardrobe = BUILTIN::START_NEW_SCRIPT_WITH_ARGS("wardrobe_sp", reinterpret_cast<Any*>(args), 5, 2324);
+			SCRIPT::SET_SCRIPT_AS_NO_LONGER_NEEDED("wardrobe_sp");
 		}
-		int IntArg(const std::string& args)
+		void StopWardrobe()
 		{
-			int v = -1;
-			sscanf_s(args.c_str(), "[%d", &v);
-			return v;
+			if (g_wardrobe && SCRIPT::IS_THREAD_ACTIVE(g_wardrobe))
+				SCRIPT::TERMINATE_THREAD(g_wardrobe);
+			g_wardrobe = 0;
 		}
 
 		// ---- state ---------------------------------------------------------------------------
@@ -176,6 +177,7 @@ namespace property::apartment
 
 		void LeaveTo(const Place& to)
 		{
+			StopWardrobe();
 			Fade(true);
 			LoadAt(to.x, to.y, to.z);
 			MovePlayer(to);
@@ -223,47 +225,16 @@ namespace property::apartment
 		g_refresh = true;
 	}
 
-	void RegisterWebFunctions()
+	void RegisterOverrides()
 	{
-		ml::web::Function("wardrobe.list", [](const std::string&) {
-			const int c = Character();
-			std::string out = std::format("{{\"character\":{},\"outfits\":[", c);
-			if (c >= 0)
+		ml::scripts::OverrideNative("wardrobe_sp", kIsEntityInAngledArea, [](ml::scripts::NativeCall& call) {
+			if (g_wardrobe && g_inside)
 			{
-				bool first = true;
-				for (const Outfit& o : Outfits(c))
-				{
-					out += (first ? "" : ",") + Json(o.name);
-					first = false;
-				}
+				const Vector3 at = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
+				call.Return<int64_t>(Near(at, g_wardrobeAt.x, g_wardrobeAt.y, g_wardrobeAt.z, 1.5f) ? 1 : 0);
 			}
-			return out + "]}";
-		});
-		ml::web::Function("wardrobe.save", [](const std::string& args) {
-			const int c = Character();
-			if (c < 0)
-				return std::string("false");
-			std::string name = StringArg(args);
-			if (name.empty())
-				name = std::format("服裝 {}", Outfits(c).size() + 1);
-			Outfits(c).push_back(Current(name));
-			SaveOutfits(c);
-			return std::string("true");
-		});
-		ml::web::Function("wardrobe.wear", [](const std::string& args) {
-			const int c = Character(), i = IntArg(args);
-			if (c < 0 || i < 0 || i >= static_cast<int>(Outfits(c).size()))
-				return std::string("false");
-			Wear(Outfits(c)[i]);
-			return std::string("true");
-		});
-		ml::web::Function("wardrobe.remove", [](const std::string& args) {
-			const int c = Character(), i = IntArg(args);
-			if (c < 0 || i < 0 || i >= static_cast<int>(Outfits(c).size()))
-				return std::string("false");
-			Outfits(c).erase(Outfits(c).begin() + i);
-			SaveOutfits(c);
-			return std::string("true");
+			else
+				call.CallOriginal();
 		});
 	}
 
@@ -293,12 +264,17 @@ namespace property::apartment
 			const Place arrive = Arrive(id);
 			if (!Near(at, arrive.x, arrive.y, arrive.z, 60.0f))
 			{
+				StopWardrobe();
 				g_inside = 0; // left some other way
 				RestoreInterior();
 				return;
 			}
 			const Place door = FrontDoor(id), bed = Bedroom(id);
 			Marker(door.x, door.y, door.z, 1.0f);
+			// The wardrobe opens by itself once started (its own prompt); started when the player reaches the bedroom.
+			// The game's own wardrobe (its own "change outfit" prompt), started when the player comes near it.
+			if (Place wardrobe; WardrobeAt(id, wardrobe) && Near(at, wardrobe.x, wardrobe.y, wardrobe.z, 8.0f))
+				StartWardrobe(wardrobe);
 			Marker(bed.x, bed.y, bed.z, 1.0f);
 			if (Near(at, door.x, door.y, door.z, 1.2f))
 			{
@@ -308,17 +284,18 @@ namespace property::apartment
 				else if (PAD::IS_CONTROL_JUST_PRESSED(0, 52))
 				{
 					ml::Log("apartment {}: elevator to the garage", id);
+					StopWardrobe();
 					g_inside = 0;
 					garage::EnterOnFoot(id);
 				}
 			}
 			else if (Near(at, bed.x, bed.y, bed.z, 1.2f))
 			{
-				Help("按 ~INPUT_CONTEXT~ 睡覺並存檔\n按 ~INPUT_CONTEXT_SECONDARY~ 打開衣櫃");
-				if (PAD::IS_CONTROL_JUST_PRESSED(0, 51))
+				// E belongs to the wardrobe (its own prompt); sleeping is on the second key.
+				if (!HUD::IS_HELP_MESSAGE_BEING_DISPLAYED())
+					Help("按 ~INPUT_CONTEXT_SECONDARY~ 睡覺並存檔");
+				if (PAD::IS_CONTROL_JUST_PRESSED(0, 52))
 					Sleep();
-				else if (PAD::IS_CONTROL_JUST_PRESSED(0, 52))
-					ml::web::Open("https://wardrobe.dynasty8/");
 			}
 			return;
 		}

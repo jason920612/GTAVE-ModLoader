@@ -75,8 +75,8 @@ namespace property::apartment
 	// Into the apartment (the elevator from the garage).
 	void Enter(int id);
 	bool Inside();
-	// The wardrobe page's functions (MLOnLoad).
-	void RegisterWebFunctions();
+	// The wardrobe's native override (MLOnLoad).
+	void RegisterOverrides();
 }
 
 // Research aids (research.cpp).

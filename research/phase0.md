@@ -575,3 +575,11 @@
 - 實作（`apartment.cpp`）：大樓入口標記 / 地圖圖示；室內前門「出門 / 搭電梯到車庫」，車庫門口「離開 / 搭電梯回公寓」；臥室
   「睡覺並存檔」（淡出、時間 +6 小時、補滿生命，再開遊戲自己的存檔選單 `SET_SAVE_MENU_ACTIVE`）與「打開衣櫃」（loader 瀏覽器的
   頁面 `wardrobe.dynasty8`：儲存目前穿著、換上、刪除，每個角色各自一份，立即寫入）。
+- 衣櫃改用遊戲原版（使用者要求）：`wardrobe_sp` 以參數 `[7, x, y, z, heading]` 啟動是「通用衣櫃」（商店 145、衣櫃索引 10；
+  更新存檔商店表的 `@2532042` 對索引 10 直接返回，不寫存檔）。它只差在觸發區域檢查（`IS_ENTITY_IN_ANGLED_AREA`）：模組對這支腳本
+  覆寫此 native，玩家在站位 1.5 m 內即回答「是」，遊戲自己的「按 E 更換服裝」與完整服裝選單就出現。鏡頭在站位前方 2.3 m 看向玩家，
+  故站位方向須朝房間，z 為角色中心（地面 +1 m）。
+- 站位取自線上：`shop_controller @2614077(物業類型, &pos, &heading, 0)`；中 / 低價為常數，高價公寓用
+  `GET_BASE_ELEMENT_LOCATION_FROM_METADATA_BLOCK(&pos, &rot, 40, 樣式 0..4)`（在遊戲中取得 5 組）再依大樓換算。以 `ysc_eval.py`
+  離線執行（補上 SIN / COS / GET_OFFSET_FROM_COORD_AND_HEADING_IN_WORLD_COORDS），得到 58 種公寓類型的站位表。實測低 / 中 / 高價
+  （日蝕大樓更衣間）皆正確。

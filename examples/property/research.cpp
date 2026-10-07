@@ -193,6 +193,21 @@ namespace property::research
 				    SCRIPT::GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH(MISC::GET_HASH_KEY(name.c_str())), t);
 			}
 		}
+		// Research: ModLoader\metadata_test.txt ("<element>") logs GET_BASE_ELEMENT_LOCATION_FROM_METADATA_BLOCK for styles 0..4.
+		if (std::ifstream in("ModLoader/metadata_test.txt"); in)
+		{
+			int element = 40;
+			in >> element;
+			in.close();
+			std::error_code ec;
+			std::filesystem::remove("ModLoader/metadata_test.txt", ec);
+			for (int style = 0; style <= 4; ++style)
+			{
+				Vector3 pos, rot;
+				const BOOL ok = MISC::GET_BASE_ELEMENT_LOCATION_FROM_METADATA_BLOCK(reinterpret_cast<Any*>(&pos), reinterpret_cast<Any*>(&rot), element, style);
+				ml::Log("metadata element {} style {}: ok {} pos {:.4f} {:.4f} {:.4f} rot {:.4f} {:.4f} {:.4f}", element, style, ok, pos.x, pos.y, pos.z, rot.x, rot.y, rot.z);
+			}
+		}
 		// Research: ModLoader\teleport.txt ("x y z [heading]") moves the player there.
 		float x = 0, y = 0, z = 0, h = 0;
 		if (std::ifstream in("ModLoader/teleport.txt"); in && in >> x >> y >> z) // (an empty file is still being written)

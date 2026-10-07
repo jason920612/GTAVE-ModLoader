@@ -311,7 +311,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	research::OnLoad();
 	ml::web::Function("property.list", [](const std::string&) { return List(); });
 	ml::web::Function("property.buy", [](const std::string& args) { return Buy(args); });
-	apartment::RegisterWebFunctions();
+	apartment::RegisterOverrides();
 	ml::web::Function("property.cash", [](const std::string&) { return std::to_string(Cash()); });
 	return 1;
 }
