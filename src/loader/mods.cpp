@@ -602,6 +602,17 @@ namespace loader::mods
 			web::Open(url ? url : "");
 		}
 
+		int32_t ApiCallScriptFunction(int32_t id, uint32_t address, const int64_t* args, int32_t count, uint32_t returnTo)
+		{
+			if (!InModFiber("CallScriptFunction", _ReturnAddress()) || count < 0 || (count && !args))
+				return 0;
+			std::string error;
+			const bool ok = game::scripts::RedirectThread(id, address, {args, static_cast<size_t>(count)}, game::scripts::Redirect::Call, error, returnTo);
+			if (!ok)
+				ModLog(g_current, ML_LOG_WARN, std::format("CallScriptFunction({}, {}): {}", id, address, error));
+			return ok ? 1 : 0;
+		}
+
 		int64_t* ApiScriptStatic(int32_t id, uint32_t index)
 		{
 			if (!InModFiber("ScriptStatic", _ReturnAddress()))
@@ -761,6 +772,7 @@ namespace loader::mods
 			.RegisterWebFunction = ApiRegisterWebFunction,
 			.WebEmit = ApiWebEmit,
 			.OpenBrowser = ApiOpenBrowser,
+			.CallScriptFunction = ApiCallScriptFunction,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

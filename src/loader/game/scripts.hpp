@@ -38,7 +38,8 @@ namespace loader::game::scripts
 	// Makes the thread continue at `address` from its next update. The frames it leaves are abandoned: use
 	// it for code that does not return (e.g. a mission's own pass routine, which ends the script).
 	// Returns false (and writes `error`) when the thread or its frames cannot be used.
-	bool RedirectThread(int32_t id, uint32_t address, std::span<const int64_t> args, Redirect mode, std::string& error);
+	// `returnTo`: where a Call continues when the function returns (e.g. a TERMINATE_THIS_THREAD instruction).
+	bool RedirectThread(int32_t id, uint32_t address, std::span<const int64_t> args, Redirect mode, std::string& error, uint32_t returnTo = 0);
 
 	// The loaded program with this name hash (scrProgram), or nullptr.
 	uint8_t* ProgramByHash(uint32_t hash);

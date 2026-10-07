@@ -290,6 +290,16 @@ namespace ml
 		// Index of a native in the thread's program (see MLApi::ScriptNativeIndex).
 		inline int32_t NativeIndex(int32_t id, uint64_t hash) { return Available() ? Api().ScriptNativeIndex(id, hash) : -1; }
 
+		// Runs `address` (a function's ENTER) in thread `id` from its next update, returning to `returnTo`
+		// (see MLApi::CallScriptFunction).
+		inline bool CallFunction(int32_t id, uint32_t address, std::initializer_list<int64_t> args, uint32_t returnTo)
+		{
+			if (Api().size < offsetof(MLApi, CallScriptFunction) + sizeof(void*))
+				return false;
+			const std::vector<int64_t> a(args);
+			return Api().CallScriptFunction(id, address, a.data(), static_cast<int32_t>(a.size()), returnTo) != 0;
+		}
+
 		// Static variable of a running script thread (see MLApi::ScriptStatic), or nullptr.
 		inline int64_t* Static(int32_t id, uint32_t index)
 		{

@@ -305,10 +305,14 @@ namespace loader::web
 		{
 			if (auto* thread = game::script::FindThread(game::script::Joaat("appinternet")))
 			{
+				// Only the browser the phone / a computer opened (its open flag set); mods may run appinternet for its
+				// functions (see examples/property shop.cpp).
 				const int32_t id = *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(thread) + 0x08);
-				if (int64_t* open = game::scripts::Global(kBrowserOpenGlobal))
+				int64_t* open = game::scripts::Global(kBrowserOpenGlobal);
+				const bool opened = open && (*open & 0xFFFFFFFF) != 0;
+				if (opened)
 					*open = 0;
-				if (id != replaced)
+				if (opened && id != replaced)
 				{
 					replaced = id;
 					log::Info("browser: the game's browser was opened (thread {}); showing ours", id);

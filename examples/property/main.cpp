@@ -174,6 +174,7 @@ namespace property
 	bool g_ownedLoaded[3] = {};
 	bool g_ownedChanged = false; // since the last game save
 	std::atomic<int> g_purchases = 0;
+	void NotePurchase() { ++g_purchases; }
 
 	std::filesystem::path OwnedFile(int character)
 	{
@@ -312,6 +313,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	ml::web::Function("property.list", [](const std::string&) { return List(); });
 	ml::web::Function("property.buy", [](const std::string& args) { return Buy(args); });
 	apartment::RegisterOverrides();
+	shop::RegisterWebFunctions();
 	ml::web::Function("property.cash", [](const std::string&) { return std::to_string(Cash()); });
 	return 1;
 }
@@ -369,6 +371,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		}
 		garage::Tick();
 		apartment::Tick();
+		shop::Tick();
 		ml::Wait(0);
 	}
 }

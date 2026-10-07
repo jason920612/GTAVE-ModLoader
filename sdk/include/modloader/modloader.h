@@ -204,6 +204,12 @@ typedef struct MLApi
 	void (*WebEmit)(const char* event, const char* json);
 	/* Opens the browser at `url` (e.g. "https://www.example.com/"). Any thread. */
 	void (*OpenBrowser)(const char* url);
+
+	/* ---- (check `size`) ----
+	 * Like RedirectScript with mainFrame = 0, but the function returns to `returnTo` (an address in the same script,
+	 * for example a TERMINATE_THIS_THREAD instruction) instead of nowhere. Typical use: start a fresh thread of a
+	 * script and, before its first update, make it run one of the script's functions. Returns 1 on success. */
+	int32_t (*CallScriptFunction)(int32_t id, uint32_t address, const int64_t* args, int32_t count, uint32_t returnTo);
 } MLApi;
 
 typedef const MLModInfo* (*MLGetModInfoFn)(void);

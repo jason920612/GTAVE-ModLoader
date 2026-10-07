@@ -583,3 +583,31 @@
   `GET_BASE_ELEMENT_LOCATION_FROM_METADATA_BLOCK(&pos, &rot, 40, 樣式 0..4)`（在遊戲中取得 5 組）再依大樓換算。以 `ysc_eval.py`
   離線執行（補上 SIN / COS / GET_OFFSET_FROM_COORD_AND_HEADING_IN_WORLD_COORDS），得到 58 種公寓類型的站位表。實測低 / 中 / 高價
   （日蝕大樓更衣間）皆正確。
+
+## 33. 買載具網站（2026-10-07）
+
+- 新網站（`examples/property/web/`）：Legendary Motorsport、Southern San Andreas Super Autos、Elitás、Dock Tease、Pedal and Metal、
+  Warstock 共用 `shops.common/store.{js,css}`，各站只設 `window.SITE` 與配色。目錄 = §30 的 381 個項目（模型、價格、類別），
+  名稱 / 廠牌用遊戲文字（`GET_DISPLAY_NAME_FROM_VEHICLE_MODEL` / `GET_MAKE_NAME_FROM_VEHICLE_MODEL`）。
+- 圖片：遊戲網站的貼圖字典 `lgm_* / sssa_* / elt_* / dock_* / pandm_* / candc_*`，貼圖名 = 模型名小寫（`_b` 為背面）。
+  完整字典清單取自遊戲檔案（研究指令 `extractall <rpf>|lgm_*.ytd|<dir>`，共 120 個；從記憶體字串湊的清單漏了 candc_gunrunning、
+  candc_smuggler、candc_xmas2017、candc_importexport、sssa_mp_to_sp 等）。基本遊戲模型在 loader 的模型清單沒有名稱，改用
+  顯示名稱小寫；少數別名：`voltic_tless`、`sentinel_convertable`（SENTINEL2）、`stallion`（STALION）、`sub2`（SUBMERS2）。
+  遊戲本身沒有網站圖的 12 款（Buccaneer、Faction、Moonbeam、Voodoo、Sultan、Tornado、Itali GTB、Nero、Diablous、FCR、Specter、
+  1 個未命名）顯示預設圖卡。圖片所屬字典決定車款出現在哪個網站（先找到的優先，candc_ 最後），沒有圖的依類別分配。
+- 掃描每幀一步（每個字典 `REQUEST_STREAMED_TEXTURE_DICT` 後最多等 300 幀，未載入的排到最後再等 1800 幀；lgm_default 剛進遊戲時
+  常需要第二輪），結果快取在 `data\shop_catalog.txt`（`v4 <項目數>`、`retry <未載入的字典>`、各項目的網站與圖片）。
+  `elt_dlc_heist`（只有 Dodo）在故事模式永遠不會載入，下次啟動只重試這些字典。
+- 汽車 / 機車：送到角色在 Dynasty 8 買的物業車庫空位（`garage::Deliver`：在玩家上方 300 m 凍結生成、擷取外觀、刪除、存入）。
+  實測 Legendary 買「風情」→ 車庫 20 第 0 格、扣款正確。
+- 飛機 / 直升機 / 船：遊戲自己的 `appinternet @2941169(項目, 角色, &Global 77590, 交付)`，在新開的 appinternet 執行緒中執行
+  （`ml::scripts::CallFunction`，函式以開頭位元組搜尋，回傳後跳到 `TERMINATE_THIS_THREAD`）。原版第 4 參數為延遲交付
+  （`@2943180` 依亂數時間送達）；傳 −1 為立即放入：寫入 Global 114990+32759+69[欄位]（78 格車輛資料）與更新計數 +1958。
+- 存放處的載具產生器（Global 114990+32759，[數量 68] 後每個一格旗標）：機庫 12/13/14、碼頭 15/16/17、停機坪 18/19/20（麥可 / 富蘭克林 / 崔佛）。
+  **bit 5 = 角色擁有該物業**（`vehicle_gen_controller @204680`：產生器資料 +12 的角色與物業擁有者 Global 114990+24913[物業 9 = LSIA 機庫、
+  4 = 停機坪…]（每筆 4 格，145 = 無人）相同時設定；不需物業的產生器 +12 = 145 也會設定）。bit 0 只是「啟用」。
+  富蘭克林沒有買 LSIA 機庫 → 網站顯示「沒有機庫，無法購買」。測試時暫時設定 bit 5 再購買：古邦 800 出現在 LSIA 機庫
+  （富蘭克林的位置 −1271.7, −3380.7，麥可 −1652, −3142）。
+- 自動存檔：購買後請求自動存檔（§28）；遊戲設定中自動存檔關閉時不會寫檔（`GET_IS_AUTO_SAVE_OFF`），購買與原版一樣要手動存檔才保留。
+- 研究指令（`examples/property/research.cpp`）新增：`blips.txt`（列出所有地圖圖示）、`closest_vehicle.txt`、`global_set.txt`（測試用寫入 global）、
+  `autosave.txt`。

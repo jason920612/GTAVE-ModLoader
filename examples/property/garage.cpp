@@ -371,6 +371,46 @@ namespace property::garage
 		g_refresh = true;
 	}
 
+	int FreeSlots(int id)
+	{
+		const int c = Character();
+		if (c < 0)
+			return 0;
+		return GarageSize(id) - static_cast<int>(Stores(c)[id].size());
+	}
+
+	bool Deliver(int id, Hash model)
+	{
+		const int c = Character();
+		if (c < 0)
+			return false;
+		Garage& garage = Stores(c)[id];
+		int slot = -1;
+		for (int i = 0; i < GarageSize(id) && slot < 0; ++i)
+			if (!garage.contains(i))
+				slot = i;
+		if (slot < 0)
+			return false;
+		// The factory finish: a vehicle made out of sight for a moment and read back.
+		STREAMING::REQUEST_MODEL(model);
+		for (int i = 0; i < 300 && !STREAMING::HAS_MODEL_LOADED(model); ++i)
+			ml::Wait(10);
+		if (!STREAMING::HAS_MODEL_LOADED(model))
+			return false;
+		const Vector3 at = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
+		Vehicle v = VEHICLE::CREATE_VEHICLE(model, at.x, at.y, at.z + 300.0f, 0.0f, false, false, false);
+		STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(model);
+		if (!v)
+			return false;
+		ENTITY::FREEZE_ENTITY_POSITION(v, true);
+		garage[slot] = Capture(v);
+		ENTITY::SET_ENTITY_AS_MISSION_ENTITY(v, true, true);
+		VEHICLE::DELETE_VEHICLE(&v);
+		g_changed = true;
+		ml::Log("garage {}: delivered {:08X} to slot {}", id, model, slot);
+		return true;
+	}
+
 	void EnterOnFoot(int id)
 	{
 		Enter(id, 0);

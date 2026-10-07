@@ -169,7 +169,7 @@ namespace loader::game::scripts
 		return stack ? stack + index : nullptr;
 	}
 
-	bool RedirectThread(int32_t id, uint32_t address, std::span<const int64_t> args, Redirect mode, std::string& error)
+	bool RedirectThread(int32_t id, uint32_t address, std::span<const int64_t> args, Redirect mode, std::string& error, uint32_t returnTo)
 	{
 		uint8_t* thread = Thread(id);
 		if (!thread || At<uint32_t>(thread, kState) >= 2)
@@ -225,7 +225,7 @@ namespace loader::game::scripts
 			}
 			for (const int64_t a : args)
 				stack[sp++] = a;
-			stack[sp++] = 0; // return address: never used, the code does not return
+			stack[sp++] = returnTo; // return address (0: never used, the code does not return)
 		}
 		At<uint32_t>(thread, kFp) = fp;
 		At<uint32_t>(thread, kSp) = sp;

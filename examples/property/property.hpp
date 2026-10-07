@@ -26,6 +26,13 @@ namespace property
 
 	// Story character of the player (0 Michael, 1 Franklin, 2 Trevor), or -1.
 	int Character();
+	// The character's money (story mode cash stat) and its stat hash.
+	int Cash();
+	Hash CashStat(int character);
+	// A JSON string literal.
+	std::string Json(const std::string& s);
+	// Something was bought: an autosave is requested (main.cpp).
+	void NotePurchase();
 	// Properties the character owns (with purchases not saved yet).
 	std::set<int>& Owned(int character);
 
@@ -63,6 +70,11 @@ namespace property::garage
 	void Refresh();
 	// Into the garage on foot (the elevator from the apartment).
 	void EnterOnFoot(int id);
+	// Free parking spaces of the character's garage at property `id`.
+	int FreeSlots(int id);
+	// A new vehicle of `model` (factory finish) parked in a free space of the garage; false when it is full or the
+	// model does not load. MLMain or a callback.
+	bool Deliver(int id, Hash model);
 	bool Inside();
 }
 
@@ -83,5 +95,13 @@ namespace property::apartment
 namespace property::research
 {
 	void OnLoad();
+	void Tick();
+}
+
+// The vehicle shop websites (shop.cpp).
+namespace property::shop
+{
+	void RegisterWebFunctions();
+	// Game thread (MLMain): the first call scans the catalogue's pictures.
 	void Tick();
 }

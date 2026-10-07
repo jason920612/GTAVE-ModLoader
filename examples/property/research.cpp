@@ -208,6 +208,60 @@ namespace property::research
 				ml::Log("metadata element {} style {}: ok {} pos {:.4f} {:.4f} {:.4f} rot {:.4f} {:.4f} {:.4f}", element, style, ok, pos.x, pos.y, pos.z, rot.x, rot.y, rot.z);
 			}
 		}
+		// Research: ModLoader\global_set.txt ("<index> <value>") writes a script global (test only).
+		if (std::ifstream in("ModLoader/global_set.txt"); in)
+		{
+			int index = 0;
+			int64_t value = 0;
+			if (in >> index >> value)
+			{
+				in.close();
+				std::error_code ec;
+				std::filesystem::remove("ModLoader/global_set.txt", ec);
+				if (int64_t* g = ml::scripts::Global(index))
+				{
+					ml::Log("global {} = {} (was {})", index, value, *g);
+					*g = value;
+				}
+			}
+		}
+		// Research: ModLoader\autosave.txt logs whether autosave is off and requests one.
+		if (std::error_code ec; std::filesystem::remove("ModLoader/autosave.txt", ec))
+		{
+			int64_t* request = ml::scripts::Global(102550);
+			ml::Log("autosave off {}, request {} {}", MISC::GET_IS_AUTO_SAVE_OFF() ? 1 : 0, request ? request[8] : -1, request ? request[10] : -1);
+			if (request)
+				++request[10];
+		}
+		// Research: ModLoader\closest_vehicle.txt ("x y z radius [flags]") logs the closest vehicle there.
+		if (std::ifstream in("ModLoader/closest_vehicle.txt"); in)
+		{
+			float x = 0, y = 0, z = 0, r = 10;
+			int flags = 70;
+			if (in >> x >> y >> z >> r)
+			{
+				in >> flags;
+				in.close();
+				std::error_code ec;
+				std::filesystem::remove("ModLoader/closest_vehicle.txt", ec);
+				const Vehicle v = VEHICLE::GET_CLOSEST_VEHICLE(x, y, z, r, 0, flags);
+				const Vector3 p = v ? ENTITY::GET_ENTITY_COORDS(v, true) : Vector3{};
+				ml::Log("closest vehicle to {} {} {}: {} model {:08X} at {:.1f} {:.1f} {:.1f}", x, y, z, v,
+				    v ? ENTITY::GET_ENTITY_MODEL(v) : 0u, p.x, p.y, p.z);
+			}
+		}
+		// Research: ModLoader\blips.txt logs every blip (sprite, colour, position).
+		if (std::filesystem::exists("ModLoader/blips.txt"))
+		{
+			std::error_code ec;
+			std::filesystem::remove("ModLoader/blips.txt", ec);
+			for (int sprite = 0; sprite < 1000; ++sprite)
+				for (Blip b = HUD::GET_FIRST_BLIP_INFO_ID(sprite); HUD::DOES_BLIP_EXIST(b); b = HUD::GET_NEXT_BLIP_INFO_ID(sprite))
+				{
+					const Vector3 p = HUD::GET_BLIP_INFO_ID_COORD(b);
+					ml::Log("blip sprite {} colour {} at {:.1f} {:.1f} {:.1f}", sprite, HUD::GET_BLIP_COLOUR(b), p.x, p.y, p.z);
+				}
+		}
 		// Research: ModLoader\teleport.txt ("x y z [heading]") moves the player there.
 		float x = 0, y = 0, z = 0, h = 0;
 		if (std::ifstream in("ModLoader/teleport.txt"); in && in >> x >> y >> z) // (an empty file is still being written)
