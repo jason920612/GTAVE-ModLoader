@@ -558,6 +558,7 @@ namespace loader::ui
 			ImGui::SeparatorText("設定");
 			bool changed = false;
 			changed |= ImGui::Checkbox("以載入器介面取代遊戲主畫面", &cfg.replaceLandingPage);
+			changed |= ImGui::Checkbox("以載入器的瀏覽器取代手機與電腦的網頁", &cfg.replaceBrowser);
 			changed |= ImGui::Checkbox("每次啟動時更新原生函式對照表", &cfg.crossmapAutoUpdate);
 
 			static const char* kKeys[] = {"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"};

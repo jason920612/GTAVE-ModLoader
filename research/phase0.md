@@ -516,7 +516,7 @@
 - 頁面 ↔ 遊戲：渲染程序注入 `window.game`（`call(name, ...args)` → Promise、`on(event, fn)`、`close()`），經 CEF message
   router 送到 loader，在遊戲執行緒派送給 mod 以 `RegisterWebFunction` 註冊的函式（在該 mod 的回呼 fiber 執行，可呼叫
   natives / Wait），結果回傳頁面；`WebEmit` 推送事件，`OpenBrowser` 開啟。SDK：`ml::web::Function / Emit / Open`。
-- 取代遊戲瀏覽器（loader.json `replaceBrowser`，預設關閉直到各網站重做完成）：偵測到 `appinternet` 執行緒時把它的開啟旗標
+- 取代遊戲瀏覽器（loader.json `replaceBrowser`，各網站重做完成後（2026-10-08）預設開啟，F4 設定頁可關閉）：偵測到 `appinternet` 執行緒時把它的開啟旗標
   Global 77414 設為 0，讓它走自己的結束清理（直接 TERMINATE_THREAD 會讓手機以為 app 仍在執行，無法再開），同時開啟我們的
   瀏覽器蓋在上面。Esc：上一頁，第一頁時關閉。
 - 實測：手機 → 網路 → 顯示 eyefind 首頁；頁面呼叫 property mod 的 `property.cash` 得到富蘭克林的現金；連結、Esc 返回 /
