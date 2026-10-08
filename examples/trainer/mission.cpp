@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <modloader/modloader.hpp>
+#include <modloader/natives.hpp>
 #include <modloader/script.hpp>
 
 namespace mission
@@ -239,9 +240,12 @@ namespace mission
 						{
 							if (caller == 0) // the pass is one of main's cases
 								return Entry{true, BlockStart(p, p.functions[0], site), 0};
-							if (const auto stage = FindStage(p, caller, callers))
-								return stage;
+							// A routine that runs one step per call (it returns, to be called again next frame) cannot be
+							// jumped to: the mission's own loop has to run it.
 							if (IsStageMachine(p, caller))
+							{
+								if (const auto stage = FindStage(p, caller, callers))
+									return stage;
 								for (const auto& [up, upSite] : callers[caller])
 									if (up == 0)
 									{
@@ -249,6 +253,9 @@ namespace mission
 										e.repeatInMain = true;
 										return e;
 									}
+							}
+							// A routine that runs to the end in one call: it registers the pass with the story flow and ends
+							// the script (what the mission would have undone on the way, e.g. a fade, Recover() undoes).
 							return Entry{false, p.functions[caller].start, p.functions[caller].params};
 						}
 						if (caller != 0 && seen.insert(caller).second)
@@ -309,6 +316,55 @@ namespace mission
 		int32_t g_repeatThread = 0;
 		uint32_t g_repeatAddress = 0;
 		uint64_t g_repeatUntil = 0;
+		// After a pass: the mission script ended part-way through what it does around its end, so what it left behind (a
+		// fade to black, a character switch, a cutscene, script cameras, no player control) is undone if it lasts.
+		int32_t g_recoverThread = 0;
+		uint64_t g_recoverUntil = 0, g_stuckSince = 0;
+
+		bool ThreadAlive(int32_t id)
+		{
+			const auto threads = ml::scripts::Threads();
+			return std::any_of(threads.begin(), threads.end(), [&](const auto& t) { return t.id == id; });
+		}
+
+		void Recover()
+		{
+			if (!g_recoverThread)
+				return;
+			const uint64_t now = ml::TickMs();
+			if (now > g_recoverUntil)
+			{
+				g_recoverThread = 0;
+				return;
+			}
+			if (ThreadAlive(g_recoverThread))
+				return;
+			const Player player = PLAYER::PLAYER_ID();
+			const bool faded = CAMERA::IS_SCREEN_FADED_OUT() != 0, switching = STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS() != 0,
+			           cutscene = CUTSCENE::IS_CUTSCENE_ACTIVE() != 0, noControl = !PLAYER::IS_PLAYER_CONTROL_ON(player);
+			if (!faded && !switching && !cutscene && !noControl)
+			{
+				g_stuckSince = 0;
+				return;
+			}
+			if (!g_stuckSince)
+				g_stuckSince = now;
+			if (now - g_stuckSince < 8000)
+				return;
+			ml::Log("after the pass: fade {}, switch {}, cutscene {}, no control {}: restored", faded, switching, cutscene, noControl);
+			if (cutscene)
+				CUTSCENE::STOP_CUTSCENE_IMMEDIATELY();
+			if (switching)
+				STREAMING::STOP_PLAYER_SWITCH();
+			if (STREAMING::IS_NEW_LOAD_SCENE_ACTIVE())
+				STREAMING::NEW_LOAD_SCENE_STOP();
+			CAMERA::RENDER_SCRIPT_CAMS(false, false, 0, true, false, 0);
+			PLAYER::SET_PLAYER_CONTROL(player, true, 0);
+			HUD::DISPLAY_HUD(true);
+			HUD::DISPLAY_RADAR(true);
+			CAMERA::DO_SCREEN_FADE_IN(500);
+			g_stuckSince = now;
+		}
 	}
 
 	void Pass(bool gold)
@@ -358,6 +414,9 @@ namespace mission
 			}
 			if (gold)
 				g_goldUntil = ml::TickMs() + 60000;
+			g_recoverThread = thread.id;
+			g_recoverUntil = ml::TickMs() + 600000;
+			g_stuckSince = 0;
 			if (unsupported)
 				ml::Notify("任務已完成；有 {} 個目標無法自動達成，獎牌可能不是金牌", unsupported);
 			else if (gold)
@@ -371,6 +430,7 @@ namespace mission
 
 	void Frame()
 	{
+		Recover();
 		if (g_repeatThread)
 		{
 			const auto threads = ml::scripts::Threads();
