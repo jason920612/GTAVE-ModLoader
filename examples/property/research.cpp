@@ -250,6 +250,27 @@ namespace property::research
 				    v ? ENTITY::GET_ENTITY_MODEL(v) : 0u, p.x, p.y, p.z);
 			}
 		}
+		// Research: ModLoader\walkto.txt ("x y z") makes the player walk there on the navigation mesh (through doors).
+		if (std::ifstream in("ModLoader/walkto.txt"); in)
+		{
+			float x = 0, y = 0, z = 0;
+			if (in >> x >> y >> z)
+			{
+				in.close();
+				std::error_code ec;
+				std::filesystem::remove("ModLoader/walkto.txt", ec);
+				TASK::TASK_FOLLOW_NAV_MESH_TO_COORD(PLAYER::PLAYER_PED_ID(), x, y, z, 1.0f, 30000, 0.5f, 0, 40000.0f);
+				ml::Log("walking to {} {} {}", x, y, z);
+			}
+		}
+		// Research: ModLoader\threads.txt logs the running script threads.
+		if (std::error_code ec; std::filesystem::remove("ModLoader/threads.txt", ec))
+		{
+			std::string names;
+			for (const auto& t : ml::scripts::Threads())
+				names += t.name + " ";
+			ml::Log("threads: {}", names);
+		}
 		// Research: ModLoader\blips.txt logs every blip (sprite, colour, position).
 		if (std::filesystem::exists("ModLoader/blips.txt"))
 		{

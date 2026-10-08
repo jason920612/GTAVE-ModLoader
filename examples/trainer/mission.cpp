@@ -254,6 +254,9 @@ namespace mission
 										return e;
 									}
 							}
+							// A routine that is itself a stage of main's stage machine: main runs it as it would.
+							if (const auto stage = FindStage(p, caller, callers))
+								return stage;
 							// A routine that runs to the end in one call: it registers the pass with the story flow and ends
 							// the script (what the mission would have undone on the way, e.g. a fade, Recover() undoes).
 							return Entry{false, p.functions[caller].start, p.functions[caller].params};
@@ -341,8 +344,19 @@ namespace mission
 				return;
 			const Player player = PLAYER::PLAYER_ID();
 			const bool faded = CAMERA::IS_SCREEN_FADED_OUT() != 0, switching = STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS() != 0,
-			           cutscene = CUTSCENE::IS_CUTSCENE_ACTIVE() != 0, noControl = !PLAYER::IS_PLAYER_CONTROL_ON(player);
-			if (!faded && !switching && !cutscene && !noControl)
+			           cutscene = CUTSCENE::IS_CUTSCENE_ACTIVE() != 0, noControl = !PLAYER::IS_PLAYER_CONTROL_ON(player),
+			           onMission = MISC::GET_MISSION_FLAG() != 0;
+			// No player control alone is not a leftover: the story's next scene (e.g. a heist planning board) takes it too.
+			if (!faded && !switching && !cutscene && !onMission)
+			{
+				// Back to normal play: done (the next mission's own cutscenes are left alone).
+				if (!g_stuckSince)
+					g_recoverThread = 0;
+				g_stuckSince = 0;
+				return;
+			}
+			// A cutscene that plays is the story going on (a mocap after the mission), not something left behind.
+			if (cutscene && CUTSCENE::IS_CUTSCENE_PLAYING())
 			{
 				g_stuckSince = 0;
 				return;
@@ -351,7 +365,11 @@ namespace mission
 				g_stuckSince = now;
 			if (now - g_stuckSince < 8000)
 				return;
-			ml::Log("after the pass: fade {}, switch {}, cutscene {}, no control {}: restored", faded, switching, cutscene, noControl);
+			ml::Log("after the pass: fade {}, switch {}, cutscene {}, no control {}, mission flag {}: restored", faded, switching, cutscene,
+			    noControl, onMission);
+			// The mission script is gone; a mission flag it left set keeps every mission trigger hidden.
+			if (onMission)
+				MISC::SET_MISSION_FLAG(false);
 			if (cutscene)
 				CUTSCENE::STOP_CUTSCENE_IMMEDIATELY();
 			if (switching)
