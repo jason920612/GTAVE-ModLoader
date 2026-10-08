@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <set>
@@ -37,6 +38,14 @@ namespace mission
 			bool inlineInMain = false; // continue inside main (the pass is one of its cases) instead of a call
 			uint32_t address = 0;
 			uint32_t params = 0;
+			// Missions run as a stage machine (main switches on a static each frame, and the pass routine is one stage
+			// that runs over several frames): the stage static is set instead, so the mission's loop runs it.
+			bool stage = false;
+			uint32_t stageStatic = 0;
+			int32_t stageValue = 0;
+			// The pass routine is a stage machine called by main every frame once main's own check says the mission is
+			// done: main is sent to that call every frame (`address`, inside main) until the script ends.
+			bool repeatInMain = false;
 		};
 
 		struct Program
@@ -92,6 +101,65 @@ namespace mission
 					leaders.insert(in.address + in.length);
 			}
 			return *std::prev(leaders.upper_bound(address));
+		}
+
+		// The function switches on a static near its start: it runs one step per call.
+		bool IsStageMachine(const Program& p, size_t f)
+		{
+			const auto& fn = p.functions[f];
+			size_t k = static_cast<size_t>(std::lower_bound(p.instructions.begin(), p.instructions.end(), fn.start,
+			                                   [](const sc::Instruction& in, uint32_t a) { return in.address < a; }) -
+			                               p.instructions.begin());
+			for (int step = 0; step < 8 && k + 1 < p.instructions.size() && p.instructions[k + 1].address < fn.end; ++step, ++k)
+			{
+				const uint8_t op = p.instructions[k].op;
+				if ((op == 59 || op == 80 || op == 95) && p.instructions[k + 1].op == sc::SWITCH)
+					return true;
+			}
+			return false;
+		}
+
+		// A SWITCH on a static whose case starts by calling the pass routine `f` (or a small function that does): the
+		// mission's stage machine. Returns the static and the case value.
+		std::optional<Entry> FindStage(const Program& p, size_t f, const std::vector<std::vector<std::pair<size_t, uint32_t>>>& callers)
+		{
+			std::set<uint32_t> targets{p.functions[f].start};
+			for (const auto& [caller, site] : callers[f])
+				if (caller != 0 && p.functions[caller].end - p.functions[caller].start < 64)
+					targets.insert(p.functions[caller].start);
+			const auto index = [&](uint32_t address) {
+				return static_cast<size_t>(std::lower_bound(p.instructions.begin(), p.instructions.end(), address,
+				                               [](const sc::Instruction& in, uint32_t a) { return in.address < a; }) -
+				                           p.instructions.begin());
+			};
+			for (size_t k = 1; k < p.instructions.size(); ++k)
+			{
+				const auto& sw = p.instructions[k];
+				const auto& load = p.instructions[k - 1];
+				if (sw.op != sc::SWITCH || (load.op != 59 && load.op != 80 && load.op != 95)) // STATIC_U8/U16/U24_LOAD
+					continue;
+				for (uint32_t c = 0; c < sw.operand; ++c)
+				{
+					int32_t value;
+					std::memcpy(&value, p.code.data() + sw.address + 2 + 6 * c, 4);
+					size_t t = index(sc::SwitchTarget(p.code, sw.address, c));
+					for (int step = 0; step < 6 && t < p.instructions.size(); ++step, ++t)
+					{
+						const auto& in = p.instructions[t];
+						if (in.op == sc::CALL && targets.contains(static_cast<uint32_t>(in.operand)))
+						{
+							Entry e;
+							e.stage = true;
+							e.stageStatic = static_cast<uint32_t>(load.operand);
+							e.stageValue = value;
+							return e;
+						}
+						if (in.op == sc::J || in.op == sc::LEAVE || in.op == sc::SWITCH)
+							break;
+					}
+				}
+			}
+			return std::nullopt;
 		}
 
 		// The mission's own pass routine: walk up from the shared "passed" helpers (2 parameters, writing one of
@@ -171,6 +239,16 @@ namespace mission
 						{
 							if (caller == 0) // the pass is one of main's cases
 								return Entry{true, BlockStart(p, p.functions[0], site), 0};
+							if (const auto stage = FindStage(p, caller, callers))
+								return stage;
+							if (IsStageMachine(p, caller))
+								for (const auto& [up, upSite] : callers[caller])
+									if (up == 0)
+									{
+										Entry e{true, BlockStart(p, p.functions[0], upSite), 0};
+										e.repeatInMain = true;
+										return e;
+									}
 							return Entry{false, p.functions[caller].start, p.functions[caller].params};
 						}
 						if (caller != 0 && seen.insert(caller).second)
@@ -227,6 +305,10 @@ namespace mission
 		}
 
 		uint64_t g_goldUntil = 0;
+		// repeatInMain: the thread and address main is sent to every frame, until the script ends or time is up.
+		int32_t g_repeatThread = 0;
+		uint32_t g_repeatAddress = 0;
+		uint64_t g_repeatUntil = 0;
 	}
 
 	void Pass(bool gold)
@@ -247,8 +329,25 @@ namespace mission
 			const int unsupported = gold ? ApplyGold(true) : 0;
 			std::vector<int64_t> args(entry->params, 0);
 			bool ok;
-			if (entry->inlineInMain)
+			if (entry->stage)
+			{
+				int64_t* stage = ml::scripts::Static(thread.id, entry->stageStatic);
+				ok = stage != nullptr;
+				if (ok)
+					*stage = entry->stageValue;
+				ml::Log("mission {}: stage static {} = {}", thread.name, entry->stageStatic, entry->stageValue);
+			}
+			else if (entry->inlineInMain)
+			{
 				ok = ml::Api().RedirectScript(thread.id, entry->address, nullptr, 0, 1) != 0;
+				if (ok && entry->repeatInMain)
+				{
+					g_repeatThread = thread.id;
+					g_repeatAddress = entry->address;
+					g_repeatUntil = ml::TickMs() + 120000;
+					ml::Log("mission {}: main sent to {} every frame", thread.name, entry->address);
+				}
+			}
 			else
 				ok = ml::Api().RedirectScript(thread.id, entry->address, args.data(), static_cast<int32_t>(args.size()), 0) != 0;
 			ml::Log("mission {}: pass at {}{} -> {}", thread.name, entry->address, entry->inlineInMain ? " (in main)" : "", ok);
@@ -272,6 +371,13 @@ namespace mission
 
 	void Frame()
 	{
+		if (g_repeatThread)
+		{
+			const auto threads = ml::scripts::Threads();
+			const bool alive = std::any_of(threads.begin(), threads.end(), [](const auto& t) { return t.id == g_repeatThread; });
+			if (!alive || ml::TickMs() > g_repeatUntil || !ml::Api().RedirectScript(g_repeatThread, g_repeatAddress, nullptr, 0, 1))
+				g_repeatThread = 0;
+		}
 		if (!g_goldUntil)
 			return;
 		// Until the results screen read the stats (the pass flag is set and the list cleared afterwards).
