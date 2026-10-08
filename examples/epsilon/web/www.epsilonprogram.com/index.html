@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epsilon 計畫</title>
+<style>
+  :root { --sky: #e8f3ff; --blue: #2f6db5; --deep: #183c6b; --gold: #c9a227; --ink: #1d2733; --muted: #66768a; --line: #d6e3f3; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; color: var(--ink); background: #fff; font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; }
+  button { font: inherit; cursor: pointer; }
+  header { position: sticky; top: 0; z-index: 5; background: rgba(255,255,255,.95); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: space-between; padding: 14px 6%; }
+  .logo { display: flex; align-items: center; gap: 12px; font-weight: 900; font-size: 24px; color: var(--deep); letter-spacing: 2px; }
+  .logo svg { width: 38px; height: 38px; }
+  nav a { margin-left: 22px; color: var(--deep); text-decoration: none; font-weight: 600; cursor: pointer; }
+  nav a:hover { color: var(--blue); }
+  .hero { background: radial-gradient(circle at 50% 120%, #fff 0, var(--sky) 45%, #cfe4ff 100%); text-align: center; padding: 80px 6% 70px; }
+  .hero h1 { margin: 0; font-size: 56px; color: var(--deep); letter-spacing: 6px; }
+  .hero p { font-size: 20px; color: var(--muted); max-width: 720px; margin: 18px auto 30px; line-height: 1.7; }
+  .cta { background: var(--blue); color: #fff; border: 0; border-radius: 999px; padding: 14px 36px; font-size: 18px; font-weight: 700; box-shadow: 0 6px 18px rgba(47,109,181,.3); }
+  section { padding: 60px 6%; }
+  section h2 { text-align: center; font-size: 34px; color: var(--deep); margin: 0 0 10px; }
+  section .lead { text-align: center; color: var(--muted); margin: 0 auto 36px; max-width: 720px; line-height: 1.7; }
+  .tenets { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+  .tenet { background: var(--sky); border-radius: 16px; padding: 22px; }
+  .tenet b { display: block; color: var(--blue); font-size: 14px; margin-bottom: 6px; }
+  .alt { background: #f6f9fd; }
+  .quiz { max-width: 760px; margin: 0 auto; }
+  .q { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 14px; }
+  .q p { margin: 0 0 12px; font-weight: 700; }
+  .q label { display: inline-flex; align-items: center; gap: 6px; margin-right: 22px; cursor: pointer; }
+  .center { text-align: center; }
+  .result { max-width: 760px; margin: 20px auto 0; background: var(--sky); border-radius: 14px; padding: 22px; text-align: center; line-height: 1.8; }
+  .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 22px; max-width: 900px; margin: 0 auto; }
+  .tier { border: 1px solid var(--line); border-radius: 18px; padding: 26px; text-align: center; background: #fff; }
+  .tier .amount { font-size: 40px; font-weight: 900; color: var(--deep); }
+  .tier p { color: var(--muted); min-height: 52px; line-height: 1.6; }
+  .tier button, .robe button { width: 100%; border: 0; border-radius: 12px; padding: 13px; font-weight: 700; font-size: 17px; background: var(--blue); color: #fff; }
+  .tier button:disabled, .robe button:disabled, .cta:disabled { background: #b7c4d3; cursor: default; box-shadow: none; }
+  .total { text-align: center; margin: 26px 0 0; color: var(--muted); }
+  .total b { color: var(--deep); font-size: 22px; }
+  .note { text-align: center; color: #a15c00; margin-top: 16px; }
+  .robe { max-width: 760px; margin: 0 auto; display: grid; grid-template-columns: 220px 1fr; gap: 26px; align-items: center;
+    border: 1px solid var(--line); border-radius: 18px; padding: 26px; background: #fff; }
+  .robe .pic { height: 220px; border-radius: 14px; background: linear-gradient(160deg, #fdfdfd, #dfeaf7); display: grid; place-items: center; }
+  .robe .price { font-size: 32px; font-weight: 900; color: var(--deep); margin: 8px 0 16px; }
+  footer { text-align: center; color: var(--muted); padding: 30px 6% 40px; border-top: 1px solid var(--line); font-size: 14px; }
+  .toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); background: var(--deep); color: #fff; padding: 13px 22px; border-radius: 10px; z-index: 20; }
+  .toast.error { background: #b42318; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="none" stroke="#2f6db5" stroke-width="3"/><path d="M12 26 L20 10 L28 26 Z" fill="#c9a227"/><circle cx="20" cy="22" r="3" fill="#183c6b"/></svg>
+    EPSILON 計畫
+  </div>
+  <nav><a data-go="tenets">教義</a><a data-go="test">我是信徒嗎？</a><a data-go="give">奉獻</a><a data-go="robes">聖袍</a></nav>
+</header>
+
+<div class="hero">
+  <h1>KIFFLOM!</h1>
+  <p>宇宙並不在乎你，但 Kraff 在乎。加入 Epsilon 計畫，摒棄不必要的懷疑，
+    透過奉獻與服從，找回你那被世俗蒙蔽的十二種頻率。</p>
+  <button class="cta" data-go="test">立即測驗：你是 Epsilon 信徒嗎？</button>
+</div>
+
+<section id="tenets">
+  <h2>Epsilon 的教導</h2>
+  <p class="lead">克羅諾斯在 2.2 億年前便寫下了這一切。以下是給新成員的入門要點，更多真理將隨著你的奉獻逐步揭示。</p>
+  <div class="tenets">
+    <div class="tenet"><b>第一條</b>懷疑是一種疾病。Epsilon 是唯一的解藥。</div>
+    <div class="tenet"><b>第二條</b>金錢是負面能量的容器。把它交給我們，你就會輕盈起來。</div>
+    <div class="tenet"><b>第三條</b>Kraff 不會出錯。如果看起來出錯了，那是你理解錯了。</div>
+    <div class="tenet"><b>第四條</b>真正的信徒會在沙漠中走很久很久，而且不會抱怨。</div>
+    <div class="tenet"><b>第五條</b>穿著聖袍至少十天。不洗。這是對 Kraff 的敬意。</div>
+    <div class="tenet"><b>第六條</b>如果有人說這是邪教，請對他們說「Kifflom」，然後離開。</div>
+  </div>
+</section>
+
+<section id="test" class="alt">
+  <h2>你是 Epsilon 信徒嗎？</h2>
+  <p class="lead">誠實回答以下問題。沒有標準答案（但有正確答案）。</p>
+  <div class="quiz" id="quiz"></div>
+  <div class="center"><button class="cta" id="send">送出答案</button></div>
+  <div class="result" id="result" hidden></div>
+</section>
+
+<section id="give">
+  <h2>奉獻</h2>
+  <p class="lead">每一筆奉獻都會讓你更接近真理。奉獻越多，你就越不需要那些讓你痛苦的東西。</p>
+  <div class="tiers">
+    <div class="tier"><div class="amount">$500</div><p>初階頻率調整。適合剛開始懷疑懷疑本身的人。</p><button data-give="500">奉獻 $500</button></div>
+    <div class="tier"><div class="amount">$5,000</div><p>中階淨化。適合已經準備好放下車子、房子與家人的人。</p><button data-give="5000">奉獻 $5,000</button></div>
+  </div>
+  <div class="total">你目前的奉獻總額：<b id="donated">—</b></div>
+  <div class="note" id="who" hidden></div>
+</section>
+
+<section id="robes" class="alt">
+  <h2>聖袍</h2>
+  <p class="lead">只有被選中的成員才能購買。穿上它，讓宇宙知道你是誰。</p>
+  <div class="robe">
+    <div class="pic">
+      <svg width="140" height="190" viewBox="0 0 140 190"><path d="M70 10 C48 10 40 30 40 44 L18 180 L122 180 L100 44 C100 30 92 10 70 10 Z" fill="#f4f7fb" stroke="#9fb4cc" stroke-width="3"/><path d="M70 40 L70 180" stroke="#c9a227" stroke-width="4"/><circle cx="70" cy="70" r="9" fill="#2f6db5"/></svg>
+    </div>
+    <div>
+      <h3 style="margin:0;color:var(--deep);font-size:24px">Epsilon 聖袍</h3>
+      <div class="price" id="robePrice">$25,000</div>
+      <p id="robeNote" style="color:var(--muted);line-height:1.6"></p>
+      <button id="buyRobes">購買聖袍</button>
+    </div>
+  </div>
+</section>
+
+<footer>Epsilon 計畫 · 2.2 億年來一直在這裡 · 所有奉獻概不退還 · Kifflom!</footer>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const money = n => '$' + Number(n).toLocaleString('en-US');
+const questions = [
+  '你是否經常覺得自己比周圍的人更聰明？',
+  '你是否覺得自己的人生缺少了什麼，但說不出是什麼？',
+  '你願意為了真理放棄你的財產嗎？',
+  '你相信外星生命會在乎你的存款嗎？',
+  '你是否曾經在沙漠中獨自思考人生？',
+  '你是否覺得家人不了解你？',
+  '你是否願意穿同一件衣服很多天？',
+  '當別人質疑你的信仰時，你會感到受傷嗎？',
+];
+$('quiz').innerHTML = questions.map((q, i) => `<div class="q"><p>${i + 1}. ${q}</p>
+  <label><input type="radio" name="q${i}" value="1">是</label><label><input type="radio" name="q${i}" value="0">否</label>
+  <label><input type="radio" name="q${i}" value="2">不確定</label></div>`).join('');
+
+let status = {};
+async function load() {
+  status = await game.call('epsilon.status');
+  $('donated').textContent = money(status.donated);
+  const who = $('who');
+  who.hidden = status.michael;
+  who.textContent = '目前的身分無法奉獻。Epsilon 只接受被選中之人（麥可）的奉獻。';
+  document.querySelectorAll('[data-give]').forEach(b => b.disabled = !status.michael || status.cash < Number(b.dataset.give));
+  $('robePrice').textContent = money(status.robesPrice);
+  $('buyRobes').disabled = !status.michael || !status.robes || status.cash < status.robesPrice;
+  $('robeNote').textContent = !status.robes ? '聖袍目前不開放購買。當 Epsilon 認為你準備好了，你自然會知道。'
+    : status.cash < status.robesPrice ? '你的資金不足。也許你應該多奉獻一些，讓負面能量離開。' : '你已被選中。立即購買你的聖袍。';
+}
+
+function errorText(e) {
+  return { money: '資金不足。', character: '只有被選中之人（麥可）可以這麼做。', closed: '目前不開放。', unsupported: '遊戲版本不支援。' }[e] || '交易失敗。';
+}
+
+document.querySelectorAll('[data-give]').forEach(b => b.onclick = async () => {
+  b.disabled = true;
+  const r = await game.call('epsilon.donate', Number(b.dataset.give));
+  toast(r.ok ? `感謝你的奉獻。Kifflom！（累計 ${money(r.donated)}）` : errorText(r.error), !r.ok);
+  load();
+});
+$('buyRobes').onclick = async () => {
+  $('buyRobes').disabled = true;
+  const r = await game.call('epsilon.robes');
+  toast(r.ok ? '聖袍已購買。穿上它，至少十天。' : errorText(r.error), !r.ok);
+  load();
+};
+$('send').onclick = async () => {
+  const answered = questions.every((_, i) => document.querySelector(`input[name=q${i}]:checked`));
+  if (!answered) { toast('請回答所有問題。', true); return; }
+  $('send').disabled = true;
+  const r = await game.call('epsilon.questionnaire');
+  $('send').disabled = false;
+  if (!r.ok) { toast(errorText(r.error), true); return; }
+  $('result').hidden = false;
+  $('result').innerHTML = '<b style="font-size:22px;color:var(--deep)">恭喜！</b><br>根據你的回答，你很可能是一位 Epsilon 信徒。<br>' +
+    '我們的代表將會與你聯絡。在此之前，請保持開放的心胸，以及開放的錢包。Kifflom！';
+};
+document.querySelectorAll('[data-go]').forEach(a => a.onclick = () => $(a.dataset.go).scrollIntoView({ behavior: 'smooth' }));
+
+let toastTimer = 0;
+function toast(text, error = false) {
+  const t = $('toast');
+  t.textContent = text;
+  t.className = 'toast' + (error ? ' error' : '');
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), 4000);
+}
+load();
+</script>
+</body>
+</html>
