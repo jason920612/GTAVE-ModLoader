@@ -139,6 +139,11 @@ namespace mission
 				const auto& load = p.instructions[k - 1];
 				if (sw.op != sc::SWITCH || (load.op != 59 && load.op != 80 && load.op != 95)) // STATIC_U8/U16/U24_LOAD
 					continue;
+				// The mission's stage machine is main's loop, or a function main calls each frame; a switch inside a stage
+				// function steps through that stage (its own counter).
+				const size_t owner = p.FunctionAt(sw.address);
+				if (owner != 0 && std::none_of(callers[owner].begin(), callers[owner].end(), [](const auto& c) { return c.first == 0; }))
+					continue;
 				for (uint32_t c = 0; c < sw.operand; ++c)
 				{
 					int32_t value;
