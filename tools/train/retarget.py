@@ -6,7 +6,7 @@ positions: for every pair below, the unit vector between two body origins of the
 the vector between the two corresponding mocap joints. The pelvis position is the mocap root scaled by the ratio of leg
 lengths, placed so that the midpoint of the hip joints matches. Twists that directions cannot fix (forearm, hips, ...) are pulled towards zero by a small weight.
 Each frame is solved by least squares (joint limits as bounds) starting from the previous frame's answer; afterwards
-the clip is lowered or raised frame by frame so the stance foot stays on the floor (the capture's floor drifts).
+the clip is lowered or raised frame by frame so the lower shoe touches the floor in every frame.
 Output: qpos (frames x nq), fps, per-frame mean direction error (degrees).
 """
 import sys
@@ -102,12 +102,11 @@ def main():
         z = [d.geom_xpos[g][2] - abs(d.geom_xmat[g][8]) * (m.geom_size[g][1] if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_CAPSULE else 0) - m.geom_size[g][0]
              for g in range(m.ngeom) if m.geom_bodyid[g] in (body["l_foot"], body["r_foot"], body["l_toe"], body["r_toe"])]
         lows.append(min(z))
-    # The capture's floor drifts (07_01: 3.5 cm over the clip), so the floor is found per frame: the lowest foot point
-    # over a 0.7 s window (a stance foot is down in any such window while walking or dribbling), smoothed.
+    # Feet on the floor in every frame: the lower shoe touches z = 0 (walking and dribbling always have a foot down;
+    # a windowed floor left the stance foot floating in most frames, so physics had nothing to stand on).
+    # Lightly smoothed (3 frames) against jitter; the capture's own floor drifts, so this is done per frame.
     lows = np.array(lows)
-    w = max(1, int(round(0.35 * fps)))
-    floor = np.array([lows[max(0, i - w):i + w + 1].min() for i in range(len(lows))])
-    floor = np.convolve(np.pad(floor, w, mode="edge"), np.ones(2 * w + 1) / (2 * w + 1), mode="valid")
+    floor = np.convolve(np.pad(lows, 1, mode="edge"), np.ones(3) / 3, mode="valid")
     qpos[:, 2] -= floor
     errors = np.array(errors)
     names = [f"{b1}->{b2}" for b1, b2, *_ in PAIRS]

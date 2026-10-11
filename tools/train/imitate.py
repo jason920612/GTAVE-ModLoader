@@ -44,6 +44,7 @@ if not hasattr(jax, "device_put_replicated") or True:
 CONTROL_STEPS = 8  # physics steps per control step
 KP = 3.0  # servo stiffness, N m per radian per N m of torque limit (DeepMimic used about 2.5)
 KV = 0.1  # damping / stiffness, seconds
+STRENGTH = float(os.environ.get("BB_STRENGTH", "1"))  # torque limits x this (the gears were sized for a ~45 kg humanoid)
 END_EFFECTORS = ("l_hand", "r_hand", "l_foot", "r_foot", "head")
 
 
@@ -57,7 +58,7 @@ def load_model(path):
     m.geom_contype[0] = 1
     # Position servos instead of the model's motors: MuJoCo integrates their damping implicitly (implicitfast), which
     # stays stable for light segments where a PD computed once per step oscillates. Torque limit = the motor's gear.
-    gear = m.actuator_gear[:, 0].copy()
+    gear = m.actuator_gear[:, 0].copy() * STRENGTH
     kp, kv = gear * KP, gear * KP * KV
     m.actuator_gaintype[:] = mujoco.mjtGain.mjGAIN_FIXED
     m.actuator_gainprm[:, 0] = kp
@@ -183,7 +184,10 @@ class Imitate(Env):
         frame = frame + 1
         f = jp.minimum(frame, self._frames - 1)
         rq, rqd, rx = self._ref_q[f], self._ref_qd[f], self._ref_x[f]
-        pose = jp.sum(jp.square(d.qpos[7:] - rq[7:]))
+        # Pose includes the pelvis orientation (as DeepMimic's root joint): without it a whole-body forward lean costs
+        # nothing and the policy topples forward while its joints still match.
+        root_angle = 2 * jp.arccos(jp.clip(jp.abs(jp.dot(d.qpos[3:7], rq[3:7])), 0, 1))
+        pose = jp.sum(jp.square(d.qpos[7:] - rq[7:])) + 3 * jp.square(root_angle)
         jvel = jp.sum(jp.square(d.qvel[6:] - rqd[6:]))
         ee = jp.sum(jp.square((pos[self._ee] - pos[0]) - (rx[self._ee] - rx[0])))
         com = jp.sum(jp.square(pos[0] - rx[0]))
@@ -223,24 +227,24 @@ def train(model_path, clip_path, out, timesteps, num_envs):
     print(f"saved {out}/params.pkl after {time.time() - start:.0f}s")
 
 
-def evaluate(model_path, clip_path, out):
+def evaluate(model_path, clip_path, out, start=0):
     env = Imitate(model_path, clip_path)
     params = model_io.load_params(os.path.join(out, "params.pkl"))
     networks = ppo_networks.make_ppo_networks(env.observation_size, env.action_size, policy_hidden_layer_sizes=(512, 256, 128))
     policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
     step, reset = jax.jit(env.step), jax.jit(env.reset)
     state = reset(jax.random.PRNGKey(1))
-    state = state.replace(pipeline_state=env.init_data(env._ref_q[0], env._ref_qd[0]), info={"frame": jp.array(0), "start": jp.array(0)})
+    state = state.replace(pipeline_state=env.init_data(env._ref_q[start], env._ref_qd[start]), info={"frame": jp.array(start), "start": jp.array(start)})
     qs, errors = [], []
-    for _ in range(env._frames - 1):
+    for _ in range(env._frames - 1 - start):
         action, _ = policy(state.obs, jax.random.PRNGKey(0))
         state = step(state, action)
         qs.append(np.array(state.pipeline_state.qpos))
         errors.append(float(state.metrics["body_error"]))
         if float(state.done):
             break
-    np.savez(os.path.join(out, "rollout.npz"), qpos=np.array(qs), fps=1 / env.dt, errors=np.array(errors))
-    print(f"rollout: {len(qs)} of {env._frames - 1} steps, body error mean {np.mean(errors):.3f} m, max {np.max(errors):.3f} m")
+    np.savez(os.path.join(out, f"rollout{start or ''}.npz"), qpos=np.array(qs), fps=1 / env.dt, errors=np.array(errors), start=start)
+    print(f"rollout from frame {start}: {len(qs)} of {env._frames - 1 - start} steps, body error mean {np.mean(errors):.3f} m, max {np.max(errors):.3f} m")
 
 
 if __name__ == "__main__":
@@ -248,4 +252,4 @@ if __name__ == "__main__":
     if mode == "train":
         train(sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]) if len(sys.argv) > 5 else 50e6, int(sys.argv[6]) if len(sys.argv) > 6 else 2048)
     else:
-        evaluate(sys.argv[2], sys.argv[3], sys.argv[4])
+        evaluate(sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]) if len(sys.argv) > 5 else 0)
