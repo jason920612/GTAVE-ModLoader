@@ -130,4 +130,4 @@ $('send').onclick = async () => {
 
 load();
 // Replies and posts arrive while the page is open (the model writes in the background).
-setInterval(() => { if (feed && feed.ai && feed.ai.state !== 'off' && !$('text').value) load(); }, 15000);
+Live.every(15000, () => { if (feed && feed.ai && feed.ai.state !== 'off' && !$('text').value) load(); });

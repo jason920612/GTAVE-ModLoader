@@ -166,7 +166,4 @@ document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id
 
 load();
 // Comments arrive while the page is open (the model writes in the background).
-setInterval(() => {
-  const typing = document.activeElement && document.activeElement.id === 'status' && document.activeElement.value;
-  if (feed && feed.ai && feed.ai.state !== 'off' && !typing) load();
-}, 15000);
+Live.every(15000, () => { if (feed && feed.ai && feed.ai.state !== 'off') load(); });

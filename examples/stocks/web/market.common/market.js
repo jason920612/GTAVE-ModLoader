@@ -258,4 +258,4 @@ $('tCancel').onclick = () => ($('trade').hidden = true);
 $('trade').onclick = e => { if (e.target === $('trade')) $('trade').hidden = true; };
 $('tGo').onclick = confirmTrade;
 load();
-setInterval(() => { if ($('trade').hidden) load(); }, 5000);
+Live.every(5000, () => { if ($('trade').hidden) load(); });
