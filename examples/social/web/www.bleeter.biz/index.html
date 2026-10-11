@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bleeter</title>
+<script src="https://site.common/theme.js"></script>
+<link rel="stylesheet" href="bleeter.css">
+</head>
+<body>
+<div class="shell">
+  <nav class="side">
+    <a class="logo" data-view="home"><svg viewBox="0 0 32 32"><path d="M4 7a5 5 0 0 1 5-5h14a5 5 0 0 1 5 5v11a5 5 0 0 1-5 5H14l-7 6v-6H9a5 5 0 0 1-5-5z"/><circle cx="12" cy="12.5" r="2" fill="var(--bg)"/><circle cx="20" cy="12.5" r="2" fill="var(--bg)"/></svg>bleeter</a>
+    <a data-view="home" class="on">首頁</a>
+    <a data-view="trends">熱門話題</a>
+    <a data-view="me">個人檔案</a>
+    <button class="theme-toggle" data-theme-toggle></button>
+    <div class="me" id="me"></div>
+  </nav>
+  <main>
+    <header class="bar"><h1 id="title">首頁</h1><button class="back" id="back" hidden>←</button></header>
+    <div id="profile"></div>
+    <div class="compose" id="compose">
+      <span id="composeAvatar"></span>
+      <div><textarea id="text" maxlength="160" placeholder="有什麼新鮮事？"></textarea>
+        <div class="row"><span class="count" id="count">160</span><button class="primary" id="send" disabled>發佈</button></div></div>
+    </div>
+    <div id="feed"></div>
+  </main>
+  <aside>
+    <input class="search" id="search" type="search" placeholder="搜尋 Bleeter">
+    <section class="box"><h2>熱門話題</h2><div id="trends"></div></section>
+    <section class="box"><h2>推薦追蹤</h2><div id="follow"></div></section>
+    <p class="fine">Bleeter © 2013 · 160 個字，剛好說完一件蠢事。<br>服務條款 · 隱私權政策（我們沒有）· 廣告</p>
+  </aside>
+</div>
+<script src="https://social.common/data.js"></script>
+<script src="https://social.common/social.js"></script>
+<script src="bleeter.js"></script>
+</body>
+</html>
