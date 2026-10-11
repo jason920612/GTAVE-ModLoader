@@ -3,8 +3,8 @@ usage (WSL): python imitate.py train <model.xml> <clip.npz> <out dir> [timesteps
              python imitate.py eval <model.xml> <clip.npz> <out dir>     (rollout of the saved policy -> rollout.npz)
 
 - Reference state initialisation: every episode starts at a random time of the clip, in the clip's pose and velocity.
-- Action: per joint, a correction to the reference angle (radians, x0.5); a PD controller turns the target into torque
-  (kp, kd per joint from the actuator's gear), applied through the model's motors.
+- Action: per joint, a correction to the reference angle (radians, x0.5); position servos (kp = 3 x torque limit per
+  radian, kv = 0.1 kp, torque limited to the motor's gear) track the target, integrated implicitly.
 - Control at 31.25 Hz (8 physics steps of 4 ms).
 - Observation: body positions and velocities relative to the pelvis in its heading frame, pelvis height and tilt,
   joint angles and velocities, and the reference's next two frames (joint angles, pelvis offset) and the clip phase.
@@ -42,6 +42,8 @@ if not hasattr(jax, "device_put_replicated") or True:
     jax.device_put_sharded = _sharded
 
 CONTROL_STEPS = 8  # physics steps per control step
+KP = 3.0  # servo stiffness, N m per radian per N m of torque limit (DeepMimic used about 2.5)
+KV = 0.1  # damping / stiffness, seconds
 END_EFFECTORS = ("l_hand", "r_hand", "l_foot", "r_foot", "head")
 
 
@@ -53,6 +55,20 @@ def load_model(path):
     m.geom_contype[:] = 0
     m.geom_conaffinity[:] = np.where(on, 1, 0)
     m.geom_contype[0] = 1
+    # Position servos instead of the model's motors: MuJoCo integrates their damping implicitly (implicitfast), which
+    # stays stable for light segments where a PD computed once per step oscillates. Torque limit = the motor's gear.
+    gear = m.actuator_gear[:, 0].copy()
+    kp, kv = gear * KP, gear * KP * KV
+    m.actuator_gaintype[:] = mujoco.mjtGain.mjGAIN_FIXED
+    m.actuator_gainprm[:, 0] = kp
+    m.actuator_biastype[:] = mujoco.mjtBias.mjBIAS_AFFINE
+    m.actuator_biasprm[:, :3] = np.stack([np.zeros_like(kp), -kp, -kv], axis=1)
+    m.actuator_gear[:, 0] = 1
+    m.actuator_forcelimited[:] = 1
+    m.actuator_forcerange[:] = np.stack([-gear, gear], axis=1)
+    m.actuator_ctrllimited[:] = 1
+    m.actuator_ctrlrange[:] = m.jnt_range[m.actuator_trnid[:, 0]]
+    m.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     m.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
     m.opt.iterations = 1
     m.opt.ls_iterations = 4
@@ -88,10 +104,6 @@ class Imitate(Env):
         self._frames = self._ref_q.shape[0]
         self._joint_lo = jp.array(m.jnt_range[1:, 0])
         self._joint_hi = jp.array(m.jnt_range[1:, 1])
-        gear = m.actuator_gear[:, 0]
-        self._gear = jp.array(gear)
-        self._kp = jp.array(gear * 1.0)  # N m per radian
-        self._kd = jp.array(gear * 0.1)
         names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(m.nbody)]
         self._ee = jp.array([names.index(n) - 1 for n in END_EFFECTORS])  # body positions below exclude the world
         # Reference body positions (for the reward and termination), from MuJoCo forward kinematics.
@@ -153,7 +165,7 @@ class Imitate(Env):
         obs = self._obs(d, vel, frame)
         zero = jp.zeros(())
         metrics = {"pose": zero, "ee": zero, "com": zero, "body_error": zero}
-        return State(d, obs, zero, zero, metrics, info={"frame": frame})
+        return State(d, obs, zero, zero, metrics, info={"frame": frame, "start": frame})
 
     def step(self, state, action):
         frame = state.info["frame"]
@@ -163,10 +175,9 @@ class Imitate(Env):
         prev = state.pipeline_state.xpos[1:] + 0.0
 
         def substep(d, _):
-            torque = self._kp * (target - d.qpos[7:]) - self._kd * d.qvel[6:]
-            return mjx.step(self._mx, d.replace(ctrl=jp.clip(torque / self._gear, -1, 1))), None
+            return mjx.step(self._mx, d), None
 
-        d = jax.lax.scan(substep, state.pipeline_state, (), CONTROL_STEPS)[0]
+        d = jax.lax.scan(substep, state.pipeline_state.replace(ctrl=target), (), CONTROL_STEPS)[0]
         pos = d.xpos[1:]
         vel = (pos - prev) / self._dt
         frame = frame + 1
@@ -182,7 +193,9 @@ class Imitate(Env):
         done = jp.where((pos[0, 2] < 0.55) | (body_error > 0.35) | (frame >= self._frames - 1) | bad, 1.0, 0.0)
         reward = jp.where(bad, 0.0, reward)
         state.metrics.update(pose=pose, ee=ee, com=com, body_error=body_error)
-        info = dict(state.info, frame=frame)
+        # Brax's auto-reset puts back the episode's first physics state and observation when done, but not our clip
+        # time: rewind it to the episode's start here so the next episode tracks the right frames.
+        info = dict(state.info, frame=jp.where(done > 0, state.info["start"], frame))
         return state.replace(pipeline_state=d, obs=self._obs(d, vel, frame), reward=reward, done=done, info=info)
 
 
@@ -215,7 +228,7 @@ def evaluate(model_path, clip_path, out):
     policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
     step, reset = jax.jit(env.step), jax.jit(env.reset)
     state = reset(jax.random.PRNGKey(1))
-    state = state.replace(pipeline_state=env.init_data(env._ref_q[0], env._ref_qd[0]), info={"frame": jp.array(0)})
+    state = state.replace(pipeline_state=env.init_data(env._ref_q[0], env._ref_qd[0]), info={"frame": jp.array(0), "start": jp.array(0)})
     qs, errors = [], []
     for _ in range(env._frames - 1):
         action, _ = policy(state.obs, jax.random.PRNGKey(0))
