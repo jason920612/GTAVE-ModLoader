@@ -1,0 +1,1026 @@
+{
+ "skeleton": "player_two",
+ "segments": {
+  "abdomen": {
+   "bone": "SKEL_Spine0",
+   "capsules": [
+    {
+     "a": [
+      0.0689,
+      0.0322,
+      -0.0222
+     ],
+     "b": [
+      0.0689,
+      0.0322,
+      0.0261
+     ],
+     "radius": 0.1433
+    }
+   ],
+   "vertices": 1073,
+   "inside": 0.792,
+   "mean_outside": 0.0066
+  },
+  "chest": {
+   "bone": "SKEL_Spine3",
+   "capsules": [
+    {
+     "a": [
+      0.0331,
+      0.018,
+      -0.0466
+     ],
+     "b": [
+      0.0331,
+      0.018,
+      0.0413
+     ],
+     "radius": 0.1531
+    },
+    {
+     "a": [
+      0.235,
+      -0.0001,
+      -0.1027
+     ],
+     "b": [
+      0.235,
+      -0.0001,
+      0.0454
+     ],
+     "radius": 0.103
+    }
+   ],
+   "vertices": 1983,
+   "inside": 0.769,
+   "mean_outside": 0.0068
+  },
+  "head": {
+   "bone": "SKEL_Head",
+   "capsules": [
+    {
+     "a": [
+      0.0436,
+      0.0676,
+      -0.0
+     ],
+     "b": [
+      0.0758,
+      0.0449,
+      0.0008
+     ],
+     "radius": 0.0892
+    }
+   ],
+   "vertices": 8390,
+   "inside": 0.8,
+   "mean_outside": 0.0059
+  },
+  "l_calf": {
+   "bone": "SKEL_L_Calf",
+   "capsules": [
+    {
+     "a": [
+      0.3473,
+      0.0085,
+      0.0034
+     ],
+     "b": [
+      0.121,
+      -0.0075,
+      0.0044
+     ],
+     "radius": 0.0781
+    }
+   ],
+   "vertices": 290,
+   "inside": 0.828,
+   "mean_outside": 0.0051
+  },
+  "l_finger00": {
+   "bone": "SKEL_L_Finger00",
+   "capsules": [
+    {
+     "a": [
+      0.0585,
+      -0.0035,
+      -0.0047
+     ],
+     "b": [
+      0.0535,
+      -0.0009,
+      0.0023
+     ],
+     "radius": 0.018
+    }
+   ],
+   "vertices": 39,
+   "inside": 1.0,
+   "mean_outside": 0.0008
+  },
+  "l_finger01": {
+   "bone": "SKEL_L_Finger01",
+   "capsules": [
+    {
+     "a": [
+      0.0255,
+      0.0002,
+      -0.0003
+     ],
+     "b": [
+      0.0215,
+      0.0011,
+      0.0038
+     ],
+     "radius": 0.0146
+    }
+   ],
+   "vertices": 55,
+   "inside": 1.0,
+   "mean_outside": 0.0004
+  },
+  "l_finger02": {
+   "bone": "SKEL_L_Finger02",
+   "capsules": [
+    {
+     "a": [
+      0.0237,
+      -0.0001,
+      0.0011
+     ],
+     "b": [
+      0.0141,
+      -0.0008,
+      -0.001
+     ],
+     "radius": 0.0103
+    }
+   ],
+   "vertices": 222,
+   "inside": 1.0,
+   "mean_outside": 0.0006
+  },
+  "l_finger10": {
+   "bone": "SKEL_L_Finger10",
+   "capsules": [
+    {
+     "a": [
+      0.0264,
+      -0.0008,
+      0.0024
+     ],
+     "b": [
+      0.0333,
+      -0.0015,
+      0.0015
+     ],
+     "radius": 0.0141
+    }
+   ],
+   "vertices": 48,
+   "inside": 1.0,
+   "mean_outside": 0.0013
+  },
+  "l_finger11": {
+   "bone": "SKEL_L_Finger11",
+   "capsules": [
+    {
+     "a": [
+      0.0122,
+      0.0,
+      0.0026
+     ],
+     "b": [
+      0.0184,
+      0.001,
+      0.0016
+     ],
+     "radius": 0.0114
+    }
+   ],
+   "vertices": 39,
+   "inside": 1.0,
+   "mean_outside": 0.001
+  },
+  "l_finger12": {
+   "bone": "SKEL_L_Finger12",
+   "capsules": [
+    {
+     "a": [
+      0.012,
+      -0.0014,
+      0.0023
+     ],
+     "b": [
+      0.0188,
+      0.0003,
+      0.0007
+     ],
+     "radius": 0.0082
+    }
+   ],
+   "vertices": 164,
+   "inside": 1.0,
+   "mean_outside": 0.0005
+  },
+  "l_finger20": {
+   "bone": "SKEL_L_Finger20",
+   "capsules": [
+    {
+     "a": [
+      0.0213,
+      0.0008,
+      0.0003
+     ],
+     "b": [
+      0.041,
+      -0.0009,
+      0.0013
+     ],
+     "radius": 0.0155
+    }
+   ],
+   "vertices": 67,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "l_finger21": {
+   "bone": "SKEL_L_Finger21",
+   "capsules": [
+    {
+     "a": [
+      0.0192,
+      -0.0028,
+      0.0018
+     ],
+     "b": [
+      0.0266,
+      0.0011,
+      0.0013
+     ],
+     "radius": 0.0115
+    }
+   ],
+   "vertices": 35,
+   "inside": 1.0,
+   "mean_outside": 0.0007
+  },
+  "l_finger22": {
+   "bone": "SKEL_L_Finger22",
+   "capsules": [
+    {
+     "a": [
+      0.0176,
+      0.0002,
+      0.0004
+     ],
+     "b": [
+      0.0122,
+      -0.001,
+      0.0011
+     ],
+     "radius": 0.0094
+    }
+   ],
+   "vertices": 160,
+   "inside": 1.0,
+   "mean_outside": 0.0005
+  },
+  "l_finger30": {
+   "bone": "SKEL_L_Finger30",
+   "capsules": [
+    {
+     "a": [
+      0.0217,
+      0.0012,
+      -0.0003
+     ],
+     "b": [
+      0.0272,
+      -0.0029,
+      0.0027
+     ],
+     "radius": 0.0149
+    }
+   ],
+   "vertices": 56,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "l_finger31": {
+   "bone": "SKEL_L_Finger31",
+   "capsules": [
+    {
+     "a": [
+      0.0091,
+      0.0004,
+      0.001
+     ],
+     "b": [
+      0.0246,
+      0.0007,
+      0.0005
+     ],
+     "radius": 0.0102
+    }
+   ],
+   "vertices": 39,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "l_finger32": {
+   "bone": "SKEL_L_Finger32",
+   "capsules": [
+    {
+     "a": [
+      0.019,
+      0.0012,
+      0.0007
+     ],
+     "b": [
+      0.0118,
+      -0.0014,
+      0.0018
+     ],
+     "radius": 0.008
+    }
+   ],
+   "vertices": 144,
+   "inside": 1.0,
+   "mean_outside": 0.0004
+  },
+  "l_finger40": {
+   "bone": "SKEL_L_Finger40",
+   "capsules": [
+    {
+     "a": [
+      0.0242,
+      -0.0003,
+      0.0007
+     ],
+     "b": [
+      0.0107,
+      0.0018,
+      -0.0051
+     ],
+     "radius": 0.0134
+    }
+   ],
+   "vertices": 68,
+   "inside": 0.985,
+   "mean_outside": 0.0008
+  },
+  "l_finger41": {
+   "bone": "SKEL_L_Finger41",
+   "capsules": [
+    {
+     "a": [
+      0.0165,
+      -0.0008,
+      -0.0003
+     ],
+     "b": [
+      0.0092,
+      0.0,
+      0.001
+     ],
+     "radius": 0.0094
+    }
+   ],
+   "vertices": 45,
+   "inside": 1.0,
+   "mean_outside": 0.001
+  },
+  "l_finger42": {
+   "bone": "SKEL_L_Finger42",
+   "capsules": [
+    {
+     "a": [
+      0.013,
+      0.0007,
+      -0.0001
+     ],
+     "b": [
+      0.0099,
+      -0.001,
+      0.0002
+     ],
+     "radius": 0.0075
+    }
+   ],
+   "vertices": 141,
+   "inside": 1.0,
+   "mean_outside": 0.0004
+  },
+  "l_foot": {
+   "bone": "SKEL_L_Foot",
+   "capsules": [
+    {
+     "a": [
+      0.0089,
+      -0.0451,
+      0.0049
+     ],
+     "b": [
+      0.0535,
+      -0.0183,
+      0.0034
+     ],
+     "radius": 0.0618
+    }
+   ],
+   "vertices": 394,
+   "inside": 0.84,
+   "mean_outside": 0.0047
+  },
+  "l_forearm": {
+   "bone": "SKEL_L_Forearm",
+   "capsules": [
+    {
+     "a": [
+      0.0794,
+      -0.0008,
+      0.0043
+     ],
+     "b": [
+      0.2152,
+      -0.0034,
+      -0.005
+     ],
+     "radius": 0.0539
+    }
+   ],
+   "vertices": 808,
+   "inside": 0.766,
+   "mean_outside": 0.0055
+  },
+  "l_hand": {
+   "bone": "SKEL_L_Hand",
+   "capsules": [
+    {
+     "a": [
+      0.037,
+      -0.0031,
+      0.0027
+     ],
+     "b": [
+      0.0669,
+      0.009,
+      -0.0077
+     ],
+     "radius": 0.0471
+    }
+   ],
+   "vertices": 538,
+   "inside": 0.976,
+   "mean_outside": 0.0014
+  },
+  "l_thigh": {
+   "bone": "SKEL_L_Thigh",
+   "capsules": [
+    {
+     "a": [
+      0.2937,
+      0.002,
+      0.0138
+     ],
+     "b": [
+      0.137,
+      0.0222,
+      0.0021
+     ],
+     "radius": 0.1084
+    }
+   ],
+   "vertices": 155,
+   "inside": 0.755,
+   "mean_outside": 0.0068
+  },
+  "l_toe": {
+   "bone": "SKEL_L_Toe0",
+   "capsules": [
+    {
+     "a": [
+      0.0352,
+      0.0201,
+      0.0307
+     ],
+     "b": [
+      0.0455,
+      0.0202,
+      -0.0015
+     ],
+     "radius": 0.0428
+    }
+   ],
+   "vertices": 101,
+   "inside": 0.782,
+   "mean_outside": 0.0053
+  },
+  "l_upperarm": {
+   "bone": "SKEL_L_UpperArm",
+   "capsules": [
+    {
+     "a": [
+      0.0402,
+      0.0087,
+      -0.01
+     ],
+     "b": [
+      0.1738,
+      0.0045,
+      0.031
+     ],
+     "radius": 0.0828
+    }
+   ],
+   "vertices": 389,
+   "inside": 0.835,
+   "mean_outside": 0.0036
+  },
+  "pelvis": {
+   "bone": "SKEL_Pelvis",
+   "capsules": [
+    {
+     "a": [
+      0.0995,
+      -0.0191,
+      0.0367
+     ],
+     "b": [
+      0.0995,
+      -0.0191,
+      -0.0404
+     ],
+     "radius": 0.1385
+    }
+   ],
+   "vertices": 151,
+   "inside": 0.702,
+   "mean_outside": 0.0076
+  },
+  "r_calf": {
+   "bone": "SKEL_R_Calf",
+   "capsules": [
+    {
+     "a": [
+      0.1227,
+      0.002,
+      -0.0214
+     ],
+     "b": [
+      0.3501,
+      0.0135,
+      -0.0119
+     ],
+     "radius": 0.0734
+    }
+   ],
+   "vertices": 311,
+   "inside": 0.788,
+   "mean_outside": 0.0062
+  },
+  "r_finger00": {
+   "bone": "SKEL_R_Finger00",
+   "capsules": [
+    {
+     "a": [
+      0.0584,
+      -0.0037,
+      0.0047
+     ],
+     "b": [
+      0.0534,
+      -0.0011,
+      -0.0023
+     ],
+     "radius": 0.018
+    }
+   ],
+   "vertices": 39,
+   "inside": 1.0,
+   "mean_outside": 0.0008
+  },
+  "r_finger01": {
+   "bone": "SKEL_R_Finger01",
+   "capsules": [
+    {
+     "a": [
+      0.0255,
+      -0.0001,
+      0.0007
+     ],
+     "b": [
+      0.0212,
+      0.0009,
+      -0.0036
+     ],
+     "radius": 0.0146
+    }
+   ],
+   "vertices": 55,
+   "inside": 1.0,
+   "mean_outside": 0.0003
+  },
+  "r_finger02": {
+   "bone": "SKEL_R_Finger02",
+   "capsules": [
+    {
+     "a": [
+      0.024,
+      0.0005,
+      -0.0011
+     ],
+     "b": [
+      0.0138,
+      -0.0008,
+      0.0008
+     ],
+     "radius": 0.01
+    }
+   ],
+   "vertices": 222,
+   "inside": 1.0,
+   "mean_outside": 0.0006
+  },
+  "r_finger10": {
+   "bone": "SKEL_R_Finger10",
+   "capsules": [
+    {
+     "a": [
+      0.0264,
+      0.001,
+      0.0022
+     ],
+     "b": [
+      0.0332,
+      0.0017,
+      0.0014
+     ],
+     "radius": 0.0142
+    }
+   ],
+   "vertices": 48,
+   "inside": 1.0,
+   "mean_outside": 0.0013
+  },
+  "r_finger11": {
+   "bone": "SKEL_R_Finger11",
+   "capsules": [
+    {
+     "a": [
+      0.0115,
+      -0.0,
+      0.0024
+     ],
+     "b": [
+      0.0184,
+      -0.0007,
+      0.0014
+     ],
+     "radius": 0.0112
+    }
+   ],
+   "vertices": 39,
+   "inside": 1.0,
+   "mean_outside": 0.001
+  },
+  "r_finger12": {
+   "bone": "SKEL_R_Finger12",
+   "capsules": [
+    {
+     "a": [
+      0.0187,
+      -0.0003,
+      0.0005
+     ],
+     "b": [
+      0.0122,
+      0.0014,
+      0.0019
+     ],
+     "radius": 0.0083
+    }
+   ],
+   "vertices": 164,
+   "inside": 1.0,
+   "mean_outside": 0.0004
+  },
+  "r_finger20": {
+   "bone": "SKEL_R_Finger20",
+   "capsules": [
+    {
+     "a": [
+      0.0215,
+      -0.0005,
+      0.0001
+     ],
+     "b": [
+      0.0407,
+      0.0012,
+      0.0011
+     ],
+     "radius": 0.0158
+    }
+   ],
+   "vertices": 67,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "r_finger21": {
+   "bone": "SKEL_R_Finger21",
+   "capsules": [
+    {
+     "a": [
+      0.0195,
+      0.0032,
+      0.0011
+     ],
+     "b": [
+      0.026,
+      -0.0005,
+      0.0011
+     ],
+     "radius": 0.012
+    }
+   ],
+   "vertices": 35,
+   "inside": 1.0,
+   "mean_outside": 0.0006
+  },
+  "r_finger22": {
+   "bone": "SKEL_R_Finger22",
+   "capsules": [
+    {
+     "a": [
+      0.0175,
+      -0.0005,
+      0.0003
+     ],
+     "b": [
+      0.0123,
+      0.0009,
+      0.0009
+     ],
+     "radius": 0.0095
+    }
+   ],
+   "vertices": 160,
+   "inside": 1.0,
+   "mean_outside": 0.0005
+  },
+  "r_finger30": {
+   "bone": "SKEL_R_Finger30",
+   "capsules": [
+    {
+     "a": [
+      0.0273,
+      0.0028,
+      0.0025
+     ],
+     "b": [
+      0.0217,
+      -0.0012,
+      -0.0005
+     ],
+     "radius": 0.0149
+    }
+   ],
+   "vertices": 56,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "r_finger31": {
+   "bone": "SKEL_R_Finger31",
+   "capsules": [
+    {
+     "a": [
+      0.0103,
+      0.0005,
+      0.0006
+     ],
+     "b": [
+      0.0238,
+      -0.0003,
+      0.0003
+     ],
+     "radius": 0.011
+    }
+   ],
+   "vertices": 39,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "r_finger32": {
+   "bone": "SKEL_R_Finger32",
+   "capsules": [
+    {
+     "a": [
+      0.0185,
+      -0.0018,
+      0.0008
+     ],
+     "b": [
+      0.012,
+      0.0014,
+      0.0014
+     ],
+     "radius": 0.0081
+    }
+   ],
+   "vertices": 144,
+   "inside": 1.0,
+   "mean_outside": 0.0003
+  },
+  "r_finger40": {
+   "bone": "SKEL_R_Finger40",
+   "capsules": [
+    {
+     "a": [
+      0.0109,
+      -0.0019,
+      -0.0053
+     ],
+     "b": [
+      0.0241,
+      0.0003,
+      0.0005
+     ],
+     "radius": 0.0136
+    }
+   ],
+   "vertices": 68,
+   "inside": 0.985,
+   "mean_outside": 0.0008
+  },
+  "r_finger41": {
+   "bone": "SKEL_R_Finger41",
+   "capsules": [
+    {
+     "a": [
+      0.0166,
+      0.0006,
+      -0.0003
+     ],
+     "b": [
+      0.0082,
+      -0.0004,
+      0.0007
+     ],
+     "radius": 0.0088
+    }
+   ],
+   "vertices": 45,
+   "inside": 1.0,
+   "mean_outside": 0.0011
+  },
+  "r_finger42": {
+   "bone": "SKEL_R_Finger42",
+   "capsules": [
+    {
+     "a": [
+      0.0131,
+      -0.0011,
+      -0.0002
+     ],
+     "b": [
+      0.0091,
+      0.0006,
+      0.0004
+     ],
+     "radius": 0.0071
+    }
+   ],
+   "vertices": 141,
+   "inside": 1.0,
+   "mean_outside": 0.0004
+  },
+  "r_foot": {
+   "bone": "SKEL_R_Foot",
+   "capsules": [
+    {
+     "a": [
+      0.0067,
+      -0.0457,
+      -0.0007
+     ],
+     "b": [
+      0.0581,
+      -0.0195,
+      0.0034
+     ],
+     "radius": 0.0595
+    }
+   ],
+   "vertices": 408,
+   "inside": 0.836,
+   "mean_outside": 0.0047
+  },
+  "r_forearm": {
+   "bone": "SKEL_R_Forearm",
+   "capsules": [
+    {
+     "a": [
+      0.0969,
+      0.0056,
+      0.0003
+     ],
+     "b": [
+      0.2239,
+      -0.0055,
+      0.0038
+     ],
+     "radius": 0.0551
+    }
+   ],
+   "vertices": 879,
+   "inside": 0.807,
+   "mean_outside": 0.0048
+  },
+  "r_hand": {
+   "bone": "SKEL_R_Hand",
+   "capsules": [
+    {
+     "a": [
+      0.0457,
+      -0.0029,
+      0.0013
+     ],
+     "b": [
+      0.0678,
+      0.0094,
+      0.0079
+     ],
+     "radius": 0.0478
+    }
+   ],
+   "vertices": 466,
+   "inside": 0.989,
+   "mean_outside": 0.0012
+  },
+  "r_thigh": {
+   "bone": "SKEL_R_Thigh",
+   "capsules": [
+    {
+     "a": [
+      0.2916,
+      -0.0048,
+      -0.0358
+     ],
+     "b": [
+      0.1283,
+      0.0206,
+      -0.009
+     ],
+     "radius": 0.1116
+    }
+   ],
+   "vertices": 148,
+   "inside": 0.764,
+   "mean_outside": 0.0072
+  },
+  "r_toe": {
+   "bone": "SKEL_R_Toe0",
+   "capsules": [
+    {
+     "a": [
+      0.0392,
+      0.0204,
+      -0.028
+     ],
+     "b": [
+      0.0463,
+      0.0202,
+      0.0009
+     ],
+     "radius": 0.0439
+    }
+   ],
+   "vertices": 104,
+   "inside": 0.798,
+   "mean_outside": 0.0051
+  },
+  "r_upperarm": {
+   "bone": "SKEL_R_UpperArm",
+   "capsules": [
+    {
+     "a": [
+      0.0909,
+      0.0125,
+      -0.0134
+     ],
+     "b": [
+      0.1768,
+      0.0013,
+      -0.0288
+     ],
+     "radius": 0.0854
+    }
+   ],
+   "vertices": 272,
+   "inside": 0.827,
+   "mean_outside": 0.0045
+  }
+ }
+}

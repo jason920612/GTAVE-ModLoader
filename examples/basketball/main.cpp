@@ -244,6 +244,23 @@ extern "C" __declspec(dllexport) void MLMain()
 			else if (w.starts_with("lean="))
 				stance.lean = std::stof(w.substr(5));
 
+		if (cmd == "skeleton")
+		{
+			// Research: the player's outfit (drawable, texture per component) and rest skeleton, for fitting body capsules.
+			const Ped ped = PLAYER::PLAYER_PED_ID();
+			std::ofstream out("ModLoader/bball_skeleton.txt");
+			out << "model " << ENTITY::GET_ENTITY_MODEL(ped) << "\n";
+			for (int c = 0; c < 12; ++c)
+				out << std::format("component {} {} {}\n", c, PED::GET_PED_DRAWABLE_VARIATION(ped, c), PED::GET_PED_TEXTURE_VARIATION(ped, c));
+			const ml::body::Skeleton sk(ped);
+			for (int i = 0; i < sk.Count(); ++i)
+			{
+				const ml::body::Transform r = sk.Rest(i);
+				out << std::format("bone {} {} {} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f}\n", i, sk.Name(i), sk.Parent(i), r.rot.x, r.rot.y, r.rot.z, r.rot.w, r.pos.x,
+				    r.pos.y, r.pos.z);
+			}
+			ml::Log("skeleton: {} bones written", sk.Count());
+		}
 		if (cmd == "dribble")
 			bball::Dribble(arg.empty() ? 8.0f : std::stof(arg), options.find("close") != std::string::npos, options.find("slow") != std::string::npos, stance,
 			    options.find("full") != std::string::npos, options.find("markers") != std::string::npos);

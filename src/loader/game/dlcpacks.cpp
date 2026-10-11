@@ -445,26 +445,33 @@ namespace loader::game::dlcpacks
 			pack.empty = r.empty;
 		}
 
-		// Walks an archive and its nested archives (research aid).
+		// Walks an archive and its nested archives (research aid). Paths include folders.
 		void WalkArchive(const convert::Archive& archive, const std::string& prefix,
 		    const std::function<void(const convert::Archive&, uint32_t, const std::string&)>& visit)
 		{
-			for (uint32_t i = 0; i < archive.Nodes().size(); ++i)
-			{
-				const auto& n = archive.Nodes()[i];
-				if (n.directory)
-					continue;
-				const std::string path = prefix + n.name;
-				if (!n.resource && !n.stored && path.ends_with(".rpf"))
+			const std::function<void(uint32_t, const std::string&)> walk = [&](uint32_t dir, const std::string& base) {
+				for (const uint32_t i : archive.Nodes()[dir].children)
 				{
-					convert::Archive nested;
-					std::string error;
-					if (archive.OpenNested(i, nested, error))
-						WalkArchive(nested, path + "/", visit);
-					continue;
+					const auto& n = archive.Nodes()[i];
+					const std::string path = base + n.name;
+					if (n.directory)
+					{
+						walk(i, path + "/");
+						continue;
+					}
+					if (!n.resource && !n.stored && path.ends_with(".rpf"))
+					{
+						convert::Archive nested;
+						std::string error;
+						if (archive.OpenNested(i, nested, error))
+							WalkArchive(nested, path + "/", visit);
+						continue;
+					}
+					visit(archive, i, path);
 				}
-				visit(archive, i, path);
-			}
+			};
+			if (!archive.Nodes().empty())
+				walk(0, prefix);
 		}
 
 		// Research aid: ModLoader\debug_convert.txt, one command per line:
