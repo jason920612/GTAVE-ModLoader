@@ -87,12 +87,12 @@ def fit_across(points, lateral, depth):
     front-back and vertical ranges (meshes are denser in front), radius half the front-back depth."""
     up = np.cross(lateral, depth)
     mid = lambda v: (np.percentile(v, 3) + np.percentile(v, 97)) / 2  # noqa: E731
-    c = lateral * points.mean(axis=0) @ lateral + depth * mid(points @ depth) + up * mid(points @ up)
+    # Across the body it is symmetric about the bone (on the midline): half width = mean of the two sides.
+    c = depth * mid(points @ depth) + up * mid(points @ up)
     r = float((np.percentile(points @ depth, 97) - np.percentile(points @ depth, 3)) / 2)
-    along = (points - c) @ lateral
-    lo, hi = float(np.percentile(along, 3)) + r, float(np.percentile(along, 97)) - r
-    if hi < lo:
-        lo = hi = (lo + hi) / 2
+    along = points @ lateral
+    half = (abs(float(np.percentile(along, 3))) + abs(float(np.percentile(along, 97)))) / 2 - r
+    lo, hi = (-half, half) if half > 0 else (0.0, 0.0)
     return c + lateral * lo, c + lateral * hi, r
 
 

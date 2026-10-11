@@ -1,0 +1,302 @@
+<mujoco model="player_two">
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.004" iterations="4" ls_iterations="6"/>
+  <default>
+    <joint damping="2" armature="0.02" limited="true"/>
+    <geom type="capsule" contype="1" conaffinity="1" friction="0.9 0.02 0.002" condim="3"/>
+    <default class="finger"><joint damping="0.05" armature="0.0005"/><geom contype="2" conaffinity="0"/></default>
+  </default>
+  <worldbody>
+    <geom name="floor" type="plane" size="20 20 0.1" contype="1" conaffinity="1"/>
+    <light pos="0 0 6" dir="0 0 -1"/>
+    <body name="pelvis" pos="0 0.007101 1.0013">
+      <freejoint name="root"/>
+      <geom name="pelvis0" fromto="-0.0386 0.0128 -0.1058 0.0386 0.0128 -0.1058" size="0.1385" mass="10.0530"/>
+      <body name="abdomen" pos="-1.1577e-08 0.01007 0.018706">
+        <joint name="abdomen_x" type="hinge" axis="1 0 0" range="-25 40"/>
+        <joint name="abdomen_y" type="hinge" axis="0 1 0" range="-25 25"/>
+        <joint name="abdomen_z" type="hinge" axis="0 0 1" range="-30 30"/>
+        <geom name="abdomen0" fromto="-0.024196 -0.019833 0.06478 0.024204 -0.019824 0.064779" size="0.1433" mass="14.6970"/>
+        <body name="chest" pos="1.8628e-06 0.014736 0.28313">
+          <joint name="chest_x" type="hinge" axis="1 0 0" range="-25 40"/>
+          <joint name="chest_y" type="hinge" axis="0 1 0" range="-25 25"/>
+          <joint name="chest_z" type="hinge" axis="0 0 1" range="-30 30"/>
+          <geom name="chest0" fromto="-0.043897 -0.015989 0.030604 0.043903 -0.016075 0.030602" size="0.1531" mass="7.1820"/>
+          <geom name="chest1" fromto="-0.074095 -0.0069856 0.23903 0.074005 -0.0069611 0.23903" size="0.1030" mass="7.1820"/>
+          <body name="head" pos="1.0232e-05 -0.02899 0.35854">
+            <joint name="head_x" type="hinge" axis="1 0 0" range="-40 50"/>
+            <joint name="head_y" type="hinge" axis="0 1 0" range="-35 35"/>
+            <joint name="head_z" type="hinge" axis="0 0 1" range="-70 70"/>
+            <geom name="head0" fromto="1.3753e-05 -0.067213 0.044194 0.00080971 -0.044231 0.076192" size="0.0892" mass="6.2460"/>
+          </body>
+          <body name="l_upperarm" pos="0.1996 0.017566 0.17567">
+            <joint name="l_upperarm_x" type="hinge" axis="1 0 0" range="-60 170"/>
+            <joint name="l_upperarm_y" type="hinge" axis="0 1 0" range="-90 90"/>
+            <joint name="l_upperarm_z" type="hinge" axis="0 0 1" range="-90 90"/>
+            <geom name="l_upperarm0" fromto="0.030377 -0.0077277 -0.028447 0.068618 -0.00031665 -0.16272" size="0.0828" mass="2.4390"/>
+            <body name="l_forearm" pos="0.14918 0.0066044 -0.22995">
+              <joint name="l_forearm_flex" type="hinge" axis="-0.83891 -0 -0.54428" range="0 150"/>
+              <joint name="l_forearm_twist" type="hinge" axis="0.54346 -0.054865 -0.83764" range="-80 80"/>
+              <geom name="l_forearm0" fromto="0.039566 -0.0035581 -0.068886 0.12125 -0.0084113 -0.1777" size="0.0539" mass="1.4580"/>
+              <body name="l_hand" pos="0.14086 -0.01422 -0.21711">
+                <joint name="l_hand_flex" type="hinge" axis="0.055823 0.84023 -0.53935" range="-70 70"/>
+                <joint name="l_hand_dev" type="hinge" axis="-0.68513 -0.3607 -0.63284" range="-30 30"/>
+                <geom name="l_hand0" fromto="0.017935 0.001065 -0.032605 0.042549 -0.012656 -0.051433" size="0.0471" mass="0.3294"/>
+                <body name="l_finger00" pos="0.012864 -0.024149 -0.020941" childclass="finger">
+                  <joint name="l_finger00_flex" type="hinge" axis="0.052375 0.84248 -0.53617" range="-20 60"/>
+                  <joint name="l_finger00_spread" type="hinge" axis="-0.9771 -0.067658 -0.20175" range="-30 50"/>
+                  <geom name="l_finger000" fromto="0.01708 -0.028307 -0.048616 0.008922 -0.027833 -0.044878" size="0.0180" mass="0.0146"/>
+                  <body name="l_finger01" pos="0.011616 -0.030102 -0.046164" childclass="finger">
+                    <joint name="l_finger01_flex" type="hinge" axis="-0.15788 0.93491 -0.31782" range="-10 95"/>
+                    <geom name="l_finger010" fromto="0.0068797 -0.0071126 -0.023504 0.0018292 -0.006894 -0.020665" size="0.0146" mass="0.0146"/>
+                    <body name="l_finger02" pos="0.0093213 -0.0097655 -0.033357" childclass="finger">
+                      <joint name="l_finger02_flex" type="hinge" axis="-0.30671 0.94272 -0.13117" range="-10 95"/>
+                      <geom name="l_finger020" fromto="0.0057809 -0.00092437 -0.022992 0.0050324 0.00019015 -0.013232" size="0.0103" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="l_finger10" pos="0.074824 -0.034963 -0.076555" childclass="finger">
+                  <joint name="l_finger10_flex" type="hinge" axis="-0.2518 0.94613 -0.20354" range="-10 95"/>
+                  <geom name="l_finger100" fromto="0.010096 -0.0043372 -0.024138 0.012591 -0.0038866 -0.030655" size="0.0141" mass="0.0146"/>
+                  <body name="l_finger11" pos="0.020171 -0.0037968 -0.042604" childclass="finger">
+                    <joint name="l_finger11_flex" type="hinge" axis="-0.37661 0.92582 -0.032077" range="-10 95"/>
+                    <geom name="l_finger110" fromto="-0.0010992 -0.0032456 -0.011994 -0.00027868 -0.0027857 -0.018283" size="0.0114" mass="0.0146"/>
+                    <body name="l_finger12" pos="-0.0012995 -0.0013614 -0.024035" childclass="finger">
+                      <joint name="l_finger12_flex" type="hinge" axis="-0.49149 0.85725 0.15351" range="-10 95"/>
+                      <geom name="l_finger120" fromto="-0.0054954 -0.0023732 -0.010743 -0.0058278 -0.0012923 -0.017843" size="0.0082" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="l_finger20" pos="0.076712 -0.010961 -0.076465" childclass="finger">
+                  <joint name="l_finger20_flex" type="hinge" axis="-0.32681 0.9394 -0.10354" range="-10 95"/>
+                  <geom name="l_finger200" fromto="0.0061387 -0.00070429 -0.020402 0.0094518 -0.0020785 -0.039873" size="0.0155" mass="0.0146"/>
+                  <body name="l_finger21" pos="0.01305 -0.00098361 -0.050118" childclass="finger">
+                    <joint name="l_finger21_flex" type="hinge" axis="-0.41015 0.91183 0.018753" range="-10 95"/>
+                    <geom name="l_finger210" fromto="-0.0057569 -0.0027608 -0.018411 -0.0030676 -0.0026318 -0.026346" size="0.0115" mass="0.0146"/>
+                    <body name="l_finger22" pos="-0.0051411 -0.0016463 -0.032391" childclass="finger">
+                      <joint name="l_finger22_flex" type="hinge" axis="-0.52158 0.82726 0.20882" range="-10 95"/>
+                      <geom name="l_finger220" fromto="-0.0092276 -0.0023053 -0.014815 -0.0073078 -0.002416 -0.0095817" size="0.0094" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="l_finger30" pos="0.066126 0.011991 -0.077436" childclass="finger">
+                  <joint name="l_finger30_flex" type="hinge" axis="-0.36832 0.92864 -0.04428" range="-10 95"/>
+                  <geom name="l_finger300" fromto="0.0076113 0.0022319 -0.020236 0.006342 -0.0013024 -0.026714" size="0.0149" mass="0.0146"/>
+                  <body name="l_finger31" pos="0.013551 0.0033553 -0.042347" childclass="finger">
+                    <joint name="l_finger31_flex" type="hinge" axis="-0.40885 0.91245 0.016744" range="-10 95"/>
+                    <geom name="l_finger310" fromto="-0.00095652 -0.001414 -0.0090031 -0.0035317 -0.0017968 -0.024294" size="0.0102" mass="0.0146"/>
+                    <body name="l_finger32" pos="-0.0053931 -0.0018638 -0.030118" childclass="finger">
+                      <joint name="l_finger32_flex" type="hinge" axis="-0.5248 0.82363 0.21498" range="-10 95"/>
+                      <geom name="l_finger320" fromto="-0.0096633 -0.0039592 -0.015933 -0.0071974 -0.0042991 -0.0086113" size="0.0080" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="l_finger40" pos="0.050592 0.028747 -0.080924" childclass="finger">
+                  <joint name="l_finger40_flex" type="hinge" axis="-0.39782 0.91746 -0.00019924" range="-10 95"/>
+                  <geom name="l_finger400" fromto="0.010588 0.0038019 -0.02144 0.0037258 0.0072984 -0.0087517" size="0.0134" mass="0.0146"/>
+                  <body name="l_finger41" pos="0.016588 0.0071853 -0.033675" childclass="finger">
+                    <joint name="l_finger41_flex" type="hinge" axis="-0.32167 0.94036 -0.11067" range="-10 95"/>
+                    <geom name="l_finger410" fromto="-0.0035154 -0.0028686 -0.015887 -0.0010503 -0.002456 -0.0088603" size="0.0094" mass="0.0146"/>
+                    <body name="l_finger42" pos="-0.003716 -0.0038905 -0.022257" childclass="finger">
+                      <joint name="l_finger42_flex" type="hinge" axis="-0.40209 0.91558 0.0063231" range="-10 95"/>
+                      <geom name="l_finger420" fromto="-0.0037964 -0.0031461 -0.012049 -0.0040018 -0.0032608 -0.008509" size="0.0075" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+          <body name="r_upperarm" pos="-0.19961 0.017498 0.17567">
+            <joint name="r_upperarm_x" type="hinge" axis="1 0 0" range="-60 170"/>
+            <joint name="r_upperarm_y" type="hinge" axis="0 1 0" range="-90 90"/>
+            <joint name="r_upperarm_z" type="hinge" axis="0 0 1" range="-90 90"/>
+            <geom name="r_upperarm0" fromto="-0.038382 -0.010322 -0.083779 -0.07206 0.0029308 -0.16398" size="0.0854" mass="2.4390"/>
+            <body name="r_forearm" pos="-0.14919 0.0065539 -0.22993">
+              <joint name="r_forearm_flex" type="hinge" axis="-0.8389 0 0.54428" range="0 150"/>
+              <joint name="r_forearm_twist" type="hinge" axis="-0.54346 -0.05505 -0.83763" range="-80 80"/>
+              <geom name="r_forearm0" fromto="-0.052744 -0.010926 -0.080745 -0.12503 -0.0068345 -0.18573" size="0.0551" mass="1.4580"/>
+              <body name="r_hand" pos="-0.14086 -0.014269 -0.21711">
+                <joint name="r_hand_flex" type="hinge" axis="0.12272 -0.79201 0.59804" range="-70 70"/>
+                <joint name="r_hand_dev" type="hinge" axis="0.74371 -0.32561 -0.58384" range="-30 30"/>
+                <geom name="r_hand0" fromto="-0.026014 0.00037965 -0.037706 -0.043191 -0.013119 -0.052058" size="0.0478" mass="0.3294"/>
+                <body name="r_finger00" pos="-0.012857 -0.024153 -0.020945" childclass="finger">
+                  <joint name="r_finger00_flex" type="hinge" axis="0.05265 -0.84246 0.53617" range="-20 60"/>
+                  <joint name="r_finger00_spread" type="hinge" axis="0.97712 -0.067337 -0.20175" range="-30 50"/>
+                  <geom name="r_finger000" fromto="-0.017078 -0.02809 -0.048638 -0.0089193 -0.027614 -0.0449" size="0.0180" mass="0.0146"/>
+                  <body name="r_finger01" pos="-0.011607 -0.030106 -0.046164" childclass="finger">
+                    <joint name="r_finger01_flex" type="hinge" axis="-0.15756 -0.93496 0.31783" range="-10 95"/>
+                    <geom name="r_finger010" fromto="-0.0072853 -0.0068263 -0.023475 -0.0019571 -0.0066207 -0.020385" size="0.0146" mass="0.0146"/>
+                    <body name="r_finger02" pos="-0.0093191 -0.0097687 -0.033356" childclass="finger">
+                      <joint name="r_finger02_flex" type="hinge" axis="-0.26283 -0.94616 0.18895" range="-10 95"/>
+                      <geom name="r_finger020" fromto="-0.0058602 -0.0015388 -0.023254 -0.0047549 0.00020145 -0.013003" size="0.0100" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="r_finger10" pos="-0.074814 -0.034988 -0.076557" childclass="finger">
+                  <joint name="r_finger10_flex" type="hinge" axis="-0.25149 -0.94622 0.20354" range="-10 95"/>
+                  <geom name="r_finger100" fromto="-0.0099563 -0.0041097 -0.024224 -0.012391 -0.0037501 -0.030651" size="0.0142" mass="0.0146"/>
+                  <body name="r_finger11" pos="-0.02017 -0.0038035 -0.042603" childclass="finger">
+                    <joint name="r_finger11_flex" type="hinge" axis="-0.37626 -0.92596 0.032134" range="-10 95"/>
+                    <geom name="r_finger110" fromto="0.0010281 -0.003009 -0.011309 0.00054013 -0.0025369 -0.018283" size="0.0112" mass="0.0146"/>
+                    <body name="r_finger12" pos="0.0012972 -0.0013612 -0.024035" childclass="finger">
+                      <joint name="r_finger12_flex" type="hinge" axis="-0.4794 -0.8675 -0.13276" range="-10 95"/>
+                      <geom name="r_finger120" fromto="0.0057646 -0.0010905 -0.017765 0.0054974 -0.0019834 -0.010966" size="0.0083" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="r_finger20" pos="-0.076712 -0.010987 -0.076467" childclass="finger">
+                  <joint name="r_finger20_flex" type="hinge" axis="-0.3265 -0.93951 0.10354" range="-10 95"/>
+                  <geom name="r_finger200" fromto="-0.0059003 -0.00051016 -0.020675 -0.0090875 -0.0018759 -0.039662" size="0.0158" mass="0.0146"/>
+                  <body name="r_finger21" pos="-0.01305 -0.00098801 -0.050117" childclass="finger">
+                    <joint name="r_finger21_flex" type="hinge" axis="-0.40984 -0.91197 -0.01874" range="-10 95"/>
+                    <geom name="r_finger210" fromto="0.0062046 -0.0020746 -0.018679 0.0035678 -0.0024008 -0.02567" size="0.0120" mass="0.0146"/>
+                    <body name="r_finger22" pos="0.0051407 -0.0016446 -0.032392" childclass="finger">
+                      <joint name="r_finger22_flex" type="hinge" axis="-0.49652 -0.85258 -0.16303" range="-10 95"/>
+                      <geom name="r_finger220" fromto="0.0089273 -0.0021919 -0.014903 0.0072892 -0.0022255 -0.0097378" size="0.0095" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="r_finger30" pos="-0.066132 0.011969 -0.077438" childclass="finger">
+                  <joint name="r_finger30_flex" type="hinge" axis="-0.368 -0.92877 0.044293" range="-10 95"/>
+                  <geom name="r_finger300" fromto="-0.0064106 -0.0010786 -0.026779 -0.0075591 0.002422 -0.020238" size="0.0149" mass="0.0146"/>
+                  <body name="r_finger31" pos="-0.013554 0.0033511 -0.042347" childclass="finger">
+                    <joint name="r_finger31_flex" type="hinge" axis="-0.40854 -0.91259 -0.016731" range="-10 95"/>
+                    <geom name="r_finger310" fromto="0.002127 -0.0013332 -0.01002 0.0038229 -0.0016574 -0.023436" size="0.0110" mass="0.0146"/>
+                    <body name="r_finger32" pos="0.0053928 -0.001862 -0.030119" childclass="finger">
+                      <joint name="r_finger32_flex" type="hinge" axis="-0.46868 -0.87594 -0.1143" range="-10 95"/>
+                      <geom name="r_finger320" fromto="0.0088926 -0.0038037 -0.015893 0.0074389 -0.0039551 -0.0087715" size="0.0081" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+                <body name="r_finger40" pos="-0.050604 0.028729 -0.080927" childclass="finger">
+                  <joint name="r_finger40_flex" type="hinge" axis="-0.39751 -0.9176 0.00020943" range="-10 95"/>
+                  <geom name="r_finger400" fromto="-0.0038024 0.0075543 -0.0088874 -0.010455 0.0039576 -0.021358" size="0.0136" mass="0.0146"/>
+                  <body name="r_finger41" pos="-0.016592 0.0071803 -0.033675" childclass="finger">
+                    <joint name="r_finger41_flex" type="hinge" axis="-0.32136 -0.94047 0.11067" range="-10 95"/>
+                    <geom name="r_finger410" fromto="0.0033556 -0.0028011 -0.016028 0.00066832 -0.0018514 -0.008001" size="0.0088" mass="0.0146"/>
+                    <body name="r_finger42" pos="0.0037157 -0.0038889 -0.022257" childclass="finger">
+                      <joint name="r_finger42_flex" type="hinge" axis="-0.43013 -0.90134 -0.050697" range="-10 95"/>
+                      <geom name="r_finger420" fromto="0.0035539 -0.002922 -0.012316 0.0033162 -0.0030548 -0.0079373" size="0.0071" mass="0.0146"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="l_thigh" pos="0.096118 0.000226 -0.073508">
+        <joint name="l_thigh_x" type="hinge" axis="1 0 0" range="-30 120"/>
+        <joint name="l_thigh_y" type="hinge" axis="0 1 0" range="-40 45"/>
+        <joint name="l_thigh_z" type="hinge" axis="0 0 1" range="-40 40"/>
+        <geom name="l_thigh0" fromto="0.0089737 0.0096713 -0.29374 0.0094028 -0.016552 -0.13749" size="0.1084" mass="12.7440"/>
+        <body name="l_calf" pos="0.031331 0.016896 -0.40496">
+          <joint name="l_calf_flex" type="hinge" axis="0.99715 0 0.075503" range="0 150"/>
+          <geom name="l_calf0" fromto="0.023129 0.020358 -0.34605 0.0043807 0.017384 -0.11998" size="0.0781" mass="3.8970"/>
+          <body name="l_foot" pos="0.031072 0.034429 -0.41036">
+            <joint name="l_foot_flex" type="hinge" axis="1 0 0" range="-45 30"/>
+            <joint name="l_foot_inv" type="hinge" axis="0 1 0" range="-25 25"/>
+            <geom name="l_foot0" fromto="-0.0051132 0.0053445 -0.045635 -0.0016285 -0.045274 -0.034004" size="0.0618" mass="0.9864"/>
+            <body name="l_toe" pos="0.006011 -0.15343 -0.050144">
+              <joint name="l_toe_flex" type="hinge" axis="1 0 0" range="-30 50"/>
+              <geom name="l_toe0" fromto="0.032084 -0.034727 -0.018712 0.0003122 -0.046276 -0.01841" size="0.0428" mass="0.2466"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="r_thigh" pos="-0.096118 0.000226 -0.073508">
+        <joint name="r_thigh_x" type="hinge" axis="1 0 0" range="-30 120"/>
+        <joint name="r_thigh_y" type="hinge" axis="0 1 0" range="-40 45"/>
+        <joint name="r_thigh_z" type="hinge" axis="0 0 1" range="-40 40"/>
+        <geom name="r_thigh0" fromto="0.013389 0.015514 -0.29311 -0.0017919 -0.015585 -0.12931" size="0.1116" mass="12.7440"/>
+        <body name="r_calf" pos="-0.031332 0.016896 -0.40496">
+          <joint name="r_calf_flex" type="hinge" axis="0.99715 0 -0.075503" range="0 150"/>
+          <geom name="r_calf0" fromto="0.011995 0.0074027 -0.12377 -0.0151 0.015281 -0.3499" size="0.0734" mass="3.8970"/>
+          <body name="r_foot" pos="-0.031072 0.034429 -0.41036">
+            <joint name="r_foot_flex" type="hinge" axis="1 0 0" range="-45 30"/>
+            <joint name="r_foot_inv" type="hinge" axis="0 1 0" range="-25 25"/>
+            <geom name="r_foot0" fromto="0.0010056 0.0077848 -0.045522 -0.005323 -0.049005 -0.036573" size="0.0595" mass="0.9864"/>
+            <body name="r_toe" pos="-0.0060126 -0.15343 -0.050144">
+              <joint name="r_toe_flex" type="hinge" axis="1 0 0" range="-30 50"/>
+              <geom name="r_toe0" fromto="-0.029544 -0.038839 -0.018856 -0.00094319 -0.047052 -0.018379" size="0.0439" mass="0.2466"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="l_thigh" body2="r_thigh"/>
+  </contact>
+  <actuator>
+    <motor name="abdomen_x" joint="abdomen_x" gear="150" ctrlrange="-1 1"/>
+    <motor name="abdomen_y" joint="abdomen_y" gear="150" ctrlrange="-1 1"/>
+    <motor name="abdomen_z" joint="abdomen_z" gear="150" ctrlrange="-1 1"/>
+    <motor name="chest_x" joint="chest_x" gear="150" ctrlrange="-1 1"/>
+    <motor name="chest_y" joint="chest_y" gear="150" ctrlrange="-1 1"/>
+    <motor name="chest_z" joint="chest_z" gear="150" ctrlrange="-1 1"/>
+    <motor name="head_x" joint="head_x" gear="40" ctrlrange="-1 1"/>
+    <motor name="head_y" joint="head_y" gear="40" ctrlrange="-1 1"/>
+    <motor name="head_z" joint="head_z" gear="40" ctrlrange="-1 1"/>
+    <motor name="l_upperarm_x" joint="l_upperarm_x" gear="80" ctrlrange="-1 1"/>
+    <motor name="l_upperarm_y" joint="l_upperarm_y" gear="80" ctrlrange="-1 1"/>
+    <motor name="l_upperarm_z" joint="l_upperarm_z" gear="80" ctrlrange="-1 1"/>
+    <motor name="l_forearm_flex" joint="l_forearm_flex" gear="60" ctrlrange="-1 1"/>
+    <motor name="l_forearm_twist" joint="l_forearm_twist" gear="60" ctrlrange="-1 1"/>
+    <motor name="l_hand_flex" joint="l_hand_flex" gear="20" ctrlrange="-1 1"/>
+    <motor name="l_hand_dev" joint="l_hand_dev" gear="20" ctrlrange="-1 1"/>
+    <motor name="l_finger00_flex" joint="l_finger00_flex" gear="3" ctrlrange="-1 1"/>
+    <motor name="l_finger00_spread" joint="l_finger00_spread" gear="3" ctrlrange="-1 1"/>
+    <motor name="l_finger01_flex" joint="l_finger01_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger02_flex" joint="l_finger02_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger10_flex" joint="l_finger10_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger11_flex" joint="l_finger11_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger12_flex" joint="l_finger12_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger20_flex" joint="l_finger20_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger21_flex" joint="l_finger21_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger22_flex" joint="l_finger22_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger30_flex" joint="l_finger30_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger31_flex" joint="l_finger31_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger32_flex" joint="l_finger32_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger40_flex" joint="l_finger40_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger41_flex" joint="l_finger41_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_finger42_flex" joint="l_finger42_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_upperarm_x" joint="r_upperarm_x" gear="80" ctrlrange="-1 1"/>
+    <motor name="r_upperarm_y" joint="r_upperarm_y" gear="80" ctrlrange="-1 1"/>
+    <motor name="r_upperarm_z" joint="r_upperarm_z" gear="80" ctrlrange="-1 1"/>
+    <motor name="r_forearm_flex" joint="r_forearm_flex" gear="60" ctrlrange="-1 1"/>
+    <motor name="r_forearm_twist" joint="r_forearm_twist" gear="60" ctrlrange="-1 1"/>
+    <motor name="r_hand_flex" joint="r_hand_flex" gear="20" ctrlrange="-1 1"/>
+    <motor name="r_hand_dev" joint="r_hand_dev" gear="20" ctrlrange="-1 1"/>
+    <motor name="r_finger00_flex" joint="r_finger00_flex" gear="3" ctrlrange="-1 1"/>
+    <motor name="r_finger00_spread" joint="r_finger00_spread" gear="3" ctrlrange="-1 1"/>
+    <motor name="r_finger01_flex" joint="r_finger01_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger02_flex" joint="r_finger02_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger10_flex" joint="r_finger10_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger11_flex" joint="r_finger11_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger12_flex" joint="r_finger12_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger20_flex" joint="r_finger20_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger21_flex" joint="r_finger21_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger22_flex" joint="r_finger22_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger30_flex" joint="r_finger30_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger31_flex" joint="r_finger31_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger32_flex" joint="r_finger32_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger40_flex" joint="r_finger40_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger41_flex" joint="r_finger41_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="r_finger42_flex" joint="r_finger42_flex" gear="2" ctrlrange="-1 1"/>
+    <motor name="l_thigh_x" joint="l_thigh_x" gear="200" ctrlrange="-1 1"/>
+    <motor name="l_thigh_y" joint="l_thigh_y" gear="200" ctrlrange="-1 1"/>
+    <motor name="l_thigh_z" joint="l_thigh_z" gear="200" ctrlrange="-1 1"/>
+    <motor name="l_calf_flex" joint="l_calf_flex" gear="160" ctrlrange="-1 1"/>
+    <motor name="l_foot_flex" joint="l_foot_flex" gear="90" ctrlrange="-1 1"/>
+    <motor name="l_foot_inv" joint="l_foot_inv" gear="90" ctrlrange="-1 1"/>
+    <motor name="l_toe_flex" joint="l_toe_flex" gear="20" ctrlrange="-1 1"/>
+    <motor name="r_thigh_x" joint="r_thigh_x" gear="200" ctrlrange="-1 1"/>
+    <motor name="r_thigh_y" joint="r_thigh_y" gear="200" ctrlrange="-1 1"/>
+    <motor name="r_thigh_z" joint="r_thigh_z" gear="200" ctrlrange="-1 1"/>
+    <motor name="r_calf_flex" joint="r_calf_flex" gear="160" ctrlrange="-1 1"/>
+    <motor name="r_foot_flex" joint="r_foot_flex" gear="90" ctrlrange="-1 1"/>
+    <motor name="r_foot_inv" joint="r_foot_inv" gear="90" ctrlrange="-1 1"/>
+    <motor name="r_toe_flex" joint="r_toe_flex" gear="20" ctrlrange="-1 1"/>
+  </actuator>
+</mujoco>
