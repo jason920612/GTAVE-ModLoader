@@ -38,6 +38,9 @@ def main():
     roll = np.load(roll_path)
     rq, dt = roll["qpos"], 1 / float(roll["fps"])
     ref, _ = reference(clip_path, m, dt)
+    # LocoMuJoCo starts trajectories at the origin: line the rollout's start up with the reference horizontally.
+    rq = rq.copy()
+    rq[:, :2] += ref[min(1, len(ref) - 1), :2] - rq[0, :2]
     picks = np.linspace(0, len(rq) - 1, count).astype(int)
     fig, axes = plt.subplots(2, count, figsize=(2.1 * count, 6.5), sharey=True)
     for c, k in enumerate(picks):
