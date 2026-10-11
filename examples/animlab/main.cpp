@@ -87,6 +87,23 @@ extern "C" __declspec(dllexport) void MLMain()
 				}
 				ml::Log("animlab: bend done");
 			}
+			else if (cmd == "hand")
+			{
+				// Research: the right hand's bones (children of SKEL_R_Hand, recursively) with world positions.
+				namespace b = ml::body;
+				const b::Skeleton sk(ped);
+				const int hand = sk.Find(static_cast<uint16_t>(0xDEAD));
+				for (int i = 0; i < sk.Count(); ++i)
+				{
+					int a = i;
+					while (a >= 0 && a != hand)
+						a = sk.Parent(a);
+					if (a != hand)
+						continue;
+					const b::Vec3 w = sk.World(i).pos;
+					ml::Log("animlab: hand bone #{} {} parent {} at {:.4f},{:.4f},{:.4f}", i, sk.Name(i), sk.Parent(i), w.x, w.y, w.z);
+				}
+			}
 			else if (cmd == "bones")
 			{
 				// Research: our world transforms (pose API) against the game's GET_WORLD_POSITION_OF_ENTITY_BONE.

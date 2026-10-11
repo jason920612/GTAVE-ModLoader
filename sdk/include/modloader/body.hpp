@@ -64,6 +64,12 @@ namespace ml::body
 			    w * o.w - x * o.x - y * o.y - z * o.z};
 		}
 		Quat Conjugate() const { return {-x, -y, -z, w}; }
+		// The angle of the rotation between this and o, degrees.
+		float AngleTo(Quat o) const
+		{
+			const float d = std::fabs(x * o.x + y * o.y + z * o.z + w * o.w);
+			return 2 * std::acos(d < 1 ? d : 1.0f) * 57.29578f;
+		}
 		Quat Normalized() const
 		{
 			const float l = std::sqrt(x * x + y * y + z * z + w * w);
@@ -194,7 +200,17 @@ namespace ml::body
 	class Pose
 	{
 	public:
-		explicit Pose(const Skeleton& sk) : m_sk(sk) {}
+		// The game moves the root after the script runs (the post-animation update shifts it, by about 1.6 cm for a
+		// standing ped); the shift is taken from the pose shown last frame so that targets land where they are shown.
+		explicit Pose(const Skeleton& sk) : m_sk(sk)
+		{
+			for (int i = 0; i < sk.Count(); ++i)
+				if (sk.Parent(i) < 0)
+				{
+					m_rootShift = sk.Shown(i).pos - sk.World(i).pos;
+					break;
+				}
+		}
 
 		// Local rotation (parent space) of a bone.
 		void SetLocal(int bone, Quat rot, float weight = 1.0f)
@@ -221,7 +237,22 @@ namespace ml::body
 		{
 			const int p = m_sk.Parent(bone);
 			if (p < 0)
-				return m_sk.World(bone);
+			{
+				// The root's parent is the entity: apply this pose's root override in the entity's frame.
+				Transform root = m_sk.World(bone);
+				const Transform local = m_sk.Local(bone);
+				const Quat entity = root.rot * local.rot.Conjugate();
+				for (const Item& e : m_items)
+					if (e.bone == bone)
+					{
+						if (e.flags & ML_POSE_TRANSLATION)
+							root.pos = root.pos + entity.Rotate(e.pos - local.pos);
+						if (e.flags & ML_POSE_ROTATION)
+							root.rot = entity * e.rot;
+					}
+				root.pos = root.pos + m_rootShift;
+				return root;
+			}
 			Transform local = m_sk.Local(bone);
 			for (const Item& e : m_items)
 				if (e.bone == bone)
@@ -297,5 +328,6 @@ namespace ml::body
 		}
 		const Skeleton& m_sk;
 		std::vector<Item> m_items;
+		Vec3 m_rootShift;
 	};
 }
