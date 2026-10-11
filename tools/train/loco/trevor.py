@@ -102,7 +102,7 @@ class MjxTrevorBody(TrevorBody):
     mjx_enabled = True
 
     def __init__(self, timestep=0.002, n_substeps=5, **kwargs):
-        model_option_conf = kwargs.pop("model_option_conf", dict(iterations=2, ls_iterations=4,
+        model_option_conf = kwargs.pop("model_option_conf", dict(iterations=4, ls_iterations=6,
                                                                   disableflags=mujoco.mjtDisableBit.mjDSBL_EULERDAMP))
         super().__init__(timestep=timestep, n_substeps=n_substeps, model_option_conf=model_option_conf, **kwargs)
 
