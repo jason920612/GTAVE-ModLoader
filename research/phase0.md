@@ -676,4 +676,5 @@
   等於官方的 float3 法線（例：175→−81→−0.64）。對應 DXGI `R8G8B8A8_SNORM`（31），頂點跨距不變。轉換器版本 15。
 - 第二輪：12,266 全部成功。遊戲內以替換模組載入轉換後的舊版 barracks3，布篷顯示與光影正常。
 - 剩餘警告 71 個，全是貼圖參數 `0x037EB699`（= `DiffuseExtraSampler`）出現在 4 種效果：強化版的同名效果已沒有可對應的貼圖槽，
-  這張貼圖不會被使用，不影響顯示。另外：強化版貼圖名稱多半是「舊版名稱去掉 Sampler 加上 Tex」（對照表 15 組中 11 組符合）。
+  這張貼圖不會被使用，不影響顯示。
+- `DiffuseExtraSampler` 的來源（2026-10-11）：4 種效果是 weapon_normal_spec_detail_palette（5ff02c23）、weapon_normal_spec_detail_tnt（71a93f43）、weapon_normal_spec_tnt（8676a645）、weapon_normal_spec_palette（9905a1ed），只出現在武器模型。71 個實例全部指向與 `DiffuseSampler` 相同的貼圖。舊版 common.rpf 的 fxc：`DiffuseSampler` 被 33 段編譯著色器的 RDEF 引用，`DiffuseExtraSampler` 只在參數宣告出現 1 次、沒有任何著色器綁定——舊版本來就沒讀它（死參數）。強化版官方的同名檔（w_ar_bullpupriflemk2、*_luxe 等）參數表裡完全沒有這個雜湊。結論：不是強化版引擎接管或改做法，而是舊版就沒用到、強化版重新編譯時把它刪掉。另外：強化版貼圖名稱多半是「舊版名稱去掉 Sampler 加上 Tex」（對照表 15 組中 11 組符合）。
