@@ -106,6 +106,25 @@ foreach(example IN LISTS EXAMPLE_MODS)
     target_compile_options(${example} PRIVATE /W4 /utf-8 /bigobj)
 endforeach()
 
+# Basketball: MuJoCo (Apache 2.0, prebuilt) simulates the players' physical bodies. mujoco.dll is delay-loaded from
+# ModLoader\mods\basketball\ (every DLL directly in mods\ would be taken for a mod).
+FetchContent_Declare(mujoco
+    URL https://github.com/google-deepmind/mujoco/releases/download/3.15.0/mujoco-3.15.0-windows-x86_64.zip)
+FetchContent_GetProperties(mujoco)
+if(NOT mujoco_POPULATED)
+    FetchContent_Populate(mujoco)
+endif()
+target_include_directories(basketball PRIVATE ${mujoco_SOURCE_DIR}/include)
+target_link_libraries(basketball PRIVATE ${mujoco_SOURCE_DIR}/lib/mujoco.lib delayimp)
+target_link_options(basketball PRIVATE /DELAYLOAD:mujoco.dll)
+# Research tool: checks the body's observation/policy against LocoMuJoCo's rollout (tools/physcheck). Not default.
+add_executable(bball_physcheck EXCLUDE_FROM_ALL tools/physcheck/physcheck.cpp examples/basketball/physbody.cpp)
+target_include_directories(bball_physcheck PRIVATE ${mujoco_SOURCE_DIR}/include)
+target_link_libraries(bball_physcheck PRIVATE ${mujoco_SOURCE_DIR}/lib/mujoco.lib)
+target_compile_features(bball_physcheck PRIVATE cxx_std_20)
+add_custom_command(TARGET bball_physcheck POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${mujoco_SOURCE_DIR}/bin/mujoco.dll" $<TARGET_FILE_DIR:bball_physcheck>)
+
 # Optional: GTAV_DIR=<game dir> installs the loader there after each build.
 if(GTAV_DIR)
     add_custom_command(TARGET stub POST_BUILD
@@ -117,12 +136,19 @@ if(GTAV_DIR)
         add_custom_command(TARGET ${example} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${GTAV_DIR}/ModLoader/mods"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${example}> "${GTAV_DIR}/ModLoader/mods/")
+        # Data of the mod (examples/<mod>/data -> ModLoader\mods\<mod>\data).
+        if(EXISTS "${CMAKE_SOURCE_DIR}/examples/${example}/data")
+            add_custom_command(TARGET ${example} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/examples/${example}/data" "${GTAV_DIR}/ModLoader/mods/${example}/data")
+        endif()
         # Web pages of the mod (examples/<mod>/web -> ModLoader\mods\<mod>\web).
         if(EXISTS "${CMAKE_SOURCE_DIR}/examples/${example}/web")
             add_custom_command(TARGET ${example} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/examples/${example}/web" "${GTAV_DIR}/ModLoader/mods/${example}/web")
         endif()
     endforeach()
+    add_custom_command(TARGET basketball POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${mujoco_SOURCE_DIR}/bin/mujoco.dll" "${GTAV_DIR}/ModLoader/mods/basketball/")
 endif()
 
 # Research tool: learns the legacy -> Enhanced script global table (tools/learn_ysc). Not part of the default build.

@@ -47,6 +47,8 @@ def main():
     traj = extend_motion("TrevorBody", OmegaConf.create({}), trevor.trajectory(clip))
     params = OmegaConf.to_container(config.env_params, resolve=True)
     params["th_params"] = dict(random_start=False, fixed_start_conf=(0, 0))
+    if os.environ.get("BB_NO_WARP"):
+        params["use_mjwarp"] = False  # MJX's JAX implementation instead of Warp (robustness check)
     env = TaskFactory.get_factory_cls(config.task_factory.name).make(**params, custom_dataset_conf=CustomDatasetConf(traj=traj))
     env = PPOJax._wrap_env(env, config)
     ts = agent_state.train_state

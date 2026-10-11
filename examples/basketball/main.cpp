@@ -13,6 +13,7 @@
 
 #include "hand.hpp"
 #include "physics.hpp"
+#include "physwalk.hpp"
 #include "stance.hpp"
 
 ML_MOD_INFO("Basketball", "0.0.1", "ModLoader", "Street basketball with procedural players (in development)")
@@ -28,6 +29,67 @@ namespace bball
 	}
 
 	Cam g_cam = 0;
+	bool LoadMujoco(const std::wstring& modDir);
+	bool g_mujoco = false;
+	float g_camSide = 1;
+
+	// The player walks with the physically simulated body (trained walking policy) until the clip ends.
+	void PhysWalkCommand(bool full)
+	{
+		if (!g_mujoco)
+		{
+			ml::LogError("physwalk: mujoco.dll did not load");
+			return;
+		}
+		const Ped ped = PLAYER::PLAYER_PED_ID();
+		PhysWalk walk;
+		std::string error;
+		if (!walk.Start(ped, std::wstring(ml::Context().modDir) + L"data\\walk", error))
+		{
+			ml::LogError("physwalk: {}", error);
+			return;
+		}
+		ENTITY::FREEZE_ENTITY_POSITION(ped, true);
+		if (full)
+		{
+			// The whole walk from the side: the clip's displacement taken into the world, the camera off to one side of
+			// its middle, a little above (side: CAM_SIDE = 1 or -1).
+			const Vector3 p = ENTITY::GET_ENTITY_COORDS(ped, false);
+			const ml::body::Vec3 move = walk.WorldDirection();
+			const Vec3 dir{move.x, move.y, 0}, side{-dir.y, dir.x, 0};
+			const Vec3 at = Vec3{p.x, p.y, p.z - 0.2f} + dir * 1.8f, from = at + side * (6.0f * g_camSide) + Vec3{0, 0, 1.2f};
+			Cam cam = CAMERA::CREATE_CAM_WITH_PARAMS("DEFAULT_SCRIPTED_CAMERA", from.x, from.y, from.z, 0, 0, 0, 45.0f, false, 2);
+			CAMERA::POINT_CAM_AT_COORD(cam, at.x, at.y, at.z);
+			CAMERA::SET_CAM_ACTIVE(cam, true);
+			CAMERA::RENDER_SCRIPT_CAMS(true, false, 0, true, false, 0);
+			g_cam = cam;
+		}
+		std::ofstream log("ModLoader/bball_physwalk.csv");
+		log << "t,clip_step,pelvis_x,pelvis_y,pelvis_z\n";
+		float t = 0;
+		while (walk.Update(std::fmin(MISC::GET_FRAME_TIME(), 0.05f)))
+		{
+			t += MISC::GET_FRAME_TIME();
+			const mjData* d = const_cast<PhysBody*>(walk.Body())->Data();
+			log << std::format("{:.3f},{},{:.3f},{:.3f},{:.3f}\n", t, walk.Body()->ClipStep(), d->qpos[0], d->qpos[1], d->qpos[2]);
+			ml::Wait(0);
+		}
+		const uint64_t hold = ml::TickMs() + 1500;
+		while (ml::TickMs() < hold)
+		{
+			walk.Update(0);
+			ml::Wait(0);
+		}
+		walk.Stop();
+		ENTITY::FREEZE_ENTITY_POSITION(ped, false);
+		if (g_cam)
+		{
+			CAMERA::RENDER_SCRIPT_CAMS(false, false, 0, true, false, 0);
+			CAMERA::DESTROY_CAM(g_cam, false);
+			g_cam = 0;
+		}
+		ml::Log("physwalk: done after {:.1f} s", t);
+	}
 
 	void Dribble(float seconds, bool close, bool slow, Stance stance, bool full, bool markers)
 	{
@@ -218,6 +280,9 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		ml::LogError("this loader has no pose API; basketball needs it");
 		return 0;
 	}
+	bball::g_mujoco = bball::LoadMujoco(ctx->modDir ? ctx->modDir : L"");
+	if (!bball::g_mujoco)
+		ml::LogError("mujoco.dll not found in the mod folder; physical bodies are off");
 	return 1;
 }
 
@@ -260,6 +325,11 @@ extern "C" __declspec(dllexport) void MLMain()
 				    r.pos.y, r.pos.z);
 			}
 			ml::Log("skeleton: {} bones written", sk.Count());
+		}
+		if (cmd == "physwalk")
+		{
+			bball::g_camSide = options.find("left") != std::string::npos ? -1.0f : 1.0f;
+			bball::PhysWalkCommand(arg == "full" || options.find("full") != std::string::npos);
 		}
 		if (cmd == "dribble")
 			bball::Dribble(arg.empty() ? 8.0f : std::stof(arg), options.find("close") != std::string::npos, options.find("slow") != std::string::npos, stance,

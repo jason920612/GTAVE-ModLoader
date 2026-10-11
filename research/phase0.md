@@ -937,3 +937,28 @@
   （隨機起點＋片段短），不是跌倒。
 - 與自寫版本的差異（可能的成功因素）：步數 5 倍、每次更新的展開長 10 倍、γ 0.99、固定動作雜訊、以模仿點為主的獎勵、
   100 Hz 控制、Warp 後端。
+
+## 50. 物理身體在遊戲中行走（2026-10-12）
+
+- 匯出（`tools/train/loco/export.py`）→ `examples/basketball/data/walk/`：
+  - `body.mjb`：訓練時實際用的 MuJoCo 模型（MJX 版：只有腳碰地、2 ms、求解器 4／6 次）；
+  - `policy.bin`：演員網路（506 → tanh 512 → tanh 256 → 37）與觀測正規化（(x − 平均) / √(變異數 + 1e-8)）；
+  - `reference.bin`：LocoMuJoCo 看到的參考軌跡（100 Hz，起點水平位置在原點）；
+  - `golden.bin`：LocoMuJoCo 的 CPU 環境實跑（每步 qpos、qvel、片段步、觀測、動作）。
+  - CPU 環境要用和 MJX 版相同的時間步「與子步數」（CPU 類別預設值不同 → 控制頻率不同，43 步就倒）；一致後 CPU 也走完整段。
+- 觀測（LocoMuJoCo GoalTrajMimic，506 維）：本體 85（根高度＋四元數、37 關節、根速度 6、37 關節速度）＋目標 421
+  ＝ 身體 14 個模仿點相對上半身（位置差〔世界座標〕、相對旋轉 mainᵀ·site 的旋轉向量、6D 速度：角 relᵀ·ω_site − ω_main、
+  線 main·(v_main − v_site)；點速度 = 所屬剛體 cvel 移到點上〔v − (p − subtree_com) × ω〕）＋參考 qpos（不含根 x/y）42 ＋ qvel 43
+  ＋參考的 14 個模仿點同上（參考的運動學在 C++ 以參考 qpos/qvel 跑 mj_forward 算出）。
+- `examples/basketball/physbody.*`（只依賴 MuJoCo）與 `tools/physcheck`（獨立程式 `bball_physcheck`）：
+  - 網路：由標準答案觀測算出的動作誤差 1e-6；參考那半部分的觀測誤差 ≤ 2e-6（公式正確）；
+  - 身體那半部分差 4 mm（位置中位數）～數 rad/s（速度）：LocoMuJoCo 在物理步進後直接取觀測（運動學停在步進前），
+    檢查程式則先 mj_forward——遊戲裡的實作與訓練一樣不重算，所以一致；
+  - C++ 獨立跑完整段 256 步，骨盆最低 0.908 m，前進 3.7 m。
+- 遊戲：MuJoCo 3.15 Windows 預編譯版（CMake 下載，Apache 2.0），`mujoco.dll` 放在 `mods\basketball\`（`mods\` 裡的 DLL
+  都會被當成模組），延遲載入、模組初始化時以完整路徑先載入。
+- 對應到骨架（`physwalk.*`）：每根骨頭歸屬一個模擬剛體（膠囊擬合的分段，滾動骨歸肢段、手指歸手掌）；目標
+  = 剛體變換 ×（骨頭靜止旋轉、骨頭相對剛體原點的靜止位移），模擬座標＝骨架物件座標（綁定姿勢），地面 z ＝ 地面高 − 實體高；
+  只覆寫剛體交界的骨頭（23 根，含平移），其他保留動畫。實體凍結在起點。
+- 驗證：指令 `physwalk full left`，側面鏡頭（方向取參考位移換到世界座標）8 格動作分解：直立、雙腿交替、雙腳著地、
+  面向前進方向，2.6 秒後停在最後姿勢；`bball_physwalk.csv` 骨盆軌跡與 C++ 獨立執行一致（終點 0.396, −3.711, 1.007）。
