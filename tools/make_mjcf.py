@@ -1,6 +1,7 @@
 """Build a MuJoCo model (MJCF) of a ped's physical body from its skeleton and fitted capsules (research/phase0.md §47).
 usage: make_mjcf.py <skeleton.txt> <capsules.json> <out.xml> [body mass kg = 90] [--rigid-hands]
 
+--strength=k: torque limits (motor gears) x k. Mimic sites (LocoMuJoCo names) mark the joint origins.
 --rigid-hands: the finger capsules are fixed to the hand (no finger joints): 43 instead of 75 degrees of freedom and
 a shallower tree, for training whole-body skills fast; fingers are posed separately.
 
@@ -59,6 +60,13 @@ GEAR = {"spine": 150, "neck": 40, "shoulder": 80, "elbow": 60, "wrist": 20, "hip
         "toe": 20, "finger": 2, "thumb0": 3}
 
 
+MIMIC_SITES = {"pelvis": ["pelvis_mimic"], "chest": ["upper_body_mimic"], "head": ["head_mimic"]}
+for _s, _side in (("l", "left"), ("r", "right")):
+    MIMIC_SITES.update({f"{_s}_upperarm": [f"{_side}_shoulder_mimic"], f"{_s}_forearm": [f"{_side}_elbow_mimic"],
+                        f"{_s}_hand": [f"{_side}_hand_mimic"], f"{_s}_thigh": [f"{_side}_hip_mimic"],
+                        f"{_s}_calf": [f"{_side}_knee_mimic"], f"{_s}_foot": [f"{_side}_foot_mimic"]})
+
+
 def fmt(v):
     return " ".join(f"{x:.5g}" for x in v)
 
@@ -66,6 +74,7 @@ def fmt(v):
 def main():
     skel_path, caps_path, out_path = sys.argv[1:4]
     rigid = "--rigid-hands" in sys.argv
+    strength = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--strength=")), 1.0)
     args = [a for a in sys.argv[4:] if not a.startswith("--")]
     total = float(args[0]) if args else 90.0
     bones = load(skel_path)
@@ -154,7 +163,10 @@ def main():
             for suffix, key, lo, hi in JOINTS[kind]:
                 name = f"{seg}_{suffix}"
                 lines.append(f'{ind}  <joint name="{name}" type="hinge" axis="{fmt(axis(seg, key))}" range="{lo} {hi}"/>')
-                actuators.append(f'    <motor name="{name}" joint="{name}" gear="{GEAR[kind]}" ctrlrange="-1 1"/>')
+                actuators.append(f'    <motor name="{name}" joint="{name}" gear="{GEAR[kind] * strength:g}" ctrlrange="-1 1"/>')
+        # Tracking points for imitation (LocoMuJoCo's mimic sites) at the joint origins.
+        for site in MIMIC_SITES.get(seg, []):
+            lines.append(f'{ind}  <site name="{site}" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>')
         def geoms(part, extra=""):
             caps = world_caps(part)
             m = mass(part) / len(caps)

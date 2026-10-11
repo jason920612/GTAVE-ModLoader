@@ -1,0 +1,193 @@
+<mujoco model="player_two">
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.004" iterations="4" ls_iterations="6"/>
+  <default>
+    <joint damping="2" armature="0.02" limited="true"/>
+    <geom type="capsule" contype="1" conaffinity="1" friction="0.9 0.02 0.002" condim="3"/>
+    <default class="finger"><joint damping="0.05" armature="0.0005"/><geom contype="2" conaffinity="0"/></default>
+  </default>
+  <worldbody>
+    <geom name="floor" type="plane" size="20 20 0.1" contype="1" conaffinity="1"/>
+    <light pos="0 0 6" dir="0 0 -1"/>
+    <body name="pelvis" pos="0 0.007101 1.0013">
+      <freejoint name="root"/>
+      <site name="pelvis_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+      <geom name="pelvis0" fromto="-0.0386 0.0128 -0.1058 0.0386 0.0128 -0.1058" size="0.1385" mass="10.0530"/>
+      <body name="abdomen" pos="-1.1577e-08 0.01007 0.018706">
+        <joint name="abdomen_x" type="hinge" axis="1 0 0" range="-25 40"/>
+        <joint name="abdomen_y" type="hinge" axis="0 1 0" range="-25 25"/>
+        <joint name="abdomen_z" type="hinge" axis="0 0 1" range="-30 30"/>
+        <geom name="abdomen0" fromto="-0.024196 -0.019833 0.06478 0.024204 -0.019824 0.064779" size="0.1433" mass="14.6970"/>
+        <body name="chest" pos="1.8628e-06 0.014736 0.28313">
+          <joint name="chest_x" type="hinge" axis="1 0 0" range="-25 40"/>
+          <joint name="chest_y" type="hinge" axis="0 1 0" range="-25 25"/>
+          <joint name="chest_z" type="hinge" axis="0 0 1" range="-30 30"/>
+          <site name="upper_body_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+          <geom name="chest0" fromto="-0.043897 -0.015989 0.030604 0.043903 -0.016075 0.030602" size="0.1531" mass="7.1820"/>
+          <geom name="chest1" fromto="-0.074095 -0.0069856 0.23903 0.074005 -0.0069611 0.23903" size="0.1030" mass="7.1820"/>
+          <body name="head" pos="1.0232e-05 -0.02899 0.35854">
+            <joint name="head_x" type="hinge" axis="1 0 0" range="-40 50"/>
+            <joint name="head_y" type="hinge" axis="0 1 0" range="-35 35"/>
+            <joint name="head_z" type="hinge" axis="0 0 1" range="-70 70"/>
+            <site name="head_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+            <geom name="head0" fromto="1.3753e-05 -0.067213 0.044194 0.00080971 -0.044231 0.076192" size="0.0892" mass="6.2460"/>
+          </body>
+          <body name="l_upperarm" pos="0.1996 0.017566 0.17567">
+            <joint name="l_upperarm_x" type="hinge" axis="1 0 0" range="-60 170"/>
+            <joint name="l_upperarm_y" type="hinge" axis="0 1 0" range="-90 90"/>
+            <joint name="l_upperarm_z" type="hinge" axis="0 0 1" range="-90 90"/>
+            <site name="left_shoulder_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+            <geom name="l_upperarm0" fromto="0.030377 -0.0077277 -0.028447 0.068618 -0.00031665 -0.16272" size="0.0828" mass="2.4390"/>
+            <body name="l_forearm" pos="0.14918 0.0066044 -0.22995">
+              <joint name="l_forearm_flex" type="hinge" axis="-0.83891 -0 -0.54428" range="0 150"/>
+              <joint name="l_forearm_twist" type="hinge" axis="0.54346 -0.054865 -0.83764" range="-80 80"/>
+              <site name="left_elbow_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+              <geom name="l_forearm0" fromto="0.039566 -0.0035581 -0.068886 0.12125 -0.0084113 -0.1777" size="0.0539" mass="1.4580"/>
+              <body name="l_hand" pos="0.14086 -0.01422 -0.21711">
+                <joint name="l_hand_flex" type="hinge" axis="0.055823 0.84023 -0.53935" range="-70 70"/>
+                <joint name="l_hand_dev" type="hinge" axis="-0.68513 -0.3607 -0.63284" range="-30 30"/>
+                <site name="left_hand_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+                <geom name="l_hand0" fromto="0.017935 0.001065 -0.032605 0.042549 -0.012656 -0.051433" size="0.0471" mass="0.3294"/>
+                <geom name="l_finger000" fromto="0.029944 -0.052456 -0.069557 0.021786 -0.051983 -0.065819" size="0.0180" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger010" fromto="0.03136 -0.061364 -0.090609 0.02631 -0.061145 -0.087769" size="0.0146" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger020" fromto="0.039583 -0.064941 -0.12345 0.038834 -0.063827 -0.11369" size="0.0103" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger100" fromto="0.084919 -0.039301 -0.10069 0.087415 -0.03885 -0.10721" size="0.0141" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger110" fromto="0.093896 -0.042006 -0.13115 0.094716 -0.041546 -0.13744" size="0.0114" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger120" fromto="0.0882 -0.042495 -0.15394 0.087868 -0.041414 -0.16104" size="0.0082" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger200" fromto="0.082851 -0.011666 -0.096867 0.086164 -0.01304 -0.11634" size="0.0155" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger210" fromto="0.084006 -0.014706 -0.14499 0.086695 -0.014577 -0.15293" size="0.0115" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger220" fromto="0.075394 -0.015897 -0.17379 0.077314 -0.016007 -0.16856" size="0.0094" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger300" fromto="0.073738 0.014223 -0.097672 0.072468 0.010689 -0.10415" size="0.0149" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger310" fromto="0.078721 0.013933 -0.12879 0.076145 0.01355 -0.14408" size="0.0102" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger320" fromto="0.064621 0.0095236 -0.16583 0.067087 0.0091837 -0.15851" size="0.0080" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger400" fromto="0.06118 0.032549 -0.10236 0.054318 0.036045 -0.089676" size="0.0134" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger410" fromto="0.063664 0.033063 -0.13049 0.06613 0.033476 -0.12346" size="0.0094" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="l_finger420" fromto="0.059667 0.028895 -0.14891 0.059462 0.028781 -0.14536" size="0.0075" mass="0.0146" contype="2" conaffinity="0"/>
+              </body>
+            </body>
+          </body>
+          <body name="r_upperarm" pos="-0.19961 0.017498 0.17567">
+            <joint name="r_upperarm_x" type="hinge" axis="1 0 0" range="-60 170"/>
+            <joint name="r_upperarm_y" type="hinge" axis="0 1 0" range="-90 90"/>
+            <joint name="r_upperarm_z" type="hinge" axis="0 0 1" range="-90 90"/>
+            <site name="right_shoulder_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+            <geom name="r_upperarm0" fromto="-0.038382 -0.010322 -0.083779 -0.07206 0.0029308 -0.16398" size="0.0854" mass="2.4390"/>
+            <body name="r_forearm" pos="-0.14919 0.0065539 -0.22993">
+              <joint name="r_forearm_flex" type="hinge" axis="-0.8389 0 0.54428" range="0 150"/>
+              <joint name="r_forearm_twist" type="hinge" axis="-0.54346 -0.05505 -0.83763" range="-80 80"/>
+              <site name="right_elbow_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+              <geom name="r_forearm0" fromto="-0.052744 -0.010926 -0.080745 -0.12503 -0.0068345 -0.18573" size="0.0551" mass="1.4580"/>
+              <body name="r_hand" pos="-0.14086 -0.014269 -0.21711">
+                <joint name="r_hand_flex" type="hinge" axis="0.12272 -0.79201 0.59804" range="-70 70"/>
+                <joint name="r_hand_dev" type="hinge" axis="0.74371 -0.32561 -0.58384" range="-30 30"/>
+                <site name="right_hand_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+                <geom name="r_hand0" fromto="-0.026014 0.00037965 -0.037706 -0.043191 -0.013119 -0.052058" size="0.0478" mass="0.3294"/>
+                <geom name="r_finger000" fromto="-0.029935 -0.052243 -0.069583 -0.021776 -0.051767 -0.065845" size="0.0180" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger010" fromto="-0.031749 -0.061085 -0.090584 -0.026421 -0.060879 -0.087494" size="0.0146" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger020" fromto="-0.039643 -0.065566 -0.12372 -0.038537 -0.063826 -0.11347" size="0.0100" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger100" fromto="-0.08477 -0.039098 -0.10078 -0.087205 -0.038738 -0.10721" size="0.0142" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger110" fromto="-0.093956 -0.041801 -0.13047 -0.094444 -0.041329 -0.13744" size="0.0112" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger120" fromto="-0.087922 -0.041243 -0.16096 -0.088189 -0.042136 -0.15416" size="0.0083" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger200" fromto="-0.082612 -0.011497 -0.097142 -0.0858 -0.012863 -0.11613" size="0.0158" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger210" fromto="-0.083558 -0.014049 -0.14526 -0.086195 -0.014376 -0.15226" size="0.0120" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger220" fromto="-0.075695 -0.015811 -0.17388 -0.077333 -0.015845 -0.16872" size="0.0095" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger300" fromto="-0.072543 0.01089 -0.10422 -0.073691 0.014391 -0.097675" size="0.0149" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger310" fromto="-0.077559 0.013986 -0.1298 -0.075863 0.013662 -0.14322" size="0.0110" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger320" fromto="-0.065401 0.009654 -0.1658 -0.066855 0.0095026 -0.15868" size="0.0081" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger400" fromto="-0.054407 0.036283 -0.089815 -0.06106 0.032687 -0.10229" size="0.0136" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger410" fromto="-0.063841 0.033108 -0.13063 -0.066528 0.034058 -0.1226" size="0.0088" mass="0.0146" contype="2" conaffinity="0"/>
+                <geom name="r_finger420" fromto="-0.059927 0.029099 -0.14918 -0.060165 0.028966 -0.1448" size="0.0071" mass="0.0146" contype="2" conaffinity="0"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="l_thigh" pos="0.096118 0.000226 -0.073508">
+        <joint name="l_thigh_x" type="hinge" axis="1 0 0" range="-30 120"/>
+        <joint name="l_thigh_y" type="hinge" axis="0 1 0" range="-40 45"/>
+        <joint name="l_thigh_z" type="hinge" axis="0 0 1" range="-40 40"/>
+        <site name="left_hip_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+        <geom name="l_thigh0" fromto="0.0089737 0.0096713 -0.29374 0.0094028 -0.016552 -0.13749" size="0.1084" mass="12.7440"/>
+        <body name="l_calf" pos="0.031331 0.016896 -0.40496">
+          <joint name="l_calf_flex" type="hinge" axis="0.99715 0 0.075503" range="0 150"/>
+          <site name="left_knee_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+          <geom name="l_calf0" fromto="0.023129 0.020358 -0.34605 0.0043807 0.017384 -0.11998" size="0.0781" mass="3.8970"/>
+          <body name="l_foot" pos="0.031072 0.034429 -0.41036">
+            <joint name="l_foot_flex" type="hinge" axis="1 0 0" range="-45 30"/>
+            <joint name="l_foot_inv" type="hinge" axis="0 1 0" range="-25 25"/>
+            <site name="left_foot_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+            <geom name="l_foot0" fromto="-0.0051132 0.0053445 -0.045635 -0.0016285 -0.045274 -0.034004" size="0.0618" mass="0.9864"/>
+            <body name="l_toe" pos="0.006011 -0.15343 -0.050144">
+              <joint name="l_toe_flex" type="hinge" axis="1 0 0" range="-30 50"/>
+              <geom name="l_toe0" fromto="0.032084 -0.034727 -0.018712 0.0003122 -0.046276 -0.01841" size="0.0428" mass="0.2466"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="r_thigh" pos="-0.096118 0.000226 -0.073508">
+        <joint name="r_thigh_x" type="hinge" axis="1 0 0" range="-30 120"/>
+        <joint name="r_thigh_y" type="hinge" axis="0 1 0" range="-40 45"/>
+        <joint name="r_thigh_z" type="hinge" axis="0 0 1" range="-40 40"/>
+        <site name="right_hip_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+        <geom name="r_thigh0" fromto="0.013389 0.015514 -0.29311 -0.0017919 -0.015585 -0.12931" size="0.1116" mass="12.7440"/>
+        <body name="r_calf" pos="-0.031332 0.016896 -0.40496">
+          <joint name="r_calf_flex" type="hinge" axis="0.99715 0 -0.075503" range="0 150"/>
+          <site name="right_knee_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+          <geom name="r_calf0" fromto="0.011995 0.0074027 -0.12377 -0.0151 0.015281 -0.3499" size="0.0734" mass="3.8970"/>
+          <body name="r_foot" pos="-0.031072 0.034429 -0.41036">
+            <joint name="r_foot_flex" type="hinge" axis="1 0 0" range="-45 30"/>
+            <joint name="r_foot_inv" type="hinge" axis="0 1 0" range="-25 25"/>
+            <site name="right_foot_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
+            <geom name="r_foot0" fromto="0.0010056 0.0077848 -0.045522 -0.005323 -0.049005 -0.036573" size="0.0595" mass="0.9864"/>
+            <body name="r_toe" pos="-0.0060126 -0.15343 -0.050144">
+              <joint name="r_toe_flex" type="hinge" axis="1 0 0" range="-30 50"/>
+              <geom name="r_toe0" fromto="-0.029544 -0.038839 -0.018856 -0.00094319 -0.047052 -0.018379" size="0.0439" mass="0.2466"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="l_thigh" body2="r_thigh"/>
+  </contact>
+  <actuator>
+    <motor name="abdomen_x" joint="abdomen_x" gear="300" ctrlrange="-1 1"/>
+    <motor name="abdomen_y" joint="abdomen_y" gear="300" ctrlrange="-1 1"/>
+    <motor name="abdomen_z" joint="abdomen_z" gear="300" ctrlrange="-1 1"/>
+    <motor name="chest_x" joint="chest_x" gear="300" ctrlrange="-1 1"/>
+    <motor name="chest_y" joint="chest_y" gear="300" ctrlrange="-1 1"/>
+    <motor name="chest_z" joint="chest_z" gear="300" ctrlrange="-1 1"/>
+    <motor name="head_x" joint="head_x" gear="80" ctrlrange="-1 1"/>
+    <motor name="head_y" joint="head_y" gear="80" ctrlrange="-1 1"/>
+    <motor name="head_z" joint="head_z" gear="80" ctrlrange="-1 1"/>
+    <motor name="l_upperarm_x" joint="l_upperarm_x" gear="160" ctrlrange="-1 1"/>
+    <motor name="l_upperarm_y" joint="l_upperarm_y" gear="160" ctrlrange="-1 1"/>
+    <motor name="l_upperarm_z" joint="l_upperarm_z" gear="160" ctrlrange="-1 1"/>
+    <motor name="l_forearm_flex" joint="l_forearm_flex" gear="120" ctrlrange="-1 1"/>
+    <motor name="l_forearm_twist" joint="l_forearm_twist" gear="120" ctrlrange="-1 1"/>
+    <motor name="l_hand_flex" joint="l_hand_flex" gear="40" ctrlrange="-1 1"/>
+    <motor name="l_hand_dev" joint="l_hand_dev" gear="40" ctrlrange="-1 1"/>
+    <motor name="r_upperarm_x" joint="r_upperarm_x" gear="160" ctrlrange="-1 1"/>
+    <motor name="r_upperarm_y" joint="r_upperarm_y" gear="160" ctrlrange="-1 1"/>
+    <motor name="r_upperarm_z" joint="r_upperarm_z" gear="160" ctrlrange="-1 1"/>
+    <motor name="r_forearm_flex" joint="r_forearm_flex" gear="120" ctrlrange="-1 1"/>
+    <motor name="r_forearm_twist" joint="r_forearm_twist" gear="120" ctrlrange="-1 1"/>
+    <motor name="r_hand_flex" joint="r_hand_flex" gear="40" ctrlrange="-1 1"/>
+    <motor name="r_hand_dev" joint="r_hand_dev" gear="40" ctrlrange="-1 1"/>
+    <motor name="l_thigh_x" joint="l_thigh_x" gear="400" ctrlrange="-1 1"/>
+    <motor name="l_thigh_y" joint="l_thigh_y" gear="400" ctrlrange="-1 1"/>
+    <motor name="l_thigh_z" joint="l_thigh_z" gear="400" ctrlrange="-1 1"/>
+    <motor name="l_calf_flex" joint="l_calf_flex" gear="320" ctrlrange="-1 1"/>
+    <motor name="l_foot_flex" joint="l_foot_flex" gear="180" ctrlrange="-1 1"/>
+    <motor name="l_foot_inv" joint="l_foot_inv" gear="180" ctrlrange="-1 1"/>
+    <motor name="l_toe_flex" joint="l_toe_flex" gear="40" ctrlrange="-1 1"/>
+    <motor name="r_thigh_x" joint="r_thigh_x" gear="400" ctrlrange="-1 1"/>
+    <motor name="r_thigh_y" joint="r_thigh_y" gear="400" ctrlrange="-1 1"/>
+    <motor name="r_thigh_z" joint="r_thigh_z" gear="400" ctrlrange="-1 1"/>
+    <motor name="r_calf_flex" joint="r_calf_flex" gear="320" ctrlrange="-1 1"/>
+    <motor name="r_foot_flex" joint="r_foot_flex" gear="180" ctrlrange="-1 1"/>
+    <motor name="r_foot_inv" joint="r_foot_inv" gear="180" ctrlrange="-1 1"/>
+    <motor name="r_toe_flex" joint="r_toe_flex" gear="40" ctrlrange="-1 1"/>
+  </actuator>
+</mujoco>

@@ -11,6 +11,7 @@
     <light pos="0 0 6" dir="0 0 -1"/>
     <body name="pelvis" pos="0 0.007101 1.0013">
       <freejoint name="root"/>
+      <site name="pelvis_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
       <geom name="pelvis0" fromto="-0.0386 0.0128 -0.1058 0.0386 0.0128 -0.1058" size="0.1385" mass="10.0530"/>
       <body name="abdomen" pos="-1.1577e-08 0.01007 0.018706">
         <joint name="abdomen_x" type="hinge" axis="1 0 0" range="-25 40"/>
@@ -21,26 +22,31 @@
           <joint name="chest_x" type="hinge" axis="1 0 0" range="-25 40"/>
           <joint name="chest_y" type="hinge" axis="0 1 0" range="-25 25"/>
           <joint name="chest_z" type="hinge" axis="0 0 1" range="-30 30"/>
+          <site name="upper_body_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
           <geom name="chest0" fromto="-0.043897 -0.015989 0.030604 0.043903 -0.016075 0.030602" size="0.1531" mass="7.1820"/>
           <geom name="chest1" fromto="-0.074095 -0.0069856 0.23903 0.074005 -0.0069611 0.23903" size="0.1030" mass="7.1820"/>
           <body name="head" pos="1.0232e-05 -0.02899 0.35854">
             <joint name="head_x" type="hinge" axis="1 0 0" range="-40 50"/>
             <joint name="head_y" type="hinge" axis="0 1 0" range="-35 35"/>
             <joint name="head_z" type="hinge" axis="0 0 1" range="-70 70"/>
+            <site name="head_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
             <geom name="head0" fromto="1.3753e-05 -0.067213 0.044194 0.00080971 -0.044231 0.076192" size="0.0892" mass="6.2460"/>
           </body>
           <body name="l_upperarm" pos="0.1996 0.017566 0.17567">
             <joint name="l_upperarm_x" type="hinge" axis="1 0 0" range="-60 170"/>
             <joint name="l_upperarm_y" type="hinge" axis="0 1 0" range="-90 90"/>
             <joint name="l_upperarm_z" type="hinge" axis="0 0 1" range="-90 90"/>
+            <site name="left_shoulder_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
             <geom name="l_upperarm0" fromto="0.030377 -0.0077277 -0.028447 0.068618 -0.00031665 -0.16272" size="0.0828" mass="2.4390"/>
             <body name="l_forearm" pos="0.14918 0.0066044 -0.22995">
               <joint name="l_forearm_flex" type="hinge" axis="-0.83891 -0 -0.54428" range="0 150"/>
               <joint name="l_forearm_twist" type="hinge" axis="0.54346 -0.054865 -0.83764" range="-80 80"/>
+              <site name="left_elbow_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
               <geom name="l_forearm0" fromto="0.039566 -0.0035581 -0.068886 0.12125 -0.0084113 -0.1777" size="0.0539" mass="1.4580"/>
               <body name="l_hand" pos="0.14086 -0.01422 -0.21711">
                 <joint name="l_hand_flex" type="hinge" axis="0.055823 0.84023 -0.53935" range="-70 70"/>
                 <joint name="l_hand_dev" type="hinge" axis="-0.68513 -0.3607 -0.63284" range="-30 30"/>
+                <site name="left_hand_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
                 <geom name="l_hand0" fromto="0.017935 0.001065 -0.032605 0.042549 -0.012656 -0.051433" size="0.0471" mass="0.3294"/>
                 <geom name="l_finger000" fromto="0.029944 -0.052456 -0.069557 0.021786 -0.051983 -0.065819" size="0.0180" mass="0.0146" contype="2" conaffinity="0"/>
                 <geom name="l_finger010" fromto="0.03136 -0.061364 -0.090609 0.02631 -0.061145 -0.087769" size="0.0146" mass="0.0146" contype="2" conaffinity="0"/>
@@ -64,14 +70,17 @@
             <joint name="r_upperarm_x" type="hinge" axis="1 0 0" range="-60 170"/>
             <joint name="r_upperarm_y" type="hinge" axis="0 1 0" range="-90 90"/>
             <joint name="r_upperarm_z" type="hinge" axis="0 0 1" range="-90 90"/>
+            <site name="right_shoulder_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
             <geom name="r_upperarm0" fromto="-0.038382 -0.010322 -0.083779 -0.07206 0.0029308 -0.16398" size="0.0854" mass="2.4390"/>
             <body name="r_forearm" pos="-0.14919 0.0065539 -0.22993">
               <joint name="r_forearm_flex" type="hinge" axis="-0.8389 0 0.54428" range="0 150"/>
               <joint name="r_forearm_twist" type="hinge" axis="-0.54346 -0.05505 -0.83763" range="-80 80"/>
+              <site name="right_elbow_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
               <geom name="r_forearm0" fromto="-0.052744 -0.010926 -0.080745 -0.12503 -0.0068345 -0.18573" size="0.0551" mass="1.4580"/>
               <body name="r_hand" pos="-0.14086 -0.014269 -0.21711">
                 <joint name="r_hand_flex" type="hinge" axis="0.12272 -0.79201 0.59804" range="-70 70"/>
                 <joint name="r_hand_dev" type="hinge" axis="0.74371 -0.32561 -0.58384" range="-30 30"/>
+                <site name="right_hand_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
                 <geom name="r_hand0" fromto="-0.026014 0.00037965 -0.037706 -0.043191 -0.013119 -0.052058" size="0.0478" mass="0.3294"/>
                 <geom name="r_finger000" fromto="-0.029935 -0.052243 -0.069583 -0.021776 -0.051767 -0.065845" size="0.0180" mass="0.0146" contype="2" conaffinity="0"/>
                 <geom name="r_finger010" fromto="-0.031749 -0.061085 -0.090584 -0.026421 -0.060879 -0.087494" size="0.0146" mass="0.0146" contype="2" conaffinity="0"/>
@@ -97,13 +106,16 @@
         <joint name="l_thigh_x" type="hinge" axis="1 0 0" range="-30 120"/>
         <joint name="l_thigh_y" type="hinge" axis="0 1 0" range="-40 45"/>
         <joint name="l_thigh_z" type="hinge" axis="0 0 1" range="-40 40"/>
+        <site name="left_hip_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
         <geom name="l_thigh0" fromto="0.0089737 0.0096713 -0.29374 0.0094028 -0.016552 -0.13749" size="0.1084" mass="12.7440"/>
         <body name="l_calf" pos="0.031331 0.016896 -0.40496">
           <joint name="l_calf_flex" type="hinge" axis="0.99715 0 0.075503" range="0 150"/>
+          <site name="left_knee_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
           <geom name="l_calf0" fromto="0.023129 0.020358 -0.34605 0.0043807 0.017384 -0.11998" size="0.0781" mass="3.8970"/>
           <body name="l_foot" pos="0.031072 0.034429 -0.41036">
             <joint name="l_foot_flex" type="hinge" axis="1 0 0" range="-45 30"/>
             <joint name="l_foot_inv" type="hinge" axis="0 1 0" range="-25 25"/>
+            <site name="left_foot_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
             <geom name="l_foot0" fromto="-0.0051132 0.0053445 -0.045635 -0.0016285 -0.045274 -0.034004" size="0.0618" mass="0.9864"/>
             <body name="l_toe" pos="0.006011 -0.15343 -0.050144">
               <joint name="l_toe_flex" type="hinge" axis="1 0 0" range="-30 50"/>
@@ -116,13 +128,16 @@
         <joint name="r_thigh_x" type="hinge" axis="1 0 0" range="-30 120"/>
         <joint name="r_thigh_y" type="hinge" axis="0 1 0" range="-40 45"/>
         <joint name="r_thigh_z" type="hinge" axis="0 0 1" range="-40 40"/>
+        <site name="right_hip_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
         <geom name="r_thigh0" fromto="0.013389 0.015514 -0.29311 -0.0017919 -0.015585 -0.12931" size="0.1116" mass="12.7440"/>
         <body name="r_calf" pos="-0.031332 0.016896 -0.40496">
           <joint name="r_calf_flex" type="hinge" axis="0.99715 0 -0.075503" range="0 150"/>
+          <site name="right_knee_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
           <geom name="r_calf0" fromto="0.011995 0.0074027 -0.12377 -0.0151 0.015281 -0.3499" size="0.0734" mass="3.8970"/>
           <body name="r_foot" pos="-0.031072 0.034429 -0.41036">
             <joint name="r_foot_flex" type="hinge" axis="1 0 0" range="-45 30"/>
             <joint name="r_foot_inv" type="hinge" axis="0 1 0" range="-25 25"/>
+            <site name="right_foot_mimic" pos="0 0 0" size="0.02" rgba="1 0 0 0.5"/>
             <geom name="r_foot0" fromto="0.0010056 0.0077848 -0.045522 -0.005323 -0.049005 -0.036573" size="0.0595" mass="0.9864"/>
             <body name="r_toe" pos="-0.0060126 -0.15343 -0.050144">
               <joint name="r_toe_flex" type="hinge" axis="1 0 0" range="-30 50"/>

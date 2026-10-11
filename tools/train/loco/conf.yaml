@@ -1,0 +1,56 @@
+# DeepMimic-style PPO on Trevor's body, from LocoMuJoCo's jax_rl_mimic example (their walking settings).
+experiment:
+  task_factory:
+    name: ImitationFactory
+  env_params:
+    env_name: MjxTrevorBody
+    use_mjwarp: true
+    nconmax: 7000
+    headless: true
+    horizon: 1000
+    goal_type: GoalTrajMimic
+    goal_params:
+      visualize_goal: false
+    control_type: DefaultControl
+    control_params: {}
+    reward_type: MimicReward
+    reward_params:
+      qpos_w_sum: 0.4
+      qvel_w_sum: 0.2
+      rpos_w_sum: 0.5
+      rquat_w_sum: 0.3
+      rvel_w_sum: 0.1
+      sites_for_mimic:
+        - upper_body_mimic
+        - left_hand_mimic
+        - left_foot_mimic
+        - right_hand_mimic
+        - right_foot_mimic
+  hidden_layers: [512, 256]
+  lr: 1e-4
+  num_envs: 2048
+  num_steps: 200
+  total_timesteps: 300e6
+  update_epochs: 4
+  proportion_env_reward: 0.0
+  num_minibatches: 32
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  init_std: 0.2
+  learnable_std: false
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  activation: tanh
+  anneal_lr: false
+  weight_decay: 0.0
+  normalize_env: true
+  debug: false
+  n_seeds: 1
+  vmap_across_seeds: true
+  validation:
+    active: false
+    num_steps: 100
+    num_envs: 100
+    num: 1  # must be > 0 even when validation is off
