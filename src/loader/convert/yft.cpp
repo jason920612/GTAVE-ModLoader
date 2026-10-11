@@ -91,6 +91,9 @@ namespace loader::convert
 			case 7: return LegacyType{16, 2};  // float4    -> R32G32B32A32_FLOAT
 			case 8: return LegacyType{4, 30};  // ubyte4    -> R8G8B8A8_UINT
 			case 9: return LegacyType{4, 28};  // colour    -> R8G8B8A8_UNORM
+			// Signed bytes (x, y, z, 0), value / 127: cloth normals. The game's own conversions store them as float3;
+			// the same values read through R8G8B8A8_SNORM, so the vertex layout stays (research/phase0.md §37).
+			case 10: return LegacyType{4, 31}; // byte4n    -> R8G8B8A8_SNORM
 			default: return std::nullopt;
 			}
 		}
@@ -408,7 +411,7 @@ namespace loader::convert
 				else
 				{
 					names[i] = textureNames[i];
-					warnings.push_back(std::format("效果 {:08x} 的貼圖 {:08x} 在強化版沒有對應，保留原名", effectHash, textureNames[i]));
+					warnings.push_back(std::format("效果 {:08x} 在強化版沒有貼圖 {:08x} 的位置，這張貼圖不會被使用", effectHash, textureNames[i]));
 				}
 			}
 			std::vector<std::pair<uint32_t, uint32_t>> meta;
