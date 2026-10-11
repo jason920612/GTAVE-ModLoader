@@ -9,8 +9,8 @@ usage (WSL): python imitate.py train <model.xml> <clip.npz> <out dir> [timesteps
 - Observation: body positions and velocities relative to the pelvis in its heading frame, pelvis height and tilt,
   joint angles and velocities, and the reference's next two frames (joint angles, pelvis offset) and the clip phase.
 - Reward (DeepMimic weights): 0.65 pose (joint angles), 0.1 joint velocities, 0.15 end effectors (hands, feet, head
-  relative to the pelvis), 0.1 centre of mass (pelvis position).
-- Episodes end when the pelvis drops below 0.55 m, the bodies are on average more than 0.35 m from the reference,
+  relative to the pelvis), 0.1 centre of mass (pelvis position); pose and velocity scales lowered for 37 joints.
+- Episodes end when the pelvis drops below 0.55 m, the bodies are on average more than 0.5 m from the reference,
   or the clip ends.
 - Contacts: only the feet against the floor (no self contact) for speed; fingers are rigid (--rigid-hands model).
 """
@@ -187,10 +187,12 @@ class Imitate(Env):
         jvel = jp.sum(jp.square(d.qvel[6:] - rqd[6:]))
         ee = jp.sum(jp.square((pos[self._ee] - pos[0]) - (rx[self._ee] - rx[0])))
         com = jp.sum(jp.square(pos[0] - rx[0]))
-        reward = 0.65 * jp.exp(-2 * pose) + 0.1 * jp.exp(-0.1 * jvel) + 0.15 * jp.exp(-40 * ee) + 0.1 * jp.exp(-10 * com)
+        # DeepMimic's scales were for about 13 joints; with 37 hinges they leave no signal (0.2 rad everywhere -> ~0),
+        # so pose and velocity are scaled down: 0.15 rad on every joint gives about half the pose reward.
+        reward = 0.65 * jp.exp(-0.8 * pose) + 0.1 * jp.exp(-0.03 * jvel) + 0.15 * jp.exp(-40 * ee) + 0.1 * jp.exp(-10 * com)
         body_error = jp.mean(jp.linalg.norm(pos - rx, axis=1))
         bad = jp.any(jp.isnan(d.qpos))
-        done = jp.where((pos[0, 2] < 0.55) | (body_error > 0.35) | (frame >= self._frames - 1) | bad, 1.0, 0.0)
+        done = jp.where((pos[0, 2] < 0.55) | (body_error > 0.5) | (frame >= self._frames - 1) | bad, 1.0, 0.0)
         reward = jp.where(bad, 0.0, reward)
         state.metrics.update(pose=pose, ee=ee, com=com, body_error=body_error)
         # Brax's auto-reset puts back the episode's first physics state and observation when done, but not our clip
