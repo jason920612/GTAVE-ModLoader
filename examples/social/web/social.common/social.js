@@ -65,9 +65,21 @@ window.Social = (() => {
       if (t > now) return;
       out.push({ id: 's' + i, t, who: post.who, text: post.text, likes: post.likes, site: p.b ? 'b' : 'l', on: p.l ? (post.on || post.who) : null });
     });
-    // Events
+    // Posts written by the local text model (feed.ai): about events, everyday ones, the player's own.
+    const ai = feed.ai || { posts: [], replies: {} };
+    const aiEvents = new Set(ai.posts.filter(p => p.ev).map(p => p.ev));
+    const aiDays = {};
+    for (const p of ai.posts) {
+      if (p.t > now) continue;
+      if (p.kind === 'daily') aiDays[Math.floor(p.t / DAY)] = (aiDays[Math.floor(p.t / DAY)] || 0) + 1;
+      out.push({ id: p.id, t: p.t, who: p.who, text: p.text, likes: p.kind === 'mine' ? 0 : Math.floor(rng(p.id)() * 200), site: p.site,
+        on: p.on || null, self: p.kind === 'mine' || (p.site === 'l' && p.on === p.who), ai: p.kind !== 'mine', mine: p.kind === 'mine' });
+    }
+    // Events (written templates, unless the model wrote about the event)
     const me = CHARACTERS;
     feed.events.forEach((e, i) => {
+      const key = `${e.t}.${e.type}.${e.c}`;
+      if (aiEvents.has(key)) return;
       const r = rng(`${e.t}:${e.type}:${i}`);
       const vars = { zone: e.a || '市區', vehicle: e.b || '車', stars: e.n, shop: e.a, amount: money(e.n), name: e.a,
         ticker: e.a, company: e.b, pct: (Math.abs(e.n) / 100).toFixed(1) };
@@ -78,24 +90,25 @@ window.Social = (() => {
       else if (e.type === 'arrest') list = EVENTS.arrest;
       else if (e.type === 'stock') list = e.n >= 0 ? EVENTS.stockUp : EVENTS.stockDown;
       // One of the "self" templates (a status of the character), plus the public ones.
-      const selfs = list.filter(x => x.self), others = list.filter(x => !x.self);
+      // Citizens' reactions to stock moves: not every time (several moves a day would repeat the same line).
+      const selfs = list.filter(x => x.self), others = list.filter(x => !x.self && (e.type !== 'stock' || PEOPLE[x.who]?.verified || r() < 0.3));
       const picked = [...(selfs.length ? [selfs[Math.floor(r() * selfs.length)]] : []), ...others];
       picked.forEach((x, k) => {
         const t = e.t + (x.at || 0);
         if (t > now) return;
         const self = !!x.self;
         if (self && e.c < 0) return;
-        out.push({ id: `e${i}.${k}`, t, who: self ? me[e.c] : x.who, text: fill(x.text, vars), likes: Math.floor(r() * 300),
+        out.push({ id: `e${key}.${k}`, t, who: self ? me[e.c] : x.who, text: fill(x.text, vars), likes: Math.floor(r() * 300),
           site: self ? 'l' : 'b', on: self ? me[e.c] : null, self });
       });
     });
-    // Everyday Bleeter posts: five a game day for the last three days, picked by the day.
+    // Everyday Bleeter posts: five a game day for the last three days, picked by the day (fewer when the model wrote some).
     const today = Math.floor(now / DAY);
     for (let day = today - 2; day <= today; day++) {
       const r = rng('day' + day);
       const pool = AMBIENT.filter(a => !a.w || (day === today && a.w.includes(feed.weather)));
       const picks = new Set();
-      while (picks.size < Math.min(5, pool.length)) picks.add(Math.floor(r() * pool.length));
+      while (picks.size < Math.max(0, Math.min(5 - (aiDays[day] || 0), pool.length))) picks.add(Math.floor(r() * pool.length));
       [...picks].forEach(k => {
         const a = pool[k], [h0, h1] = a.h || [7, 23];
         const t = day * DAY + h0 * 60 + Math.floor(r() * (h1 - h0) * 60);
@@ -116,5 +129,21 @@ window.Social = (() => {
     return esc(text).replace(/#([^\s#，。！？、]+)/g, '<a class="tag" data-tag="$1">#$1</a>').replace(/@(\w+)/g, '<a class="mention">@$1</a>');
   }
 
-  return { DAY, hash, rng, ago, money, posts, person, avatar, esc, rich, missionTimes };
+  // Replies the model wrote to a post on `site` ('b' / 'l').
+  function replies(feed, site, id) {
+    return ((feed.ai && feed.ai.replies[`${site}:${id}`]) || []).filter(r => r.t <= feed.now + 60);
+  }
+  // Asks the model for replies to the first `n` posts of `list` that have none yet (`pool(p)`: who may reply).
+  function want(feed, site, list, n, pool) {
+    if (!feed.ai || (feed.ai.state !== 'ready' && feed.ai.state !== 'starting')) return;
+    const asks = list.filter(p => !(feed.ai.replies[`${site}:${p.id}`])).slice(0, n)
+      .map(p => ({ key: `${site}:${p.id}`, who: p.who, text: p.text, site, t: p.t, pool: pool ? pool(p) : [] }));
+    if (asks.length) game.call('social.want', asks).catch(() => {});
+  }
+  function aiStatus(feed) {
+    const a = feed.ai || {};
+    return a.state === 'ready' ? `本機 AI 撰寫中${a.queued ? `（排隊 ${a.queued}）` : ''}` : a.state === 'starting' ? '本機 AI 啟動中' : '';
+  }
+
+  return { DAY, hash, rng, ago, money, posts, person, avatar, esc, rich, missionTimes, replies, want, aiStatus };
 })();

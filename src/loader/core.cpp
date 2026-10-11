@@ -9,6 +9,7 @@
 #include <string_view>
 #include <thread>
 
+#include "ai/ai.hpp"
 #include "config.hpp"
 #include "crossmap_update.hpp"
 #include "debug/watch.hpp"
@@ -302,6 +303,8 @@ namespace loader::core
 		game::models::Install();
 		game::scripts::Install();
 		debug::hangdump::Start();
+		if (config::Get().aiEnabled)
+			ai::SettingChanged(); // starts the model server in the background
 		game::fixes::InstallLoadingScreenDeadlockFix();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())
 			game::pausemenu::InstallHooks();

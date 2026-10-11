@@ -4,7 +4,9 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 
+#include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -16,6 +18,7 @@
 #include "../config.hpp"
 #include "../log.hpp"
 #include "../mods.hpp"
+#include "../paths.hpp"
 #include "../state.hpp"
 #include "../web/browser.hpp"
 #include "../web/textures.hpp"
@@ -250,8 +253,52 @@ namespace loader::ui
 			f.fenceValue = g_fenceCounter;
 		}
 
+		// Development aid: while ModLoader\debug_fps.txt exists, log the frame rate and the slowest frame every 5 s.
+		void FrameStats()
+		{
+			static uint64_t nextCheck = 0, windowStart = 0;
+			static bool on = false;
+			static int frames = 0;
+			static double worst = 0;
+			const uint64_t now = GetTickCount64();
+			if (now >= nextCheck)
+			{
+				nextCheck = now + 2000;
+				std::error_code ec;
+				on = std::filesystem::exists(paths::Get().root / L"debug_fps.txt", ec);
+			}
+			if (!on)
+			{
+				windowStart = 0;
+				return;
+			}
+			LARGE_INTEGER freq, t;
+			QueryPerformanceFrequency(&freq);
+			QueryPerformanceCounter(&t);
+			static int64_t prev = 0;
+			if (prev)
+				worst = std::max(worst, static_cast<double>(t.QuadPart - prev) * 1000.0 / static_cast<double>(freq.QuadPart));
+			prev = t.QuadPart;
+			if (!windowStart)
+			{
+				windowStart = now;
+				frames = 0;
+				worst = 0;
+				return;
+			}
+			++frames;
+			if (now - windowStart >= 5000)
+			{
+				log::Info("fps: {:.1f}, slowest frame {:.1f} ms", frames * 1000.0 / static_cast<double>(now - windowStart), worst);
+				windowStart = now;
+				frames = 0;
+				worst = 0;
+			}
+		}
+
 		void OnPresent(IDXGISwapChain3* swapChain, ID3D12CommandQueue* queue)
 		{
+			FrameStats();
 			if (g_failed)
 				return;
 			if (!g_imguiReady)

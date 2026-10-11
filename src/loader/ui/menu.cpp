@@ -16,6 +16,7 @@
 
 #include <imgui.h>
 
+#include "../ai/ai.hpp"
 #include "../config.hpp"
 #include "../convert/packs.hpp"
 #include "../game/dlcpacks.hpp"
@@ -546,6 +547,45 @@ namespace loader::ui
 			ImGui::EndChild();
 		}
 
+		// The local text model: on / off, download, state.
+		void AiSettings(bool& changed)
+		{
+			auto& cfg = config::Get();
+			if (ImGui::Checkbox("啟用本機 AI 文字模型（模組可用來產生貼文、對話等內容）", &cfg.aiEnabled))
+			{
+				changed = true;
+				ai::SettingChanged();
+			}
+			const ai::Status s = ai::GetStatus();
+			ImGui::Indent();
+			if (s.state == ai::State::Downloading)
+			{
+				ImGui::Text("下載中：%s", s.message.c_str());
+				const float f = s.total ? static_cast<float>(static_cast<double>(s.done) / static_cast<double>(s.total)) : 0.0f;
+				ImGui::ProgressBar(f, ImVec2(ImGui::GetFontSize() * 18, 0),
+				    std::format("{:.0f} / {:.0f} MB", static_cast<double>(s.done) / 1e6, static_cast<double>(s.total) / 1e6).c_str());
+			}
+			else if (!ai::Installed())
+			{
+				ImGui::TextColored(kMuted, "需要下載 llama.cpp 與 Qwen3.5 4B 模型（約 2.8 GB，在 CPU 上執行，不使用顯示卡）。");
+				if (ImGui::Button("下載模型"))
+					ai::Install();
+			}
+			else
+			{
+				static const char* kStates[] = {"已關閉", "尚未下載", "下載中", "啟動中", "運作中", "發生錯誤"};
+				const int i = static_cast<int>(s.state);
+				ImGui::Text("狀態：%s%s", kStates[i >= 0 && i < 6 ? i : 5], s.queued ? std::format("（排隊 {} 個）", s.queued).c_str() : "");
+			}
+			if (s.state == ai::State::Failed)
+			{
+				ImGui::TextColored(kError, "%s", s.message.c_str());
+				if (ImGui::Button("重試"))
+					ai::Install();
+			}
+			ImGui::Unindent();
+		}
+
 		void SettingsTab()
 		{
 			auto& cfg = config::Get();
@@ -560,6 +600,7 @@ namespace loader::ui
 			changed |= ImGui::Checkbox("以載入器介面取代遊戲主畫面", &cfg.replaceLandingPage);
 			changed |= ImGui::Checkbox("以載入器的瀏覽器取代手機與電腦的網頁", &cfg.replaceBrowser);
 			changed |= ImGui::Checkbox("每次啟動時更新原生函式對照表", &cfg.crossmapAutoUpdate);
+			AiSettings(changed);
 
 			static const char* kKeys[] = {"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"};
 			int current = 3;

@@ -16,6 +16,7 @@
 #include <mutex>
 #include <set>
 
+#include "ai/ai.hpp"
 #include "config.hpp"
 #include "log.hpp"
 #include "game/models.hpp"
@@ -1123,6 +1124,48 @@ namespace loader::mods
 				item.owner->pending.emplace_back(item.fn, item.user);
 		}
 
+		// ---- high-level API: the local text model ------------------------------------------------
+
+		int32_t ApiAiState()
+		{
+			switch (ai::GetStatus().state)
+			{
+			case ai::State::Downloading:
+			case ai::State::Starting: return ML_AI_STARTING;
+			case ai::State::Ready: return ML_AI_READY;
+			case ai::State::Failed: return ML_AI_FAILED;
+			default: return ML_AI_OFF;
+			}
+		}
+
+		struct AiResult
+		{
+			MLAiCallback fn;
+			void* user;
+			std::optional<std::string> text;
+		};
+		void RunAiResult(void* p)
+		{
+			const std::unique_ptr<AiResult> r(static_cast<AiResult*>(p));
+			r->fn(r->text ? r->text->c_str() : nullptr, r->user);
+		}
+
+		int32_t ApiAiGenerate(const char* system, const char* prompt, int32_t maxTokens, float temperature, MLAiCallback fn, void* user)
+		{
+			Mod* mod = ModFromAddress(_ReturnAddress());
+			if (!mod || !prompt || !fn)
+				return 0;
+			const int32_t state = ApiAiState();
+			if (state != ML_AI_READY && state != ML_AI_STARTING)
+				return 0;
+			ai::Submit({system ? system : "", prompt, maxTokens, temperature}, [mod, fn, user](std::optional<std::string> text) {
+				std::lock_guard lock(g_menuMutex);
+				if (mod->state != State::Faulted)
+					mod->pending.push_back({RunAiResult, new AiResult{fn, user, std::move(text)}});
+			});
+			return 1;
+		}
+
 		const MLApi g_api{
 			.apiVersion = ML_API_VERSION,
 			.size = sizeof(MLApi),
@@ -1170,6 +1213,8 @@ namespace loader::mods
 			.SaveDataGet = ApiSaveDataGet,
 			.SaveDataSet = ApiSaveDataSet,
 			.RunScriptFunction = ApiRunScriptFunction,
+			.AiState = ApiAiState,
+			.AiGenerate = ApiAiGenerate,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

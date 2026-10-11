@@ -79,13 +79,16 @@ async function load() {
       daily.push({ id: `d${id}${day}`, t, who: id, text, likes: Math.floor(r() * 40), on: id });
     }
   }
-  const own = store.get(`status.${me}`, []).filter(p => p.t <= feed.now);
-  posts = [...story, ...daily, ...own].sort((a, b) => b.t - a.t);
+  posts = [...story, ...daily].sort((a, b) => b.t - a.t);
   render();
 }
 
 function comments(p) {
-  // A couple of friends react, picked by the post.
+  // What the model wrote, else a couple of friends react with a stock line, picked by the post.
+  const written = Social.replies(feed, 'l', p.id);
+  if (written.length)
+    return `<div class="comments">${written.map(c => `<div class="comment">${avatar(c.who, 30)}<div><b>${esc(person(c.who).name)}</b> ${rich(c.text)}</div></div>`).join('')}</div>`;
+  if (p.mine) return '';
   const r = rng('c' + p.id), pool = friends.filter(f => f !== p.who);
   if (!pool.length || r() < 0.4) return '';
   const lines = ['哈哈哈哈', '你還好嗎？', '讚！', '這是真的嗎', '打給我', '笑死', '我就知道', '你又來了', '下次找我', '❤️'];
@@ -125,16 +128,18 @@ function render() {
   if (tab === 'feed') {
     const list = posts.filter(x => friends.includes(x.who) || x.who === me || x.on === me);
     body = composer() + (list.map(postHtml).join('') || '<div class="card empty">你的朋友最近都很安靜。</div>');
+    Social.want(feed, 'l', list, 8, () => friends);
   } else if (tab === 'profile') {
     const list = posts.filter(x => x.on === me || (x.who === me && !x.on));
     body = `<div class="card profile"><div class="cover" style="background:linear-gradient(120deg, ${p.color}, #1c1c1c)"></div>
       <div class="id">${avatar(me, 110)}<div><h1>${esc(p.name)}</h1><small>${friends.length} 位朋友</small></div></div>
       <ul class="about"><li>💼 ${esc(prof.work)}</li><li>🏠 住在 ${esc(prof.home)}</li><li>📍 來自 ${esc(prof.from)}</li><li>❤️ ${esc(prof.rel)}</li></ul></div>`
       + composer() + (list.map(postHtml).join('') || '<div class="card empty">還沒有任何貼文。</div>');
+    Social.want(feed, 'l', list, 8, () => friends);
   } else {
     body = `<div class="card"><h3>朋友</h3><div class="friends">${friends.map(f => `<div class="friend">${avatar(f, 72)}<b>${esc(person(f).name)}</b></div>`).join('')}</div></div>`;
   }
-  $('main').innerHTML = body;
+  $('main').innerHTML = body + (Social.aiStatus(feed) ? `<p class="ai-status">${Social.aiStatus(feed)}</p>` : '');
 }
 
 function composer() {
@@ -153,12 +158,15 @@ document.addEventListener('click', e => {
   } else if (t.id === 'share') {
     const text = $('status').value.trim();
     if (!text) return;
-    const own = store.get(`status.${me}`, []);
-    own.push({ id: 'u' + Date.now(), t: feed.now, who: me, text, likes: 0, on: me });
-    store.set(`status.${me}`, own.slice(-200));
-    load();
+    t.disabled = true;
+    game.call('social.post', 'l', text).catch(() => null).then(load);
   }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'status') $('share').click(); });
 
 load();
+// Comments arrive while the page is open (the model writes in the background).
+setInterval(() => {
+  const typing = document.activeElement && document.activeElement.id === 'status' && document.activeElement.value;
+  if (feed && feed.ai && feed.ai.state !== 'off' && !typing) load();
+}, 15000);

@@ -704,3 +704,22 @@
   股票（Global 57379 +34 漲跌幅 ≥ 8%，每天最多 3 則，同一檔一天一次，以存檔中的事件判斷避免重開遊戲重複）。存在 ml::save。
 - 網頁內容（貼文、人物、事件範本、每日貼文）全部自行撰寫，在 `social.common/data.js`；`social.js` 依遊戲狀態產生固定的時間軸
   （以遊戲日期為種子的亂數）。實測：3 星通緝在桑庫多堡壘甩掉後，Bleeter 出現 LSPD 貼文。
+
+## 40. 本機文字模型（2026-10-11）
+
+- 實測（llama.cpp b11552 CPU 版、Q4_K_M、4 執行緒，Ryzen 7 5700X3D）：
+  - 遊戲關閉時，Qwen3.5 2B 約 17 token/秒，4B 約 7.8 token/秒。
+  - 遊戲運行中，4B 約 5.6 token/秒（一則貼文約 7 秒），2B 約 11.8 token/秒。
+  - 遊戲維持 60 fps（垂直同步上限），最慢一幀與不跑模型時相同（約 20–25 ms）：遊戲吃顯示卡，模型只用 CPU。
+  - 系統提示說明是諷刺的犯罪都市後，官方版與去拒絕版（Huihui abliterated）都沒有拒絕；去拒絕版反而夾雜簡體字、引號、#GTA5，
+    品質較差。採用官方 Qwen3.5-4B。
+- 載入器（`src/loader/ai`）：
+  - 設定頁「啟用本機 AI 文字模型」（`aiEnabled`，預設關）與「下載模型」。下載固定版本的 llama.cpp zip 與 Hugging Face 模型
+    （固定 commit），比對 SHA-256，可續傳。以 Windows 內建 tar 解壓；tar 會回傳警告碼，改以結果檔案判斷。
+  - llama-server 以低於一般的優先權、CREATE_NO_WINDOW 執行，加入 kill-on-close 工作物件（遊戲結束即結束），只聽 127.0.0.1 的隨機埠，
+    每次啟動產生隨機 API 金鑰（伺服器預設允許任何來源跨站存取，沒有金鑰的話一般瀏覽器裡的網站也能呼叫它）。
+  - API：`AiState`、`AiGenerate(system, prompt, maxTokens, temperature, fn, user)`；結果送到模組的回呼 fiber。
+    SDK `ml::ai::Generate`。請求一次一個、依序處理。
+- `examples/social/gen.cpp`：人設（每個人物一段）＋提示詞；優先順序：玩家發文的回覆 > 事件貼文 > 頁面上貼文的回覆 > 每天 4 則路人貼文。
+  檢查：去引號、去「名字：」、擋簡體字、擋「遊戲／GTA／AI」等破壞世界觀的字，不合格重試一次。結果存 ml::save "social_ai"；
+  玩家自己的發文也改存在這裡（原本在瀏覽器 localStorage）。網頁沒有 AI 內容時沿用寫好的內容。

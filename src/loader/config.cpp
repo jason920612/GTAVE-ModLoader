@@ -38,6 +38,7 @@ namespace loader::config
 			c.debugWatchBoot = j.value("debugWatchBoot", c.debugWatchBoot);
 			c.pauseMenuModsTab = j.value("pauseMenuModsTab", c.pauseMenuModsTab);
 			c.replaceBrowser = j.value("replaceBrowser", c.replaceBrowser);
+			c.aiEnabled = j.value("aiEnabled", c.aiEnabled);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -56,6 +57,7 @@ namespace loader::config
 				{"debugWatchBoot", c.debugWatchBoot},
 				{"pauseMenuModsTab", c.pauseMenuModsTab},
 				{"replaceBrowser", c.replaceBrowser},
+				{"aiEnabled", c.aiEnabled},
 			};
 		}
 	}

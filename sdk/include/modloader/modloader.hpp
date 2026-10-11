@@ -11,6 +11,7 @@
 #include <functional>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <utility>
 #include <string>
@@ -565,6 +566,45 @@ namespace ml
 				return RunResult::NotFound;
 			const std::vector<int64_t> a(args);
 			return static_cast<RunResult>(Api().RunScriptFunction(script, pattern, stackSize, a.data(), static_cast<int32_t>(a.size()), timeoutMs));
+		}
+	}
+
+	// ---- the local text model -------------------------------------------------------------------
+	// A small language model the player may turn on in the loader's settings (it runs on the CPU, a few seconds per
+	// request, one request at a time). Ask ahead of time and keep what comes back:
+	//   ml::ai::Generate({.system = "You write posts for ...", .prompt = "..."}, [](std::optional<std::string> text) { ... });
+	namespace ai
+	{
+		enum class State : int32_t { Off = ML_AI_OFF, Starting = ML_AI_STARTING, Ready = ML_AI_READY, Failed = ML_AI_FAILED };
+		inline State GetState() { return detail::Has(&MLApi::AiState) ? static_cast<State>(Api().AiState()) : State::Off; }
+		// True when requests will be served (now or once the model has loaded).
+		inline bool Usable()
+		{
+			const State s = GetState();
+			return s == State::Ready || s == State::Starting;
+		}
+
+		struct Request
+		{
+			std::string system, prompt;
+			int32_t maxTokens = 120;
+			float temperature = 0.9f;
+		};
+		// `done` runs once on the mod's callback fiber with the text, or nullopt when the model failed. Returns false
+		// (and `done` is not called) when the model is not on.
+		inline bool Generate(const Request& r, std::function<void(std::optional<std::string>)> done)
+		{
+			if (!detail::Has(&MLApi::AiGenerate))
+				return false;
+			auto* fn = new std::function<void(std::optional<std::string>)>(std::move(done));
+			const MLAiCallback trampoline = [](const char* text, void* user) {
+				const std::unique_ptr<std::function<void(std::optional<std::string>)>> f(static_cast<std::function<void(std::optional<std::string>)>*>(user));
+				(*f)(text ? std::optional<std::string>(text) : std::nullopt);
+			};
+			if (Api().AiGenerate(r.system.c_str(), r.prompt.c_str(), r.maxTokens, r.temperature, trampoline, fn))
+				return true;
+			delete fn;
+			return false;
 		}
 	}
 

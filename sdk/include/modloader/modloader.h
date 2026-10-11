@@ -82,6 +82,8 @@ typedef void (*MLModelVisitor)(uint32_t hash, const char* name, const char* pack
 /* A function web pages can call (see RegisterWebFunction): `args` is a JSON array; returns JSON text (NULL = null)
  * that stays valid until the function is called again. */
 typedef const char* (*MLWebFunction)(const char* args, void* user);
+/* Result of AiGenerate: the generated text (UTF-8), or NULL when the model is off or failed. */
+typedef void (*MLAiCallback)(const char* text, void* user);
 
 /* One call of an overridden native. */
 typedef struct MLNativeCall
@@ -245,7 +247,27 @@ typedef struct MLApi
 	 * Returns 1 when the function ran, 0 when the script or the pattern was not found, -1 when it did not finish in
 	 * time. MLMain, a callback or a task. */
 	int32_t (*RunScriptFunction)(const char* script, const char* pattern, int32_t stackSize, const int64_t* args, int32_t count, uint32_t timeoutMs);
+
+	/* ---- local text model (check `size`) ----
+	 * A small language model (llama.cpp, run on the CPU in a process of its own) that the player can turn on and
+	 * download in the loader's settings page. Requests are served one at a time, in order, a few seconds each, so ask
+	 * ahead of time and keep the results (for example in save data). */
+	/* MLAiState. Any thread. */
+	int32_t (*AiState)(void);
+	/* Queues a completion of `prompt` following `system` (UTF-8; `system` may be NULL), at most `maxTokens` tokens.
+	 * `fn(text, user)` runs once on the mod's callback fiber when it is done. Returns 1 when queued, 0 when the model
+	 * is not on (then `fn` is not called). Any thread. */
+	int32_t (*AiGenerate)(const char* system, const char* prompt, int32_t maxTokens, float temperature, MLAiCallback fn, void* user);
 } MLApi;
+
+/* States of the local text model (AiState). */
+typedef enum MLAiState
+{
+	ML_AI_OFF = 0,      /* turned off, or not downloaded */
+	ML_AI_STARTING = 1, /* downloading or loading the model: requests wait */
+	ML_AI_READY = 2,
+	ML_AI_FAILED = 3,
+} MLAiState;
 
 /* Events for OnGameEvent. */
 typedef enum MLGameEvent

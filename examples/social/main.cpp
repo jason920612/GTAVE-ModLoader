@@ -18,12 +18,11 @@
 #include <map>
 #include <vector>
 
-#include <modloader/game.hpp>
-#include <modloader/json.hpp>
+#include "social.hpp"
 
-ML_MOD_INFO("Social", "0.1.0", "ModLoader", "The Bleeter and Lifeinvader websites")
+ML_MOD_INFO("Social", "0.2.0", "ModLoader", "The Bleeter and Lifeinvader websites")
 
-namespace
+namespace social
 {
 	std::string Text(const char* label)
 	{
@@ -60,14 +59,6 @@ namespace
 
 	// ---- events --------------------------------------------------------------------------------------
 
-	struct Event
-	{
-		int64_t t;
-		std::string type;
-		int c;
-		std::string a, b;
-		int64_t n;
-	};
 	constexpr size_t kMaxEvents = 400;
 
 	struct State
@@ -102,7 +93,8 @@ namespace
 	void AddEvent(Event e)
 	{
 		ml::Log("event {} {} {} {} {}", e.type, e.c, e.a, e.b, e.n);
-		g.events.push_back(std::move(e));
+		g.events.push_back(e);
+		gen::OnEvent(e);
 		if (g.events.size() > kMaxEvents)
 			g.events.erase(g.events.begin(), g.events.begin() + static_cast<ptrdiff_t>(g.events.size() - kMaxEvents));
 		Save();
@@ -246,6 +238,8 @@ namespace
 		return "clear";
 	}
 
+	const std::vector<Event>& Events() { return g.events; }
+
 	ml::Json Feed()
 	{
 		ml::Json missions = ml::Json::Array();
@@ -258,9 +252,12 @@ namespace
 		ml::Json events = ml::Json::Array();
 		for (const Event& e : g.events)
 			events.Push({{"t", e.t}, {"type", e.type}, {"c", e.c}, {"a", e.a}, {"b", e.b}, {"n", e.n}});
-		return {{"character", ml::game::CharacterIndex()}, {"now", GameMinute()}, {"weather", Weather()}, {"missions", missions}, {"events", events}};
+		return {{"character", ml::game::CharacterIndex()}, {"now", GameMinute()}, {"weather", Weather()}, {"missions", missions}, {"events", events},
+		    {"ai", gen::ToJson()}};
 	}
 }
+
+using namespace social;
 
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
 {
@@ -271,6 +268,11 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		return 0;
 	}
 	ml::web::Function("social.feed", [] { return Feed(); });
+	ml::web::Function("social.want", [](ml::Json list) {
+		gen::Want(list);
+		return ml::Json(true);
+	});
+	ml::web::Function("social.post", [](std::string site, std::string text) { return gen::Post(site, text); });
 	ml::game::On(ml::game::Event::SaveLoading, [] { g_reload = true; });
 	return 1;
 }
@@ -286,6 +288,7 @@ extern "C" __declspec(dllexport) void MLMain()
 			if (first)
 			{
 				Load();
+				gen::Reload();
 				std::fill(std::begin(g_logCount), std::end(g_logCount), -1);
 				g_chase = {};
 			}
@@ -298,6 +301,7 @@ extern "C" __declspec(dllexport) void MLMain()
 					TrackBank(c);
 				TrackStocks();
 			}
+			gen::Tick();
 		}
 		ml::Wait(250);
 	}

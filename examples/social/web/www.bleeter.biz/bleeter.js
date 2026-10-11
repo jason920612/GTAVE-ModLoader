@@ -27,8 +27,8 @@ async function load() {
     return;
   }
   const me = CHARACTERS[feed.character];
-  const own = store.get('bleets', []).filter(b => b.t <= feed.now);
-  all = [...Social.posts(feed).filter(p => p.site === 'b'), ...own].sort((a, b) => b.t - a.t);
+  all = Social.posts(feed).filter(p => p.site === 'b');
+  $('status').textContent = Social.aiStatus(feed);
   $('me').innerHTML = me ? `${avatar(me, 40)}<div><b>${esc(person(me).name)}</b><small>@${person(me).handle}</small></div>` : '';
   $('composeAvatar').innerHTML = me ? avatar(me, 44) : '';
   $('compose').hidden = !me;
@@ -39,7 +39,8 @@ async function load() {
 function postHtml(p) {
   const who = person(p.who), r = rng(p.id);
   const likes = (p.likes || 0) + (liked.has(p.id) ? 1 : 0);
-  const replies = Math.floor((p.likes || 0) * (0.05 + r() * 0.15)), rebleets = Math.floor((p.likes || 0) * (0.1 + r() * 0.4));
+  const thread = Social.replies(feed, 'b', p.id);
+  const replies = thread.length + Math.floor((p.likes || 0) * (0.05 + r() * 0.15)), rebleets = Math.floor((p.likes || 0) * (0.1 + r() * 0.4));
   return `<article class="post">
     <a data-user="${p.who}">${avatar(p.who)}</a>
     <div class="body">
@@ -48,6 +49,8 @@ function postHtml(p) {
       <div class="text">${rich(p.text)}</div>
       <div class="actions"><button>💬 ${replies}</button><button>🔁 ${rebleets}</button>
         <button data-like="${p.id}" class="${liked.has(p.id) ? 'liked' : ''}">${liked.has(p.id) ? '♥' : '♡'} ${likes}</button><button>↗</button></div>
+      ${thread.map(t => `<div class="reply">${avatar(t.who, 30)}<div><span class="name" data-user="${t.who}">${esc(person(t.who).name)}</span>
+        <span class="handle">@${person(t.who).handle} · ${ago(t.t, feed.now)}</span><div class="text">${rich(t.text)}</div></div></div>`).join('')}
     </div></article>`;
 }
 
@@ -74,6 +77,7 @@ function render() {
   document.querySelectorAll('.side a[data-view]').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   if (view === 'trends') { $('feed').innerHTML = ''; return; }
   $('feed').innerHTML = list.map(postHtml).join('') || '<div class="empty">這裡還沒有任何貼文。<br>推進劇情、或在城裡搞點事情，大家就會開始討論。</div>';
+  Social.want(feed, 'b', list, 10);
 }
 
 function trends() {
@@ -112,16 +116,18 @@ document.addEventListener('click', e => {
 $('back').onclick = () => go('home');
 $('search').onkeydown = e => { if (e.key === 'Enter' && e.target.value.trim()) go('search', e.target.value.trim()); };
 $('text').oninput = e => { $('count').textContent = 160 - e.target.value.length; $('send').disabled = !e.target.value.trim(); };
-$('send').onclick = () => {
-  const text = $('text').value.trim(), me = CHARACTERS[feed.character];
-  if (!text || !me) return;
-  const own = store.get('bleets', []);
-  own.push({ id: 'u' + Date.now(), t: feed.now, who: me, text, likes: 0, site: 'b' });
-  store.set('bleets', own.slice(-200));
-  $('text').value = '';
+$('send').onclick = async () => {
+  const text = $('text').value.trim();
+  if (!text || !CHARACTERS[feed.character]) return;
   $('send').disabled = true;
-  $('count').textContent = 160;
+  const r = await game.call('social.post', 'b', text).catch(() => null);
+  if (r && r.ok) {
+    $('text').value = '';
+    $('count').textContent = 160;
+  }
   load();
 };
 
 load();
+// Replies and posts arrive while the page is open (the model writes in the background).
+setInterval(() => { if (feed && feed.ai && feed.ai.state !== 'off' && !$('text').value) load(); }, 15000);

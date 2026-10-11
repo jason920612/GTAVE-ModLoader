@@ -71,3 +71,7 @@ aside { padding: 10px 24px; }
 .trend b { display: block; }
 .who { display: flex; align-items: center; gap: 10px; }
 .fine { color: var(--muted); font-size: 12px; line-height: 1.7; padding: 0 8px; }
+.reply { display: flex; gap: 8px; margin-top: 10px; padding: 8px 10px; border-radius: 12px; background: var(--box); }
+.reply .text { margin: 2px 0 0; }
+.reply .handle { color: var(--muted); font-size: 13px; }
+#status:empty { display: none; }

@@ -27,8 +27,10 @@ namespace loader::config
 		bool debugWatchBoot = false;
 		// Story-mode pause menu: the "Online" tab becomes a "Mods" tab with each mod's settings.
 		bool pauseMenuModsTab = true;
-		// The phone's / computers' web browser is replaced by the loader's (ModLoaderrowser, pages in ModLoader\web).
+		// The phone's / computers' web browser is replaced by the loader's (ModLoader\browser, pages in ModLoader\web).
 		bool replaceBrowser = true;
+		// The local text model mods can use (ModLoader\ai, downloaded from the settings page).
+		bool aiEnabled = false;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.
