@@ -59,6 +59,12 @@ namespace loader::debug::skelhook
 
 		uint64_t Detour(void* a, void* b, void* c, void* d)
 		{
+			static std::atomic_int logged = 0;
+			if (logged < 40 && g_skeleton)
+			{
+				++logged;
+				log::Info("skelhook: call a {} b {} c {} d {} thread {}", a, b, c, d, GetCurrentThreadId());
+			}
 			const uint64_t result = g_orig(a, b, c, d);
 			uint8_t* skeleton = g_skeleton;
 			if (!skeleton)

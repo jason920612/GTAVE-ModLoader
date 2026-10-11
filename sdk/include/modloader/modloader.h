@@ -82,6 +82,30 @@ typedef void (*MLModelVisitor)(uint32_t hash, const char* name, const char* pack
 /* A function web pages can call (see RegisterWebFunction): `args` is a JSON array; returns JSON text (NULL = null)
  * that stays valid until the function is called again. */
 typedef const char* (*MLWebFunction)(const char* args, void* user);
+/* A bone of a ped's skeleton (PoseBoneInfo). Rest transform = the model's default local pose (parent space). */
+typedef struct MLBoneInfo
+{
+	uint16_t tag;    /* bone tag, e.g. 0xDEAD SKEL_R_Hand */
+	int16_t parent;  /* bone index, -1 for the root */
+	char name[48];
+	float restRotation[4]; /* quaternion x, y, z, w */
+	float restTranslation[3];
+} MLBoneInfo;
+
+/* A joint override (PoseSet): replaces the animated local transform of `bone`, blended by `weight` (0..1). */
+typedef struct MLBonePose
+{
+	int32_t bone;
+	uint32_t flags;        /* ML_POSE_ROTATION | ML_POSE_TRANSLATION */
+	float rotation[4];     /* local, quaternion x, y, z, w */
+	float translation[3];  /* local, metres, parent space */
+	float weight;
+} MLBonePose;
+enum { ML_POSE_ROTATION = 1, ML_POSE_TRANSLATION = 2 };
+/* Spaces for PoseGetBone. By default the transform as the game animated it this frame (before overrides); with
+ * ML_SPACE_SHOWN, as it was shown in the last frame (overrides applied). */
+enum { ML_SPACE_LOCAL = 0, ML_SPACE_OBJECT = 1, ML_SPACE_WORLD = 2, ML_SPACE_SHOWN = 0x10 };
+
 /* Result of AiGenerate: the generated text (UTF-8), or NULL when the model is off or failed. */
 typedef void (*MLAiCallback)(const char* text, void* user);
 
@@ -258,6 +282,19 @@ typedef struct MLApi
 	 * `fn(text, user)` runs once on the mod's callback fiber when it is done. Returns 1 when queued, 0 when the model
 	 * is not on (then `fn` is not called). Any thread. */
 	int32_t (*AiGenerate)(const char* system, const char* prompt, int32_t maxTokens, float temperature, MLAiCallback fn, void* user);
+
+	/* ---- ped skeletons and procedural poses (check `size`) ----
+	 * Read a ped's skeleton and override its joints with your own transforms (procedural animation): after the game has
+	 * animated the ped each frame, the overridden bones get your local transforms and everything below them follows.
+	 * Matrices are 4x4 row-vector (x axis, y axis, z axis, translation rows). MLMain, a callback or a task. */
+	int32_t (*PoseBoneCount)(int32_t ped); /* 0 when the ped has no skeleton */
+	int32_t (*PoseFindBone)(int32_t ped, uint32_t tag); /* bone index, -1 when none */
+	int32_t (*PoseBoneInfo)(int32_t ped, int32_t bone, MLBoneInfo* out);
+	/* A bone's transform: as animated this frame, or with ML_SPACE_SHOWN as shown last frame (see the spaces). */
+	int32_t (*PoseGetBone)(int32_t ped, int32_t bone, int32_t space, float* matrix16);
+	/* Replaces the ped's overrides with `bones` (count 0 clears them). They stay until replaced, cleared, the ped is
+	 * gone, or 2 seconds pass without a new PoseSet (so set them every frame while you drive the ped). */
+	int32_t (*PoseSet)(int32_t ped, const MLBonePose* bones, int32_t count);
 } MLApi;
 
 /* States of the local text model (AiState). */

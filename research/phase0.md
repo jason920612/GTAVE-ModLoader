@@ -760,3 +760,14 @@
 - 研究工具：`tools/{findped,floatscan,ptrscan,skelpath}.py`；載入器 `debug/animprobe`（`debug_animprobe.txt`）、`debug/skelhook`
   （`debug_skelhook.txt` = 131feb0、`debug_skelbend.txt` = "<骨架> <索引> <角度>"）；`examples/animlab`（play／ent／bend／cam side|front|off／where）。
 - 驗證方法（只能看截圖與數據）：數值比對（FK 誤差、骨骼世界座標）、曲線圖、固定攝影機前後對照拼圖、之後加上連續動作分解圖與疊加骨架線。
+
+## 43. 角色姿勢 API 與數學 IK（2026-10-11）
+
+- 載入器 `game/pose`：以特徵碼找 handle→實體（`85 C9 0F 88 …`）與每角色動畫後更新（`56 57 48 83 EC 58 …`），hook 後者；其第一個參數
+  是角色元件，`*(元件+0x100)` = 實體（實體+0xF00 → 元件）。模組的覆寫（旋轉四元數、位移、權重）在該角色的更新返回後寫進局部矩陣，
+  並重算被覆寫骨骼與其子孫的物件矩陣（根骨骼保留遊戲加上的高度偏移）。2 秒未更新自動解除。
+- API：`PoseBoneCount/FindBone/BoneInfo/GetBone/Set`；SDK `modloader/body.hpp`（Vec3、Quat、Transform、Skeleton、Pose、兩段解析 IK）。
+- 時序：模組在腳本階段讀到的局部／物件矩陣是「這一影格剛動畫完、尚未覆寫」的姿勢；覆寫在之後才套用。驗證要讀「上一影格實際顯示」
+  的姿勢：`ML_SPACE_SHOWN`（套用時保存的副本，`Skeleton::Shown`）。
+- 實測（animlab `ik`）：右手追蹤胸前畫圓的目標，預測誤差 0.000、實際顯示誤差 0.01–0.06 m（一影格延遲＋目標超出手長）；
+  連續動作分解圖（`tools/strip.py`，固定正面攝影機）顯示手繞圈、紅色目標十字在手上。

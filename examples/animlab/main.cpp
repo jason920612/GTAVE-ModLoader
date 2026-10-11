@@ -11,6 +11,7 @@
 #include <fstream>
 #include <sstream>
 
+#include <modloader/body.hpp>
 #include <modloader/game.hpp>
 
 ML_MOD_INFO("Animation Lab", "0.1.0", "ModLoader", "Research: play animations on the player")
@@ -85,6 +86,75 @@ extern "C" __declspec(dllexport) void MLMain()
 					ml::Wait(0);
 				}
 				ml::Log("animlab: bend done");
+			}
+			else if (cmd == "bones")
+			{
+				// Research: our world transforms (pose API) against the game's GET_WORLD_POSITION_OF_ENTITY_BONE.
+				namespace b = ml::body;
+				const b::Skeleton sk(ped);
+				for (const int tag : {0x0, 0xE0FD, 0x60F2, 0x9D4D, 0x6E5C, 0xDEAD, 0x796E, 0x3779})
+				{
+					const int i = sk.Find(static_cast<uint16_t>(tag));
+					if (i < 0)
+						continue;
+					const b::Vec3 ours = sk.World(i).pos;
+					const Vector3 game = ENTITY::GET_WORLD_POSITION_OF_ENTITY_BONE(ped, PED::GET_PED_BONE_INDEX(ped, tag));
+					float m[16]{};
+					ml::Api().PoseGetBone(ped, i, ML_SPACE_OBJECT, m);
+					ml::Log("animlab: {:04x} {} #{} parent {} ours {:.3f},{:.3f},{:.3f} game {:.3f},{:.3f},{:.3f} object {:.3f},{:.3f},{:.3f}", tag, sk.Name(i), i,
+					    sk.Parent(i), ours.x, ours.y, ours.z, game.x, game.y, game.z, m[12], m[13], m[14]);
+				}
+				const Vector3 p = ENTITY::GET_ENTITY_COORDS(ped, false);
+				ml::Log("animlab: entity at {:.3f},{:.3f},{:.3f} heading {:.1f}", p.x, p.y, p.z, ENTITY::GET_ENTITY_HEADING(ped));
+			}
+			else if (cmd == "ik")
+			{
+				// Research: ik <seconds> — the right hand follows a point circling in front of the chest (two-bone IK through
+				// the loader's pose API). Draws the target (red) and the arm as the game shows it (green); logs the error.
+				namespace b = ml::body;
+				const float seconds = dict.empty() ? 8.0f : std::stof(dict);
+				const b::Skeleton sk(ped);
+				const int hand = sk.Find(static_cast<uint16_t>(0xDEAD)), fore = sk.Parent(hand), upper = sk.Parent(fore);
+				ml::Log("animlab: ik bones hand {} ({}) fore {} ({}) upper {} ({}) of {}", hand, sk.Name(hand), fore, sk.Name(fore), upper, sk.Name(upper),
+				    sk.Count());
+				if (hand < 0 || fore < 0 || upper < 0)
+					continue;
+				const uint64_t start = ml::TickMs(), end = start + static_cast<uint64_t>(seconds * 1000);
+				uint64_t nextLog = start;
+				while (ml::TickMs() < end)
+				{
+					const float t = static_cast<float>(ml::TickMs() - start) / 1000.0f;
+					const b::Transform root = sk.World(0);
+					// In the ped's frame: x right, y forward, z up (root bone axes vary; use the entity's).
+					const float h = ENTITY::GET_ENTITY_HEADING(ped) * 3.14159265f / 180.0f;
+					const b::Vec3 fwd{-std::sin(h), std::cos(h), 0}, right{std::cos(h), std::sin(h), 0}, up{0, 0, 1};
+					const Vector3 p = ENTITY::GET_ENTITY_COORDS(ped, false);
+					const b::Vec3 chest = b::Vec3{p.x, p.y, p.z} + up * 0.35f;
+					const b::Vec3 target = chest + fwd * 0.45f + right * (0.15f + 0.15f * std::cos(t * 2)) + up * (0.15f * std::sin(t * 2));
+					const b::Vec3 pole = sk.World(fore).pos + right * 0.3f - up * 0.5f;
+					b::Pose pose(sk);
+					const b::Vec3 before = pose.WorldOf(hand).pos;
+					pose.ReachTwoBone(upper, fore, hand, target, pole);
+					const b::Vec3 predicted = pose.WorldOf(hand).pos;
+					pose.Commit();
+					if (ml::TickMs() >= nextLog)
+						ml::Log("animlab: ik target {:.3f},{:.3f},{:.3f} before {:.3f},{:.3f},{:.3f} predicted {:.3f},{:.3f},{:.3f} (miss {:.3f})", target.x, target.y,
+						    target.z, before.x, before.y, before.z, predicted.x, predicted.y, predicted.z, (predicted - target).Length());
+					// What the game shows (last frame's pose, overrides applied).
+					const b::Vec3 sa = sk.Shown(upper).pos, sb = sk.Shown(fore).pos, sc = sk.Shown(hand).pos;
+					GRAPHICS::DRAW_LINE(sa.x, sa.y, sa.z, sb.x, sb.y, sb.z, 0, 255, 0, 255);
+					GRAPHICS::DRAW_LINE(sb.x, sb.y, sb.z, sc.x, sc.y, sc.z, 0, 255, 0, 255);
+					for (const b::Vec3 axis : {b::Vec3{0.05f, 0, 0}, b::Vec3{0, 0.05f, 0}, b::Vec3{0, 0, 0.05f}})
+						GRAPHICS::DRAW_LINE(target.x - axis.x, target.y - axis.y, target.z - axis.z, target.x + axis.x, target.y + axis.y, target.z + axis.z, 255, 0, 0, 255);
+					if (ml::TickMs() >= nextLog)
+					{
+						nextLog += 500;
+						ml::Log("animlab: ik t {:.1f} hand-target {:.3f} m (root {:.2f},{:.2f},{:.2f})", t, (sc - target).Length(), root.pos.x, root.pos.y, root.pos.z);
+					}
+					ml::Wait(0);
+				}
+				b::Pose::Clear(ped);
+				ml::Log("animlab: ik done");
 			}
 			else if (cmd == "cam")
 			{

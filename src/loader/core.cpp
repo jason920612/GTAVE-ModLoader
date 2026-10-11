@@ -27,6 +27,7 @@
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/pools.hpp"
+#include "game/pose.hpp"
 #include "game/pausemenu.hpp"
 #include "game/text.hpp"
 #include "game/text_override.hpp"
@@ -304,6 +305,7 @@ namespace loader::core
 		game::dlcpacks::InstallHooks();
 		game::datafiles::InstallHooks();
 		game::models::Install();
+		game::pose::Install();
 		game::scripts::Install();
 		debug::hangdump::Start();
 		debug::animprobe::StartIfRequested();

@@ -20,6 +20,7 @@
 #include "config.hpp"
 #include "log.hpp"
 #include "game/models.hpp"
+#include "game/pose.hpp"
 #include "convert/resource.hpp"
 #include "game/scripts.hpp"
 #include "game/story.hpp"
@@ -1124,6 +1125,29 @@ namespace loader::mods
 				item.owner->pending.emplace_back(item.fn, item.user);
 		}
 
+		// ---- ped skeletons and procedural poses ----------------------------------------------------
+
+		int32_t ApiPoseBoneCount(int32_t ped)
+		{
+			return InModFiber("PoseBoneCount", _ReturnAddress()) ? game::pose::BoneCount(ped) : 0;
+		}
+		int32_t ApiPoseFindBone(int32_t ped, uint32_t tag)
+		{
+			return InModFiber("PoseFindBone", _ReturnAddress()) ? game::pose::FindBone(ped, tag) : -1;
+		}
+		int32_t ApiPoseBoneInfo(int32_t ped, int32_t bone, MLBoneInfo* out)
+		{
+			return InModFiber("PoseBoneInfo", _ReturnAddress()) && out ? game::pose::BoneInfo(ped, bone, out) : 0;
+		}
+		int32_t ApiPoseGetBone(int32_t ped, int32_t bone, int32_t space, float* matrix16)
+		{
+			return InModFiber("PoseGetBone", _ReturnAddress()) && matrix16 ? game::pose::GetBone(ped, bone, space, matrix16) : 0;
+		}
+		int32_t ApiPoseSet(int32_t ped, const MLBonePose* bones, int32_t count)
+		{
+			return InModFiber("PoseSet", _ReturnAddress()) && count >= 0 && (count == 0 || bones) ? game::pose::SetPose(ped, bones, count) : 0;
+		}
+
 		// ---- high-level API: the local text model ------------------------------------------------
 
 		int32_t ApiAiState()
@@ -1215,6 +1239,11 @@ namespace loader::mods
 			.RunScriptFunction = ApiRunScriptFunction,
 			.AiState = ApiAiState,
 			.AiGenerate = ApiAiGenerate,
+			.PoseBoneCount = ApiPoseBoneCount,
+			.PoseFindBone = ApiPoseFindBone,
+			.PoseBoneInfo = ApiPoseBoneInfo,
+			.PoseGetBone = ApiPoseGetBone,
+			.PoseSet = ApiPoseSet,
 		};
 
 		// ---- loading --------------------------------------------------------------------------
