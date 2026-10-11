@@ -3,25 +3,28 @@
 <head>
 <meta charset="utf-8">
 <title>eyefind.info</title>
+<script src="https://site.common/theme.js"></script>
 <style>
-  :root { --blue: #3a7fc1; --ink: #222; --bg: #f4f4f4; }
+  :root { --blue: #3a7fc1; --ink: #222; --bg: #f4f4f4; --card: #fff; --title: #3a7fc1; --field: #fff; }
+  html[data-theme="dark"] { --blue: #1f4f7f; --ink: #e4e8ee; --bg: #121519; --card: #1c2128; --title: #7db7ec; --field: #262d36; }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
   header { background: var(--blue); color: #fff; padding: 28px 12%; display: flex; align-items: center; gap: 32px; }
   header h1 { margin: 0; font-size: 56px; font-style: italic; letter-spacing: -1px; }
   header h1 span { color: #ffd23f; }
-  header input { flex: 1; font-size: 22px; padding: 12px 18px; border: 0; border-radius: 4px; }
+  header input { flex: 1; font-size: 22px; padding: 12px 18px; border: 0; border-radius: 4px; background: var(--field); color: var(--ink); }
   main { padding: 32px 12%; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
-  a.site { display: block; background: #fff; border-radius: 6px; padding: 24px; text-decoration: none; color: var(--ink);
+  a.site { display: block; background: var(--card); border-radius: 6px; padding: 24px; text-decoration: none; color: var(--ink);
            box-shadow: 0 1px 3px rgba(0,0,0,.15); transition: transform .1s; }
   a.site:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,.2); }
-  a.site h2 { margin: 0 0 8px; font-size: 22px; color: var(--blue); }
+  a.site h2 { margin: 0 0 8px; font-size: 22px; color: var(--title); }
 </style>
 </head>
 <body>
 <header>
   <h1>eye<span>find</span>.info</h1>
   <input placeholder="搜尋 Eyefind">
+  <button class="theme-toggle" data-theme-toggle></button>
 </header>
 <main>
   <a class="site" href="https://www.dynasty8realestate.com/"><h2>朝代 8 房地產</h2>洛聖都的公寓與車庫</a>
@@ -34,6 +37,9 @@
   <a class="site" href="https://www.lcn-exchange.com/"><h2>LCN Exchange</h2>自由城證券交易所</a>
   <a class="site" href="https://www.bawsaq.com/"><h2>BAWSAQ</h2>聖安地列斯證券交易所</a>
   <a class="site" href="https://www.epsilonprogram.com/"><h2>Epsilon 計畫</h2>Kifflom！</a>
+  <a class="site" href="https://www.maze-bank.com/"><h2>Maze Bank</h2>私人銀行與財富管理</a>
+  <a class="site" href="https://www.fleeca.com/"><h2>Fleeca</h2>就在您家附近的銀行</a>
+  <a class="site" href="https://www.thebankofliberty.com/"><h2>Bank of Liberty</h2>自 1887 年起，自由城的信賴</a>
 </main>
 </body>
 </html>

@@ -4,19 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Epsilon 計畫</title>
+<script src="https://site.common/theme.js"></script>
 <style>
-  :root { --sky: #e8f3ff; --blue: #2f6db5; --deep: #183c6b; --gold: #c9a227; --ink: #1d2733; --muted: #66768a; --line: #d6e3f3; }
+  :root { --sky: #e8f3ff; --blue: #2f6db5; --deep: #183c6b; --gold: #c9a227; --ink: #1d2733; --muted: #66768a; --line: #d6e3f3;
+    --page: #fff; --surface: #fff; --head: rgba(255,255,255,.95); --alt: #f6f9fd; --hero2: #cfe4ff; --heroc: #fff; --pic: #fdfdfd; --off: #b7c4d3; --warn: #a15c00; }
+  html[data-theme="dark"] { --sky: #16243a; --blue: #4d8fdc; --deep: #9cc4f5; --gold: #e0bd4a; --ink: #e2e9f2; --muted: #9aa9bb; --line: #2a3a50;
+    --page: #0e141c; --surface: #152030; --head: rgba(14,20,28,.95); --alt: #111a26; --hero2: #0e1a2b; --heroc: #23395a; --pic: #1b2a3f; --off: #3a4656; --warn: #f2a54a; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; color: var(--ink); background: #fff; font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; }
+  html, body { margin: 0; color: var(--ink); background: var(--page); font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; }
   button { font: inherit; cursor: pointer; }
-  header { position: sticky; top: 0; z-index: 5; background: rgba(255,255,255,.95); border-bottom: 1px solid var(--line);
+  header { position: sticky; top: 0; z-index: 5; background: var(--head); border-bottom: 1px solid var(--line);
     display: flex; align-items: center; justify-content: space-between; padding: 14px 6%; }
   .logo { display: flex; align-items: center; gap: 12px; font-weight: 900; font-size: 24px; color: var(--deep); letter-spacing: 2px; }
   .logo svg { width: 38px; height: 38px; }
+  nav { display: flex; align-items: center; }
+  nav .theme-toggle { margin-left: 22px; color: var(--deep); }
   nav a { margin-left: 22px; color: var(--deep); text-decoration: none; font-weight: 600; cursor: pointer; }
   nav a:hover { color: var(--blue); }
-  .hero { background: radial-gradient(circle at 50% 120%, #fff 0, var(--sky) 45%, #cfe4ff 100%); text-align: center; padding: 80px 6% 70px; }
+  .hero { background: radial-gradient(circle at 50% 120%, var(--heroc) 0, var(--sky) 45%, var(--hero2) 100%); text-align: center; padding: 80px 6% 70px; }
   .hero h1 { margin: 0; font-size: 56px; color: var(--deep); letter-spacing: 6px; }
   .hero p { font-size: 20px; color: var(--muted); max-width: 720px; margin: 18px auto 30px; line-height: 1.7; }
   .cta { background: var(--blue); color: #fff; border: 0; border-radius: 999px; padding: 14px 36px; font-size: 18px; font-weight: 700; box-shadow: 0 6px 18px rgba(47,109,181,.3); }
@@ -26,28 +32,28 @@
   .tenets { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
   .tenet { background: var(--sky); border-radius: 16px; padding: 22px; }
   .tenet b { display: block; color: var(--blue); font-size: 14px; margin-bottom: 6px; }
-  .alt { background: #f6f9fd; }
+  .alt { background: var(--alt); }
   .quiz { max-width: 760px; margin: 0 auto; }
-  .q { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 14px; }
+  .q { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 14px; }
   .q p { margin: 0 0 12px; font-weight: 700; }
   .q label { display: inline-flex; align-items: center; gap: 6px; margin-right: 22px; cursor: pointer; }
   .center { text-align: center; }
   .result { max-width: 760px; margin: 20px auto 0; background: var(--sky); border-radius: 14px; padding: 22px; text-align: center; line-height: 1.8; }
   .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 22px; max-width: 900px; margin: 0 auto; }
-  .tier { border: 1px solid var(--line); border-radius: 18px; padding: 26px; text-align: center; background: #fff; }
+  .tier { border: 1px solid var(--line); border-radius: 18px; padding: 26px; text-align: center; background: var(--surface); }
   .tier .amount { font-size: 40px; font-weight: 900; color: var(--deep); }
   .tier p { color: var(--muted); min-height: 52px; line-height: 1.6; }
   .tier button, .robe button { width: 100%; border: 0; border-radius: 12px; padding: 13px; font-weight: 700; font-size: 17px; background: var(--blue); color: #fff; }
-  .tier button:disabled, .robe button:disabled, .cta:disabled { background: #b7c4d3; cursor: default; box-shadow: none; }
+  .tier button:disabled, .robe button:disabled, .cta:disabled { background: var(--off); cursor: default; box-shadow: none; }
   .total { text-align: center; margin: 26px 0 0; color: var(--muted); }
   .total b { color: var(--deep); font-size: 22px; }
-  .note { text-align: center; color: #a15c00; margin-top: 16px; }
+  .note { text-align: center; color: var(--warn); margin-top: 16px; }
   .robe { max-width: 760px; margin: 0 auto; display: grid; grid-template-columns: 220px 1fr; gap: 26px; align-items: center;
-    border: 1px solid var(--line); border-radius: 18px; padding: 26px; background: #fff; }
-  .robe .pic { height: 220px; border-radius: 14px; background: linear-gradient(160deg, #fdfdfd, #dfeaf7); display: grid; place-items: center; }
+    border: 1px solid var(--line); border-radius: 18px; padding: 26px; background: var(--surface); }
+  .robe .pic { height: 220px; border-radius: 14px; background: linear-gradient(160deg, var(--pic), var(--sky)); display: grid; place-items: center; }
   .robe .price { font-size: 32px; font-weight: 900; color: var(--deep); margin: 8px 0 16px; }
   footer { text-align: center; color: var(--muted); padding: 30px 6% 40px; border-top: 1px solid var(--line); font-size: 14px; }
-  .toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); background: var(--deep); color: #fff; padding: 13px 22px; border-radius: 10px; z-index: 20; }
+  .toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); background: #183c6b; color: #fff; padding: 13px 22px; border-radius: 10px; z-index: 20; }
   .toast.error { background: #b42318; }
 </style>
 </head>
@@ -57,7 +63,7 @@
     <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="none" stroke="#2f6db5" stroke-width="3"/><path d="M12 26 L20 10 L28 26 Z" fill="#c9a227"/><circle cx="20" cy="22" r="3" fill="#183c6b"/></svg>
     EPSILON 計畫
   </div>
-  <nav><a data-go="tenets">教義</a><a data-go="test">我是信徒嗎？</a><a data-go="give">奉獻</a><a data-go="robes">聖袍</a></nav>
+  <nav><a data-go="tenets">教義</a><a data-go="test">我是信徒嗎？</a><a data-go="give">奉獻</a><a data-go="robes">聖袍</a><button class="theme-toggle" data-theme-toggle></button></nav>
 </header>
 
 <div class="hero">

@@ -678,3 +678,18 @@
 - 剩餘警告 71 個，全是貼圖參數 `0x037EB699`（= `DiffuseExtraSampler`）出現在 4 種效果：強化版的同名效果已沒有可對應的貼圖槽，
   這張貼圖不會被使用，不影響顯示。
 - `DiffuseExtraSampler` 的來源（2026-10-11）：4 種效果是 weapon_normal_spec_detail_palette（5ff02c23）、weapon_normal_spec_detail_tnt（71a93f43）、weapon_normal_spec_tnt（8676a645）、weapon_normal_spec_palette（9905a1ed），只出現在武器模型。71 個實例全部指向與 `DiffuseSampler` 相同的貼圖。舊版 common.rpf 的 fxc：`DiffuseSampler` 被 33 段編譯著色器的 RDEF 引用，`DiffuseExtraSampler` 只在參數宣告出現 1 次、沒有任何著色器綁定——舊版本來就沒讀它（死參數）。強化版官方的同名檔（w_ar_bullpupriflemk2、*_luxe 等）參數表裡完全沒有這個雜湊。結論：不是強化版引擎接管或改做法，而是舊版就沒用到、強化版重新編譯時把它刪掉。另外：強化版貼圖名稱多半是「舊版名稱去掉 Sampler 加上 Tex」（對照表 15 組中 11 組符合）。
+
+## 38. 銀行網站與遊戲的記帳（2026-10-11）
+
+- 網站盤點（`find` 研究指令）：x64b.rpf 與 update.rpf 的 `scaleform_web.rpf/www_*.gfx`，約 90 個網站。
+- appinternet 依網站種類分派頁面（`@3076690(種類, 頁面, 影片, …)`，種類存 Global 77533、頁面 77532）：5 Epsilon、4/7 股市、
+  14 Bleeter（`BLE_*`）、6 Lifeinvader 動態、25 Lifeinvader 個人頁（依角色載入 `LFI_M/F/T` 文字）、21/22/23 銀行（頁面 2 = 帳戶，`@3077230`）。
+- 餘額：Global 62254[角色]（= `SPn_TOTAL_CASH`，兩者同步）。交易紀錄：Global 114990+20573+233，每角色 69 格：+0 累計筆數（不封頂）、
+  +1 下一格、+2 起 11 筆 × 6 格（+0 0 支出／1 收入、+1 對象 id、+2 金額、+3..+5 副本）。沒有日期。
+- 對象 id → 名稱標籤：`@3077706` 的 switch（`ACCNA_*`、商店 `S_*`，130 個；91、92、130 沒有文字）。例：2 股票、32 Lester、36 Oscar、
+  85–90 六個車店網站、130 朝代 8。
+- 記帳兼扣款：`@16835(角色, 0 支出／1 收入, 對象, 金額, 允許透支)`，特徵碼 `2d 05 0d 00 00 5d ?? ?? ?? 38 03 72 5b ?? ?? 71 2e 05 01 7b`；
+  同時更新消費統計，部分對象有折扣。以 RunFunction 執行（堆疊 4000；2000 會讓 START_NEW_SCRIPT 失敗），HUD 現金立即更新。
+  SDK `ml::game::Pay`；房產與車店改用它。
+- `examples/bank`：每 250 ms 比對累計筆數與餘額，穩定 1 秒後入帳；新紀錄標上遊戲時間，沒有紀錄的金額變動記成「其他收支」
+  （同一小時同方向合併），最多 2000 筆，存在 ml::save（每角色）。實測：BAWSAQ 買 10 股 → 銀行顯示「2009/6/11 11:20 股票買賣 -$714」。

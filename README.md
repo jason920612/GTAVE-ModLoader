@@ -19,15 +19,16 @@ GTA V Enhanced（故事模式）的單一 DLL 模組載入器。
   - `ml::StartTask`：額外的腳本執行緒，可以呼叫原生函式與 `Wait`，不會卡住 MLMain；另有 `WaitUntil`。
   - 會自動釋放的串流資源：`ml::LoadModel`、`LoadTextureDict`、`LoadAnimDict`、`LoadPtfxAsset`。
   - `ml::save`：跟著遊戲存檔走的模組資料，每個角色一份或共用；遊戲存檔時寫入 `data\save.json`，讀檔時丟棄未存的變更。
-  - `ml::game`：目前角色、金錢（`Cash` / `AddCash`）、自動存檔請求、讀取畫面，以及事件（角色切換、遊戲存檔、讀檔）。
+  - `ml::game`：目前角色、金錢（`Cash` / `AddCash`，以及 `Pay`：走遊戲自己的扣款，會出現在銀行交易紀錄）、自動存檔請求、讀取畫面，以及事件（角色切換、遊戲存檔、讀檔）。
   - `ml::Global`：以欄位偏移與陣列存取腳本全域變數。
   - `ml::scripts::RunFunction`：以位元組特徵碼找到遊戲腳本的函式，在新的腳本執行緒中執行並等待結束。
   - 網頁函式可直接用 C++ 型別參數並回傳 `ml::Json`。
 - **遊戲內瀏覽器**：以 Chromium（CEF）取代手機與電腦的網頁瀏覽器（F4 設定頁可關閉），網站全部重做：
   eyefind 首頁、朝代 8 房地產（`examples/property`：買線上公寓與車庫，含地圖、車庫、衣櫃）、六個買車網站（新車送到自己的車庫，
   飛機與船送到故事模式原本的機庫／碼頭）、LCN 與 BAWSAQ 股市（`examples/stocks`：交易用遊戲自己的函式，兩個交易所都有模擬的行情
-  與新聞事件）、Epsilon 計畫（`examples/epsilon`：捐款、問卷、聖袍，照原版推進劇情）。模組可以在 `mods\<模組>\web\<網域>\` 放自己的網頁，
-  以 `game.call` 呼叫模組註冊的函式。
+  與新聞事件）、Epsilon 計畫（`examples/epsilon`：捐款、問卷、聖袍，照原版推進劇情）、Maze Bank／Fleeca／Bank of Liberty（`examples/bank`：每個角色一家銀行，餘額、交易明細（加上遊戲內日期，保存在存檔）、餘額走勢與支出分類）。模組可以在 `mods\<模組>\web\<網域>\` 放自己的網頁，
+  以 `game.call` 呼叫模組註冊的函式。網站支援深色模式：預設跟隨 Windows 設定，各網站可自行切換；自己的網頁在 `<head>` 載入
+  `https://site.common/theme.js`，以 `html[data-theme="dark"]` 寫深色樣式，`data-theme-toggle` 元素即為切換鈕。瀏覽器工具列也跟隨 Windows 主題。
 - **腳本 API（進階）**：讀寫腳本全域變數、列出執行中的腳本、讀取腳本程式碼（附反組譯用的指令解碼 `modloader/script.hpp`）、
   讓腳本從指定位置繼續執行。
 - **修改器（`examples/trainer`）**：玩家（無敵、通緝、體力、超級跳、快跑、隱形、更換角色模型）、

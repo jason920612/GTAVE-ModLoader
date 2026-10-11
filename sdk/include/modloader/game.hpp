@@ -151,6 +151,30 @@ namespace ml
 			return STATS::STAT_SET_INT(MISC::GET_HASH_KEY(std::format("SP{}_TOTAL_CASH", static_cast<int32_t>(who)).c_str()), now + amount, true) != 0;
 		}
 
+		// Payees of the game's bank history (appinternet's ACCNA_* names); the bank websites show them.
+		namespace account
+		{
+			inline constexpr int32_t StockBroker = 2, LegendaryMotorsport = 85, Warstock = 86, Elitas = 87, DockTease = 88, PedalAndMetal = 89,
+			                         SuperAutos = 90, Dynasty8 = 130;
+		}
+
+		// Pays `amount` the way the game's own shops do (appinternet's bank function): the money goes, the payment shows
+		// in the character's bank history and counts in the spending stats. Without that function (game update?) it
+		// falls back to AddCash, which leaves no history. False when there is not enough money or no character.
+		// MLMain, a callback or a task (it waits for the game's script).
+		inline bool Pay(int32_t amount, int32_t payee, Character who = CurrentCharacter())
+		{
+			if (who == Character::None || amount < 0 || Cash(who) < amount)
+				return false;
+			const int32_t before = Cash(who);
+			// @16835(character, 0 pay / 1 receive, payee, amount, allow overdraft) -> 1 when done
+			if (scripts::RunFunction("appinternet", "2d 05 0d 00 00 5d ?? ?? ?? 38 03 72 5b ?? ?? 71 2e 05 01 7b",
+			        {static_cast<int32_t>(who), 0, payee, amount, 0}, 4000) == scripts::RunResult::Ran)
+				return Cash(who) < before || amount == 0;
+			LogError("ml::game::Pay: the game's bank function was not found (game update?); paying without bank history");
+			return AddCash(-amount, who);
+		}
+
 		inline bool IsLoadingScreen() { return DLC::GET_IS_LOADING_SCREEN_ACTIVE() != 0; }
 
 		// Asks story mode to autosave (it does unless autosave is off in the settings). False when one is already waiting.

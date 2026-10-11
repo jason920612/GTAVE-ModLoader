@@ -650,6 +650,18 @@ namespace property::shop
 			    {"storage", {{"hangar", HasStorage(1, c)}, {"marina", HasStorage(2, c)}, {"helipad", HasStorage(3, c)}}}};
 		}
 
+		// The bank history names the shop (ml::game::account).
+		int32_t Payee(const std::string& site)
+		{
+			namespace a = ml::game::account;
+			static const std::pair<const char*, int32_t> payees[] = {{"legendary", a::LegendaryMotorsport}, {"ssasa", a::SuperAutos},
+			    {"elitas", a::Elitas}, {"docktease", a::DockTease}, {"pandm", a::PedalAndMetal}, {"warstock", a::Warstock}};
+			for (const auto& [key, payee] : payees)
+				if (site == key)
+					return payee;
+			return a::LegendaryMotorsport;
+		}
+
 		ml::Json Buy(int item, int garageId)
 		{
 			const auto fail = [](const char* error) { return ml::Json{{"ok", false}, {"error", error}, {"cash", ml::game::Cash()}}; };
@@ -675,7 +687,7 @@ namespace property::shop
 				if (const std::string error = StoreOwnVehicle(item, c); !error.empty())
 					return fail(error.c_str());
 			}
-			ml::game::AddCash(-i->price);
+			ml::game::Pay(i->price, Payee(g_info[item].site));
 			NotePurchase();
 			ml::Log("shop: character {} bought item {} ({:08X}) for ${}", c, item, i->model, i->price);
 			return {{"ok", true}, {"error", ""}, {"cash", ml::game::Cash()}};

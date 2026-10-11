@@ -1,0 +1,83 @@
+/* Shared bank site: brand colours come from the page (--brand, --brand-dark, --brand-ink, --accent, --tint);
+   html[data-theme="dark"] switches the neutral colours (https://site.common/theme.js). */
+:root { --bg: #f4f6f9; --surface: #fff; --ink: #18212d; --muted: #6a7686; --line: #e4e8ee; --line-soft: #f0f2f5; --field: #d5dbe4;
+  --track: #eef1f5; --text2: #4c5868; --good: #138a43; --bad: #c0392b; --shadow: 0 1px 3px rgba(20, 30, 50, .08);
+  --chip: var(--tint); --chip-ink: var(--brand-dark); --link: var(--brand); }
+html[data-theme="dark"] { --bg: #0f1318; --surface: #191f27; --ink: #e6ebf1; --muted: #93a0b0; --line: #2a323d; --line-soft: #222a34;
+  --field: #343e4b; --track: #252d38; --text2: #b3bfcc; --good: #4cd38a; --bad: #ff7b6e; --shadow: 0 1px 3px rgba(0, 0, 0, .5);
+  --chip: color-mix(in srgb, var(--brand) 35%, #191f27); --chip-ink: #e6ebf1; --link: color-mix(in srgb, var(--brand) 40%, #fff); }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; font-size: 15px; }
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+a { color: var(--link); }
+
+.top { background: var(--brand); color: var(--brand-ink); }
+.top .bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 1180px; margin: 0 auto; padding: 16px 24px; }
+.top .end { display: flex; align-items: center; gap: 16px; }
+.logo { display: flex; align-items: center; gap: 12px; font-weight: 900; font-size: 24px; letter-spacing: 1px; }
+.logo svg { width: 40px; height: 40px; flex: none; }
+.logo small { display: block; font-size: 12px; font-weight: 400; opacity: .8; letter-spacing: 0; }
+.who { text-align: right; font-size: 13px; opacity: .9; }
+.who b { display: block; font-size: 16px; opacity: 1; }
+
+main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+.card { background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); padding: 20px 22px; }
+.card h2 { margin: 0 0 14px; font-size: 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.card h2 small { font-weight: 400; color: var(--muted); font-size: 13px; }
+.grid { display: grid; gap: 20px; }
+.cols { grid-template-columns: 1.6fr 1fr; }
+@media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+
+.hero-acc { background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: var(--brand-ink); border-radius: 16px; padding: 24px 26px;
+  display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: end; }
+.hero-acc .label { opacity: .8; font-size: 13px; }
+.hero-acc .bal { font-size: 42px; font-weight: 900; letter-spacing: 1px; margin-top: 4px; }
+.hero-acc .no { opacity: .75; font-size: 13px; margin-top: 6px; font-family: Consolas, monospace; }
+.hero-acc .flows { display: flex; gap: 22px; text-align: right; }
+.hero-acc .flows b { display: block; font-size: 20px; }
+.hero-acc .flows span { font-size: 12px; opacity: .8; }
+
+.ranges { display: flex; gap: 6px; }
+.ranges button { border: 1px solid var(--field); background: var(--surface); border-radius: 999px; padding: 3px 12px; font-size: 13px; color: var(--text2); }
+.ranges button.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+svg.chart { width: 100%; height: 220px; display: block; }
+svg.chart .grid-line { stroke: var(--line-soft); }
+svg.chart .axis { fill: var(--muted); }
+svg.chart .area { fill: var(--chip); opacity: .7; }
+svg.chart .line { fill: none; stroke: var(--link); stroke-width: 2.5; }
+.empty { color: var(--muted); text-align: center; padding: 28px 10px; }
+
+.cats .row { display: grid; grid-template-columns: 92px 1fr 96px; gap: 10px; align-items: center; margin: 9px 0; font-size: 14px; }
+.cats .track { background: var(--track); border-radius: 999px; height: 10px; overflow: hidden; }
+.cats .fill { background: var(--link); height: 100%; border-radius: 999px; }
+.cats .amt { text-align: right; font-variant-numeric: tabular-nums; }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.filters input, .filters select { border: 1px solid var(--field); border-radius: 8px; padding: 7px 10px; background: var(--surface); color: var(--ink); }
+.filters input { flex: 1; min-width: 160px; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+td { padding: 10px 6px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.date { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.tag { display: inline-block; font-size: 11px; border-radius: 999px; padding: 1px 8px; background: var(--chip); color: var(--chip-ink); margin-left: 6px; }
+.in { color: var(--good); font-weight: 700; }
+.out { color: var(--bad); font-weight: 700; }
+.more { display: block; margin: 14px auto 0; border: 1px solid var(--field); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 7px 22px; }
+
+/* Visitors who bank elsewhere: the bank's public page. */
+.promo { background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: var(--brand-ink); }
+.promo > div { max-width: 1180px; margin: 0 auto; padding: 64px 24px; }
+.promo h1 { margin: 0; font-size: 44px; letter-spacing: 1px; }
+.promo p { font-size: 18px; max-width: 680px; line-height: 1.7; opacity: .92; }
+.login { background: var(--surface); border-radius: 14px; padding: 20px 22px; max-width: 680px; margin-top: 26px; color: var(--ink); line-height: 1.7; }
+.login b { color: var(--link); }
+.products { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+.product h3 { margin: 0 0 8px; color: var(--link); }
+.product p { margin: 0; color: var(--text2); line-height: 1.65; }
+.notice { border-left: 4px solid var(--accent); background: var(--surface); padding: 14px 18px; border-radius: 0 10px 10px 0; color: var(--text2); line-height: 1.7; }
+footer { max-width: 1180px; margin: 0 auto; padding: 10px 24px 40px; color: var(--muted); font-size: 12px; line-height: 1.7; }

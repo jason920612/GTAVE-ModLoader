@@ -1,4 +1,7 @@
-:root { --bg: #f2f2f2; --card: #fff; --ink: #1d1d1f; --muted: #6e6e73; --line: #e2e2e2; --red: #c2453a; }
+:root { --bg: #f2f2f2; --card: #fff; --ink: #1d1d1f; --muted: #6e6e73; --line: #e2e2e2; --red: #c2453a; --field: #fff; --noimg: #dcdcdc;
+  --noimg-ink: #999; --price: var(--brand); --off: #cfcfcf; --off-ink: #888; }
+html[data-theme="dark"] { --bg: #0f1012; --card: #1a1b1f; --ink: #ececef; --muted: #9a9aa2; --line: #2d2e34; --red: #ff6f62; --field: #24252b;
+  --noimg: #26272d; --noimg-ink: #6c6c74; --price: color-mix(in srgb, var(--accent) 75%, #fff); --off: #3a3b42; --off-ink: #777; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; }
@@ -10,12 +13,13 @@ button, select, input { font: inherit; }
 .logo small { display: block; font-size: 14px; font-weight: 400; opacity: .8; font-style: normal; letter-spacing: 0; }
 .account { background: rgba(0,0,0,.25); padding: 9px 16px; border-radius: 999px; }
 .account b { color: var(--accent); }
+.top .end { display: flex; align-items: center; gap: 14px; }
 
 .hero { padding: 40px 6% 30px; background: var(--hero); color: var(--brand-ink); }
 .hero h1 { margin: 0 0 6px; font-size: 36px; }
 .hero p { margin: 0 0 22px; opacity: .85; }
 .filters { display: flex; gap: 12px; flex-wrap: wrap; }
-.filters select, .filters input { border: 0; border-radius: 8px; padding: 10px 14px; background: #fff; color: var(--ink); }
+.filters select, .filters input { border: 0; border-radius: 8px; padding: 10px 14px; background: var(--field); color: var(--ink); }
 .filters input { flex: 1; min-width: 220px; }
 
 main { padding: 26px 6% 40px; }
@@ -24,12 +28,12 @@ main { padding: 26px 6% 40px; }
 .card { background: var(--card); border-radius: 12px; overflow: hidden; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.1);
   transition: transform .12s, box-shadow .12s; }
 .card:hover { transform: translateY(-3px); box-shadow: 0 10px 22px rgba(0,0,0,.15); }
-.photo { width: 100%; aspect-ratio: 2 / 1; object-fit: cover; display: block; background: #dcdcdc; }
-.noimg { width: 100%; aspect-ratio: 2 / 1; display: grid; place-items: center; background: #dcdcdc; color: #999; font-size: 14px; }
+.photo { width: 100%; aspect-ratio: 2 / 1; object-fit: cover; display: block; background: var(--noimg); }
+.noimg { width: 100%; aspect-ratio: 2 / 1; display: grid; place-items: center; background: var(--noimg); color: var(--noimg-ink); font-size: 14px; }
 .card .info { padding: 12px 14px 14px; }
 .card .maker { color: var(--muted); font-size: 13px; }
 .card .name { font-size: 18px; font-weight: 700; }
-.card .price { margin-top: 8px; font-size: 20px; font-weight: 800; color: var(--brand); }
+.card .price { margin-top: 8px; font-size: 20px; font-weight: 800; color: var(--price); }
 .empty, .loading { text-align: center; color: var(--muted); padding: 40px; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 10; }
@@ -40,12 +44,12 @@ main { padding: 26px 6% 40px; }
   background: rgba(0,0,0,.6); color: #fff; cursor: pointer; }
 .deliver { margin: 16px 0; }
 .deliver label { display: block; color: var(--muted); margin-bottom: 6px; }
-.deliver select { width: 100%; padding: 11px; border-radius: 8px; border: 1px solid var(--line); }
+.deliver select { width: 100%; padding: 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--field); color: var(--ink); }
 .note { color: var(--muted); font-size: 14px; line-height: 1.6; }
 .note.warn { color: var(--red); }
 .buy { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 10px; }
 .buy .price { font-size: 28px; font-weight: 800; }
 button.primary { border: 0; border-radius: 10px; padding: 12px 28px; font-weight: 700; font-size: 17px; cursor: pointer; background: var(--brand); color: var(--brand-ink); }
-button.primary:disabled { background: #cfcfcf; color: #888; cursor: default; }
+button.primary:disabled { background: var(--off); color: var(--off-ink); cursor: default; }
 .toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); background: #222; color: #fff; padding: 13px 22px; border-radius: 10px; z-index: 20; }
 .toast.error { background: var(--red); }

@@ -191,7 +191,7 @@ namespace property
 		if (Owned(c).contains(id))
 			return fail("owned");
 		const int price = Price(id);
-		if (!ml::game::AddCash(-price))
+		if (!ml::game::Pay(price, ml::game::account::Dynasty8))
 			return fail("money");
 		AddOwned(c, id);
 		garage::Refresh();

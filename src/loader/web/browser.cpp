@@ -323,7 +323,7 @@ namespace loader::web
 
 		textures::Tick();
 
-		// Development aid: ModLoaderrowser_open.txt holds a URL to open.
+		// Development aid: ModLoader\browser_open.txt holds a URL to open.
 		static uint64_t nextCheck = 0;
 		if (GetTickCount64() >= nextCheck)
 		{
@@ -406,6 +406,22 @@ namespace loader::web
 		g_gpu.hasFrame = true;
 	}
 
+	// Like a desktop browser, the toolbar follows the Windows light / dark app setting (checked every 2 s).
+	bool SystemDark()
+	{
+		static bool dark = false;
+		static uint64_t next = 0;
+		if (GetTickCount64() >= next)
+		{
+			next = GetTickCount64() + 2000;
+			DWORD light = 1, size = sizeof(light);
+			if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme",
+			        RRF_RT_REG_DWORD, nullptr, &light, &size) == ERROR_SUCCESS)
+				dark = light == 0;
+		}
+		return dark;
+	}
+
 	void Draw()
 	{
 		if (!g_open)
@@ -425,7 +441,16 @@ namespace loader::web
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(40, 40, 40, 255));
+		const bool dark = SystemDark();
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, dark ? IM_COL32(40, 40, 40, 255) : IM_COL32(243, 243, 243, 255));
+		ImGui::PushStyleColor(ImGuiCol_Text, dark ? IM_COL32(235, 235, 235, 255) : IM_COL32(32, 32, 32, 255));
+		ImGui::PushStyleColor(ImGuiCol_Button, dark ? IM_COL32(60, 60, 60, 255) : IM_COL32(225, 225, 225, 255));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dark ? IM_COL32(80, 80, 80, 255) : IM_COL32(208, 208, 208, 255));
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, dark ? IM_COL32(95, 95, 95, 255) : IM_COL32(192, 192, 192, 255));
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, dark ? IM_COL32(28, 28, 28, 255) : IM_COL32(255, 255, 255, 255));
+		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, dark ? IM_COL32(34, 34, 34, 255) : IM_COL32(250, 250, 250, 255));
+		ImGui::PushStyleColor(ImGuiCol_FrameBgActive, dark ? IM_COL32(34, 34, 34, 255) : IM_COL32(255, 255, 255, 255));
+		ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, dark ? IM_COL32(60, 110, 180, 200) : IM_COL32(150, 190, 240, 200));
 		ImGui::Begin("##browser", nullptr,
 		    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
 		        ImGuiWindowFlags_NoScrollWithMouse);
@@ -478,7 +503,7 @@ namespace loader::web
 		else
 			ImGui::TextDisabled("...");
 		ImGui::End();
-		ImGui::PopStyleColor();
+		ImGui::PopStyleColor(9);
 		ImGui::PopStyleVar(3);
 	}
 

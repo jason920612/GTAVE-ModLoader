@@ -11,7 +11,7 @@ document.title = SITE.title;
 document.body.insertAdjacentHTML('afterbegin', `
 <header class="top">
   <div class="logo">${SITE.title}<small>${SITE.tagline}</small></div>
-  <div class="account"><span id="who"></span> <b id="cash"></b></div>
+  <div class="end"><div class="account"><span id="who"></span> <b id="cash"></b></div><button class="theme-toggle" data-theme-toggle></button></div>
 </header>
 <div class="tape"><div class="track" id="tape"></div></div>
 <div class="closed" id="closed" hidden>目前無法交易：交易所沒有報價。</div>

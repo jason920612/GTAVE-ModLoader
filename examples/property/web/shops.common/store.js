@@ -10,7 +10,7 @@ document.title = SITE.title;
 document.body.insertAdjacentHTML('afterbegin', `
 <header class="top">
   <div class="logo">${SITE.title}<small>${SITE.tagline}</small></div>
-  <div class="account"><span id="who"></span> <b id="cash"></b></div>
+  <div class="end"><div class="account"><span id="who"></span> <b id="cash"></b></div><button class="theme-toggle" data-theme-toggle></button></div>
 </header>
 <section class="hero">
   <h1>${SITE.headline}</h1>
