@@ -401,6 +401,13 @@ namespace loader::convert
 			{
 				if (names[i])
 					continue;
+				// DiffuseExtraSampler: declared by the legacy weapon effects but sampled by none of their shaders, and
+				// Enhanced dropped it (research/phase0.md §37). It must not take a free slot meant for another texture.
+				if (textureNames[i] == 0x037EB699)
+				{
+					names[i] = textureNames[i];
+					continue;
+				}
 				while (next < used.size() && used[next])
 					++next;
 				if (next < used.size())
