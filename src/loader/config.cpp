@@ -36,6 +36,7 @@ namespace loader::config
 			c.debugWatchLanding = j.value("debugWatchLanding", c.debugWatchLanding);
 			c.debugWatchFile = j.value("debugWatchFile", c.debugWatchFile);
 			c.debugWatchBoot = j.value("debugWatchBoot", c.debugWatchBoot);
+			c.debugPoseWatch = j.value("debugPoseWatch", c.debugPoseWatch);
 			c.pauseMenuModsTab = j.value("pauseMenuModsTab", c.pauseMenuModsTab);
 			c.replaceBrowser = j.value("replaceBrowser", c.replaceBrowser);
 			c.aiEnabled = j.value("aiEnabled", c.aiEnabled);
@@ -55,6 +56,7 @@ namespace loader::config
 				{"debugWatchLanding", c.debugWatchLanding},
 				{"debugWatchFile", c.debugWatchFile},
 				{"debugWatchBoot", c.debugWatchBoot},
+				{"debugPoseWatch", c.debugPoseWatch},
 				{"pauseMenuModsTab", c.pauseMenuModsTab},
 				{"replaceBrowser", c.replaceBrowser},
 				{"aiEnabled", c.aiEnabled},

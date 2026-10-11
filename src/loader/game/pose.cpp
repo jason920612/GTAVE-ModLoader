@@ -3,13 +3,20 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <cmath>
 #include <cstring>
+#include <format>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <MinHook.h>
 
+#include "../config.hpp"
+#include "../debug/watch.hpp"
 #include "../log.hpp"
 #include "../pattern.hpp"
 
@@ -23,6 +30,12 @@ namespace loader::game::pose
 		// Per-ped update after the animation pass (main thread): (ped component a, ...); *(a+0x100) = entity.
 		constexpr const char* kPostAnimation =
 		    "56 57 48 83 EC 58 44 0F 29 44 24 40 0F 29 7C 24 30 0F 29 74 24 20 41 80 B8 ? ? 00 00 00 74 ? F3 41 0F 10 80 ? ? 00 00 F3 41 0F 10 98";
+		// Animation job (worker threads) that writes an animation frame into a skeleton: resets the local matrices to the
+		// defaults, writes the frame's tracks and recomputes the object matrices (research §45). It runs after the
+		// post-animation update, and frames only carry translations for some bones, so overrides are applied again after it.
+		// Job: +0x20 local matrices. The pattern is 0x6d bytes into the function.
+		constexpr const char* kFrameToSkeleton = "4C 8B 31 48 8B 59 08 4C 8B 61 10 48 8B 71 20 44 8B 51 28 44 8B 69 30 44 0F B6 59 38";
+		constexpr ptrdiff_t kFrameToSkeletonOffset = 0x6d;
 		constexpr size_t kEntitySkeleton = 0xff8; // entity -> skeleton
 		constexpr size_t kComponentEntity = 0x100; // post-animation argument -> entity
 		constexpr size_t kEntityMatrix = 0x60;
@@ -47,6 +60,8 @@ namespace loader::game::pose
 
 		using GetEntityFn = uint8_t* (*)(int32_t);
 		using PostAnimationFn = uint64_t (*)(void*, void*, void*, void*);
+		using FrameToSkeletonFn = uint64_t (*)(void*);
+		FrameToSkeletonFn g_frameToSkeleton = nullptr;
 		GetEntityFn g_getEntity = nullptr;
 		PostAnimationFn g_postAnimation = nullptr;
 
@@ -55,8 +70,24 @@ namespace loader::game::pose
 			std::vector<MLBonePose> bones;
 			uint64_t setAt = 0;
 			std::vector<float> shownLocal, shownObject; // the last frame as shown (after the overrides)
+			// This frame's animation before the overrides: what scripts build on. Bones the animation does not write (no
+			// track in the clip) start each frame from the previous frame's final pose, which holds our override; for those
+			// the value from before the override is used (and put back when the override ends).
+			std::vector<float> animLocal, animObject;
+			struct Base
+			{
+				float local[16];   // the animation's value
+				float applied[16]; // what we left in the skeleton last
+				bool hasApplied = false;
+			};
+			std::unordered_map<int, Base> base; // by bone
+			bool ending = false;                // cleared or expired: restore the bases next frame, then drop
+			const float* local = nullptr;       // the skeleton's local matrices (to recognise animation jobs)
 		};
-		std::unordered_map<uint8_t*, Override> g_overrides; // by entity (game thread only)
+		// By entity. Used by the game thread (scripts, post-animation) and the animation workers: under g_mutex.
+		std::unordered_map<uint8_t*, Override> g_overrides;
+		std::mutex g_mutex;
+		std::atomic_int g_overrideCount = 0;
 
 		bool Readable(const void* p, size_t n)
 		{
@@ -190,6 +221,9 @@ namespace loader::game::pose
 						m[12 + k] += (p.translation[k] - m[12 + k]) * w;
 				dirty[static_cast<size_t>(p.bone)] = 1;
 				first = std::min(first, p.bone);
+				Override::Base& b = o.base[p.bone];
+				std::memcpy(b.applied, m, sizeof(b.applied));
+				b.hasApplied = true;
 			}
 			// Object matrices: the bone, then everything below it (parents come before their children). The root keeps
 			// the offset the post-animation update added (object root - local root).
@@ -213,25 +247,147 @@ namespace loader::game::pose
 				else
 					MulAffine(loc, s.object + 16 * parent, obj);
 			}
+			// Research (§45): who writes a translated spine bone after us. Watches the object and local translation z of the
+			// first translated bone whose name has "Spine", and the object z of its first child.
+			static bool watched = false;
+			if (!watched && config::Get().debugPoseWatch)
+				for (const MLBonePose& p : o.bones)
+				{
+					const char* name = *reinterpret_cast<const char* const*>(s.bones + 0x50 * p.bone + 0x38);
+					if (!(p.flags & ML_POSE_TRANSLATION) || !Readable(name, 4) || !std::strstr(name, "Spine"))
+						continue;
+					int child = -1;
+					for (int i = p.bone + 1; i < s.count && child < 0; ++i)
+						if (s.Parent(i) == p.bone)
+							child = i;
+					// object z translation, object x-axis y (turns with the lean), local z translation, local x-axis y.
+					std::vector<debug::Watch> w{{reinterpret_cast<uintptr_t>(s.object + 16 * p.bone + 14), 4, false, true},
+					    {reinterpret_cast<uintptr_t>(s.object + 16 * p.bone + 1), 4, false, true},
+					    {reinterpret_cast<uintptr_t>(s.local + 16 * p.bone + 14), 4, false, true},
+					    {reinterpret_cast<uintptr_t>(s.local + 16 * p.bone + 1), 4, false, true}};
+					log::Info("pose: watching bone {} {} (object {}, local {}), child {}", p.bone, name, static_cast<void*>(s.object + 16 * p.bone),
+					    static_cast<void*>(s.local + 16 * p.bone), child);
+					std::thread([w] { debug::ArmWriteWatches(w); }).detach();
+					watched = true;
+					break;
+				}
+			o.local = s.local;
 			o.shownLocal.assign(s.local, s.local + 16 * s.count);
 			o.shownObject.assign(s.object, s.object + 16 * s.count);
+		}
+
+		bool Near(const float* a, const float* b)
+		{
+			for (int k = 0; k < 16; ++k)
+				if (k % 4 != 3 && std::fabs(a[k] - b[k]) > 1e-3f)
+					return false;
+			return true;
+		}
+
+		// Object matrices of the changed bones and everything below them, from the local ones. Other bones keep the
+		// game's object matrices (helper bones are not plain FK).
+		void Forward(const Skeleton& s, const float* local, float* object, std::vector<uint8_t>& changed)
+		{
+			for (int i = 0; i < s.count; ++i)
+			{
+				const int parent = s.Parent(i);
+				if (parent < 0 || !(changed[static_cast<size_t>(i)] || changed[static_cast<size_t>(parent)]))
+					continue;
+				changed[static_cast<size_t>(i)] = 1;
+				MulAffine(local + 16 * i, object + 16 * parent, object + 16 * i);
+			}
+		}
+
+		// The animation as scripts should see it (see Override::base).
+		void CaptureAnimation(const Skeleton& s, Override& o)
+		{
+			o.animLocal.assign(s.local, s.local + 16 * s.count);
+			o.animObject.assign(s.object, s.object + 16 * s.count);
+			for (const MLBonePose& p : o.bones)
+				if (p.bone >= 0 && p.bone < s.count && !o.base.contains(p.bone))
+					std::memcpy(o.base[p.bone].local, s.local + 16 * p.bone, 64);
+			std::vector<uint8_t> carried(static_cast<size_t>(s.count), 0);
+			for (auto& [bone, b] : o.base)
+			{
+				const float* cur = s.local + 16 * bone;
+				if (b.hasApplied && Near(cur, b.applied))
+				{
+					std::memcpy(&o.animLocal[16 * bone], b.local, 64); // carried over from our last frame
+					carried[static_cast<size_t>(bone)] = 1;
+				}
+				else
+					std::memcpy(b.local, cur, 64); // the animation wrote it
+			}
+			Forward(s, o.animLocal.data(), o.animObject.data(), carried);
+			// Bones the mod no longer poses go back to the animation.
+			std::vector<uint8_t> restored(static_cast<size_t>(s.count), 0);
+			bool any = false;
+			for (auto it = o.base.begin(); it != o.base.end();)
+			{
+				const int bone = it->first;
+				if (std::any_of(o.bones.begin(), o.bones.end(), [bone](const MLBonePose& p) { return p.bone == bone; }))
+				{
+					++it;
+					continue;
+				}
+				std::memcpy(s.local + 16 * bone, it->second.local, 64);
+				restored[static_cast<size_t>(bone)] = 1, any = true;
+				it = o.base.erase(it);
+			}
+			if (any)
+				Forward(s, s.local, s.object, restored);
+		}
+
+		// Puts back what the animation would have (bones it does not write keep our last values otherwise).
+		void Restore(const Skeleton& s, Override& o)
+		{
+			std::vector<uint8_t> restored(static_cast<size_t>(s.count), 0);
+			for (auto& [bone, b] : o.base)
+				if (b.hasApplied && Near(s.local + 16 * bone, b.applied))
+				{
+					std::memcpy(s.local + 16 * bone, b.local, 64);
+					restored[static_cast<size_t>(bone)] = 1;
+				}
+			Forward(s, s.local, s.object, restored);
 		}
 
 		uint64_t PostAnimation(void* a, void* b, void* c, void* d)
 		{
 			const uint64_t result = g_postAnimation(a, b, c, d);
-			if (g_overrides.empty() || !Readable(a, kComponentEntity + 8))
+			if (g_overrideCount == 0 || !Readable(a, kComponentEntity + 8))
 				return result;
+			std::lock_guard lock(g_mutex);
 			uint8_t* entity = *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(a) + kComponentEntity);
 			const auto it = g_overrides.find(entity);
 			if (it == g_overrides.end())
 				return result;
-			if (GetTickCount64() - it->second.setAt > 2000)
+			if (it->second.ending || GetTickCount64() - it->second.setAt > 2000)
 			{
+				if (Skeleton s; SkeletonOf(entity, s))
+					Restore(s, it->second);
 				g_overrides.erase(it);
+				g_overrideCount = static_cast<int>(g_overrides.size());
 				return result;
 			}
+			if (Skeleton s; SkeletonOf(entity, s))
+				CaptureAnimation(s, it->second);
 			Apply(entity, it->second);
+			return result;
+		}
+
+		uint64_t FrameToSkeleton(void* job)
+		{
+			const uint64_t result = g_frameToSkeleton(job);
+			if (g_overrideCount == 0)
+				return result;
+			const float* local = *reinterpret_cast<float* const*>(static_cast<uint8_t*>(job) + 0x20);
+			std::lock_guard lock(g_mutex);
+			for (auto& [entity, o] : g_overrides)
+				if (o.local == local)
+				{
+					Apply(entity, o);
+					break;
+				}
 			return result;
 		}
 	}
@@ -254,6 +410,13 @@ namespace loader::game::pose
 			g_getEntity = nullptr;
 			return false;
 		}
+		// Without the animation job hook, overrides still show except translations of bones whose frames lack them.
+		if (const auto job = pattern::Find(module.text, pattern::Pattern::Parse(kFrameToSkeleton)); !job)
+			log::Warn("pose: animation job not found; translating the hips or spine will not show");
+		else if (void* fn = reinterpret_cast<uint8_t*>(*job) - kFrameToSkeletonOffset;
+		         MH_CreateHook(fn, reinterpret_cast<void*>(&FrameToSkeleton), reinterpret_cast<void**>(&g_frameToSkeleton)) != MH_OK ||
+		         MH_EnableHook(fn) != MH_OK)
+			log::Warn("pose: could not hook the animation job; translating the hips or spine will not show");
 		log::Info("pose: hooks installed");
 		return true;
 	}
@@ -301,10 +464,14 @@ namespace loader::game::pose
 		space &= ~ML_SPACE_SHOWN;
 		const float* local = s.local;
 		const float* object = s.object;
-		if (const auto it = g_overrides.find(entity); shownSpace && it != g_overrides.end() && it->second.shownObject.size() == 16u * s.count)
+		std::lock_guard lock(g_mutex);
+		if (const auto it = g_overrides.find(entity); it != g_overrides.end())
 		{
-			local = it->second.shownLocal.data();
-			object = it->second.shownObject.data();
+			const Override& o = it->second;
+			const auto& l = shownSpace ? o.shownLocal : o.animLocal;
+			const auto& m = shownSpace ? o.shownObject : o.animObject;
+			if (m.size() == 16u * s.count && l.size() == m.size())
+				local = l.data(), object = m.data();
 		}
 		const float* src = (space == ML_SPACE_LOCAL ? local : object) + 16 * bone;
 		std::memcpy(matrix16, src, 64);
@@ -320,14 +487,18 @@ namespace loader::game::pose
 		uint8_t* entity = Entity(ped);
 		if (!entity)
 			return 0;
+		std::lock_guard lock(g_mutex);
 		if (count == 0)
 		{
-			g_overrides.erase(entity);
+			if (const auto it = g_overrides.find(entity); it != g_overrides.end())
+				it->second.ending = true, it->second.bones.clear(); // restored at the next post-animation update
 			return 1;
 		}
 		Override& o = g_overrides[entity];
+		o.ending = false;
 		o.bones.assign(bones, bones + count);
 		o.setAt = GetTickCount64();
+		g_overrideCount = static_cast<int>(g_overrides.size());
 		return 1;
 	}
 }

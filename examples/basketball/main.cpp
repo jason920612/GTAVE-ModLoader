@@ -236,7 +236,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		std::error_code ec;
 		std::filesystem::remove("ModLoader/bball.txt", ec);
 		// Options: close, full (cameras), slow, markers, crouch=<m>, lean=<degrees>.
-		bball::Stance stance{0.0f, 18.0f}; // no crouch until the game keeps upper-body translations (research §45)
+		bball::Stance stance{0.14f, 18.0f};
 		std::istringstream words(options);
 		for (std::string w; words >> w;)
 			if (w.starts_with("crouch="))

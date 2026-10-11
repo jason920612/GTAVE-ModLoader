@@ -1,7 +1,5 @@
 // The body's stance, built on the game's current pose: hips lowered with the feet kept where they are (two-bone IK on
 // the legs, knees bending forward) and the upper body leaning forward from the hips. The arms are posed after it.
-// Note: the game overwrites the spine's translation after our pose is applied (research §45), so a crouch lowers
-// only the legs' side for now.
 #pragma once
 #include <vector>
 

@@ -25,6 +25,8 @@ namespace loader::config
 		bool debugWatchFile = false;
 		// Research only: from startup, log writes to the pause menu screen array globals.
 		bool debugWatchBoot = false;
+		// Research only: log writes to a posed bone's matrices after the pose override is applied (research §45).
+		bool debugPoseWatch = false;
 		// Story-mode pause menu: the "Online" tab becomes a "Mods" tab with each mod's settings.
 		bool pauseMenuModsTab = true;
 		// The phone's / computers' web browser is replaced by the loader's (ModLoader\browser, pages in ModLoader\web).
