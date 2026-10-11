@@ -66,6 +66,8 @@ add_library(loader SHARED
     src/loader/debug/hangdump.cpp
     src/loader/debug/scripttrace.cpp
     src/loader/debug/watch.cpp
+    src/loader/debug/animprobe.cpp
+    src/loader/debug/skelhook.cpp
     src/loader/debug/dred.cpp
     src/loader/game/dlcpacks.cpp
     src/loader/game/pools.cpp
@@ -95,7 +97,7 @@ add_library(modloader_sdk INTERFACE)
 target_include_directories(modloader_sdk INTERFACE sdk/include)
 target_compile_features(modloader_sdk INTERFACE cxx_std_20)
 
-set(EXAMPLE_MODS hello_mod settings_demo trainer property stocks epsilon bank social)
+set(EXAMPLE_MODS hello_mod settings_demo trainer property stocks epsilon bank social animlab)
 foreach(example IN LISTS EXAMPLE_MODS)
     file(GLOB example_sources CONFIGURE_DEPENDS examples/${example}/*.cpp)
     add_library(${example} SHARED ${example_sources})

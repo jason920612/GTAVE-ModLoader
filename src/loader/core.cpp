@@ -19,6 +19,8 @@
 #include "game/dlcpacks.hpp"
 #include "game/models.hpp"
 #include "game/scripts.hpp"
+#include "debug/animprobe.hpp"
+#include "debug/skelhook.hpp"
 #include "debug/hangdump.hpp"
 #include "debug/scripttrace.hpp"
 #include "web/browser.hpp"
@@ -227,6 +229,7 @@ namespace loader::core
 				FirstTick();
 			else if (GetCurrentThreadId() != g_gameThreadId)
 				return; // mods only ever run on the thread they were loaded on
+			debug::skelhook::Poll();
 
 			if (game::script::FindThread(kOnlineScript))
 			{
@@ -303,6 +306,8 @@ namespace loader::core
 		game::models::Install();
 		game::scripts::Install();
 		debug::hangdump::Start();
+		debug::animprobe::StartIfRequested();
+		debug::skelhook::StartIfRequested();
 		if (config::Get().aiEnabled)
 			ai::SettingChanged(); // starts the model server in the background
 		game::fixes::InstallLoadingScreenDeadlockFix();
