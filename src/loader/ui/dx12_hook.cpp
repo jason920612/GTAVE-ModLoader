@@ -1,8 +1,12 @@
 #include "dx12_hook.hpp"
 
 #include <Windows.h>
+#include <intrin.h>
 
 #include <atomic>
+#include <filesystem>
+
+#include <MinHook.h>
 
 #include "../log.hpp"
 
@@ -107,8 +111,38 @@ namespace loader::ui::dx12
 			t_inHook = false;
 		}
 
+		// A hook entered again on the same thread before it returned means hooks call each other in a loop; that call
+		// fails instead of recursing until the stack overflows.
+		struct Depth
+		{
+			int& depth;
+			explicit Depth(int& d) : depth(++d) {}
+			~Depth() { --depth; }
+			bool Looped() const { return depth > 1; }
+		};
+		thread_local int t_presentDepth = 0, t_present1Depth = 0, t_resizeDepth = 0, t_resize1Depth = 0;
+
+		HRESULT Looped(const char* method, const void* caller)
+		{
+			static std::atomic_bool warned = false;
+			if (!warned.exchange(true))
+			{
+				HMODULE module = nullptr;
+				wchar_t path[MAX_PATH] = {};
+				GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCWSTR>(caller), &module);
+				if (module)
+					GetModuleFileNameW(module, path, MAX_PATH);
+				log::Error("ui: {} hooks call each other in a loop (called again from {}); the call fails", method,
+				    std::filesystem::path(path).filename().string());
+			}
+			return DXGI_ERROR_INVALID_CALL;
+		}
+
 		HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain3* swapChain, UINT sync, UINT flags)
 		{
+			const Depth depth(t_presentDepth);
+			if (depth.Looped())
+				return Looped("Present", _ReturnAddress());
 			if (!(flags & DXGI_PRESENT_TEST))
 				BeforePresent(swapChain);
 			return g_origPresent(swapChain, sync, flags);
@@ -116,6 +150,9 @@ namespace loader::ui::dx12
 
 		HRESULT STDMETHODCALLTYPE HookPresent1(IDXGISwapChain3* swapChain, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* params)
 		{
+			const Depth depth(t_present1Depth);
+			if (depth.Looped())
+				return Looped("Present1", _ReturnAddress());
 			if (!(flags & DXGI_PRESENT_TEST))
 				BeforePresent(swapChain);
 			return g_origPresent1(swapChain, sync, flags, params);
@@ -123,6 +160,9 @@ namespace loader::ui::dx12
 
 		HRESULT STDMETHODCALLTYPE HookResizeBuffers(IDXGISwapChain3* swapChain, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags)
 		{
+			const Depth depth(t_resizeDepth);
+			if (depth.Looped())
+				return Looped("ResizeBuffers", _ReturnAddress());
 			g_callbacks.onReleaseBuffers(swapChain);
 			return g_origResizeBuffers(swapChain, count, w, h, fmt, flags);
 		}
@@ -130,20 +170,27 @@ namespace loader::ui::dx12
 		HRESULT STDMETHODCALLTYPE HookResizeBuffers1(IDXGISwapChain3* swapChain, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags,
 		    const UINT* nodeMasks, IUnknown* const* queues)
 		{
+			const Depth depth(t_resize1Depth);
+			if (depth.Looped())
+				return Looped("ResizeBuffers1", _ReturnAddress());
 			g_callbacks.onReleaseBuffers(swapChain);
 			return g_origResizeBuffers1(swapChain, count, w, h, fmt, flags, nodeMasks, queues);
 		}
 
+		// Hooks the DXGI function a swap chain vtable slot points to; the vtable itself stays as it is. Overlays that hook
+		// each new swap chain's methods (Discord's) take a changed slot for a new function to hook and then call back
+		// into ours as their original: with the slot patched, enabling frame generation (which recreates the swap
+		// chain) made ResizeBuffers recurse until the stack overflowed (research §51).
 		template<class Fn>
-		bool PatchSlot(void** vtable, size_t index, void* hook, Fn& original)
+		bool HookSlot(void** vtable, size_t index, void* hook, Fn& original)
 		{
-			DWORD old = 0;
-			if (!VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &old))
-				return false;
-			original = reinterpret_cast<Fn>(vtable[index]);
-			InterlockedExchangePointer(&vtable[index], hook);
-			VirtualProtect(&vtable[index], sizeof(void*), old, &old);
-			return true;
+			void* target = vtable[index];
+			MH_STATUS status = MH_CreateHook(target, hook, reinterpret_cast<void**>(&original));
+			if (status == MH_OK)
+				status = MH_EnableHook(target);
+			if (status != MH_OK)
+				log::Error("ui: could not hook swap chain method {}: {}", index, MH_StatusToString(status));
+			return status == MH_OK;
 		}
 
 		template<class T>
@@ -267,18 +314,16 @@ namespace loader::ui::dx12
 
 			g_queueVtable = *reinterpret_cast<void**>(queue);
 			void** vtable = *reinterpret_cast<void***>(target);
-			ok = PatchSlot(vtable, kPresent, reinterpret_cast<void*>(&HookPresent), g_origPresent) &&
-			     PatchSlot(vtable, kPresent1, reinterpret_cast<void*>(&HookPresent1), g_origPresent1) &&
-			     PatchSlot(vtable, kResizeBuffers, reinterpret_cast<void*>(&HookResizeBuffers), g_origResizeBuffers) &&
-			     PatchSlot(vtable, kResizeBuffers1, reinterpret_cast<void*>(&HookResizeBuffers1), g_origResizeBuffers1);
+			ok = HookSlot(vtable, kPresent, reinterpret_cast<void*>(&HookPresent), g_origPresent) &&
+			     HookSlot(vtable, kPresent1, reinterpret_cast<void*>(&HookPresent1), g_origPresent1) &&
+			     HookSlot(vtable, kResizeBuffers, reinterpret_cast<void*>(&HookResizeBuffers), g_origResizeBuffers) &&
+			     HookSlot(vtable, kResizeBuffers1, reinterpret_cast<void*>(&HookResizeBuffers1), g_origResizeBuffers1);
 			if (ok)
 				log::Info("ui: DXGI hooks installed (queue offset {:#x}{})", g_queueOffset, target == swapChain ? "" : ", inner swap chain");
-			else
-				log::Error("ui: could not patch the swap chain vtable");
 		} while (false);
 
-		// The probe objects are only needed to learn the layout; the patched vtable is shared
-		// by the class, so the hooks stay active for the game's swap chain.
+		// The probe objects are only needed to learn the layout; the hooked functions are the class's,
+		// so the hooks stay active for the game's swap chain.
 		t_inHook = true; // the probe swap chain must not reach our callbacks
 		SafeRelease(swapChain);
 		t_inHook = false;

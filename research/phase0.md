@@ -962,3 +962,46 @@
   只覆寫剛體交界的骨頭（23 根，含平移），其他保留動畫。實體凍結在起點。
 - 驗證：指令 `physwalk full left`，側面鏡頭（方向取參考位移換到世界座標）8 格動作分解：直立、雙腿交替、雙腳著地、
   面向前進方向，2.6 秒後停在最後姿勢；`bball_physwalk.csv` 骨盆軌跡與 C++ 獨立執行一致（終點 0.396, −3.711, 1.007）。
+
+## 51. DLSS：改用 NVIDIA 最新的 DLSS 4.5 與模型預設集（2026-10-14）
+
+- DLSS 5（「DLSS Neural Rendering」，2026-09-03 隨 NBA 2K27 推出）：官方只支援 RTX 50（RTX 40「規劃中」），沒有公開 SDK
+  （公開 Streamline 2.14.1 沒有對應外掛）；流出的 `nvngx_dlssnr.dll` 未授權，不使用。改做 DLSS 4.5（第二代 transformer，
+  預設集 M／L），所有 RTX 都能用。
+- 遊戲自帶：Streamline 2.9.1（sl.interposer／common／dlss／dlss_g／pcl／reflex）、`nvngx_dlss.dll`／`nvngx_dlssg.dll` 310.4。
+- NVIDIA 的存放區 `C:\ProgramData\NVIDIA\NGX\models\<dlss|dlssg|dlssd>\versions\<n>\files\*.bin`（驅動／NVIDIA App 下載；
+  資料夾名 n = (主 << 16) | (次 << 8) | 組建，20318480 = 310.9.16；`nvngx_config.txt` 記每個 app 代碼的版本，
+  `app_E658700` 是通用覆寫）。檔案有 NVIDIA 簽章，但 `BUILTIN\Users` 完全控制 → 載入器自己驗簽章（WinVerifyTrust，
+  只用本機快取，簽署者須為 NVIDIA Corporation）才用。
+- NGX 核心（驅動的 `_nvngx.dll`，由 sl.common 載入）找功能 DLL 的過程（追蹤 `_nvngx.dll` 的匯入表看到的）：
+  `PathFileExistsW(<遊戲資料夾>\/nvngx_dlss.dll)` → `GetFileAttributesW` → `CreateFileW`（之後載入 crypt32／wintrust 驗簽章）
+  → `GetFileAttributesW` → `LoadLibraryExW`；接著查 `models\dlss\versions\0\files\160_84E40D8.bin`、`160_E658703.bin`（這個遊戲的
+  OTA，不存在）；畫格生成另外也載入驅動資料夾自己的 `nvngx_dlssg.dll`（310.2.1）。NGX 會初始化兩次（兩個執行緒）。
+- 重導（`src/loader/game/dlss.cpp`）：DLL 載入通知（LdrRegisterDllNotification）收到 `_nvngx.dll` 時，直接改它的匯入表
+  （LoadLibraryExW/W、CreateFileW〔只限唯讀開啟〕、GetFileAttributesW、GetFileVersionInfo(Size)ExW／A、GetModuleFileNameW、
+  GetModuleHandle(Ex)W，共 15 個）：對「遊戲自帶的那份」（路徑正規化後比對，NGX 用 `\/`）改給存放區的檔案；驅動自己的那份不動。
+  通知送達時匯入已解析完（100 ms 後檢查沒有被蓋掉）。內聯掛鉤 kernelbase!LoadLibraryExW 會讓遊戲一啟動就崩潰（ntdll 的
+  0x80000001），不要用。結果：NGX 從存放區載入超解析度與畫格生成 310.9.16。
+- 預設集：包住 Streamline 的 `slDLSSSetOptions`（掛 sl.interposer!slGetFeatureFunction）。sl::DLSSOptions（kStructVersion3，88
+  位元組）：BaseStructure 32 位元組後 mode @32、輸出寬高 @36/40、sharpness/preExposure/exposureScale @44/48/52、3 個 Boolean、
+  預設集 DLAA/品質/平衡/效能/超高效能/超高品質 @60…80（u32；0 預設、11 K、12 L、13 M）。sl::DLSSMode：1 效能、2 平衡、3 品質、
+  4 超高效能、5 超高品質、6 DLAA。sl.dlss 把預設集原樣（uint32_t）交給 NGX，改變時重建 DLSS 功能 → 可即時切換。
+  遊戲本身要求 K/K/K/K/F；「自動」送 K/K/K/M/L/K（L、M 需要 310.5 以上，否則維持遊戲的並警告）。
+- 驗證預設集真的到 NGX（研究用，`debugDlssTrace`）：掛 `_nvngx!NVSDK_NGX_D3D12_CreateFeature`，從參數物件讀值。
+  NVSDK_NGX_Parameter 的虛擬表 MSVC 把多載倒序排：sl.dlss 呼叫 Set(name, unsigned int) 在第 4 格、讀 SuperSampling.Available 的
+  Get(name, int*) 在第 11 格 → Get(name, unsigned int*) 是第 12 格。結果：品質模式 1280x720 → 1920x1080，選 M 時五個預設集都是 13，
+  「自動」時 11/11/11/13/12，CreateFeature 回傳 1（成功）。M 與 K 的截圖對照：M 的鐵絲網、招牌字較清楚。
+- 畫格生成：sl.dlss_g 2.9.1 ＋ nvngx_dlssg 310.9.16 可用（slDLSSGGetState：每次呈現 2 格，最多生成 1 格；RTX 40）。
+- 測試中找到的兩個載入器 overlay 問題（與 DLSS 版本無關，原版遊戲沒有）：
+  1. 開畫格生成時遊戲重建交換鏈，Discord 的 overlay（DiscordHook64）對新交換鏈重新掛鉤：它的 ResizeBuffers 攔截函式只有一個
+     全域「原始函式」指標，看到虛擬表格子被我們改過就把我們的函式當新目標掛上 → 它呼叫我們、我們呼叫 dxgi（它更早的內聯
+     掛鉤）→ 又回到它，遞迴 43,657 層後堆疊溢位（KERNELBASE 的 0x80000001）。修正：不改共用的虛擬表，改用 MinHook 內聯掛鉤
+     虛擬表指向的 dxgi 函式；另加同執行緒重入保護（再進入就讓那次呼叫失敗並記錄，不再溢位）。
+  2. overlay 一直持有後緩衝區參照（只在 ResizeBuffers 時釋放）：遊戲重建交換鏈時舊的放不掉、新的建立失敗，遊戲拿空的全域
+     交換鏈（+0x4e87ac0）呼叫 GetBuffer → +0x1e7f978 讀取位址 0 崩潰（開著畫格生成進入世界時必現；原版不會）。修正：每格才取
+     後緩衝區、送出後立即釋放；ResizeBuffers 前等 GPU 並重讀格式／數量；遊戲改用新交換鏈（原本那個停止呈現 0.5 秒後）就跟過去，
+     格式或佇列不同時重建 ImGui 後端。
+  驗證（Discord、Steam overlay 都在）：開著畫格生成啟動 → 進入世界時交換鏈換成 4 個緩衝區、overlay 跟過去、F4 選單正常；
+  遊戲中關閉／再開啟／再關閉畫格生成都正常。
+- 設定：`loader.json` 的 `dlssUpgrade`（預設開，重新啟動生效）、`dlssPreset`（auto／game／K／L／M，立即生效）；F4 → 設定 → DLSS
+  顯示存放區版本、這次載入的版本與目前模式／模型。不寫 HKLM 的 DLSS 指示器。不散布任何 NVIDIA 檔案。

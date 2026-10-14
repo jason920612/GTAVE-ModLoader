@@ -20,6 +20,7 @@
 #include "../config.hpp"
 #include "../convert/packs.hpp"
 #include "../game/dlcpacks.hpp"
+#include "../game/dlss.hpp"
 #include "../log.hpp"
 #include "../mods.hpp"
 #include "../paths.hpp"
@@ -586,6 +587,53 @@ namespace loader::ui
 			ImGui::Unindent();
 		}
 
+		// DLSS (research §51): the newest DLSS from NVIDIA's store and the Super Resolution model.
+		void DlssSettings(bool& changed)
+		{
+			auto& cfg = config::Get();
+			const auto s = game::dlss::GetStatus();
+			const auto letter = [](uint32_t preset) {
+				const std::string l = game::dlss::PresetLetter(preset);
+				return l.empty() ? std::string("預設") : l;
+			};
+			ImGui::SeparatorText("DLSS");
+			changed |= ImGui::Checkbox("使用 NVIDIA 最新的 DLSS（重新啟動遊戲後生效）", &cfg.dlssUpgrade);
+			ImGui::Indent();
+			if (s.checked && s.storeSr.empty())
+				ImGui::TextColored(kMuted, "NVIDIA 存放區沒有 DLSS（需要 NVIDIA 顯示卡驅動程式，NVIDIA App 會自動下載最新版）。");
+			else if (s.checked)
+				ImGui::TextColored(kMuted, "NVIDIA 存放區：超解析度 %s、畫格生成 %s；遊戲內建 %s", s.storeSr.c_str(), s.storeFg.empty() ? "無" : s.storeFg.c_str(),
+				    s.gameSr.empty() ? "無" : s.gameSr.c_str());
+			if (!s.loadedSr.empty())
+				ImGui::TextColored(kMuted, "這次使用：超解析度 %s（%s）%s", s.loadedSr.c_str(), s.loadedSrFromStore ? "NVIDIA 存放區" : "遊戲內建",
+				    s.loadedFg.empty() ? "" : std::format("、畫格生成 {}（{}）", s.loadedFg, s.loadedFgFromStore ? "NVIDIA 存放區" : "遊戲內建").c_str());
+			if (cfg.dlssUpgrade != s.upgradeAtStart)
+				ImGui::TextColored(kWarn, "重新啟動遊戲後生效。");
+			ImGui::Unindent();
+
+			static const char* kLabels[] = {"自動（建議）", "依照遊戲", "K：DLSS 4", "L：DLSS 4.5（超高效能用）", "M：DLSS 4.5（效能用）"};
+			static const char* kValues[] = {"auto", "game", "K", "L", "M"};
+			int current = 0;
+			for (int i = 0; i < 5; ++i)
+				if (cfg.dlssPreset == kValues[i])
+					current = i;
+			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+			if (ImGui::Combo("超解析度模型", &current, kLabels, 5))
+			{
+				cfg.dlssPreset = kValues[current];
+				changed = true;
+				game::dlss::PresetChanged();
+			}
+			ImGui::Indent();
+			ImGui::TextColored(kMuted, "自動：DLAA、品質、平衡用 K，效能用 M，超高效能用 L（L、M 需要 DLSS 310.5 以上）。立即套用。");
+			static const char* kModes[] = {"關閉", "效能", "平衡", "品質", "超高效能", "超高品質", "DLAA"};
+			if (s.mode > 0 && s.mode < 7)
+				ImGui::TextColored(kMuted, "遊戲目前：%s，使用模型 %s（遊戲要求 %s）", kModes[s.mode], letter(s.sentPreset).c_str(), letter(s.gamePreset).c_str());
+			else
+				ImGui::TextColored(kMuted, "遊戲目前沒有使用 DLSS（遊戲的 設定 > 影像 > 畫面調整 選 NVIDIA DLSS）。");
+			ImGui::Unindent();
+		}
+
 		void SettingsTab()
 		{
 			auto& cfg = config::Get();
@@ -613,6 +661,7 @@ namespace loader::ui
 				cfg.menuKey = kKeys[current];
 				changed = true;
 			}
+			DlssSettings(changed);
 			if (changed)
 				config::Save();
 		}

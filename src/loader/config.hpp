@@ -27,12 +27,20 @@ namespace loader::config
 		bool debugWatchBoot = false;
 		// Research only: log writes to a posed bone's matrices after the pose override is applied (research §45).
 		bool debugPoseWatch = false;
+		// Research only: log the NVIDIA NGX core's file calls, Streamline / DLSS DLL loads and DLSS calls (research §51).
+		bool debugDlssTrace = false;
 		// Story-mode pause menu: the "Online" tab becomes a "Mods" tab with each mod's settings.
 		bool pauseMenuModsTab = true;
 		// The phone's / computers' web browser is replaced by the loader's (ModLoader\browser, pages in ModLoader\web).
 		bool replaceBrowser = true;
 		// The local text model mods can use (ModLoader\ai, downloaded from the settings page).
 		bool aiEnabled = false;
+		// DLSS: use the newest DLSS the NVIDIA driver / app keeps in C:\ProgramData\NVIDIA\NGX\models instead of the
+		// game's copies (research §51). Takes effect at the next start.
+		bool dlssUpgrade = true;
+		// DLSS Super Resolution model: "auto" (K for DLAA / Quality / Balanced, M for Performance, L for Ultra
+		// Performance; needs DLSS 310.5 or newer), "game" (what the game asks for) or a preset letter ("K", "L", "M").
+		std::string dlssPreset = "auto";
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

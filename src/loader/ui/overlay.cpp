@@ -33,11 +33,13 @@ namespace loader::ui
 	namespace
 	{
 		constexpr UINT kSrvHeapSize = 64;
+		constexpr UINT kMaxBackBuffers = DXGI_MAX_SWAP_CHAIN_BUFFERS;
 
+		// Per back buffer. The back buffer itself is only held while a frame is recorded: a reference kept between
+		// frames kept the game's old swap chain alive, so creating its new one (frame generation) failed (research §51).
 		struct Frame
 		{
 			ID3D12CommandAllocator* allocator = nullptr;
-			ID3D12Resource* backBuffer = nullptr;
 			D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
 			UINT64 fenceValue = 0;
 		};
@@ -45,7 +47,10 @@ namespace loader::ui
 		// Everything below is touched on the render thread only, except where noted.
 		// Recursive: ImGui's Win32 handler can send messages (SetCapture, ...) that re-enter WndProc.
 		std::recursive_mutex g_imguiMutex; // ImGui state is shared with the window procedure
-		IDXGISwapChain3* g_swapChain = nullptr; // the game's swap chain we draw into
+		IDXGISwapChain3* g_swapChain = nullptr; // the game's swap chain we draw into (no reference held)
+		ID3D12CommandQueue* g_queue = nullptr;  // its queue, which the ImGui backend uploads through
+		ULONGLONG g_lastPresent = 0;            // when g_swapChain last presented
+		std::atomic_bool g_relayout = false;    // g_swapChain is being resized: read its layout again
 		ID3D12Device* g_device = nullptr;
 		ID3D12DescriptorHeap* g_rtvHeap = nullptr;
 		ID3D12DescriptorHeap* g_srvHeap = nullptr;
@@ -120,31 +125,37 @@ namespace loader::ui
 			}
 		}
 
-		void ReleaseBackBuffers()
+		// One allocator and RTV slot per back buffer; the count can change when the swap chain is resized or replaced.
+		bool SetFrameCount(UINT count)
 		{
-			WaitForGpu();
-			for (auto& f : g_frames)
-			{
-				if (f.backBuffer)
-					f.backBuffer->Release();
-				f.backBuffer = nullptr;
-			}
-		}
-
-		bool CreateBackBuffers()
-		{
+			count = std::min(count, kMaxBackBuffers);
+			for (size_t i = count; i < g_frames.size(); ++i)
+				g_frames[i].allocator->Release();
+			g_frames.resize(count);
 			const UINT rtvInc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-			for (UINT i = 0; i < g_frames.size(); ++i)
+			for (UINT i = 0; i < count; ++i)
 			{
 				auto& f = g_frames[i];
-				if (FAILED(g_swapChain->GetBuffer(i, IID_PPV_ARGS(&f.backBuffer))))
-					return false;
 				f.rtv.ptr = g_rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr + i * rtvInc;
-				D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
-				rtvDesc.Format = g_format;
-				rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-				g_device->CreateRenderTargetView(f.backBuffer, &rtvDesc, f.rtv);
+				if (!f.allocator && FAILED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&f.allocator))))
+					return false;
 			}
+			return true;
+		}
+
+		bool InitBackend(ID3D12CommandQueue* queue)
+		{
+			ImGui_ImplDX12_InitInfo info;
+			info.Device = g_device;
+			info.CommandQueue = queue;
+			info.NumFramesInFlight = static_cast<int>(kMaxBackBuffers); // any back buffer count without a re-init
+			info.RTVFormat = g_format;
+			info.SrvDescriptorHeap = g_srvHeap;
+			info.SrvDescriptorAllocFn = SrvAlloc;
+			info.SrvDescriptorFreeFn = SrvFree;
+			if (!ImGui_ImplDX12_Init(&info))
+				return false;
+			g_queue = queue;
 			return true;
 		}
 
@@ -158,24 +169,20 @@ namespace loader::ui
 			g_swapChain = swapChain;
 			g_format = desc.BufferDesc.Format;
 			g_window = desc.OutputWindow;
-			g_frames.resize(desc.BufferCount);
 
-			D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, desc.BufferCount, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+			D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxBackBuffers, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
 			D3D12_DESCRIPTOR_HEAP_DESC srvDesc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kSrvHeapSize, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
 			if (FAILED(g_device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&g_rtvHeap))) ||
 			    FAILED(g_device->CreateDescriptorHeap(&srvDesc, IID_PPV_ARGS(&g_srvHeap))))
 				return false;
 			g_srvUsed.assign(kSrvHeapSize, false);
 
-			for (auto& f : g_frames)
-				if (FAILED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&f.allocator))))
-					return false;
+			if (!SetFrameCount(desc.BufferCount) || g_frames.empty())
+				return false;
 			if (FAILED(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_frames[0].allocator, nullptr, IID_PPV_ARGS(&g_commandList))) ||
 			    FAILED(g_commandList->Close()) || FAILED(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_fence))))
 				return false;
 			g_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-			if (!CreateBackBuffers())
-				return false;
 
 			std::lock_guard lock(g_imguiMutex);
 			ImGui::CreateContext();
@@ -186,20 +193,46 @@ namespace loader::ui
 			LoadFonts();
 
 			ImGui_ImplWin32_Init(g_window);
-			ImGui_ImplDX12_InitInfo info;
-			info.Device = g_device;
-			info.CommandQueue = queue;
-			info.NumFramesInFlight = static_cast<int>(desc.BufferCount);
-			info.RTVFormat = g_format;
-			info.SrvDescriptorHeap = g_srvHeap;
-			info.SrvDescriptorAllocFn = SrvAlloc;
-			info.SrvDescriptorFreeFn = SrvFree;
-			if (!ImGui_ImplDX12_Init(&info))
+			if (!InitBackend(queue))
 				return false;
 
 			g_origWndProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProc)));
 			g_imguiReady = true;
 			log::Info("ui: overlay ready ({} back buffers, format {})", desc.BufferCount, static_cast<int>(g_format));
+			return true;
+		}
+
+		// After the swap chain was resized, or the game replaced it (e.g. when frame generation is switched on):
+		// reads its back buffer count and format again.
+		bool Attach(IDXGISwapChain3* swapChain, ID3D12CommandQueue* queue)
+		{
+			DXGI_SWAP_CHAIN_DESC desc{};
+			if (FAILED(swapChain->GetDesc(&desc)) || desc.OutputWindow != g_window)
+				return false;
+			WaitForGpu();
+			if (desc.BufferDesc.Format != g_format || queue != g_queue)
+			{
+				// The backend's pipeline is built for one format, and it uploads textures through the queue.
+				std::lock_guard lock(g_imguiMutex);
+				ImGui_ImplDX12_Shutdown();
+				g_format = desc.BufferDesc.Format;
+				if (!InitBackend(queue))
+				{
+					g_failed = true;
+					log::Error("ui: overlay could not follow the game's new swap chain; the loader keeps running without UI");
+					return false;
+				}
+			}
+			if (!SetFrameCount(desc.BufferCount) || g_frames.empty())
+			{
+				g_failed = true;
+				log::Error("ui: overlay could not follow the game's new swap chain; the loader keeps running without UI");
+				return false;
+			}
+			if (swapChain != g_swapChain)
+				log::Info("ui: overlay moved to the game's new swap chain ({} back buffers, format {})", desc.BufferCount,
+				    static_cast<int>(g_format));
+			g_swapChain = swapChain;
 			return true;
 		}
 
@@ -220,28 +253,36 @@ namespace loader::ui
 			if (!drawData || drawData->CmdLists.Size == 0)
 				return;
 
-			Frame& f = g_frames[g_swapChain->GetCurrentBackBufferIndex()];
-			if (!f.backBuffer)
+			const UINT index = g_swapChain->GetCurrentBackBufferIndex();
+			if (index >= g_frames.size())
+				return;
+			Frame& f = g_frames[index];
+			ID3D12Resource* backBuffer = nullptr;
+			if (FAILED(g_swapChain->GetBuffer(index, IID_PPV_ARGS(&backBuffer))))
 				return;
 			if (g_fence->GetCompletedValue() < f.fenceValue)
 			{
 				g_fence->SetEventOnCompletion(f.fenceValue, g_fenceEvent);
 				WaitForSingleObject(g_fenceEvent, 1000);
 			}
+			D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+			rtvDesc.Format = g_format;
+			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+			g_device->CreateRenderTargetView(backBuffer, &rtvDesc, f.rtv);
 			f.allocator->Reset();
 			g_commandList->Reset(f.allocator, nullptr);
-			web::textures::OnRender(g_device, g_commandList, f.backBuffer, g_fenceCounter + 1, g_fence->GetCompletedValue());
+			web::textures::OnRender(g_device, g_commandList, backBuffer, g_fenceCounter + 1, g_fence->GetCompletedValue());
 
 			D3D12_RESOURCE_BARRIER barrier{};
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = f.backBuffer;
+			barrier.Transition.pResource = backBuffer;
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
 			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			g_commandList->ResourceBarrier(1, &barrier);
 			g_commandList->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
 			g_commandList->SetDescriptorHeaps(1, &g_srvHeap);
-			web::Upload(g_device, g_commandList, g_swapChain->GetCurrentBackBufferIndex(), static_cast<unsigned>(g_frames.size()), &AllocDescriptor);
+			web::Upload(g_device, g_commandList, index, static_cast<unsigned>(g_frames.size()), &AllocDescriptor);
 			ImGui_ImplDX12_RenderDrawData(drawData, g_commandList);
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			g_commandList->ResourceBarrier(1, &barrier);
@@ -251,6 +292,7 @@ namespace loader::ui
 			queue->ExecuteCommandLists(1, lists);
 			queue->Signal(g_fence, ++g_fenceCounter);
 			f.fenceValue = g_fenceCounter;
+			backBuffer->Release(); // the swap chain keeps it alive while the GPU draws; it waits for the queue before letting go
 		}
 
 		// Development aid: while ModLoader\debug_fps.txt exists, log the frame rate and the slowest frame every 5 s.
@@ -314,17 +356,27 @@ namespace loader::ui
 					return;
 				}
 			}
-			if (swapChain != g_swapChain)
-				return;
-			if (!g_frames[0].backBuffer && !CreateBackBuffers())
-				return;
+			const ULONGLONG now = GetTickCount64();
+			if (swapChain != g_swapChain || g_relayout || now - g_lastPresent > 500)
+			{
+				// Another swap chain takes over only once ours has stopped presenting: two presenting side by side
+				// keep the first.
+				if (swapChain != g_swapChain && now - g_lastPresent <= 500)
+					return;
+				g_relayout = false;
+				if (!Attach(swapChain, queue))
+					return;
+			}
+			g_lastPresent = now;
 			Render(queue);
 		}
 
 		void OnReleaseBuffers(IDXGISwapChain3* swapChain)
 		{
-			if (swapChain == g_swapChain && g_imguiReady)
-				ReleaseBackBuffers(); // recreated lazily on the next Present
+			if (swapChain != g_swapChain || !g_imguiReady)
+				return;
+			WaitForGpu(); // our command lists still draw into the buffers being resized
+			g_relayout = true;
 		}
 
 		bool IsInputMessage(UINT msg)

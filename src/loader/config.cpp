@@ -37,9 +37,12 @@ namespace loader::config
 			c.debugWatchFile = j.value("debugWatchFile", c.debugWatchFile);
 			c.debugWatchBoot = j.value("debugWatchBoot", c.debugWatchBoot);
 			c.debugPoseWatch = j.value("debugPoseWatch", c.debugPoseWatch);
+			c.debugDlssTrace = j.value("debugDlssTrace", c.debugDlssTrace);
 			c.pauseMenuModsTab = j.value("pauseMenuModsTab", c.pauseMenuModsTab);
 			c.replaceBrowser = j.value("replaceBrowser", c.replaceBrowser);
 			c.aiEnabled = j.value("aiEnabled", c.aiEnabled);
+			c.dlssUpgrade = j.value("dlssUpgrade", c.dlssUpgrade);
+			c.dlssPreset = j.value("dlssPreset", c.dlssPreset);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -57,9 +60,12 @@ namespace loader::config
 				{"debugWatchFile", c.debugWatchFile},
 				{"debugWatchBoot", c.debugWatchBoot},
 				{"debugPoseWatch", c.debugPoseWatch},
+				{"debugDlssTrace", c.debugDlssTrace},
 				{"pauseMenuModsTab", c.pauseMenuModsTab},
 				{"replaceBrowser", c.replaceBrowser},
 				{"aiEnabled", c.aiEnabled},
+				{"dlssUpgrade", c.dlssUpgrade},
+				{"dlssPreset", c.dlssPreset},
 			};
 		}
 	}
