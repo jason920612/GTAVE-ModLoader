@@ -48,7 +48,9 @@ let data = { items: [], garages: [], storage: {} };
 let current = null;
 
 function picture(p, cls) {
-  return p ? `<img class="${cls}" loading="lazy" src="https://gametextures/${p}.png" alt="">` : `<div class="noimg">${SITE.title}</div>`;
+  // "dictionary/texture" of a game picture, or the address of an add-on car's own picture.
+  const src = p && (p.includes('://') ? p : `https://gametextures/${p}.png`);
+  return p ? `<img class="${cls}" loading="lazy" src="${src}" alt="">` : `<div class="noimg">${SITE.title}</div>`;
 }
 
 async function load() {

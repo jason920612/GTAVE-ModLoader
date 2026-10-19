@@ -1,0 +1,7 @@
+{
+	"vehicles": [
+		{ "model": "tr22", "site": "legendary", "price": 1500000, "photo": "https://roadster.local/roadster.png" },
+		{ "model": "tr22t", "site": "legendary", "price": 2500000, "photo": "https://roadster.local/roadster.png" },
+		{ "model": "tr22r", "site": "legendary", "price": 4000000, "photo": "https://roadster.local/roadster.png" }
+	]
+}

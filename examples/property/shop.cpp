@@ -3,6 +3,10 @@
 // garage of the player's properties; aircraft and boats to the character's own hangar, helipad or marina slip, the way
 // the game's own websites do it (research/phase0.md §33).
 //
+// Add-on cars of other mods are sold too: ModLoader\mods\<mod>\shop.json lists them,
+//   { "vehicles": [ { "model": "tr22", "site": "legendary", "price": 1500000, "photo": "https://<host>/<file>.png" } ] }
+// (site: legendary / ssasa / pandm / warstock; photo: optional, usually a picture in the mod's web folder).
+//
 // Pages call:
 //   shop.list(site) -> { character, cash, ready, items: [ { item, name, maker, price, kind, photo } ],
 //                        garages: [ { id, name, free } ], storage: { hangar, marina, helipad } }
@@ -14,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -424,6 +429,55 @@ namespace property::shop
 		std::map<int, Info> g_info; // by item
 		bool g_ready = false;
 
+		// Add-on road vehicles from the mods' shop.json files (items numbered from kAddonItems).
+		constexpr int kAddonItems = 100000;
+		std::vector<Item> g_addons;
+		std::map<int, Info> g_addonInfo;
+
+		void LoadAddons()
+		{
+			static const std::set<std::string> sites = {"legendary", "ssasa", "pandm", "warstock"};
+			const std::filesystem::path mods = std::filesystem::path(ml::Context().modDir).parent_path().parent_path();
+			std::error_code ec;
+			for (const auto& entry : std::filesystem::directory_iterator(mods, ec))
+			{
+				const auto file = entry.path() / L"shop.json";
+				if (!entry.is_directory(ec) || !std::filesystem::is_regular_file(file, ec))
+					continue;
+				std::ifstream in(file, std::ios::binary);
+				const std::string text((std::istreambuf_iterator<char>(in)), {});
+				const std::string mod = entry.path().filename().string();
+				bool ok = false;
+				const ml::Json json = ml::Json::Parse(text, &ok);
+				if (!ok)
+				{
+					ml::LogError("shop: {}\\shop.json is not valid JSON; its vehicles are not sold", mod);
+					continue;
+				}
+				for (const ml::Json& v : json["vehicles"].Items())
+				{
+					const std::string model = v["model"].Str(), site = v["site"].Str();
+					const Hash hash = MISC::GET_HASH_KEY(model.c_str());
+					const int price = v["price"].Int();
+					if (model.empty() || !STREAMING::IS_MODEL_IN_CDIMAGE(hash) || !STREAMING::IS_MODEL_A_VEHICLE(hash))
+					{
+						ml::LogError("shop: {}: vehicle '{}' is not in the game (is its DLC pack loaded?); not sold", mod, model);
+						continue;
+					}
+					if (!sites.contains(site) || price <= 0)
+					{
+						ml::LogError("shop: {}: vehicle '{}' needs a site (legendary, ssasa, pandm, warstock) and a price; not sold", mod, model);
+						continue;
+					}
+					const int item = kAddonItems + static_cast<int>(g_addons.size());
+					g_addons.push_back({item, hash, price, 0});
+					g_addonInfo[item] = {site, {}, {}, v["photo"].Str()};
+				}
+			}
+			if (!g_addons.empty())
+				ml::Log("shop: {} add-on vehicles from the mods' shop.json files", g_addons.size());
+		}
+
 		// Every store dictionary with vehicle pictures (from the game files; research/phase0.md §33). Earlier entries win, so a
 		// vehicle keeps the store that sells it in story mode; Warstock (candc_) comes last.
 		const char* const kDictionaries[] = {"candc_default", "dock_default", "elt_default", "lgm_default", "pandm_default", "sssa_default", "dock_dlc_executive1",
@@ -595,6 +649,16 @@ namespace property::shop
 				info.maker = Text(VEHICLE::GET_MAKE_NAME_FROM_VEHICLE_MODEL(i.model));
 				g_info[i.item] = info;
 			}
+			for (const Item& i : g_addons)
+			{
+				Info info = g_addonInfo[i.item];
+				const char* label = VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(i.model);
+				info.name = Text(label);
+				if (info.name.empty())
+					info.name = label ? label : "";
+				info.maker = Text(VEHICLE::GET_MAKE_NAME_FROM_VEHICLE_MODEL(i.model));
+				g_info[i.item] = info;
+			}
 			g_ready = true;
 		}
 
@@ -633,6 +697,9 @@ namespace property::shop
 			for (const Item& i : kItems)
 				if (i.item == item)
 					return &i;
+			for (const Item& i : g_addons)
+				if (i.item == item)
+					return &i;
 			return nullptr;
 		}
 
@@ -640,10 +707,15 @@ namespace property::shop
 		{
 			const int c = ml::game::CharacterIndex();
 			ml::Json items = ml::Json::Array(), garages = ml::Json::Array();
+			const auto add = [&](const Item& i) {
+				if (const Info& info = g_info[i.item]; info.site == site)
+					items.Push({{"item", i.item}, {"name", info.name}, {"maker", info.maker}, {"price", i.price}, {"kind", i.kind}, {"photo", info.photo}});
+			};
 			if (g_ready)
-				for (const Item& i : kItems)
-					if (const Info& info = g_info[i.item]; info.site == site)
-						items.Push({{"item", i.item}, {"name", info.name}, {"maker", info.maker}, {"price", i.price}, {"kind", i.kind}, {"photo", info.photo}});
+			{
+				std::ranges::for_each(kItems, add);
+				std::ranges::for_each(g_addons, add);
+			}
 			for (const int id : Owned(c))
 				garages.Push({{"id", id}, {"name", Name(id)}, {"free", garage::FreeSlots(id)}});
 			return {{"character", c}, {"cash", ml::game::Cash()}, {"ready", g_ready}, {"items", items}, {"garages", garages},
@@ -700,6 +772,7 @@ namespace property::shop
 		ml::web::Function("shop.buy", [](int item, int garage) { return Buy(item, garage); });
 		ml::StartTask([] {
 			ml::WaitUntil([] { return ml::game::CharacterIndex() >= 0; }, UINT32_MAX, 500);
+			LoadAddons();
 			Scan();
 		});
 	}

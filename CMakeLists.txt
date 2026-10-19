@@ -99,7 +99,7 @@ add_library(modloader_sdk INTERFACE)
 target_include_directories(modloader_sdk INTERFACE sdk/include)
 target_compile_features(modloader_sdk INTERFACE cxx_std_20)
 
-set(EXAMPLE_MODS hello_mod settings_demo trainer property stocks epsilon bank social animlab basketball)
+set(EXAMPLE_MODS hello_mod settings_demo trainer property stocks epsilon bank social animlab basketball roadster)
 foreach(example IN LISTS EXAMPLE_MODS)
     file(GLOB example_sources CONFIGURE_DEPENDS examples/${example}/*.cpp)
     add_library(${example} SHARED ${example_sources})
@@ -141,6 +141,11 @@ if(GTAV_DIR)
         if(EXISTS "${CMAKE_SOURCE_DIR}/examples/${example}/data")
             add_custom_command(TARGET ${example} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/examples/${example}/data" "${GTAV_DIR}/ModLoader/mods/${example}/data")
+        endif()
+        # Add-on cars the mod sells (examples/<mod>/shop.json -> ModLoader\mods\<mod>\shop.json, property mod).
+        if(EXISTS "${CMAKE_SOURCE_DIR}/examples/${example}/shop.json")
+            add_custom_command(TARGET ${example} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/examples/${example}/shop.json" "${GTAV_DIR}/ModLoader/mods/${example}/shop.json")
         endif()
         # Web pages of the mod (examples/<mod>/web -> ModLoader\mods\<mod>\web).
         if(EXISTS "${CMAKE_SOURCE_DIR}/examples/${example}/web")

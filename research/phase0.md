@@ -1005,3 +1005,25 @@
   遊戲中關閉／再開啟／再關閉畫格生成都正常。
 - 設定：`loader.json` 的 `dlssUpgrade`（預設開，重新啟動生效）、`dlssPreset`（auto／game／K／L／M，立即生效）；F4 → 設定 → DLSS
   顯示存放區版本、這次載入的版本與目前模式／模型。不寫 HKLM 的 DLSS 指示器。不散布任何 NVIDIA 檔案。
+
+## 52. 加裝車輛的模型資訊容量、車商讀 shop.json、Tesla Roadster（2026-10-19）
+
+- 崩潰：加入 3 台 Roadster（加上原有的 HSV）後，進入故事模式時遊戲在 `+0x13778CF`（`call [rax+0x38]`）存取違規。
+  - 那裡是登錄模型資訊的函式 `+0x1377010`。它從車輛原型工廠依鍵值找到區塊 `{元素, u16 已用, u16 容量}`，取下一個 0x5A0 位元組的元素（CVehicleModelInfo）並呼叫其虛擬函式。
+  - 取元素不檢查容量（另一個取用處 `+0x136F1E0` 也一樣）。
+  - 崩潰時鍵值 0xF000，已用 640（r13 = 0xE1000 = 640 × 0x5A0），第 641 台車寫到陣列外面。
+- 工廠虛擬表 `+0x2672230`：
+  - 槽 1 `+0x136F1E0` 取元素；
+  - 槽 4 `+0x136F230` 建區塊 (key, count)，配置 count × 0x5A0 並把容量寫到 +0xA；
+  - 槽 5 `+0x136F320` 刪區塊。
+- 修正：`game/pools.cpp` 掛鉤槽 4（以函式開頭特徵碼定位，並確認 +0x79 是 `imul rcx, rax, 0x5A0`）。
+  - 256 以上的區塊加大：0xFFFF 320 → 820（開機），0xF000 640 → 1140（進入故事模式）。
+  - 驗證：同樣 4 台加裝車連續 3 次啟動都正常進入故事模式。
+- 車商（property 模組）：讀取 `ModLoader\mods\<模組>\shop.json` 裡的加裝車並上架。
+  - 格式：`{"vehicles":[{"model","site","price","photo"}]}`，site 可填 legendary／ssasa／pandm／warstock。
+  - 型號不在遊戲裡或欄位不對時，記錄錯誤並略過。
+  - photo 可以是網址（通常指向模組 web 資料夾），store.js 會直接使用。
+- Tesla Roadster（examples/roadster）：
+  - 車輛包是本機用的社群模組 tr22（skyrix），複製出 tr22t、tr22r 兩個版本，自寫 meta 與 gxt2，不進 repo。
+  - 模組依官方 0–60 mph 時間補足前進速度：Performance 1.9 秒、Thrust 0.81 秒、Rocket 0.59 秒；60 mph 以上為定功率，接近極速 370 km/h 時漸減。
+  - 實測：Rocket 0.60 秒、Thrust 0.82 秒。Performance 在車輪著地的 1.69 秒內平均 14.14 m/s²（目標 14.12，相當於 1.90 秒）；途中壓到起伏、車輪離地 0.2 秒，所以計時是 2.08 秒。
