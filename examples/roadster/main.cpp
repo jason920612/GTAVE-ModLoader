@@ -6,15 +6,15 @@
 // and all wheels on the ground, the mod adds whatever forward speed the engine did not reach this frame to follow the
 // trim's acceleration curve: the official 0-60 mph time up to 60 mph, constant power above it, fading out at the top
 // speed. It never slows the car, and a sudden loss of speed (a crash, braking) restarts the curve from the new speed.
-#define NOMINMAX
-#include <Windows.h>
+//
+// All three trims also have the suction fan (fan.cpp): grip far above the car's weight, and driving on walls.
+#include "roadster.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
-#include <modloader/natives.hpp>
-
-ML_MOD_INFO("Tesla Roadster", "1.0.0", "ModLoader", "Roadster Performance / Thrust / Rocket acceleration")
+ML_MOD_INFO("Tesla Roadster", "1.1.0", "ModLoader", "Roadster Performance / Thrust / Rocket: acceleration and suction fan")
 
 namespace
 {
@@ -35,6 +35,17 @@ namespace
 
 	ml::Setting g_enabled;
 	ml::Setting g_showTimes;
+	ml::Setting g_fan;
+	ml::Setting g_fanStrength;
+	constexpr float kFanStrengths[] = {1.0f, 1.5f, 2.0f, 2.5f, 3.0f}; // g
+	bool g_fanOn = true; // G key, while driving
+
+	bool GameInFront()
+	{
+		DWORD pid = 0;
+		GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+		return pid == GetCurrentProcessId();
+	}
 
 	const Trim* TrimOf(Hash model)
 	{
@@ -88,7 +99,22 @@ namespace
 		const Ped player = PLAYER::PLAYER_PED_ID();
 		const Vehicle v = PED::IS_PED_IN_ANY_VEHICLE(player, false) ? PED::GET_VEHICLE_PED_IS_IN(player, false) : 0;
 		const Trim* trim = v && VEHICLE::GET_PED_IN_VEHICLE_SEAT(v, -1, false) == player ? TrimOf(ENTITY::GET_ENTITY_MODEL(v)) : nullptr;
-		if (!trim || !g_enabled)
+		if (!trim)
+		{
+			g_expected = -1.0f;
+			g_run.timing = false;
+			roadster::fan::Reset();
+			return;
+		}
+		if ((GetAsyncKeyState('G') & 1) && GameInFront() && g_fan)
+		{
+			g_fanOn = !g_fanOn;
+			ml::Notify("車底吸附風扇：{}", g_fanOn ? "開" : "關");
+		}
+		// <mod folder>\debug.txt: the fan logs the car's state every 0.1 s.
+		static const bool debug = std::filesystem::exists(std::filesystem::path(ml::Context().modDir) / L"debug.txt");
+		roadster::fan::Tick(v, kFanStrengths[std::clamp(g_fanStrength.Value(), 0, 4)], g_fan && g_fanOn, debug);
+		if (!g_enabled)
 		{
 			g_expected = -1.0f;
 			g_run.timing = false;
@@ -130,6 +156,8 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	ml::Init(api, ctx);
 	g_enabled = ml::AddToggle("acceleration", "實車加速（0–60 mph：Performance 1.9 秒、Thrust 0.81 秒、Rocket 0.59 秒）", true);
 	g_showTimes = ml::AddToggle("showTimes", "顯示 0–96 km/h 成績", true);
+	g_fan = ml::AddToggle("fan", "車底吸附風扇（開車時按 G 開關）：抓地力大增，能沿著坡度漸增的弧面開上牆壁", true);
+	g_fanStrength = ml::AddList("fanStrength", "風扇吸力（車重的倍數）", {"1 倍", "1.5 倍", "2 倍（像真的風扇車）", "2.5 倍", "3 倍"}, 2);
 	return 1;
 }
 
