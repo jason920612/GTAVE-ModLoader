@@ -103,6 +103,8 @@ namespace police::duty
 {
 	// In uniform is on duty.
 	bool OnDuty();
+	// Where the officer stands about at their department's station when switched to on duty.
+	Place Idle();
 	// The duty equipment (pistol, taser, baton, flashlight) given or taken.
 	void Equip(::Ped ped, bool on);
 	// The world was reset: the patrol car is gone.

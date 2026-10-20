@@ -177,6 +177,35 @@ namespace police::look
 		bool g_editing = false;
 	}
 
+	namespace
+	{
+		// The departments' uniforms from the freemode clothes (found by sweeping the drawables, research §53.2), male
+		// and female. Freemode has police wear only for the LSPD; the others are put together from work clothes.
+		struct Part
+		{
+			int slot, drawable, texture;
+		};
+		struct Uniform
+		{
+			Part parts[5]; // trousers, shoes, undershirt, armour, shirt
+			int cap;       // prop 0, -1 none
+		};
+		const Uniform kUniforms[][2] = {
+		    // LSPD: the summer patrol uniform. No cap: the freemode police caps (45/46) carry the sheriff's star.
+		    {{{{4, 35, 0}, {6, 25, 0}, {8, 58, 0}, {9, 0, 0}, {11, 55, 0}}, -1},
+		        {{{4, 34, 0}, {6, 25, 0}, {8, 35, 0}, {9, 0, 0}, {11, 48, 0}}, -1}},
+		    // BCSO: tan short-sleeved uniform shirt, dark olive work trousers, the sheriff's cap.
+		    {{{{4, 122, 0}, {6, 25, 0}, {8, 15, 0}, {9, 0, 0}, {11, 318, 3}}, 46},
+		        {{{4, 128, 0}, {6, 25, 0}, {8, 14, 0}, {9, 0, 0}, {11, 329, 3}}, 45}},
+		    // SAHP: light khaki uniform shirt, grey work trousers.
+		    {{{{4, 129, 3}, {6, 25, 0}, {8, 15, 0}, {9, 0, 0}, {11, 318, 2}}, -1},
+		        {{{4, 135, 3}, {6, 25, 0}, {8, 14, 0}, {9, 0, 0}, {11, 329, 2}}, -1}},
+		    // NOOSE: black military top and trousers, plate carrier.
+		    {{{{4, 31, 0}, {6, 25, 0}, {8, 15, 0}, {9, 16, 0}, {11, 49, 0}}, -1},
+		        {{{4, 30, 0}, {6, 25, 0}, {8, 14, 0}, {9, 18, 0}, {11, 42, 0}}, -1}},
+		};
+	}
+
 	Hash Model()
 	{
 		return MISC::GET_HASH_KEY(g.sex == 1 ? "mp_f_freemode_01" : "mp_m_freemode_01");
@@ -209,15 +238,17 @@ namespace police::look
 		PED::SET_PED_HEAD_OVERLAY(ped, 1, !female && g.beard >= 0 ? g.beard : 255, 1.0f); // beard
 		PED::SET_PED_HEAD_OVERLAY_TINT(ped, 1, 1, g.beardColor, g.beardColor);
 		PED::SET_HEAD_BLEND_EYE_COLOR(ped, g.eyes);
-		// Clothes: the summer patrol uniform on duty (per department later; LSPD's for now), own clothes otherwise.
+		// Clothes: the department's uniform on duty, own clothes otherwise.
 		if (uniform)
 		{
-			PED::SET_PED_COMPONENT_VARIATION(ped, 3, female ? 14 : 0, 0, 0);  // arms
-			PED::SET_PED_COMPONENT_VARIATION(ped, 4, female ? 34 : 35, 0, 0); // trousers
-			PED::SET_PED_COMPONENT_VARIATION(ped, 6, female ? 25 : 25, 0, 0); // shoes
-			PED::SET_PED_COMPONENT_VARIATION(ped, 8, female ? 35 : 58, 0, 0); // undershirt and belt
-			PED::SET_PED_COMPONENT_VARIATION(ped, 11, female ? 48 : 55, 0, 0); // shirt
-			PED::CLEAR_PED_PROP(ped, 0, 0); // no cap: the freemode police caps (45/46) carry the sheriff's star
+			const Uniform& u = kUniforms[std::clamp(g.department, 0, static_cast<int>(std::size(kUniforms)) - 1)][female ? 1 : 0];
+			PED::SET_PED_COMPONENT_VARIATION(ped, 3, female ? 14 : 0, 0, 0); // arms
+			for (const auto& [slot, drawable, texture] : u.parts)
+				PED::SET_PED_COMPONENT_VARIATION(ped, slot, drawable, texture, 0);
+			if (u.cap >= 0)
+				PED::SET_PED_PROP_INDEX(ped, 0, u.cap, 0, true, 0);
+			else
+				PED::CLEAR_PED_PROP(ped, 0, 0);
 		}
 		else
 		{
@@ -226,6 +257,7 @@ namespace police::look
 			PED::SET_PED_COMPONENT_VARIATION(ped, 6, female ? 3 : 1, 0, 0);  // trainers
 			PED::SET_PED_COMPONENT_VARIATION(ped, 8, female ? 14 : 15, 0, 0); // nothing under
 			PED::SET_PED_COMPONENT_VARIATION(ped, 11, female ? 0 : 0, 0, 0);  // T-shirt / top
+			PED::SET_PED_COMPONENT_VARIATION(ped, 9, 0, 0, 0);
 			PED::CLEAR_PED_PROP(ped, 0, 0);
 		}
 	}

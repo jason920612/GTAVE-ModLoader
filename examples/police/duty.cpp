@@ -6,9 +6,18 @@
 // bare briefing room: from the lobby through the double door marked CELLS / BRIEFING, down the corridor, the blue door
 // on the right; the mod stands lockers in it. The corridor ends at a locked door marked GARAGE, which the mod makes a
 // way (with a fade) to the lot behind the station, by the parking ramp; the game parks its own patrol cars there.
-// Stations of the other departments come later; until then they use Mission Row.
+//
+// The other departments' stations have no usable interior in story mode (the sheriff's offices in Sandy Shores and
+// Paleto Bay stand as bare, untextured shells), so the officer changes "inside" through the front door: E at the door,
+// a fade, and out again changed. Sheriff (BCSO): Sandy Shores. Highway patrol (SAHP, no station in the game): the La
+// Mesa police station by the freeways. NOOSE: the Los Santos Government Facility.
+//
+// Patrol cars: the game's own (police, sheriff, fbi ...) and the newer shared police cars (polbuffalo, polgreenwood ...)
+// whose livery (vehicle mod 48) is named per department: POLSHARED_LIV1 LSPD, LIV4 highway patrol, LIV5 sheriff
+// (the index differs from car to car, so it is looked up by name).
 #include "police.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <tuple>
 #include <vector>
@@ -17,42 +26,88 @@ namespace police::duty
 {
 	namespace
 	{
+		struct Car
+		{
+			const char* model;
+			const char* livery; // the mod-48 livery's label, nullptr = the car's own
+		};
 		struct Station
 		{
 			const char* name;
-			Place locker;             // where the officer stands to change
-			Place doorInside;         // the way out to the lot ...
-			Place doorOutside;        // ... and back in
+			bool door;                // changing happens behind the front door (no locker room)
+			Place idle;               // where they stand about when switched to on duty
+			Place locker;             // where the officer stands to change (the locker, or before the door)
 			Place lot;                // where they stand to pick a car
 			Place bay;                // where the picked car is put
-			std::vector<const char*> cars;
+			std::vector<Car> cars;
+			// A locker room only:
+			Place doorInside{};         // the way out to the lot ...
+			Place doorOutside{};        // ... and back in
 			std::vector<Place> lockers; // locker props the mod puts in the (bare) room
-			size_t own;                 // the officer's (open) one among them
+			size_t own = 0;             // the officer's (open) one among them
 		};
-		const Station kMissionRow = {
-		    "Mission Row",
-		    {438.4f, -995.6f, 30.69f, 180.0f},
-		    {445.5f, -996.0f, 30.69f, 0.0f},    // before the GARAGE door, arriving facing up the corridor
-		    {450.0f, -1012.6f, 28.49f, 180.0f}, // before the parking ramp's shutters, arriving facing the lot
-		    {446.0f, -1015.5f, 28.49f, 180.0f},
-		    {443.0f, -1019.0f, 28.5f, 270.0f},
-		    {"police", "police2", "police3", "police4", "policeb"},
-		    // Along the room's south wall (x 435.9-442.8, y -996.8 to -989.7).
-		    // A row along the room's south wall (x 435.9-442.8, y -996.8 to -989.7), the officer's in front of the marker.
-		    {{436.54f, -996.3f, 29.69f, 180.0f}, {437.16f, -996.3f, 29.69f, 180.0f}, {437.78f, -996.3f, 29.69f, 180.0f}, {438.40f, -996.3f, 29.69f, 180.0f},
-		        {439.02f, -996.3f, 29.69f, 180.0f}, {439.64f, -996.3f, 29.69f, 180.0f}, {440.26f, -996.3f, 29.69f, 180.0f}},
-		    3,
+		// In the order of look::Department(): LSPD, BCSO, SAHP, NOOSE.
+		const Station kStations[] = {
+		    {
+		        "任務街警局",
+		        false,
+		        {436.5f, -981.3f, 30.7f, 270.0f}, // in the lobby, facing into it
+		        {438.4f, -995.6f, 30.69f, 180.0f},
+		        {446.0f, -1015.5f, 28.49f, 180.0f},
+		        {443.0f, -1019.0f, 28.5f, 270.0f},
+		        {{"police", nullptr}, {"police2", nullptr}, {"police3", nullptr}, {"police4", nullptr}, {"policeb", nullptr},
+		            {"polbuffalo", "POLSHARED_LIV1"}, {"polgreenwood", "POLSHARED_LIV1"}, {"polcaracara", "POLSHARED_LIV1"},
+		            {"polimpaler5", "POLSHARED_LIV1"}},
+		        {445.5f, -996.0f, 30.69f, 0.0f},    // before the GARAGE door, arriving facing up the corridor
+		        {450.0f, -1012.6f, 28.49f, 180.0f}, // before the parking ramp's shutters, arriving facing the lot
+		        // A row along the room's south wall (x 435.9-442.8, y -996.8 to -989.7), the officer's in front of the marker.
+		        {{436.54f, -996.3f, 29.69f, 180.0f}, {437.16f, -996.3f, 29.69f, 180.0f}, {437.78f, -996.3f, 29.69f, 180.0f},
+		            {438.40f, -996.3f, 29.69f, 180.0f}, {439.02f, -996.3f, 29.69f, 180.0f}, {439.64f, -996.3f, 29.69f, 180.0f},
+		            {440.26f, -996.3f, 29.69f, 180.0f}},
+		        3,
+		    },
+		    {
+		        "沙灘鎮郡警局",
+		        true,
+		        {1853.5f, 3680.6f, 34.3f, 210.0f}, // on the porch
+		        {1855.6f, 3682.0f, 34.3f, 210.0f}, // the porch before the front door; out again facing the yard
+		        {1850.0f, 3672.0f, 33.7f, 300.0f},
+		        {1855.8f, 3671.9f, 33.5f, 120.0f},
+		        {{"sheriff", nullptr}, {"sheriff2", nullptr}, {"polbuffalo", "POLSHARED_LIV5"}, {"polgreenwood", "POLSHARED_LIV5"},
+		            {"polcaracara", "POLSHARED_LIV5"}, {"polimpaler5", "POLSHARED_LIV5"}, {"policeb2", "POLSHARED_LIV5"}},
+		    },
+		    {
+		        "拉梅薩警局（公路巡警）",
+		        true,
+		        {823.0f, -1288.5f, 29.3f, 90.0f}, // on the landing, facing the street
+		        {823.6f, -1290.0f, 29.3f, 90.0f}, // the landing before the doors at the top of the steps
+		        {826.0f, -1274.5f, 26.3f, 0.0f},
+		        {832.0f, -1270.5f, 26.3f, 90.0f},
+		        {{"policeb2", "POLSHARED_LIV4"}, {"polbuffalo", "POLSHARED_LIV4"}, {"polgauntlet", "POLSHARED_LIV4"},
+		            {"polgreenwood", "POLSHARED_LIV4"}, {"polcoquette4", "POLSHARED_LIV4"}, {"poldominator10", "POLSHARED_LIV4"},
+		            {"polimpaler6", "POLIMP6_LIV6"}},
+		    },
+		    {
+		        "NOOSE 總部",
+		        true,
+		        {2482.8f, -384.0f, 93.9f, 270.0f}, // on the steps, facing the square
+		        {2476.4f, -384.0f, 94.4f, 270.0f}, // the landing before the main doors
+		        {2522.0f, -395.0f, 93.0f, 0.0f},
+		        {2528.0f, -389.0f, 93.0f, 0.0f},
+		        {{"fbi", nullptr}, {"fbi2", nullptr}, {"riot", nullptr}, {"policet", nullptr}},
+		    },
 		};
 
 		const Station& Current()
 		{
-			return kMissionRow; // look::Department(): own stations per department come later
+			return kStations[std::clamp(look::Department(), 0, static_cast<int>(std::size(kStations)) - 1)];
 		}
 
 		// The equipment (user's list): a pistol, the taser, the baton and a flashlight.
 		const char* const kEquipment[] = {"WEAPON_COMBATPISTOL", "WEAPON_STUNGUN", "WEAPON_NIGHTSTICK", "WEAPON_FLASHLIGHT"};
 
 		std::vector<Object> g_props; // the station's lockers while the officer is near
+		const Station* g_propsOf = nullptr;
 		Vehicle g_car = 0;     // the patrol car picked in the lot
 		Blip g_carBlip = 0;
 		// Picking a car: the choice stands in the bay while the player looks through them.
@@ -115,16 +170,26 @@ namespace police::duty
 		}
 
 		// The game's name of a car model, in the game's language.
-		std::string CarName(const char* model)
+		std::string CarName(const Car& car)
 		{
+			const char* model = car.model;
 			const char* label = VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(MISC::GET_HASH_KEY(model));
 			const char* text = label ? HUD::GET_FILENAME_FOR_AUDIO_CONVERSATION(label) : nullptr;
 			return text && *text && std::string(text) != "NULL" ? text : model;
 		}
 
-		Vehicle Spawn(const char* model, const Place& at)
+		// The car's mod-48 livery with this label (-1 when it has none).
+		int Livery(Vehicle v, const char* label)
 		{
-			const Hash hash = MISC::GET_HASH_KEY(model);
+			for (int i = 0, n = VEHICLE::GET_NUM_VEHICLE_MODS(v, 48); i < n; ++i)
+				if (const char* l = VEHICLE::GET_MOD_TEXT_LABEL(v, 48, i); l && std::string(l) == label)
+					return i;
+			return -1;
+		}
+
+		Vehicle Spawn(const Car& car, const Place& at)
+		{
+			const Hash hash = MISC::GET_HASH_KEY(car.model);
 			const auto loaded = ml::LoadModel(hash);
 			if (!loaded)
 				return 0;
@@ -136,6 +201,14 @@ namespace police::duty
 				ENTITY::SET_ENTITY_AS_MISSION_ENTITY(v, true, true);
 				VEHICLE::SET_VEHICLE_ON_GROUND_PROPERLY(v, 5.0f);
 				VEHICLE::SET_VEHICLE_DOORS_LOCKED(v, 1);
+				if (car.livery)
+				{
+					VEHICLE::SET_VEHICLE_MOD_KIT(v, 0);
+					if (const int livery = Livery(v, car.livery); livery >= 0)
+						VEHICLE::SET_VEHICLE_MOD(v, 48, livery, false);
+					else
+						ml::LogError("duty: {} has no livery {}", car.model, car.livery);
+				}
 			}
 			return v;
 		}
@@ -159,6 +232,8 @@ namespace police::duty
 		void StartPicking()
 		{
 			g_picking = true;
+			if (g_choice >= Current().cars.size())
+				g_choice = 0;
 			Aside(true);
 			ShowPreview();
 		}
@@ -172,14 +247,14 @@ namespace police::duty
 				Delete(g_car);
 				g_car = g_preview;
 				g_preview = 0;
-				ml::Log("duty: patrol car {}", Current().cars[g_choice]);
+				ml::Log("duty: patrol car {}", Current().cars[g_choice].model);
 				return;
 			}
 			Delete(g_preview);
 			Aside(false);
 		}
 
-		void Pick(const std::vector<const char*>& cars)
+		void Pick(const std::vector<Car>& cars)
 		{
 			if (Pressed(kLeft) || Pressed(kRight))
 			{
@@ -196,7 +271,7 @@ namespace police::duty
 		// The lockers stand while the officer is played near the station.
 		void Props(bool show)
 		{
-			if (show == !g_props.empty())
+			if ((show ? &Current() : nullptr) == g_propsOf)
 				return;
 			for (Object& o : g_props)
 				if (Exists(o))
@@ -205,8 +280,10 @@ namespace police::duty
 					OBJECT::DELETE_OBJECT(&o);
 				}
 			g_props.clear();
+			g_propsOf = nullptr;
 			if (!show)
 				return;
+			g_propsOf = &Current();
 			const Hash closed = MISC::GET_HASH_KEY("p_cs_locker_01_s"), open = MISC::GET_HASH_KEY("p_cs_locker_01");
 			const auto loadedClosed = ml::LoadModel(closed);
 			const auto loadedOpen = ml::LoadModel(open);
@@ -253,6 +330,11 @@ namespace police::duty
 		}
 	}
 
+	Place Idle()
+	{
+		return Current().idle;
+	}
+
 	bool OnDuty()
 	{
 		return officer::InUniform();
@@ -264,25 +346,29 @@ namespace police::duty
 		g_carBlip = 0;
 		g_picking = false;
 		g_props.clear();
+		g_propsOf = nullptr;
 	}
 
 	void Tick()
 	{
 		const bool player = officer::IsPlayer();
-		// The station on the map while the officer is played.
+		// The department's station on the map while the officer is played.
 		static Blip stationBlip = 0;
-		if (player != (stationBlip != 0))
+		static const Station* blipOf = nullptr;
+		if ((player ? &Current() : nullptr) != blipOf)
 		{
 			if (stationBlip)
 				HUD::REMOVE_BLIP(&stationBlip);
-			else
+			stationBlip = 0;
+			blipOf = player ? &Current() : nullptr;
+			if (blipOf)
 			{
-				const Place& at = Current().locker;
+				const Place& at = blipOf->locker;
 				stationBlip = HUD::ADD_BLIP_FOR_COORD(at.x, at.y, at.z);
 				HUD::SET_BLIP_SPRITE(stationBlip, 60); // police station
 				HUD::SET_BLIP_AS_SHORT_RANGE(stationBlip, true);
 				HUD::BEGIN_TEXT_COMMAND_SET_BLIP_NAME("STRING");
-				HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME("警局（置物間）");
+				HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(blipOf->name);
 				HUD::END_TEXT_COMMAND_SET_BLIP_NAME(stationBlip);
 			}
 		}
@@ -298,7 +384,7 @@ namespace police::duty
 		const ::Ped ped = PLAYER::PLAYER_PED_ID();
 		const Station& station = Current();
 		const Vector3 at = ENTITY::GET_ENTITY_COORDS(ped, true);
-		Props(player && Distance(at, station.locker) < 80.0f);
+		Props(!station.lockers.empty() && Distance(at, station.locker) < 80.0f);
 		if (PED::IS_PED_IN_ANY_VEHICLE(ped, false))
 			return;
 
@@ -309,27 +395,38 @@ namespace police::duty
 			if (Distance(at, station.locker) < 1.2f)
 			{
 				const bool on = OnDuty();
-				Help(on ? "按 ~INPUT_CONTEXT~ 換回便服下班" : "按 ~INPUT_CONTEXT~ 換上制服、領裝備上班");
+				if (station.door)
+					Help(on ? "按 ~INPUT_CONTEXT~ 進去換回便服下班" : "按 ~INPUT_CONTEXT~ 進去換上制服、領裝備上班");
+				else
+					Help(on ? "按 ~INPUT_CONTEXT~ 換回便服下班" : "按 ~INPUT_CONTEXT~ 換上制服、領裝備上班");
 				if (Pressed(kContext))
 				{
 					Fade(true);
 					officer::Dress(!on);
+					if (station.door)
+					{
+						// Out of the door again, facing away from it.
+						ENTITY::SET_ENTITY_COORDS(ped, station.locker.x, station.locker.y, station.locker.z, false, false, false, false);
+						ENTITY::SET_ENTITY_HEADING(ped, station.locker.heading);
+						CAMERA::SET_GAMEPLAY_CAM_RELATIVE_HEADING(0.0f);
+						ml::Wait(1200);
+					}
 					ml::Wait(300);
 					Fade(false);
 					if (on)
 						ml::Notify("已下班");
 					else
-						ml::Notify("已上班：{}。巡邏車在局後方停車場", station.name);
+						ml::Notify("已上班：{}。到停車場選巡邏車", station.name);
 					ml::Log("duty: {}", on ? "off" : "on");
 				}
 			}
 		}
 
-		// The way between the corridor and the lot.
+		// The way between the corridor and the lot (a locker room only).
 		for (const auto& [from, to, text] : {std::tuple{station.doorInside, station.doorOutside, "按 ~INPUT_CONTEXT~ 去停車場"},
 		         std::tuple{station.doorOutside, station.doorInside, "按 ~INPUT_CONTEXT~ 進警局"}})
 		{
-			if (Distance(at, from) >= 25.0f)
+			if (station.door || Distance(at, from) >= 25.0f)
 				continue;
 			Marker(from);
 			if (Distance(at, from) < 1.2f)

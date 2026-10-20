@@ -23,9 +23,6 @@ namespace police::life
 			Place at;
 			const char* scenario;
 		};
-		const Spot kStation[] = {
-		    {{436.5f, -981.3f, 30.7f, 270.0f}, "WORLD_HUMAN_COP_IDLES"}, // facing into the lobby,
-		};
 		const Spot kOut[] = {
 		    {{-1203.0f, -1568.5f, 4.6f, 30.0f}, "WORLD_HUMAN_MUSCLE_FREE_WEIGHTS"}, // Muscle Beach
 		    {{-628.0f, 239.0f, 81.9f, 90.0f}, "WORLD_HUMAN_AA_COFFEE"},             // Bean Machine, Vinewood
@@ -115,9 +112,14 @@ namespace police::life
 
 	Place Pick(Scene scene, const char*& scenario)
 	{
-		const Spot* spots = scene == Scene::OnDuty ? kStation : scene == Scene::Out ? kOut : kHome;
-		const int count = scene == Scene::OnDuty ? static_cast<int>(std::size(kStation)) : scene == Scene::Out ? static_cast<int>(std::size(kOut))
-		                                                                                                           : static_cast<int>(std::size(kHome));
+		if (scene == Scene::OnDuty)
+		{
+			// At the department's station (duty.cpp).
+			scenario = "WORLD_HUMAN_COP_IDLES";
+			return duty::Idle();
+		}
+		const Spot* spots = scene == Scene::Out ? kOut : kHome;
+		const int count = scene == Scene::Out ? static_cast<int>(std::size(kOut)) : static_cast<int>(std::size(kHome));
 		const Spot& s = spots[MISC::GET_RANDOM_INT_IN_RANGE(0, count)];
 		scenario = s.scenario;
 		return s.at;
