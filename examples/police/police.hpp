@@ -162,6 +162,19 @@ namespace police::units
 	menu::List Menu();
 }
 
+namespace police::lights
+{
+	// The emergency lights' stage of a vehicle (0 off, 1 rear warning, 2 lights, 3 lights and siren).
+	void Set(Vehicle v, int stage);
+	int Stage(Vehicle v);
+	// The stage and tone keys (MLOnLoad).
+	void BuildKeys();
+	// The world was reset.
+	void Forget();
+	// Every frame: the keys in the player's emergency vehicle, the sirens' sounds.
+	void Tick();
+}
+
 namespace police::look
 {
 	// The officer's model (freemode male or female).

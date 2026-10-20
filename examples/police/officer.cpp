@@ -269,6 +269,7 @@ namespace police::officer
 	{
 		duty::Forget();
 		units::Forget();
+		lights::Forget();
 		menu::Close();
 		g_officer = 0;
 		g_protagonist = 0;

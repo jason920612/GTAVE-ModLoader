@@ -20,6 +20,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
 	police::look::BuildMenu();
+	police::lights::BuildKeys();
 	ml::Hotkey("hkPoliceMenu", "警察選單", 0x78 /* F9 (F6-F8 are the trainer's) */, [] { g_menuRequested = true; });
 	return 1;
 }
@@ -35,6 +36,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::life::Tick();
 		police::duty::Tick();
 		police::units::Tick();
+		police::lights::Tick();
 		police::look::Tick();
 		if (g_menuRequested)
 		{

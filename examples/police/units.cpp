@@ -121,7 +121,7 @@ namespace police::units
 				}
 			if (Exists(u.car))
 			{
-				VEHICLE::SET_VEHICLE_SIREN(u.car, false);
+				lights::Set(u.car, 0);
 				ENTITY::SET_VEHICLE_AS_NO_LONGER_NEEDED(&u.car);
 			}
 		}
@@ -151,7 +151,7 @@ namespace police::units
 				{
 					// There: stop (lights on, siren quiet), get out and join the officer.
 					VEHICLE::BRING_VEHICLE_TO_HALT(u.car, 5.0f, 2, false);
-					VEHICLE::SET_VEHICLE_HAS_MUTED_SIRENS(u.car, true);
+					lights::Set(u.car, 2);
 					for (::Ped p : u.crew)
 						if (Alive(p))
 						{
@@ -222,7 +222,7 @@ namespace police::units
 					++seat;
 				}
 			if (Exists(u.car))
-				VEHICLE::SET_VEHICLE_SIREN(u.car, false);
+				lights::Set(u.car, 0);
 		}
 
 		void TickValet()
@@ -293,7 +293,7 @@ namespace police::units
 			return;
 		}
 		VEHICLE::SET_VEHICLE_ENGINE_ON(u.car, true, true, false);
-		VEHICLE::SET_VEHICLE_SIREN(u.car, true);
+		lights::Set(u.car, 3);
 		u.blip = HUD::ADD_BLIP_FOR_ENTITY(u.car);
 		HUD::SET_BLIP_SPRITE(u.blip, 56);
 		HUD::SET_BLIP_COLOUR(u.blip, 38);

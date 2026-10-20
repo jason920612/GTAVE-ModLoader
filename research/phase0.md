@@ -1186,3 +1186,19 @@
   - 收隊：支援回車上、開走巡邏（`TASK_VEHICLE_DRIVE_WANDER`），交還給遊戲。
 - 找路點：`GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING` 逐個找，跳過太近或 `IS_SPHERE_VISIBLE` 的。
 - 實測（任務街附近）：支援 13 秒到場，兩人下車站在玩家身邊；收隊後離開；巡邏車約 13 秒送到。
+
+### 53.4 多段式警燈（2026-10-20）
+
+- 使用者的設計（照美國警車）：第 1 段只有後方黃色警示燈（停在路邊）、第 2 段全部警燈不鳴笛、第 3 段警燈加警笛。警笛音調另外切換。
+  - 適用範圍：玩家駕駛的所有緊急車輛（車輛類別 18），以及模組自己的支援車（趕來時第 3 段，到場第 2 段，收隊關掉）。
+  - 按鍵：Q 依序 1→2→3→關，R 換音調，按住喇叭（E）是氣笛。Q、R 可在載入器改。在這些車上停用遊戲原本按 E 開關警笛，以及 Q 的電台輪盤。
+- 第 2、3 段：`SET_VEHICLE_SIREN` 開燈，`SET_VEHICLE_HAS_MUTED_SIRENS` 控制有沒有聲音，`SET_SIREN_WITH_NO_DRIVER` 讓人下車後燈還亮著。
+- 第 1 段：遊戲本身沒有這種狀態。
+  - `SET_VEHICLE_INDICATOR_LIGHTS`（每格設也一樣）在這些警車上不會亮，量尾燈亮度也沒變化。
+  - 所以改成自己畫：找燈條的燈位骨架 siren1–siren20，換算成車身座標，取左右兩側最後面的燈。在那裡用 `DRAW_LIGHT_WITH_RANGE` 加一顆小 marker，畫琥珀色燈，每 250 毫秒左右輪流閃。
+  - Stanier 警車最後面的燈位在後擋風玻璃上緣，看起來像後窗的警示燈。沒有燈位骨架的車，就畫在車頂後緣。
+- 音調：用車子原本的警笛，或把原本的消音，從車上播遊戲的聲音。
+  - 判斷聲音名稱存不存在：用 `PLAY_SOUND_FROM_ENTITY` 播，半秒後 `HAS_SOUND_FINISHED` 為假就是存在；隨便取的假名稱會立刻結束。
+  - 確認存在：VEHICLES_HORNS_SIREN_1、VEHICLES_HORNS_SIREN_2、VEHICLES_HORNS_POLICE_WARNING、SIRENS_AIRHORN（氣笛）、VEHICLES_HORNS_AMBULANCE_WARNING、VEHICLES_HORNS_FIRETRUCK_WARNING、RESIDENT_VEHICLES_SIREN_WAIL_01、RESIDENT_VEHICLES_SIREN_QUICK_01。
+  - 沒辦法錄遊戲聲音，所以音調先叫 A/B/C（SIREN_1、SIREN_2、POLICE_WARNING），請使用者聽過後再命名。
+- 實測：三段燈光與第 1 段左右輪流閃都在畫面上確認；Q、R、氣笛的按鍵流程沒有錯誤。聲音未驗證。
