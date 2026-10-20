@@ -9,6 +9,7 @@ ML_MOD_INFO("Police", "0.0.1", "ModLoader", "Play as a police officer (in develo
 namespace
 {
 	std::atomic<bool> g_saveRequested = false;
+	std::atomic<bool> g_menuRequested = false;
 }
 
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
@@ -19,6 +20,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
 	police::look::BuildMenu();
+	ml::Hotkey("hkPoliceMenu", "警察選單", 0x78 /* F9 (F6-F8 are the trainer's) */, [] { g_menuRequested = true; });
 	return 1;
 }
 
@@ -32,7 +34,23 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::officer::Tick();
 		police::life::Tick();
 		police::duty::Tick();
+		police::units::Tick();
 		police::look::Tick();
+		if (g_menuRequested)
+		{
+			g_menuRequested = false;
+			if (police::menu::IsOpen())
+				police::menu::Close();
+			else if (!police::officer::IsPlayer())
+				ml::Notify("警察選單只在當警察時能用");
+			else if (!police::duty::OnDuty())
+				ml::Notify("要先上班（到警局換上制服）");
+			else
+				police::menu::Open(police::units::Menu());
+		}
+		if (!police::officer::IsPlayer())
+			police::menu::Close();
+		police::menu::Tick();
 		if (g_saveRequested)
 		{
 			police::officer::SaveForOfficer();

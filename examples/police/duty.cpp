@@ -34,6 +34,7 @@ namespace police::duty
 		struct Station
 		{
 			const char* name;
+			const char* cop;          // the department's police ped
 			bool door;                // changing happens behind the front door (no locker room)
 			Place idle;               // where they stand about when switched to on duty
 			Place locker;             // where the officer stands to change (the locker, or before the door)
@@ -50,6 +51,7 @@ namespace police::duty
 		const Station kStations[] = {
 		    {
 		        "任務街警局",
+		        "s_m_y_cop_01",
 		        false,
 		        {436.5f, -981.3f, 30.7f, 270.0f}, // in the lobby, facing into it
 		        {438.4f, -995.6f, 30.69f, 180.0f},
@@ -68,6 +70,7 @@ namespace police::duty
 		    },
 		    {
 		        "沙灘鎮郡警局",
+		        "s_m_y_sheriff_01",
 		        true,
 		        {1853.5f, 3680.6f, 34.3f, 210.0f}, // on the porch
 		        {1855.6f, 3682.0f, 34.3f, 210.0f}, // the porch before the front door; out again facing the yard
@@ -78,6 +81,7 @@ namespace police::duty
 		    },
 		    {
 		        "拉梅薩警局（公路巡警）",
+		        "s_m_y_hwaycop_01",
 		        true,
 		        {823.0f, -1288.5f, 29.3f, 90.0f}, // on the landing, facing the street
 		        {823.6f, -1290.0f, 29.3f, 90.0f}, // the landing before the doors at the top of the steps
@@ -89,6 +93,7 @@ namespace police::duty
 		    },
 		    {
 		        "NOOSE 總部",
+		        "s_m_y_swat_01",
 		        true,
 		        {2482.8f, -384.0f, 93.9f, 270.0f}, // on the steps, facing the square
 		        {2476.4f, -384.0f, 94.4f, 270.0f}, // the landing before the main doors
@@ -328,6 +333,21 @@ namespace police::duty
 			else
 				WEAPON::REMOVE_WEAPON_FROM_PED(ped, hash);
 		}
+	}
+
+	const char* CopModel()
+	{
+		return Current().cop;
+	}
+
+	Vehicle UnitCar(const Place& at)
+	{
+		return Spawn(Current().cars.front(), at);
+	}
+
+	Vehicle PatrolCar()
+	{
+		return Exists(g_car) ? g_car : 0;
 	}
 
 	Place Idle()

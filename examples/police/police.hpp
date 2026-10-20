@@ -7,7 +7,9 @@
 #include <modloader/game.hpp>
 #include <modloader/natives.hpp>
 
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace police
 {
@@ -105,12 +107,59 @@ namespace police::duty
 	bool OnDuty();
 	// Where the officer stands about at their department's station when switched to on duty.
 	Place Idle();
+	// The department's police ped model (backup, colleagues).
+	const char* CopModel();
+	// A car of the department (its first patrol car, in its livery) at a place; 0 when it could not be made.
+	Vehicle UnitCar(const Place& at);
+	// The patrol car the officer picked in the lot (0 = none).
+	Vehicle PatrolCar();
 	// The duty equipment (pistol, taser, baton, flashlight) given or taken.
 	void Equip(::Ped ped, bool on);
 	// The world was reset: the patrol car is gone.
 	void Forget();
 	// Every frame while the officer is played: the station's locker and lot.
 	void Tick();
+}
+
+namespace police::menu
+{
+	struct Item
+	{
+		std::string label;
+		std::string detail; // right-aligned (a count, a state)
+		std::string help;   // a line under the menu while the item is selected
+		bool enabled = true;
+		bool keepOpen = false;
+		std::function<void()> action;
+		std::function<struct List()> sub; // opens a submenu instead
+	};
+	struct List
+	{
+		std::string title;
+		std::vector<Item> items;
+	};
+	// Opens a menu (on top of the open one, Back returns to it).
+	void Open(List list);
+	void Close();
+	bool IsOpen();
+	// Every frame: draws the open menu and takes its keys.
+	void Tick();
+}
+
+namespace police::units
+{
+	void CallBackup();
+	void BringCar();
+	// Ends the incident: the backup goes back to patrol.
+	void Clear();
+	// Backup units coming or on scene.
+	size_t Backup();
+	// The world was reset.
+	void Forget();
+	// Every frame.
+	void Tick();
+	// The police menu (F9).
+	menu::List Menu();
 }
 
 namespace police::look

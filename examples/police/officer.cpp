@@ -268,6 +268,8 @@ namespace police::officer
 	void Forget()
 	{
 		duty::Forget();
+		units::Forget();
+		menu::Close();
 		g_officer = 0;
 		g_protagonist = 0;
 		g_headshot = 0;
