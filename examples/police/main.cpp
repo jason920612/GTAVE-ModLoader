@@ -28,6 +28,8 @@ extern "C" __declspec(dllexport) void MLMain()
 		ml::Wait(0);
 		police::persist::Tick();
 		police::wheel::Tick();
+		police::officer::Tick();
+		police::life::Tick();
 		if (g_saveRequested)
 		{
 			police::officer::SaveForOfficer();

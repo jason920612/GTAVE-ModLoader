@@ -11,17 +11,20 @@
 #include "police.hpp"
 
 #include <atomic>
+#include <cmath>
 
 namespace police::officer
 {
 	namespace
 	{
 		::Ped g_officer = 0;
+		Place g_scene{};                  // where the officer was put when created
+		const char* g_scenario = nullptr; // what they are busy with there
+		bool g_busy = false; // the player (the officer) is still busy with the switch scene's activity
 		::Ped g_protagonist = 0; // the protagonist left behind while the officer is played
 		int g_headshot = 0;
 		constexpr uint32_t kSwitchRequest = 99964;
 		constexpr uint32_t kCurrentCharacter = 122220; // 0..2 a protagonist, 145 none
-		const Vector3 kStation = {432.0f, -981.0f, 30.7f};
 
 		bool Exists(::Ped p)
 		{
@@ -60,8 +63,32 @@ namespace police::officer
 			g_protagonist = 0;
 		}
 
-		// Prototype look: a default face in the LSPD summer uniform.
-		::Ped Create(Vector3 at, float heading)
+		// Clothes (freemode male components): the LSPD summer uniform on duty, own clothes otherwise.
+		void Dress(::Ped ped, bool uniform)
+		{
+			PED::SET_PED_DEFAULT_COMPONENT_VARIATION(ped);
+			PED::SET_PED_HEAD_BLEND_DATA(ped, 0, 0, 0, 0, 0, 0, 0.5f, 0.5f, 0.0f, false);
+			PED::SET_PED_COMPONENT_VARIATION(ped, 3, 0, 0, 0); // arms
+			if (uniform)
+			{
+				PED::SET_PED_COMPONENT_VARIATION(ped, 4, 35, 0, 0);  // trousers
+				PED::SET_PED_COMPONENT_VARIATION(ped, 6, 25, 0, 0);  // shoes
+				PED::SET_PED_COMPONENT_VARIATION(ped, 8, 58, 0, 0);  // undershirt and belt
+				PED::SET_PED_COMPONENT_VARIATION(ped, 11, 55, 0, 0); // shirt
+				PED::SET_PED_PROP_INDEX(ped, 0, 46, 0, true, 0);     // cap
+			}
+			else
+			{
+				PED::SET_PED_COMPONENT_VARIATION(ped, 4, 4, 0, 0);  // jeans
+				PED::SET_PED_COMPONENT_VARIATION(ped, 6, 1, 0, 0);  // trainers
+				PED::SET_PED_COMPONENT_VARIATION(ped, 8, 15, 0, 0); // no undershirt
+				PED::SET_PED_COMPONENT_VARIATION(ped, 11, 0, 0, 0); // T-shirt
+				PED::CLEAR_PED_PROP(ped, 0, 0);
+			}
+		}
+
+		// Prototype look: a default face.
+		::Ped Create(Vector3 at, float heading, bool uniform)
 		{
 			const Hash model = MISC::GET_HASH_KEY("mp_m_freemode_01");
 			const auto loaded = ml::LoadModel(model);
@@ -70,14 +97,7 @@ namespace police::officer
 			const ::Ped ped = PED::CREATE_PED(4, model, at.x, at.y, at.z, heading, false, false);
 			if (!ped)
 				return 0;
-			PED::SET_PED_DEFAULT_COMPONENT_VARIATION(ped);
-			PED::SET_PED_HEAD_BLEND_DATA(ped, 0, 0, 0, 0, 0, 0, 0.5f, 0.5f, 0.0f, false);
-			PED::SET_PED_COMPONENT_VARIATION(ped, 3, 0, 0, 0);   // arms
-			PED::SET_PED_COMPONENT_VARIATION(ped, 4, 35, 0, 0);  // trousers
-			PED::SET_PED_COMPONENT_VARIATION(ped, 6, 25, 0, 0);  // shoes
-			PED::SET_PED_COMPONENT_VARIATION(ped, 8, 58, 0, 0);  // undershirt and belt
-			PED::SET_PED_COMPONENT_VARIATION(ped, 11, 55, 0, 0); // shirt
-			PED::SET_PED_PROP_INDEX(ped, 0, 46, 0, true, 0);     // cap
+			Dress(ped, uniform);
 			Hold(ped, true);
 			return ped;
 		}
@@ -115,11 +135,14 @@ namespace police::officer
 				*g = value;
 		}
 
-		// The game's switch from the player's ped to `to`; false when it did not complete.
-		bool Switch(::Ped to)
+		// The game's switch from the player's ped to `to`, busy with `scenario` (or nothing) when the camera comes down;
+		// false when it did not complete.
+		bool Switch(::Ped to, const char* scenario = nullptr)
 		{
 			const ::Ped from = PLAYER::PLAYER_PED_ID();
 			Hold(to, false);
+			if (scenario)
+				TASK::TASK_START_SCENARIO_IN_PLACE(to, scenario, 0, true);
 			const Vector3 a = ENTITY::GET_ENTITY_COORDS(from, true), b = ENTITY::GET_ENTITY_COORDS(to, true);
 			STREAMING::START_PLAYER_SWITCH(from, to, 0, STREAMING::GET_IDEAL_PLAYER_SWITCH_TYPE(a.x, a.y, a.z, b.x, b.y, b.z));
 			bool changed = false;
@@ -129,6 +152,11 @@ namespace police::officer
 				if (!changed && (STREAMING::GET_PLAYER_SWITCH_STATE() >= 8 || !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS()))
 				{
 					PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), to, false, false);
+					if (scenario)
+					{
+						TASK::TASK_START_SCENARIO_IN_PLACE(to, scenario, 0, true);
+						g_busy = true;
+					}
 					changed = true;
 				}
 				if (changed && !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
@@ -187,16 +215,28 @@ namespace police::officer
 	{
 		if (!Exists(g_officer))
 		{
-			Vector3 at = kStation;
-			float heading = 90.0f;
-			persist::Where(at, heading);
-			g_officer = Create(at, heading);
+			// Where the hour puts them (the scene's activity starts when they are switched to).
+			const life::Scene scene = life::Now();
+			g_scene = life::Pick(scene, g_scenario);
+			g_officer = Create({g_scene.x, g_scene.y, g_scene.z}, g_scene.heading, scene == life::Scene::OnDuty);
 			if (g_headshot)
 				PED::UNREGISTER_PEDHEADSHOT(g_headshot);
 			g_headshot = 0;
 		}
 		if (Exists(g_officer) && !g_headshot)
 			g_headshot = PED::REGISTER_PEDHEADSHOT(g_officer);
+	}
+
+	void Drop()
+	{
+		if (!Exists(g_officer) || IsPlayer())
+			return;
+		if (g_headshot)
+			PED::UNREGISTER_PEDHEADSHOT(g_headshot);
+		g_headshot = 0;
+		ENTITY::SET_ENTITY_AS_MISSION_ENTITY(g_officer, true, true);
+		PED::DELETE_PED(&g_officer);
+		g_officer = 0;
 	}
 
 	void Forget()
@@ -212,7 +252,11 @@ namespace police::officer
 		if (!Exists(g_officer) || IsPlayer())
 			return;
 		const ::Ped from = PLAYER::PLAYER_PED_ID();
-		if (Switch(g_officer))
+		// The scene's place loads first, so it is there when the camera comes down.
+		life::Load(g_scene);
+		ENTITY::SET_ENTITY_COORDS(g_officer, g_scene.x, g_scene.y, g_scene.z, false, false, false, false);
+		ENTITY::SET_ENTITY_HEADING(g_officer, g_scene.heading);
+		if (Switch(g_officer, g_scenario))
 		{
 			KeepProtagonist(from);
 			ml::Log("switched to the officer from protagonist {:08X}", ENTITY::GET_ENTITY_MODEL(from));
@@ -240,7 +284,7 @@ namespace police::officer
 		}
 		for (const uint64_t end = ml::TickMs() + 60000; ml::TickMs() < end && STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS();)
 			ml::Wait(0);
-		Hold(g_officer, true);
+		Drop();
 		// A protagonist other than the one switched to stays the mod's no longer: the game looks after them now.
 		if (Exists(g_protagonist))
 		{
@@ -257,12 +301,26 @@ namespace police::officer
 		if (!Exists(g_officer))
 			return;
 		const ::Ped from = PLAYER::PLAYER_PED_ID();
+		if (life::InApartment(at))
+			life::Load({at.x, at.y, at.z, heading});
 		ENTITY::SET_ENTITY_COORDS_NO_OFFSET(g_officer, at.x, at.y, at.z, false, false, false);
 		ENTITY::SET_ENTITY_HEADING(g_officer, heading);
 		Hold(g_officer, false);
 		PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), g_officer, false, false);
 		KeepProtagonist(from);
 		ml::Log("restored the officer at ({:.1f}, {:.1f}, {:.1f}); protagonist {:08X} kept", at.x, at.y, at.z, ENTITY::GET_ENTITY_MODEL(from));
+	}
+
+	void Tick()
+	{
+		// The scene's activity lasts until the player moves (as after the game's own switches).
+		if (g_busy && IsPlayer() && (std::abs(PAD::GET_CONTROL_NORMAL(0, 30)) > 0.2f || std::abs(PAD::GET_CONTROL_NORMAL(0, 31)) > 0.2f))
+		{
+			TASK::CLEAR_PED_TASKS(g_officer);
+			g_busy = false;
+		}
+		if (!IsPlayer())
+			g_busy = false;
 	}
 
 	void NoteSaved()

@@ -99,6 +99,8 @@ namespace police::wheel
 			}
 			else if (g_wasOpen && g_lastHover == kSlotOfficer)
 				officer::SwitchTo();
+			else if (g_wasOpen)
+				officer::Drop(); // the wheel closed on someone else: the officer is not needed here
 			g_wasOpen = open;
 			g_lastHover = open ? hover : -1;
 		}
