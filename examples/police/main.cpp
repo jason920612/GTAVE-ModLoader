@@ -52,6 +52,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::units::Tick();
 		police::lights::Tick();
 		police::suspect::Tick();
+		police::ambient::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)
 		{
 			if (t == 9)

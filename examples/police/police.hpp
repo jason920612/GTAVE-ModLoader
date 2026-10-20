@@ -156,6 +156,8 @@ namespace police::units
 	size_t Backup();
 	// Backup officers within `radius` of a place (how many police a suspect has on them).
 	int Near(const Vector3& at, float radius);
+	// The backup's cars.
+	std::vector<Vehicle> Cars();
 	// The world was reset.
 	void Forget();
 	// Every frame.
@@ -265,6 +267,14 @@ namespace police::suspect
 	// The world was reset.
 	void Forget();
 	// Every frame.
+	void Tick();
+}
+
+namespace police::ambient
+{
+	// The world was reset.
+	void Forget();
+	// Every frame while the officer is played: traffic giving way, onlookers and fleeing passers-by, witnesses.
 	void Tick();
 }
 

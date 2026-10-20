@@ -683,6 +683,15 @@ namespace police::units
 		TickValet();
 	}
 
+	std::vector<Vehicle> Cars()
+	{
+		std::vector<Vehicle> cars;
+		for (const Unit& u : g_units)
+			if (Exists(u.car))
+				cars.push_back(u.car);
+		return cars;
+	}
+
 	int Near(const Vector3& at, float radius)
 	{
 		int n = 0;

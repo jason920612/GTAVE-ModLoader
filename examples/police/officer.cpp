@@ -271,6 +271,7 @@ namespace police::officer
 		units::Forget();
 		lights::Forget();
 		suspect::Forget();
+		ambient::Forget();
 		menu::Close();
 		g_officer = 0;
 		g_protagonist = 0;
