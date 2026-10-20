@@ -1,8 +1,11 @@
 // The officer's ped and the switches between them and the protagonists.
 //
-// A switch is the game's own: START_PLAYER_SWITCH from the player's ped to the target ped (sky camera), and control
-// moves to the target with CHANGE_PLAYER_PED once the camera is up (switch state 8). The ped the player leaves stays
-// in the world where it was, held in place (frozen, invincible, ignoring events) until it is switched back to.
+// To the officer: the game's switch, START_PLAYER_SWITCH from the player's ped to the officer (sky camera), control
+// moving with CHANGE_PLAYER_PED once the camera is up (switch state 8). The protagonist left behind is handed back to
+// the game as an ordinary ped that walks off, the way a protagonist does after a switch.
+// Back to a protagonist: the game's own switch request (global 99964: +45 character, +46 0, +44 1; what the selector
+// does), so player_controller_b picks the protagonist's scene and creates or reuses their ped. With the officer as the
+// player the current character is 145 (none), and the game skips storing the leaving character.
 #include "police.hpp"
 
 namespace police::officer
@@ -10,8 +13,8 @@ namespace police::officer
 	namespace
 	{
 		::Ped g_officer = 0;
-		::Ped g_parked = 0; // the protagonist left behind while the officer is played
 		int g_headshot = 0;
+		constexpr uint32_t kSwitchRequest = 99964;
 
 		bool Exists(::Ped p)
 		{
@@ -51,15 +54,22 @@ namespace police::officer
 			return ped;
 		}
 
-		Hash ModelOf(int slot)
+		// The game's character number of a wheel slot (0 Michael, 1 Franklin, 2 Trevor).
+		int CharacterOf(int slot)
 		{
 			switch (slot)
 			{
-			case kSlotMichael: return MISC::GET_HASH_KEY("player_zero");
-			case kSlotFranklin: return MISC::GET_HASH_KEY("player_one");
-			case kSlotTrevor: return MISC::GET_HASH_KEY("player_two");
-			default: return 0;
+			case kSlotMichael: return 0;
+			case kSlotFranklin: return 1;
+			case kSlotTrevor: return 2;
+			default: return -1;
 			}
+		}
+
+		void SetGlobal(uint32_t index, int64_t value)
+		{
+			if (int64_t* g = ml::scripts::Global(index))
+				*g = value;
 		}
 
 		// The game's switch from the player's ped to `to`; false when it did not complete.
@@ -76,7 +86,6 @@ namespace police::officer
 				if (!changed && (STREAMING::GET_PLAYER_SWITCH_STATE() >= 8 || !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS()))
 				{
 					PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), to, false, false);
-					Hold(from, true);
 					changed = true;
 				}
 				if (changed && !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
@@ -121,29 +130,35 @@ namespace police::officer
 		Ensure();
 		if (!Exists(g_officer) || IsPlayer())
 			return;
-		const ::Ped from = PLAYER::PLAYER_PED_ID();
+		::Ped from = PLAYER::PLAYER_PED_ID();
 		if (Switch(g_officer))
 		{
-			g_parked = from;
-			ml::Log("switched to the officer; protagonist {:08X} held at their place", ENTITY::GET_ENTITY_MODEL(from));
+			// The protagonist goes on with their day.
+			TASK::TASK_WANDER_STANDARD(from, 10.0f, 10);
+			ml::Log("switched to the officer from protagonist {:08X}", ENTITY::GET_ENTITY_MODEL(from));
 		}
 	}
 
 	void SwitchFrom(int slot)
 	{
-		const Hash model = ModelOf(slot);
-		if (!model || !IsPlayer())
+		const int character = CharacterOf(slot);
+		if (character < 0 || !IsPlayer())
 			return;
-		if (!Exists(g_parked) || ENTITY::GET_ENTITY_MODEL(g_parked) != model)
+		SetGlobal(kSwitchRequest + 45, character);
+		SetGlobal(kSwitchRequest + 46, 0);
+		SetGlobal(kSwitchRequest + 44, 1);
+		ml::Log("switch to character {} requested from the game", character);
+		// The game takes over; once the player is someone else, the officer stays where they were.
+		for (const uint64_t end = ml::TickMs() + 60000; ml::TickMs() < end && PLAYER::PLAYER_PED_ID() == g_officer;)
+			ml::Wait(0);
+		if (PLAYER::PLAYER_PED_ID() == g_officer)
 		{
-			ml::Notify("（開發中）目前只能切回剛才的主角");
-			ml::Log("switch to slot {}: that protagonist is not the one left behind (prototype)", slot);
+			ml::LogError("the game did not switch to character {}", character);
 			return;
 		}
-		if (Switch(g_parked))
-		{
-			g_parked = 0;
-			ml::Log("switched back to protagonist {:08X}", model);
-		}
+		for (const uint64_t end = ml::TickMs() + 60000; ml::TickMs() < end && STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS();)
+			ml::Wait(0);
+		Hold(g_officer, true);
+		ml::Log("switched to character {}", character);
 	}
 }
