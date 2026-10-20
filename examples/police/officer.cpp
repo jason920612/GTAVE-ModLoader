@@ -273,6 +273,9 @@ namespace police::officer
 		suspect::Forget();
 		ambient::Forget();
 		dispatch::Forget();
+		records::Forget();
+		search::Forget();
+		mdt::Forget();
 		menu::Close();
 		g_officer = 0;
 		g_protagonist = 0;

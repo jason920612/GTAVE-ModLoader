@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>車上電腦</title>
+<script src="https://site.common/theme.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="logo"><span class="badge">MDT</span> 車上電腦 <small id="who"></small></div>
+  <nav id="tabs">
+    <button data-tab="cars" class="on">附近車輛</button>
+    <button data-tab="search">查詢</button>
+    <button data-tab="people">盤查紀錄</button>
+    <button data-tab="cases">案件與報告</button>
+  </nav>
+  <div class="end"><button class="theme-toggle" data-theme-toggle></button><button id="close" title="關閉">✕</button></div>
+</header>
+<main>
+  <section id="cars" class="tab on">
+    <div class="split">
+      <div class="list" id="carList"></div>
+      <div class="detail" id="carDetail"><p class="hint">選一台車查詢車牌。</p></div>
+    </div>
+  </section>
+  <section id="search" class="tab">
+    <div class="split">
+      <div class="forms">
+        <form id="plateForm"><label>車牌</label><div class="row"><input id="plate" autocomplete="off" placeholder="例如 46EEK572"><button>查詢</button></div>
+          <p class="hint" id="readerHint"></p></form>
+        <form id="nameForm"><label>姓名</label><div class="row"><input id="name" autocomplete="off" placeholder="英文姓名"><button>查詢</button></div></form>
+      </div>
+      <div class="detail" id="searchDetail"><p class="hint">輸入車牌或姓名。</p></div>
+    </div>
+  </section>
+  <section id="people" class="tab">
+    <div class="split">
+      <div class="list" id="peopleList"></div>
+      <div class="detail" id="personDetail"><p class="hint">盤查過證件的人會列在這裡。</p></div>
+    </div>
+  </section>
+  <section id="cases" class="tab">
+    <div class="split">
+      <div class="list" id="caseList"></div>
+      <div class="detail" id="caseDetail"><p class="hint">案件結束後會產生報告草稿。</p></div>
+    </div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -154,6 +154,9 @@ namespace police::units
 	void Clear();
 	// Backup units coming or on scene.
 	size_t Backup();
+	// A backup officer near a place, free to help (a search): taken off their duties until returned. 0 = none.
+	::Ped Borrow(const Vector3& around);
+	void Return(::Ped helper);
 	// Backup officers within `radius` of a place (how many police a suspect has on them).
 	int Near(const Vector3& at, float radius);
 	// The backup's cars.
@@ -275,9 +278,14 @@ namespace police::suspect
 	int Within(const Vector3& at, float radius);
 	Status StatusOf(int id);
 	void OrderOut(int id);
-	// What a search finds (weapons are taken), and the ID check (name, record).
-	std::string Search(int id);
-	std::string CheckId(int id);
+	// Who a suspect is (false for anyone else), the suspect driving a vehicle, a suspect's vehicle.
+	bool ProfileOf(::Ped ped, ai::Profile& out);
+	::Ped OwnerOf(Vehicle car);
+	Vehicle CarOf(int id);
+	// The suspect was driving (a vehicle of theirs, taken or their own).
+	bool Drove(::Ped ped);
+	// Searched: what they carried is taken.
+	void Disarm(::Ped ped);
 	bool Cuff(int id);
 	// A cuffed suspect into the back of a car.
 	bool PutInCar(int id, Vehicle car);
@@ -298,10 +306,101 @@ namespace police::dispatch
 	// The police menu's dispatch item (the call on offer, or the one under way).
 	menu::Item MenuItem();
 	// Development: a call now.
-	void CallNow();
+	void CallNow(bool easy = false);
 	// The world was reset.
 	void Forget();
 	// Every frame while the officer is played: calls, and the action menu next to a suspect (hold E).
+	void Tick();
+}
+
+namespace police::records
+{
+	struct Person
+	{
+		std::vector<std::string> priors;
+		std::string name, dob, licence, warrantFor;
+		bool warrant = false;
+		bool drunk = false;
+	};
+	struct VehicleRecord
+	{
+		std::string plate, owner, registration, insurance;
+		Hash model = 0;
+		bool stolen = false;
+	};
+	struct Case
+	{
+		std::vector<std::string> log, evidence, people, suggested;
+		std::string title, place, date, time;
+	};
+	struct Report
+	{
+		std::vector<std::string> people, evidence, suggested, charges;
+		std::string title, date, time, place, outcome, narrative;
+		int id = 0;
+		int score = 0;
+		bool submitted = false;
+	};
+	std::string RandomName();
+	// A shop picture of a vehicle model (https://gametextures/...), "" when there is none.
+	std::string Photo(Hash model);
+	Person& PersonOf(::Ped ped);
+	// A suspect's record follows who they are.
+	void SetSuspect(::Ped ped, const std::string& name, float guilt, bool drunk);
+	VehicleRecord& VehicleOf(Vehicle v);
+	void MarkStolen(Vehicle v);
+	ml::Json PersonJson(const Person& p);
+	ml::Json VehicleJson(Vehicle v);
+	// A vehicle by its plate (known, or around the officer), 0 = none.
+	Vehicle FindPlate(const std::string& plate);
+	const Person* FindName(const std::string& name);
+	// Someone's ID was checked (they show in the computer's list).
+	void Checked(::Ped ped);
+	ml::Json CheckedPeople();
+	// The case under way: its log, evidence, the people in it, the charges the evidence supports.
+	void BeginCase(const std::string& title, const std::string& place);
+	bool CaseOpen();
+	void Note(const std::string& what);
+	void Evidence(const std::string& item);
+	void Involved(const std::string& person);
+	void Charge(const std::string& charge);
+	// Ends it: a report is drafted; its id.
+	int EndCase(const std::string& outcome);
+	ml::Json Reports();
+	ml::Json CurrentCase();
+	ml::Json Submit(int id, const std::vector<std::string>& charges, const std::string& narrative);
+	// After a save loaded: the reports from it.
+	void Loaded();
+	void Forget();
+}
+
+namespace police::search
+{
+	constexpr int kZones = 5; // driver's seat, front passenger seat, glovebox, back seats, boot
+	const char* ZoneName(int zone);
+	bool Searched(Vehicle car, int zone);
+	bool Frisked(::Ped ped);
+	// The officer is searching now.
+	bool Busy();
+	// Frisk a person / search a vehicle area (-1 = every area left), by the officer or a backup officer.
+	void Frisk(::Ped target, bool backup);
+	void SearchCar(Vehicle car, int zone, bool backup);
+	void Forget();
+	void Tick();
+}
+
+namespace police::mdt
+{
+	// The in-car computer (a page of the in-game browser) and the hotkey (MLOnLoad).
+	void Build();
+	void Open();
+	// Asking dispatch over the radio: a vehicle's plate, a person's name (the answer comes after a few seconds).
+	void RadioPlate(Vehicle v);
+	void RadioPerson(::Ped ped);
+	// The plate of the vehicle in front of the officer's car (the plate reader), 0 = none.
+	Vehicle Ahead();
+	void Forget();
+	// Every frame: the plate reader, radio answers.
 	void Tick();
 }
 

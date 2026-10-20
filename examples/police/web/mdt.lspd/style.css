@@ -1,0 +1,52 @@
+:root { --bg: #eef1f5; --card: #fff; --ink: #1b2330; --muted: #5f6b7a; --line: #d8dee6; --brand: #12305c; --brand-ink: #fff; --accent: #2f6fd1;
+  --bad: #c62828; --warn: #b26a00; --ok: #2e7d32; --sel: #e3ecfa; }
+html[data-theme="dark"] { --bg: #0e1218; --card: #161c24; --ink: #e3e8ee; --muted: #93a0b0; --line: #283240; --brand: #0b1c36; --accent: #6aa3ff;
+  --bad: #ff6b6b; --warn: #ffb74d; --ok: #66bb6a; --sel: #1d2a3d; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+.top { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--brand); color: var(--brand-ink); flex-wrap: wrap; }
+.logo { font-weight: 700; font-size: 18px; }
+.logo small { font-weight: 400; opacity: .8; margin-left: 8px; font-size: 13px; }
+.badge { background: #fff2; border: 1px solid #fff5; border-radius: 4px; padding: 1px 6px; font-size: 13px; margin-right: 6px; }
+nav { display: flex; gap: 4px; flex: 1; }
+nav button, .end button { background: transparent; color: inherit; border: 1px solid #fff3; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+nav button.on { background: #fff; color: var(--brand); }
+.end { display: flex; gap: 6px; }
+.theme-toggle::before { content: "◐"; }
+main { padding: 16px; }
+.tab { display: none; }
+.tab.on { display: block; }
+.split { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; }
+@media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+.list, .detail, .forms { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.list { max-height: calc(100vh - 110px); overflow: auto; }
+.detail, .forms { padding: 16px; }
+.item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.item:hover { background: var(--sel); }
+.item.on { background: var(--sel); box-shadow: inset 3px 0 var(--accent); }
+.thumb { width: 96px; height: 48px; flex: none; border-radius: 6px; background: var(--line); object-fit: cover; display: grid; place-items: center; color: var(--muted); font-size: 11px; }
+.item .main { flex: 1; min-width: 0; }
+.item .plate { font-family: Consolas, monospace; font-weight: 700; letter-spacing: 1px; }
+.item .sub { color: var(--muted); font-size: 13px; }
+.tag { display: inline-block; font-size: 12px; border-radius: 4px; padding: 0 6px; margin-left: 4px; border: 1px solid currentColor; }
+.tag.bad { color: var(--bad); } .tag.warn { color: var(--warn); } .tag.ok { color: var(--ok); } .tag.info { color: var(--accent); }
+.hint { color: var(--muted); }
+h2 { margin: 0 0 8px; font-size: 20px; }
+h3 { margin: 16px 0 6px; font-size: 15px; color: var(--muted); font-weight: 600; }
+.photo { width: 100%; max-width: 420px; aspect-ratio: 2 / 1; object-fit: cover; border-radius: 8px; background: var(--line); display: block; }
+.noPhoto { width: 100%; max-width: 420px; aspect-ratio: 2 / 1; border-radius: 8px; background: var(--line); display: grid; place-items: center; color: var(--muted); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+.bad { color: var(--bad); font-weight: 700; } .warn { color: var(--warn); font-weight: 700; } .ok { color: var(--ok); }
+label { display: block; font-weight: 600; margin: 10px 0 4px; }
+.row { display: flex; gap: 8px; }
+input, textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; width: 100%; }
+textarea { min-height: 220px; font-family: inherit; }
+button.primary, form button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 7px 16px; font: inherit; cursor: pointer; white-space: nowrap; }
+.charges { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px; margin: 6px 0; }
+.charges label { font-weight: 400; margin: 0; display: flex; gap: 6px; align-items: center; }
+.charges input { width: auto; }
+.charges .sug { color: var(--accent); font-size: 12px; }
+ul.log { margin: 4px 0; padding-left: 18px; color: var(--ink); }
+.score { font-size: 28px; font-weight: 700; }

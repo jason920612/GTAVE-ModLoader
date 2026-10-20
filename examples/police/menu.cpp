@@ -112,7 +112,7 @@ namespace police::menu
 			const bool sel = i == g_cursor;
 			Rect(kLeft, y, kWidth, kRow, sel ? 240 : 0, sel ? 240 : 0, sel ? 240 : 0, sel ? 235 : 170);
 			const int c = it.enabled ? (sel ? 0 : 255) : 130;
-			Text(it.label + (it.sub ? "  ›" : ""), kLeft + 0.008f, y + 0.004f, 0.36f, c, c, c);
+			Text(it.label + (it.sub ? "  >" : ""), kLeft + 0.008f, y + 0.004f, 0.36f, c, c, c);
 			if (!it.detail.empty())
 				Text(it.detail, kLeft + kWidth - 0.008f, y + 0.004f, 0.36f, c, c, c, true);
 		}

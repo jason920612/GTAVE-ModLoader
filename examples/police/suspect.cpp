@@ -131,6 +131,40 @@ namespace police::suspect
 			ml::Log("suspect {}: {} -> {} ({})", s.id, Name(s.state), Name(st), why);
 			s.state = st;
 			s.since = Now();
+			// The case log (and what the account supports).
+			switch (st)
+			{
+			case State::Evade:
+				records::Note("嫌犯駕車逃逸");
+				records::Charge("駕車逃避警察攔查");
+				records::Charge("危險駕駛");
+				break;
+			case State::Flee:
+				records::Note("嫌犯徒步逃跑");
+				records::Charge("拒捕");
+				break;
+			case State::Resist:
+				records::Note("嫌犯徒手反抗");
+				records::Charge("妨害公務");
+				break;
+			case State::Shoot:
+				records::Note("嫌犯持械攻擊員警");
+				records::Charge("以武器攻擊警察");
+				break;
+			case State::Jack:
+				records::Note("嫌犯強行奪取他人車輛");
+				records::Charge("強盜（劫車）");
+				break;
+			case State::Comply: records::Note("嫌犯配合，舉手"); break;
+			case State::Pulled: records::Note("嫌犯靠邊停車"); break;
+			case State::Hide: records::Note("嫌犯躲藏，失去目視"); break;
+			case State::Cuffed:
+				records::Note("嫌犯上銬：" + records::PersonOf(s.ped).name);
+				records::Involved(records::PersonOf(s.ped).name + "（嫌犯）");
+				break;
+			case State::Custody: records::Note("嫌犯押上警車"); break;
+			default: break;
+			}
 		}
 
 		Vector3 At(const Suspect& s)
@@ -428,6 +462,7 @@ namespace police::suspect
 			PED::CLEAR_ALL_PED_PROPS(s.ped, 0);
 			s.disguised = true;
 			ml::Log("suspect {}: changed their look", s.id);
+			records::Note("目擊者稱嫌犯更換衣著");
 		}
 
 		// A vehicle within reach to take: on wheels, not the police's, closer to them than to the officer.
@@ -943,7 +978,7 @@ namespace police::suspect
 					Set(s, State::Custody, "in the patrol car");
 					ml::Notify("嫌犯已押上警車");
 				}
-				else if (now - s.since > 20000)
+				else if (now - s.since > 40000)
 				{
 					PED::SET_PED_INTO_VEHICLE(s.ped, s.car, 1); // could not get there: put in
 				}
@@ -953,16 +988,6 @@ namespace police::suspect
 			case State::Gone:
 				break;
 			}
-		}
-	}
-
-	namespace
-	{
-		std::string RandomName()
-		{
-			static const char* const first[] = {"Marcus", "Tyrone", "Kevin", "Luis", "Derek", "Brandon", "Carlos", "Jamal", "Travis", "Andre"};
-			static const char* const last[] = {"Johnson", "Ramirez", "Walker", "Nguyen", "Brooks", "Morales", "Carter", "Hughes", "Reyes", "Bennett"};
-			return std::string(first[MISC::GET_RANDOM_INT_IN_RANGE(0, 10)]) + " " + last[MISC::GET_RANDOM_INT_IN_RANGE(0, 10)];
 		}
 	}
 
@@ -998,7 +1023,8 @@ namespace police::suspect
 		s.id = g_nextId++;
 		s.since = Now();
 		TASK::TASK_START_SCENARIO_IN_PLACE(s.ped, "WORLD_HUMAN_STAND_MOBILE", 0, true);
-		s.name = RandomName();
+		s.name = records::RandomName();
+		records::SetSuspect(s.ped, s.name, profile.guilt, profile.impairment == ai::Impairment::Drunk);
 		g_suspects.push_back(s);
 		ml::Log("suspect {}: spawned, skill {} nerve {:.2f} hostility {:.2f} guilt {:.2f} armed {} impairment {} (grade {})", s.id,
 		    static_cast<int>(profile.skill), profile.nerve, profile.hostility, profile.guilt, profile.armed, static_cast<int>(profile.impairment),
@@ -1040,7 +1066,8 @@ namespace police::suspect
 		s.id = g_nextId++;
 		s.since = Now();
 		s.state = State::Cruise;
-		s.name = RandomName();
+		s.name = records::RandomName();
+		records::SetSuspect(s.ped, s.name, profile.guilt, profile.impairment == ai::Impairment::Drunk);
 		g_suspects.push_back(s);
 		ml::Log("suspect {}: driver spawned at ({:.0f}, {:.0f}), skill {} nerve {:.2f} hostility {:.2f} guilt {:.2f} armed {}", s.id, node.x, node.y,
 		    static_cast<int>(profile.skill), profile.nerve, profile.hostility, profile.guilt, profile.armed);
@@ -1145,41 +1172,50 @@ namespace police::suspect
 			}
 	}
 
-	std::string Search(int id)
+	bool ProfileOf(::Ped ped, ai::Profile& out)
 	{
-		for (Suspect& s : g_suspects)
-			if (s.id == id)
+		for (const Suspect& s : g_suspects)
+			if (s.ped == ped)
 			{
-				s.searched = true;
-				std::string found;
-				if (s.profile.armed == 1)
-					found += "一把刀";
-				else if (s.profile.armed == 2)
-					found += "一把手槍";
-				else if (s.profile.armed >= 3)
-					found += "一把衝鋒槍";
-				if (s.profile.substanceGrade > 0)
-				{
-					static const char* const grades[] = {"", "第一級", "第二級", "第三級", "第四級"};
-					found += std::string(found.empty() ? "" : "、") + grades[std::clamp(s.profile.substanceGrade, 1, 4)] + "管制藥物";
-				}
-				WEAPON::REMOVE_ALL_PED_WEAPONS(s.ped, true);
-				s.profile.armed = 0;
-				return found.empty() ? "沒有搜到東西" : "搜到：" + found;
+				out = s.profile;
+				return true;
 			}
-		return "";
+		return false;
 	}
 
-	std::string CheckId(int id)
+	::Ped OwnerOf(Vehicle car)
+	{
+		for (const Suspect& s : g_suspects)
+			if (s.car == car && car)
+				return s.ped;
+		return 0;
+	}
+
+	bool Drove(::Ped ped)
+	{
+		for (const Suspect& s : g_suspects)
+			if (s.ped == ped)
+				return s.car != 0;
+		return false;
+	}
+
+	Vehicle CarOf(int id)
+	{
+		for (const Suspect& s : g_suspects)
+			if (s.id == id)
+				return s.car && ENTITY::DOES_ENTITY_EXIST(s.car) ? s.car : 0;
+		return 0;
+	}
+
+	void Disarm(::Ped ped)
 	{
 		for (Suspect& s : g_suspects)
-			if (s.id == id)
+			if (s.ped == ped)
 			{
-				s.checked = true;
-				const char* record = s.profile.guilt > 0.8f ? "有通緝（竊盜）" : s.profile.guilt > 0.6f ? "有前科" : "無紀錄";
-				return s.name + "，" + record;
+				WEAPON::REMOVE_ALL_PED_WEAPONS(s.ped, true);
+				s.profile.armed = 0;
+				s.profile.substanceGrade = 0;
 			}
-		return "";
 	}
 
 	bool Cuff(int id)
@@ -1207,7 +1243,7 @@ namespace police::suspect
 			{
 				s.car = car;
 				const int seat = VEHICLE::IS_VEHICLE_SEAT_FREE(car, 1, false) ? 1 : 2;
-				TASK::TASK_ENTER_VEHICLE(s.ped, car, 20000, seat, 1.0f, 1, nullptr);
+				TASK::TASK_ENTER_VEHICLE(s.ped, car, 40000, seat, 1.0f, 1, nullptr);
 				Set(s, State::Escort, "to the patrol car");
 				return true;
 			}

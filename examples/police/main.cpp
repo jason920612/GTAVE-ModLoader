@@ -33,9 +33,11 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		test.Action("生成持槍的兇嫌", [] { g_testSpawn = 6; });
 		test.Action("生成會配合的路人", [] { g_testSpawn = 7; });
 		test.Action("立即派遣一件報案", [] { police::dispatch::CallNow(); });
+		test.Action("立即派遣（嫌犯會配合，測試搜查用）", [] { police::dispatch::CallNow(true); });
 		test.Action("清除測試嫌犯", [] { g_testSpawn = 9; });
 	}
 	police::lights::BuildKeys();
+	police::mdt::Build();
 	ml::Hotkey("hkPoliceMenu", "警察選單", 0x78 /* F9 (F6-F8 are the trainer's) */, [] { g_menuRequested = true; });
 	return 1;
 }
@@ -55,6 +57,8 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::suspect::Tick();
 		police::ambient::Tick();
 		police::dispatch::Tick();
+		police::search::Tick();
+		police::mdt::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)
 		{
 			if (t == 9)

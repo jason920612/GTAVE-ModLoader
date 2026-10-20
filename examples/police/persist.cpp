@@ -64,6 +64,7 @@ namespace police::persist
 				return;
 			g_loading = false;
 			look::Loaded();
+			records::Loaded();
 			const ml::Json s = State();
 			Vector3 at{};
 			float heading = 0;

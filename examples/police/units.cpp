@@ -64,6 +64,11 @@ namespace police::units
 			int id = 0;
 		};
 		int g_nextUnit = 1;
+		std::vector<::Ped> g_borrowed; // officers lent out (a search): their unit leaves them be
+		bool Borrowed(::Ped p)
+		{
+			return std::find(g_borrowed.begin(), g_borrowed.end(), p) != g_borrowed.end();
+		}
 		std::vector<Unit> g_units;
 		constexpr size_t kMaxUnits = 2;
 
@@ -303,7 +308,7 @@ namespace police::units
 				u.role = want;
 				u.nextTask = 0;
 				for (::Ped p : u.crew)
-					if (Alive(p))
+					if (Alive(p) && !Borrowed(p))
 						PED::REMOVE_PED_FROM_GROUP(p);
 			}
 			if (now < u.nextTask)
@@ -365,7 +370,7 @@ namespace police::units
 				if (Exists(u.car))
 					lights::Set(u.car, 2);
 				for (::Ped p : u.crew)
-					if (Alive(p))
+					if (Alive(p) && !Borrowed(p))
 					{
 						if (InCar(u, p))
 						{
@@ -382,7 +387,7 @@ namespace police::units
 				break;
 			case Role::Engage:
 				for (::Ped p : u.crew)
-					if (Alive(p))
+					if (Alive(p) && !Borrowed(p))
 					{
 						if (InCar(u, p))
 							TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
@@ -392,7 +397,7 @@ namespace police::units
 				break;
 			case Role::Cover:
 				for (::Ped p : u.crew)
-					if (Alive(p))
+					if (Alive(p) && !Borrowed(p))
 					{
 						if (InCar(u, p))
 						{
@@ -412,7 +417,7 @@ namespace police::units
 				break;
 			case Role::Search:
 				for (::Ped p : u.crew)
-					if (Alive(p))
+					if (Alive(p) && !Borrowed(p))
 					{
 						if (InCar(u, p))
 						{
@@ -652,6 +657,7 @@ namespace police::units
 
 	void Forget()
 	{
+		g_borrowed.clear();
 		g_units.clear();
 		g_valet = {};
 	}
@@ -683,6 +689,32 @@ namespace police::units
 		TickValet();
 	}
 
+	::Ped Borrow(const Vector3& around)
+	{
+		::Ped best = 0;
+		float bestD = 60.0f;
+		for (const Unit& u : g_units)
+			if (u.state != State::Leaving)
+				for (::Ped p : u.crew)
+					if (Alive(p) && !Borrowed(p) && !PED::IS_PED_IN_ANY_VEHICLE(p, false))
+						if (const float d = Distance(ENTITY::GET_ENTITY_COORDS(p, true), around); d < bestD)
+							best = p, bestD = d;
+		if (best)
+		{
+			g_borrowed.push_back(best);
+			PED::REMOVE_PED_FROM_GROUP(best);
+			TASK::CLEAR_PED_TASKS(best);
+		}
+		return best;
+	}
+
+	void Return(::Ped helper)
+	{
+		g_borrowed.erase(std::remove(g_borrowed.begin(), g_borrowed.end(), helper), g_borrowed.end());
+		if (Alive(helper))
+			PED::SET_PED_AS_GROUP_MEMBER(helper, PLAYER::GET_PLAYER_GROUP(PLAYER::PLAYER_ID()));
+	}
+
 	std::vector<Vehicle> Cars()
 	{
 		std::vector<Vehicle> cars;
@@ -706,6 +738,39 @@ namespace police::units
 	{
 		menu::List m{"警察", {}};
 		m.items.push_back(dispatch::MenuItem());
+		menu::Item computer{"車上電腦", "F10", "附近車輛、查車牌、查人、案件報告（要在警車上）"};
+		computer.action = mdt::Open;
+		m.items.push_back(computer);
+		menu::Item query{"向調度查詢", "", "用無線電查附近車輛的車牌"};
+		query.sub = [] {
+			menu::List q{"向調度查詢", {}};
+			const ::Ped me = PLAYER::PLAYER_PED_ID();
+			const Vector3 at = ENTITY::GET_ENTITY_COORDS(me, true);
+			int64_t buf[1 + 20] = {20};
+			const int n = PED::GET_PED_NEARBY_VEHICLES(me, reinterpret_cast<Any*>(buf));
+			std::vector<std::pair<float, Vehicle>> list;
+			for (int i = 0; i < n && i < 20; ++i)
+				if (const Vehicle v = static_cast<Vehicle>(buf[1 + i]); v && v != PED::GET_VEHICLE_PED_IS_IN(me, false) && ENTITY::DOES_ENTITY_EXIST(v))
+					list.emplace_back(Distance(at, ENTITY::GET_ENTITY_COORDS(v, true)), v);
+			std::sort(list.begin(), list.end());
+			if (const Vehicle ahead = mdt::Ahead())
+			{
+				menu::Item i{"前車 " + records::VehicleOf(ahead).plate, "", "車牌辨識讀到的前方車輛"};
+				i.action = [ahead] { mdt::RadioPlate(ahead); };
+				q.items.push_back(i);
+			}
+			for (size_t k = 0; k < list.size() && k < 6; ++k)
+			{
+				const Vehicle v = list[k].second;
+				const char* label = VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(ENTITY::GET_ENTITY_MODEL(v));
+				const char* text = label ? HUD::GET_FILENAME_FOR_AUDIO_CONVERSATION(label) : "";
+				menu::Item i{records::VehicleOf(v).plate + "  " + (text ? text : ""), std::to_string(static_cast<int>(list[k].first)) + " m", "查這台車"};
+				i.action = [v] { mdt::RadioPlate(v); };
+				q.items.push_back(i);
+			}
+			return q;
+		};
+		m.items.push_back(query);
 		menu::Item backup{"呼叫支援", Backup() ? std::to_string(Backup()) + " 組" : "", "一組兩名警員開巡邏車過來，到場後跟著你"};
 		backup.action = CallBackup;
 		m.items.push_back(backup);
