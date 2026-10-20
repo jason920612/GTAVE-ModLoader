@@ -31,6 +31,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::wheel::Tick();
 		police::officer::Tick();
 		police::life::Tick();
+		police::duty::Tick();
 		police::look::Tick();
 		if (g_saveRequested)
 		{

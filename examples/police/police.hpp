@@ -40,6 +40,8 @@ namespace police::officer
 	// Makes the officer anew from their look (after the sex changed), keeping the player in control of them.
 	void Rebuild();
 	bool InUniform();
+	// Into the uniform with the equipment (on duty) or into their own clothes (off duty).
+	void Dress(bool uniform);
 	// The wheel's picture of the officer anew (after their look changed).
 	void RefreshHeadshot();
 	// Every frame: ends the switch scene's activity once the player moves.
@@ -94,6 +96,18 @@ namespace police::life
 	void Load(const Place& at);
 	bool InApartment(const Vector3& at);
 	// Every frame while the officer is played: the apartment's doors and bed.
+	void Tick();
+}
+
+namespace police::duty
+{
+	// In uniform is on duty.
+	bool OnDuty();
+	// The duty equipment (pistol, taser, baton, flashlight) given or taken.
+	void Equip(::Ped ped, bool on);
+	// The world was reset: the patrol car is gone.
+	void Forget();
+	// Every frame while the officer is played: the station's locker and lot.
 	void Tick();
 }
 

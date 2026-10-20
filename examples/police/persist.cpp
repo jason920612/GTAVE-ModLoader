@@ -1,5 +1,6 @@
 // The officer's state in the game's save (ml::save "officer", shared by the three protagonists):
-//   { "active": bool (the officer was the player), "x", "y", "z", "heading", "clock": game minutes }
+//   { "active": bool (the officer was the player), "x", "y", "z", "heading", "clock": game minutes,
+//     "uniform": bool (on duty) }
 // It is kept current while the officer is in the world and written whenever the game saves. After a save is loaded the
 // game's player is a protagonist; when the officer was the player at that save, they are put back in control where
 // they were. ml::save keeps one record for all save slots, so the game clock at the time is recorded too: a loaded
@@ -45,7 +46,7 @@ namespace police::persist
 			return;
 		const Vector3 at = ENTITY::GET_ENTITY_COORDS(ped, true);
 		ml::save::Set("officer", ml::Json{{"active", active}, {"x", at.x}, {"y", at.y}, {"z", at.z}, {"heading", ENTITY::GET_ENTITY_HEADING(ped)},
-		    {"clock", Clock()}});
+		    {"clock", Clock()}, {"uniform", officer::InUniform()}});
 	}
 
 	void Loading()
@@ -72,6 +73,8 @@ namespace police::persist
 			{
 				CAMERA::DO_SCREEN_FADE_OUT(0);
 				officer::Restore(at, heading);
+				if (s["uniform"].IsBool() && s["uniform"].Bool() != officer::InUniform())
+					officer::Dress(s["uniform"].Bool());
 				ml::Wait(1500);
 				CAMERA::DO_SCREEN_FADE_IN(800);
 			}

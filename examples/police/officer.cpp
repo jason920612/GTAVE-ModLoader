@@ -76,6 +76,7 @@ namespace police::officer
 				return 0;
 			g_uniform = uniform;
 			look::Apply(ped, uniform);
+			duty::Equip(ped, uniform);
 			Hold(ped, true);
 			return ped;
 		}
@@ -233,6 +234,16 @@ namespace police::officer
 		g_headshot = PED::REGISTER_PEDHEADSHOT(ped);
 	}
 
+	void Dress(bool uniform)
+	{
+		if (!Exists(g_officer))
+			return;
+		g_uniform = uniform;
+		look::Apply(g_officer, uniform);
+		duty::Equip(g_officer, uniform);
+		RefreshHeadshot();
+	}
+
 	void RefreshHeadshot()
 	{
 		if (!Exists(g_officer))
@@ -256,6 +267,7 @@ namespace police::officer
 
 	void Forget()
 	{
+		duty::Forget();
 		g_officer = 0;
 		g_protagonist = 0;
 		g_headshot = 0;
