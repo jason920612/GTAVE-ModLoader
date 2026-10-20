@@ -62,6 +62,7 @@ namespace police::persist
 			if (DLC::GET_IS_LOADING_SCREEN_ACTIVE() || !ENTITY::DOES_ENTITY_EXIST(player) || !PLAYER::IS_PLAYER_CONTROL_ON(PLAYER::PLAYER_ID()))
 				return;
 			g_loading = false;
+			look::Loaded();
 			const ml::Json s = State();
 			Vector3 at{};
 			float heading = 0;

@@ -7,6 +7,8 @@
 #include <modloader/game.hpp>
 #include <modloader/natives.hpp>
 
+#include <string>
+
 namespace police
 {
 	struct Place
@@ -35,6 +37,11 @@ namespace police::officer
 	void Ensure();
 	// Removes the officer from the world while nobody plays them.
 	void Drop();
+	// Makes the officer anew from their look (after the sex changed), keeping the player in control of them.
+	void Rebuild();
+	bool InUniform();
+	// The wheel's picture of the officer anew (after their look changed).
+	void RefreshHeadshot();
 	// Every frame: ends the switch scene's activity once the player moves.
 	void Tick();
 	// Switches from the current protagonist to the officer, with the game's sky camera.
@@ -87,5 +94,23 @@ namespace police::life
 	void Load(const Place& at);
 	bool InApartment(const Vector3& at);
 	// Every frame while the officer is played: the apartment's doors and bed.
+	void Tick();
+}
+
+namespace police::look
+{
+	// The officer's model (freemode male or female).
+	Hash Model();
+	std::string Name();
+	int Department();
+	// Head, hair and clothes (the uniform or own clothes) on a ped of Model().
+	void Apply(::Ped ped, bool uniform);
+	// True when the save has a look (the creator was used).
+	bool Exists();
+	// After a save loaded (or the game started): the look from the save, into the menu.
+	void Loaded();
+	// The creator page in the loader window (MLOnLoad).
+	void BuildMenu();
+	// Every frame: the editing camera.
 	void Tick();
 }

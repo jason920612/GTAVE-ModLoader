@@ -18,6 +18,7 @@ namespace police::officer
 	namespace
 	{
 		::Ped g_officer = 0;
+		bool g_uniform = false; // the officer wears the uniform
 		Place g_scene{};                  // where the officer was put when created
 		const char* g_scenario = nullptr; // what they are busy with there
 		bool g_busy = false; // the player (the officer) is still busy with the switch scene's activity
@@ -63,41 +64,18 @@ namespace police::officer
 			g_protagonist = 0;
 		}
 
-		// Clothes (freemode male components): the LSPD summer uniform on duty, own clothes otherwise.
-		void Dress(::Ped ped, bool uniform)
-		{
-			PED::SET_PED_DEFAULT_COMPONENT_VARIATION(ped);
-			PED::SET_PED_HEAD_BLEND_DATA(ped, 0, 0, 0, 0, 0, 0, 0.5f, 0.5f, 0.0f, false);
-			PED::SET_PED_COMPONENT_VARIATION(ped, 3, 0, 0, 0); // arms
-			if (uniform)
-			{
-				PED::SET_PED_COMPONENT_VARIATION(ped, 4, 35, 0, 0);  // trousers
-				PED::SET_PED_COMPONENT_VARIATION(ped, 6, 25, 0, 0);  // shoes
-				PED::SET_PED_COMPONENT_VARIATION(ped, 8, 58, 0, 0);  // undershirt and belt
-				PED::SET_PED_COMPONENT_VARIATION(ped, 11, 55, 0, 0); // shirt
-				PED::SET_PED_PROP_INDEX(ped, 0, 46, 0, true, 0);     // cap
-			}
-			else
-			{
-				PED::SET_PED_COMPONENT_VARIATION(ped, 4, 4, 0, 0);  // jeans
-				PED::SET_PED_COMPONENT_VARIATION(ped, 6, 1, 0, 0);  // trainers
-				PED::SET_PED_COMPONENT_VARIATION(ped, 8, 15, 0, 0); // no undershirt
-				PED::SET_PED_COMPONENT_VARIATION(ped, 11, 0, 0, 0); // T-shirt
-				PED::CLEAR_PED_PROP(ped, 0, 0);
-			}
-		}
-
-		// Prototype look: a default face.
+		// The officer as made in the creator (look.cpp).
 		::Ped Create(Vector3 at, float heading, bool uniform)
 		{
-			const Hash model = MISC::GET_HASH_KEY("mp_m_freemode_01");
+			const Hash model = look::Model();
 			const auto loaded = ml::LoadModel(model);
 			if (!loaded)
 				return 0;
 			const ::Ped ped = PED::CREATE_PED(4, model, at.x, at.y, at.z, heading, false, false);
 			if (!ped)
 				return 0;
-			Dress(ped, uniform);
+			g_uniform = uniform;
+			look::Apply(ped, uniform);
 			Hold(ped, true);
 			return ped;
 		}
@@ -227,6 +205,43 @@ namespace police::officer
 			g_headshot = PED::REGISTER_PEDHEADSHOT(g_officer);
 	}
 
+	bool InUniform()
+	{
+		return g_uniform;
+	}
+
+	void Rebuild()
+	{
+		if (!Exists(g_officer))
+			return;
+		// A new ped (the model changes with the sex) in the old one's place, in control when the old one was.
+		const bool player = IsPlayer();
+		const Vector3 at = ENTITY::GET_ENTITY_COORDS(g_officer, true);
+		const float heading = ENTITY::GET_ENTITY_HEADING(g_officer);
+		const ::Ped ped = Create({at.x, at.y, at.z - 1.0f}, heading, g_uniform);
+		if (!ped)
+			return;
+		::Ped old = g_officer;
+		g_officer = ped;
+		Hold(ped, !player);
+		if (player)
+			PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), ped, false, false);
+		ENTITY::SET_ENTITY_AS_MISSION_ENTITY(old, true, true);
+		PED::DELETE_PED(&old);
+		if (g_headshot)
+			PED::UNREGISTER_PEDHEADSHOT(g_headshot);
+		g_headshot = PED::REGISTER_PEDHEADSHOT(ped);
+	}
+
+	void RefreshHeadshot()
+	{
+		if (!Exists(g_officer))
+			return;
+		if (g_headshot)
+			PED::UNREGISTER_PEDHEADSHOT(g_headshot);
+		g_headshot = PED::REGISTER_PEDHEADSHOT(g_officer);
+	}
+
 	void Drop()
 	{
 		if (!Exists(g_officer) || IsPlayer())
@@ -259,6 +274,8 @@ namespace police::officer
 		if (Switch(g_officer, g_scenario))
 		{
 			KeepProtagonist(from);
+			if (!look::Exists())
+				ml::Notify("第一次當警察：按 F4 →「Police」→「外觀（角色建立）」建立你的警察");
 			ml::Log("switched to the officer from protagonist {:08X}", ENTITY::GET_ENTITY_MODEL(from));
 		}
 	}

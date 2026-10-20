@@ -24,7 +24,7 @@ namespace police::life
 			const char* scenario;
 		};
 		const Spot kStation[] = {
-		    {{436.5f, -981.3f, 30.7f, 90.0f}, "WORLD_HUMAN_COP_IDLES"},
+		    {{436.5f, -981.3f, 30.7f, 270.0f}, "WORLD_HUMAN_COP_IDLES"}, // facing into the lobby,
 		};
 		const Spot kOut[] = {
 		    {{-1203.0f, -1568.5f, 4.6f, 30.0f}, "WORLD_HUMAN_MUSCLE_FREE_WEIGHTS"}, // Muscle Beach
