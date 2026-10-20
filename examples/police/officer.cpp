@@ -1,20 +1,27 @@
 // The officer's ped and the switches between them and the protagonists.
 //
 // To the officer: the game's switch, START_PLAYER_SWITCH from the player's ped to the officer (sky camera), control
-// moving with CHANGE_PLAYER_PED once the camera is up (switch state 8). The protagonist left behind is handed back to
-// the game as an ordinary ped that walks off, the way a protagonist does after a switch.
+// moving with CHANGE_PLAYER_PED once the camera is up (switch state 8). The protagonist left behind goes on with their
+// day (wanders off), kept by the mod: the game only saves with a protagonist as the player, so saving while the officer
+// is played borrows them (see SaveForOfficer).
 // Back to a protagonist: the game's own switch request (global 99964: +45 character, +46 0, +44 1; what the selector
 // does), so player_controller_b picks the protagonist's scene and creates or reuses their ped. With the officer as the
-// player the current character is 145 (none), and the game skips storing the leaving character.
+// player the current character is 145 (none), and the game skips storing the leaving character. The kept protagonist is
+// let go first when they are the one switched to, so the game makes them anew in their scene.
 #include "police.hpp"
+
+#include <atomic>
 
 namespace police::officer
 {
 	namespace
 	{
 		::Ped g_officer = 0;
+		::Ped g_protagonist = 0; // the protagonist left behind while the officer is played
 		int g_headshot = 0;
 		constexpr uint32_t kSwitchRequest = 99964;
+		constexpr uint32_t kCurrentCharacter = 122220; // 0..2 a protagonist, 145 none
+		const Vector3 kStation = {432.0f, -981.0f, 30.7f};
 
 		bool Exists(::Ped p)
 		{
@@ -32,14 +39,35 @@ namespace police::officer
 				TASK::CLEAR_PED_TASKS_IMMEDIATELY(p);
 		}
 
-		// Prototype look: a default face in the LSPD summer uniform, at the Mission Row station.
-		::Ped Create()
+		// Keeps a protagonist nobody plays: they walk about, and nothing kills them while the mod needs them.
+		void KeepProtagonist(::Ped p)
+		{
+			g_protagonist = p;
+			ENTITY::SET_ENTITY_AS_MISSION_ENTITY(p, true, true);
+			ENTITY::FREEZE_ENTITY_POSITION(p, false);
+			ENTITY::SET_ENTITY_INVINCIBLE(p, true, false);
+			TASK::TASK_WANDER_STANDARD(p, 10.0f, 10);
+		}
+
+		void LetGoOfProtagonist()
+		{
+			if (Exists(g_protagonist))
+			{
+				ENTITY::SET_ENTITY_INVINCIBLE(g_protagonist, false, false);
+				ENTITY::SET_ENTITY_AS_MISSION_ENTITY(g_protagonist, true, true);
+				PED::DELETE_PED(&g_protagonist);
+			}
+			g_protagonist = 0;
+		}
+
+		// Prototype look: a default face in the LSPD summer uniform.
+		::Ped Create(Vector3 at, float heading)
 		{
 			const Hash model = MISC::GET_HASH_KEY("mp_m_freemode_01");
 			const auto loaded = ml::LoadModel(model);
 			if (!loaded)
 				return 0;
-			const ::Ped ped = PED::CREATE_PED(4, model, 432.0f, -981.0f, 30.7f, 90.0f, false, false);
+			const ::Ped ped = PED::CREATE_PED(4, model, at.x, at.y, at.z, heading, false, false);
 			if (!ped)
 				return 0;
 			PED::SET_PED_DEFAULT_COMPONENT_VARIATION(ped);
@@ -65,7 +93,22 @@ namespace police::officer
 			default: return -1;
 			}
 		}
+		int CharacterOfModel(Hash model)
+		{
+			if (model == MISC::GET_HASH_KEY("player_zero"))
+				return 0;
+			if (model == MISC::GET_HASH_KEY("player_one"))
+				return 1;
+			if (model == MISC::GET_HASH_KEY("player_two"))
+				return 2;
+			return -1;
+		}
 
+		int64_t GetGlobal(uint32_t index)
+		{
+			const int64_t* g = ml::scripts::Global(index);
+			return g ? static_cast<int32_t>(*g) : -1;
+		}
 		void SetGlobal(uint32_t index, int64_t value)
 		{
 			if (int64_t* g = ml::scripts::Global(index))
@@ -95,6 +138,34 @@ namespace police::officer
 				STREAMING::STOP_PLAYER_SWITCH();
 			return changed;
 		}
+
+		void Fade(bool out)
+		{
+			if (out)
+			{
+				CAMERA::DO_SCREEN_FADE_OUT(500);
+				for (const uint64_t end = ml::TickMs() + 3000; ml::TickMs() < end && !CAMERA::IS_SCREEN_FADED_OUT();)
+					ml::Wait(0);
+			}
+			else
+				CAMERA::DO_SCREEN_FADE_IN(500);
+		}
+
+		std::atomic<bool> g_saved = false;
+
+		// The game's save screen (the one a safehouse bed opens; autosave may be off in the settings): the player picks
+		// a slot or backs out. Scripts, the mod's included, do not run while it is up, so the next frames are after it
+		// closed. True when the game wrote a save (the save files are looked at once a second).
+		bool SaveScreen()
+		{
+			g_saved = false;
+			MISC::SET_SAVE_MENU_ACTIVE(true);
+			ml::Wait(0); // the screen opens
+			ml::Wait(0); // ... and these frames run once it has closed
+			for (const uint64_t end = ml::TickMs() + 3000; ml::TickMs() < end && !g_saved;)
+				ml::Wait(0);
+			return g_saved;
+		}
 	}
 
 	::Ped Ped()
@@ -116,7 +187,10 @@ namespace police::officer
 	{
 		if (!Exists(g_officer))
 		{
-			g_officer = Create();
+			Vector3 at = kStation;
+			float heading = 90.0f;
+			persist::Where(at, heading);
+			g_officer = Create(at, heading);
 			if (g_headshot)
 				PED::UNREGISTER_PEDHEADSHOT(g_headshot);
 			g_headshot = 0;
@@ -125,16 +199,22 @@ namespace police::officer
 			g_headshot = PED::REGISTER_PEDHEADSHOT(g_officer);
 	}
 
+	void Forget()
+	{
+		g_officer = 0;
+		g_protagonist = 0;
+		g_headshot = 0;
+	}
+
 	void SwitchTo()
 	{
 		Ensure();
 		if (!Exists(g_officer) || IsPlayer())
 			return;
-		::Ped from = PLAYER::PLAYER_PED_ID();
+		const ::Ped from = PLAYER::PLAYER_PED_ID();
 		if (Switch(g_officer))
 		{
-			// The protagonist goes on with their day.
-			TASK::TASK_WANDER_STANDARD(from, 10.0f, 10);
+			KeepProtagonist(from);
 			ml::Log("switched to the officer from protagonist {:08X}", ENTITY::GET_ENTITY_MODEL(from));
 		}
 	}
@@ -144,6 +224,8 @@ namespace police::officer
 		const int character = CharacterOf(slot);
 		if (character < 0 || !IsPlayer())
 			return;
+		if (Exists(g_protagonist) && CharacterOfModel(ENTITY::GET_ENTITY_MODEL(g_protagonist)) == character)
+			LetGoOfProtagonist();
 		SetGlobal(kSwitchRequest + 45, character);
 		SetGlobal(kSwitchRequest + 46, 0);
 		SetGlobal(kSwitchRequest + 44, 1);
@@ -159,6 +241,67 @@ namespace police::officer
 		for (const uint64_t end = ml::TickMs() + 60000; ml::TickMs() < end && STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS();)
 			ml::Wait(0);
 		Hold(g_officer, true);
+		// A protagonist other than the one switched to stays the mod's no longer: the game looks after them now.
+		if (Exists(g_protagonist))
+		{
+			ENTITY::SET_ENTITY_INVINCIBLE(g_protagonist, false, false);
+			ENTITY::SET_PED_AS_NO_LONGER_NEEDED(&g_protagonist);
+			g_protagonist = 0;
+		}
 		ml::Log("switched to character {}", character);
+	}
+
+	void Restore(Vector3 at, float heading)
+	{
+		Ensure();
+		if (!Exists(g_officer))
+			return;
+		const ::Ped from = PLAYER::PLAYER_PED_ID();
+		ENTITY::SET_ENTITY_COORDS_NO_OFFSET(g_officer, at.x, at.y, at.z, false, false, false);
+		ENTITY::SET_ENTITY_HEADING(g_officer, heading);
+		Hold(g_officer, false);
+		PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), g_officer, false, false);
+		KeepProtagonist(from);
+		ml::Log("restored the officer at ({:.1f}, {:.1f}, {:.1f}); protagonist {:08X} kept", at.x, at.y, at.z, ENTITY::GET_ENTITY_MODEL(from));
+	}
+
+	void NoteSaved()
+	{
+		g_saved = true;
+	}
+
+	bool SaveForOfficer()
+	{
+		if (!IsPlayer())
+		{
+			// A protagonist saves the game's own way.
+			const bool saved = SaveScreen();
+			ml::Log("save as a protagonist: saved {}", saved);
+			return saved;
+		}
+		if (!Exists(g_protagonist) || ENTITY::IS_ENTITY_DEAD(g_protagonist, false))
+		{
+			ml::Notify("無法存檔：找不到留下的主角");
+			ml::LogError("save for the officer: no protagonist to save with");
+			return false;
+		}
+		persist::Update(true);
+		Fade(true);
+		// The protagonist stands still where they are while the game saves with them as the player.
+		TASK::CLEAR_PED_TASKS_IMMEDIATELY(g_protagonist);
+		ENTITY::FREEZE_ENTITY_POSITION(g_protagonist, true);
+		Hold(g_officer, true);
+		PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), g_protagonist, false, false);
+		for (const uint64_t end = ml::TickMs() + 5000; ml::TickMs() < end && !(GetGlobal(kCurrentCharacter) >= 0 && GetGlobal(kCurrentCharacter) < 3);)
+			ml::Wait(0);
+		const int64_t character = GetGlobal(kCurrentCharacter);
+		const bool saved = SaveScreen();
+		// Back to the officer.
+		Hold(g_officer, false);
+		PLAYER::CHANGE_PLAYER_PED(PLAYER::PLAYER_ID(), g_officer, false, false);
+		KeepProtagonist(g_protagonist);
+		Fade(false);
+		ml::Log("save for the officer: saved {}, character during the save {}", saved, character);
+		return saved;
 	}
 }
