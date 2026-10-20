@@ -100,6 +100,9 @@ namespace police::suspect
 			uint64_t followedSince = 0;  // a police car with its lights on behind them since
 			bool disguised = false;      // changed their look: not recognised from a distance
 			uint64_t jackCheckAt = 0;    // next look for a vehicle to take
+			Vector3 policeKnow{};        // where the police (officer or backup) last saw them
+			uint64_t policeSawAt = 0;
+			float policeDist = 1e9f;     // how far the police who saw them last were
 			Blip blip = 0;
 			Blip area = 0;               // last known area while not seen
 			int id = 0;
@@ -379,6 +382,17 @@ namespace police::suspect
 			TASK::TASK_VEHICLE_DRIVE_TO_COORD(s.ped, s.car, at.x, at.y, at.z, 6.0f, 0, ENTITY::GET_ENTITY_MODEL(s.car), 786603, 2.0f, 0.0f);
 		}
 
+		// Any of the police (the officer or the backup) has them in sight now.
+		bool SeenByPolice(const Suspect& s)
+		{
+			return Now() - s.policeSawAt < 800;
+		}
+		// The nearest police (the officer, or backup officers within 120 m).
+		float PoliceDistance(const Suspect& s)
+		{
+			return units::Near(ENTITY::GET_ENTITY_COORDS(s.ped, true), 120.0f) > 0 ? std::min(s.senses.distance, s.policeDist) : s.senses.distance;
+		}
+
 		// The officer recognises them: always unless they changed their look, then only close up.
 		bool Recognised(const Suspect& s)
 		{
@@ -617,6 +631,12 @@ namespace police::suspect
 					s.heldSince = 0;
 			}
 			Breathe(s, now);
+			if (Recognised(s))
+			{
+				s.policeKnow = At(s);
+				s.policeSawAt = now;
+				s.policeDist = s.senses.distance;
+			}
 			UpdateBlips(s);
 			const ai::Senses& se = s.senses;
 			switch (s.state)
@@ -652,7 +672,7 @@ namespace police::suspect
 			{
 				const Vector3 me = At(s);
 				// Out of the officer's sight for a while and far enough: hide (novices keep running a while longer).
-				if (!se.visible)
+				if (!se.visible && !SeenByPolice(s))
 				{
 					if (!s.unseenSince)
 						s.unseenSince = now;
@@ -660,7 +680,7 @@ namespace police::suspect
 				else
 					s.unseenSince = 0;
 				const uint64_t settle = s.profile.skill == ai::Skill::Novice ? 5000 : 1500;
-				if (s.unseenSince && now - s.unseenSince > settle && se.distance > 20.0f)
+				if (s.unseenSince && now - s.unseenSince > settle && PoliceDistance(s) > 20.0f)
 				{
 					if (PlanHide(s))
 					{
@@ -717,7 +737,8 @@ namespace police::suspect
 				    Random() < (s.profile.skill == ai::Skill::Veteran ? 0.8f : 0.4f) * 0.05f) // checked every frame: within a few seconds
 					ChangeLook(s);
 				// Found: run again, or give up when the officer is right there (close by, a hedge or fence does not hide them).
-				if ((se.visible && se.distance < (s.disguised ? 6.0f : 18.0f)) || se.distance < 5.0f)
+				if ((se.visible && se.distance < (s.disguised ? 6.0f : 18.0f)) || se.distance < 5.0f ||
+				    (SeenByPolice(s) && s.policeDist < (s.disguised ? 6.0f : 18.0f)))
 				{
 					PED::SET_PED_STEALTH_MOVEMENT(s.ped, false, "DEFAULT_ACTION");
 					const State choice = se.distance < 6.0f ? Decide(s) : State::Flee;
@@ -815,7 +836,7 @@ namespace police::suspect
 					break;
 				}
 				const Vector3 me = At(s);
-				if (!se.visible)
+				if (!se.visible && !SeenByPolice(s))
 				{
 					if (!s.unseenSince)
 						s.unseenSince = now;
@@ -842,7 +863,7 @@ namespace police::suspect
 				}
 				// Lost the officer: ditch the car somewhere and walk (novices drive on).
 				const uint64_t lostAfter = s.profile.skill == ai::Skill::Veteran ? 6000 : 12000;
-				if (s.unseenSince && now - s.unseenSince > lostAfter && se.distance > 120.0f)
+				if (s.unseenSince && now - s.unseenSince > lostAfter && PoliceDistance(s) > 120.0f)
 				{
 					if (s.profile.skill == ai::Skill::Novice)
 					{
@@ -979,6 +1000,60 @@ namespace police::suspect
 		ml::Log("suspect {}: driver spawned at ({:.0f}, {:.0f}), skill {} nerve {:.2f} hostility {:.2f} guilt {:.2f} armed {}", s.id, node.x, node.y,
 		    static_cast<int>(profile.skill), profile.nerve, profile.hostility, profile.guilt, profile.armed);
 		return s.id;
+	}
+
+	bool Pursued(Target& out)
+	{
+		for (Suspect& s : g_suspects)
+		{
+			if (s.state == State::Unaware || s.state == State::Cruise || s.state == State::Gone || !ENTITY::DOES_ENTITY_EXIST(s.ped))
+				continue;
+			out.ped = s.ped;
+			out.car = Driving(s) ? s.car : 0;
+			switch (s.state)
+			{
+			case State::Evade:
+			case State::Jack:
+			case State::Ditch:
+				out.mode = Target::Mode::Vehicle;
+				break;
+			case State::Resist:
+			case State::Shoot:
+				out.mode = Target::Mode::Armed;
+				break;
+			case State::Comply:
+			case State::PullOver:
+			case State::Pulled:
+				out.mode = Target::Mode::Stopped;
+				break;
+			case State::Stall:
+				// Standing there arguing (or driving on): covered on foot, followed in a car.
+				out.mode = out.car ? Target::Mode::Vehicle : Target::Mode::Stopped;
+				break;
+			default:
+				out.mode = out.car ? Target::Mode::Vehicle : Target::Mode::Foot;
+				break;
+			}
+			out.known = Now() - s.policeSawAt < 4000; // a moment out of view is not lost yet
+			out.lastKnown = s.policeKnow;
+			out.heading = s.goal;
+			return true;
+		}
+		return false;
+	}
+
+	void Spotted(::Ped by)
+	{
+		for (Suspect& s : g_suspects)
+			if (ENTITY::DOES_ENTITY_EXIST(s.ped))
+			{
+				const float d = ai::Distance(At(s), ENTITY::GET_ENTITY_COORDS(by, true));
+				if (s.disguised && d >= 10.0f)
+					continue;
+				s.policeKnow = At(s);
+				s.policeSawAt = Now();
+				s.policeDist = d;
+			}
 	}
 
 	size_t Count()

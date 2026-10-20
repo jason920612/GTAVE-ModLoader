@@ -1,8 +1,17 @@
 // Other police on the officer's side and the police menu (F9, user's list): backup units that drive in with sirens
 // and then follow the officer, the patrol car brought to the officer by a colleague, and clearing the scene (the
 // backup goes back to patrol). Dispatch (accepting or ignoring calls) waits for the callouts.
+//
+// The backup in a pursuit (user's design: the game's police behaving like police): the mod decides for them as for
+// the suspects (ai::TakeControl). A suspect getting away by road is followed at a distance, lights and siren, without
+// ramming; when the pursuit has two units, the one further behind drives ahead on the suspect's route and blocks the
+// road there (stopped across it, lights on). On foot they run the suspect down without shooting. They fire only at a
+// suspect who fights or shoots. Complying suspects are covered (weapon out, at a distance) for the officer to deal
+// with. When nobody sees the suspect any more, they search where the suspect was last seen. What any of them sees,
+// all of them know (the radio).
 #include "police.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -15,7 +24,32 @@ namespace police::units
 			Coming,  // driving in
 			OnScene, // out of the car, following the officer
 			Leaving, // back to the car, then away
+			Pursuit, // after a suspect (see above)
 		};
+		enum class Role
+		{
+			None,
+			Follow,   // after the suspect's car
+			Block,    // a roadblock ahead of it
+			OnFoot,   // after them on foot
+			Engage,   // they fight or shoot
+			Cover,    // they comply
+			Search,   // nobody sees them
+		};
+		const char* RoleName(Role r)
+		{
+			switch (r)
+			{
+			case Role::None: return "none";
+			case Role::Follow: return "follow";
+			case Role::Block: return "block";
+			case Role::OnFoot: return "on foot";
+			case Role::Engage: return "engage";
+			case Role::Cover: return "cover";
+			case Role::Search: return "search";
+			}
+			return "?";
+		}
 		struct Unit
 		{
 			Vehicle car = 0;
@@ -25,7 +59,11 @@ namespace police::units
 			uint64_t since = 0;    // when the state began
 			uint64_t nextTask = 0; // when the driver's route is renewed
 			Vector3 target{};      // where they are driving to
+			Vector3 block{};       // the roadblock's place
+			Role role = Role::None;
+			int id = 0;
 		};
+		int g_nextUnit = 1;
 		std::vector<Unit> g_units;
 		constexpr size_t kMaxUnits = 2;
 
@@ -98,6 +136,8 @@ namespace police::units
 				return 0;
 			ENTITY::SET_ENTITY_AS_MISSION_ENTITY(p, true, true);
 			PED::SET_PED_RANDOM_COMPONENT_VARIATION(p, 0);
+			PED::SET_PED_RELATIONSHIP_GROUP_HASH(p, MISC::GET_HASH_KEY("COP"));
+			ai::TakeControl(p);
 			WEAPON::GIVE_WEAPON_TO_PED(p, MISC::GET_HASH_KEY("WEAPON_PISTOL"), 200, false, true);
 			PED::SET_PED_ARMOUR(p, 50);
 			PED::SET_PED_KEEP_TASK(p, true);
@@ -116,6 +156,7 @@ namespace police::units
 			for (::Ped& p : u.crew)
 				if (Exists(p))
 				{
+					ai::Release(p);
 					PED::REMOVE_PED_FROM_GROUP(p);
 					ENTITY::SET_PED_AS_NO_LONGER_NEEDED(&p);
 				}
@@ -173,6 +214,8 @@ namespace police::units
 			}
 			case State::OnScene:
 				break;
+			case State::Pursuit:
+				break; // see Pursue
 			case State::Leaving:
 			{
 				bool aboard = Exists(u.car);
@@ -223,6 +266,238 @@ namespace police::units
 				}
 			if (Exists(u.car))
 				lights::Set(u.car, 0);
+		}
+
+		bool InCar(const Unit& u, ::Ped p)
+		{
+			return Exists(u.car) && PED::IS_PED_IN_VEHICLE(p, u.car, false);
+		}
+
+		void Board(Unit& u)
+		{
+			int seat = -1;
+			for (::Ped p : u.crew)
+			{
+				if (Alive(p) && !PED::IS_PED_IN_VEHICLE(p, u.car, true))
+					TASK::TASK_ENTER_VEHICLE(p, u.car, 10000, seat, 2.0f, 1, nullptr);
+				++seat;
+			}
+		}
+
+		void Unboard(Unit& u)
+		{
+			for (::Ped p : u.crew)
+				if (Alive(p) && InCar(u, p))
+					TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
+		}
+
+		// The unit in a pursuit: its role from what the suspect does, re-given when it changes (and the driver's
+		// task renewed every few seconds).
+		void Pursue(Unit& u, const suspect::Target& t, Role want)
+		{
+			const uint64_t now = ml::TickMs();
+			const bool changed = want != u.role;
+			if (changed)
+			{
+				ml::Log("units: unit {} {} -> {}", u.id, RoleName(u.role), RoleName(want));
+				u.role = want;
+				u.nextTask = 0;
+				for (::Ped p : u.crew)
+					if (Alive(p))
+						PED::REMOVE_PED_FROM_GROUP(p);
+			}
+			if (now < u.nextTask)
+				return;
+			u.nextTask = now + 2500;
+			switch (want)
+			{
+			case Role::Follow:
+			{
+				lights::Set(u.car, 3);
+				bool aboard = true;
+				for (::Ped p : u.crew)
+					if (Alive(p) && !InCar(u, p))
+						aboard = false;
+				if (!aboard)
+				{
+					Board(u);
+					break;
+				}
+				const ::Ped wheel = VEHICLE::GET_PED_IN_VEHICLE_SEAT(u.car, -1, false);
+				if (Alive(wheel) && Exists(t.car))
+					// Follow (mission 7): keeps 15 m back, no ramming.
+					TASK::TASK_VEHICLE_MISSION_PED_TARGET(wheel, u.car, t.ped, 7, 45.0f, kEmergency, 15.0f, 10.0f, true);
+				break;
+			}
+			case Role::Block:
+			{
+				// Ahead on the suspect's route: the road node there, the car stopped across it.
+				if (changed || Distance(u.block, t.heading) > 60.0f)
+				{
+					Vector3 node{};
+					float heading = 0;
+					int lanes = 0;
+					if (PATH::GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING(t.heading.x, t.heading.y, t.heading.z, 1, &node, &heading, &lanes, 1, 3.0f, 0.0f))
+						u.block = node;
+				}
+				const ::Ped wheel = Exists(u.car) ? VEHICLE::GET_PED_IN_VEHICLE_SEAT(u.car, -1, false) : 0;
+				if (!Alive(wheel))
+				{
+					Board(u);
+					break;
+				}
+				const Vector3 at = ENTITY::GET_ENTITY_COORDS(u.car, true);
+				if (Distance(at, u.block) < 12.0f)
+				{
+					VEHICLE::BRING_VEHICLE_TO_HALT(u.car, 3.0f, 1, false);
+					lights::Set(u.car, 2);
+					// Out, behind the car.
+					Unboard(u);
+				}
+				else
+				{
+					lights::Set(u.car, 3);
+					TASK::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(wheel, u.car, u.block.x, u.block.y, u.block.z, 45.0f, kEmergency, 6.0f);
+				}
+				break;
+			}
+			case Role::OnFoot:
+				if (Exists(u.car))
+					lights::Set(u.car, 2);
+				for (::Ped p : u.crew)
+					if (Alive(p))
+					{
+						if (InCar(u, p))
+						{
+							// Drive up close first when far.
+							if (p == VEHICLE::GET_PED_IN_VEHICLE_SEAT(u.car, -1, false) &&
+							    Distance(ENTITY::GET_ENTITY_COORDS(u.car, true), ENTITY::GET_ENTITY_COORDS(t.ped, true)) > 40.0f)
+								TASK::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(p, u.car, t.lastKnown.x, t.lastKnown.y, t.lastKnown.z, 30.0f, kEmergency, 15.0f);
+							else
+								TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
+						}
+						else
+							TASK::TASK_GO_TO_ENTITY(p, t.ped, -1, 1.2f, 3.0f, 0.0f, 0); // run them down, no shooting
+					}
+				break;
+			case Role::Engage:
+				for (::Ped p : u.crew)
+					if (Alive(p))
+					{
+						if (InCar(u, p))
+							TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
+						else
+							TASK::TASK_COMBAT_PED(p, t.ped, 0, 16);
+					}
+				break;
+			case Role::Cover:
+				for (::Ped p : u.crew)
+					if (Alive(p))
+					{
+						if (InCar(u, p))
+						{
+							if (Distance(ENTITY::GET_ENTITY_COORDS(p, true), ENTITY::GET_ENTITY_COORDS(t.ped, true)) < 40.0f)
+								TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
+						}
+						else
+						{
+							// Weapon on them from a few metres.
+							const Vector3 at = ENTITY::GET_ENTITY_COORDS(t.ped, true);
+							if (Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) > 7.0f)
+								TASK::TASK_GO_TO_ENTITY_WHILE_AIMING_AT_ENTITY(p, t.ped, t.ped, 1.0f, false, 5.0f, 2.0f, false, false, 0);
+							else
+								TASK::TASK_AIM_GUN_AT_ENTITY(p, t.ped, -1, false);
+						}
+					}
+				break;
+			case Role::Search:
+				for (::Ped p : u.crew)
+					if (Alive(p))
+					{
+						if (InCar(u, p))
+						{
+							if (p == VEHICLE::GET_PED_IN_VEHICLE_SEAT(u.car, -1, false))
+							{
+								if (Distance(ENTITY::GET_ENTITY_COORDS(u.car, true), t.lastKnown) > 30.0f)
+									TASK::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(p, u.car, t.lastKnown.x, t.lastKnown.y, t.lastKnown.z, 20.0f, kNormal | 512, 15.0f);
+								else
+									Unboard(u);
+							}
+						}
+						else
+							TASK::TASK_WANDER_IN_AREA(p, t.lastKnown.x, t.lastKnown.y, t.lastKnown.z, 40.0f, 2.0f, 2.0f);
+					}
+				break;
+			case Role::None:
+				break;
+			}
+		}
+
+		// The units in a pursuit: roles for each, and what they see goes on the radio.
+		void TickPursuit()
+		{
+			suspect::Target t;
+			const bool active = suspect::Pursued(t);
+			std::vector<Unit*> engaged;
+			for (Unit& u : g_units)
+				if (u.state == State::OnScene || u.state == State::Pursuit || (u.state == State::Coming && active))
+					engaged.push_back(&u);
+			if (!active)
+			{
+				// Over: back with the officer.
+				for (Unit* u : engaged)
+					if (u->state == State::Pursuit)
+					{
+						u->state = State::OnScene;
+						u->role = Role::None;
+						for (::Ped p : u->crew)
+							if (Alive(p))
+							{
+								TASK::CLEAR_PED_TASKS(p);
+								PED::SET_PED_AS_GROUP_MEMBER(p, PLAYER::GET_PLAYER_GROUP(PLAYER::PLAYER_ID()));
+							}
+						ml::Log("units: unit {} back with the officer", u->id);
+					}
+				return;
+			}
+			// The radio: any of them seeing the suspect.
+			for (Unit* u : engaged)
+				for (::Ped p : u->crew)
+					if (Alive(p) &&
+					    ai::Distance(ENTITY::GET_ENTITY_COORDS(p, true), ENTITY::GET_ENTITY_COORDS(t.ped, true)) < (InCar(*u, p) ? 150.0f : 60.0f) &&
+					    ENTITY::HAS_ENTITY_CLEAR_LOS_TO_ENTITY(p, t.ped, 17))
+						suspect::Spotted(p);
+			suspect::Pursued(t); // with what the radio told
+			// The unit nearest the suspect follows; with two, the other blocks the road ahead. Roles stay put unless the
+			// other unit is clearly (50 m) nearer.
+			if (engaged.size() >= 2 && Exists(engaged[0]->car) && Exists(engaged[1]->car))
+			{
+				const Vector3 at = ENTITY::GET_ENTITY_COORDS(t.ped, true);
+				const float d0 = Distance(ENTITY::GET_ENTITY_COORDS(engaged[0]->car, true), at);
+				const float d1 = Distance(ENTITY::GET_ENTITY_COORDS(engaged[1]->car, true), at);
+				const bool firstFollows = engaged[0]->role == Role::Follow || engaged[1]->role == Role::Block;
+				if ((firstFollows && d0 > d1 + 50.0f) || (!firstFollows && d1 <= d0 + 50.0f))
+					std::swap(engaged[0], engaged[1]);
+			}
+			for (size_t i = 0; i < engaged.size(); ++i)
+			{
+				Unit& u = *engaged[i];
+				if (!Exists(u.car))
+					continue;
+				u.state = State::Pursuit;
+				Role want = Role::Search;
+				if (t.mode == suspect::Target::Mode::Armed)
+					want = Role::Engage;
+				else if (t.mode == suspect::Target::Mode::Stopped)
+					want = Role::Cover;
+				else if (!t.known)
+					want = Role::Search;
+				else if (t.mode == suspect::Target::Mode::Vehicle)
+					want = i == 1 ? Role::Block : Role::Follow;
+				else
+					want = Role::OnFoot;
+				Pursue(u, t, want);
+			}
 		}
 
 		void TickValet()
@@ -302,6 +577,7 @@ namespace police::units
 		HUD::END_TEXT_COMMAND_SET_BLIP_NAME(u.blip);
 		u.since = ml::TickMs();
 		u.target = PlayerAt();
+		u.id = g_nextUnit++;
 		DriveTo(u.crew[0], u.car, u.target, kEmergency, 15.0f);
 		u.nextTask = u.since + 3000;
 		g_units.push_back(u);
@@ -396,13 +672,25 @@ namespace police::units
 		for (size_t i = 0; i < g_units.size();)
 		{
 			bool done = false;
-			TickUnit(g_units[i], done);
+			if (g_units[i].state != State::Pursuit)
+				TickUnit(g_units[i], done);
 			if (done)
 				g_units.erase(g_units.begin() + static_cast<std::ptrdiff_t>(i));
 			else
 				++i;
 		}
+		TickPursuit();
 		TickValet();
+	}
+
+	int Near(const Vector3& at, float radius)
+	{
+		int n = 0;
+		for (const Unit& u : g_units)
+			for (::Ped p : u.crew)
+				if (Alive(p) && Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) < radius)
+					++n;
+		return n;
 	}
 
 	menu::List Menu()

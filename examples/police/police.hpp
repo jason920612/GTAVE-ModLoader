@@ -154,6 +154,8 @@ namespace police::units
 	void Clear();
 	// Backup units coming or on scene.
 	size_t Backup();
+	// Backup officers within `radius` of a place (how many police a suspect has on them).
+	int Near(const Vector3& at, float radius);
 	// The world was reset.
 	void Forget();
 	// Every frame.
@@ -238,6 +240,26 @@ namespace police::suspect
 	// A suspect driving a car on the road nearest to `around` (unaware until a police car with its lights on is behind).
 	int SpawnDriver(const Vector3& around, const ai::Profile& profile);
 	size_t Count();
+	// What the police know of the suspect being pursued (the first one active), for the backup.
+	struct Target
+	{
+		enum class Mode
+		{
+			Foot,    // running or hiding on foot
+			Vehicle, // getting away by road
+			Armed,   // fighting or shooting
+			Stopped, // complying, pulled over
+		};
+		Vector3 lastKnown{}; // where they were last seen by the police
+		Vector3 heading{};   // where they are going (their route), when known
+		::Ped ped = 0;
+		Vehicle car = 0;
+		Mode mode = Mode::Foot;
+		bool known = false;  // someone of the police sees them now
+	};
+	bool Pursued(Target& out);
+	// A police officer (backup) sees the suspect: tells the others (the suspect's last known place).
+	void Spotted(::Ped by);
 	// Removes them all.
 	void Clear();
 	// The world was reset.

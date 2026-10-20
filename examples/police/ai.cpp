@@ -94,7 +94,7 @@ namespace police::ai
 		s.gunDrawn = weapon != kUnarmed && WEAPON::IS_PED_ARMED(player, 4); // a firearm
 		s.aimedAt = s.seesPlayer && (PLAYER::IS_PLAYER_FREE_AIMING_AT_ENTITY(id, ped) || PLAYER::IS_PLAYER_TARGETTING_ENTITY(id, ped));
 		// The officer's side: the backup and the siren of a police car nearby.
-		s.copsNear = static_cast<int>(units::Backup());
+		s.copsNear = units::Near(me, 25.0f);
 		s.siren = false;
 		if (PED::IS_PED_IN_ANY_VEHICLE(player, false))
 		{

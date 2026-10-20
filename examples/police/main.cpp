@@ -30,6 +30,8 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		test.Action("生成會逃跑的老手（高罪責）", [] { g_testSpawn = 3; });
 		test.Action("生成開車的嫌犯（前方道路）", [] { g_testSpawn = 4; });
 		test.Action("生成開車的老手嫌犯（高罪責）", [] { g_testSpawn = 5; });
+		test.Action("生成持槍的兇嫌", [] { g_testSpawn = 6; });
+		test.Action("生成會配合的路人", [] { g_testSpawn = 7; });
 		test.Action("清除測試嫌犯", [] { g_testSpawn = 9; });
 	}
 	police::lights::BuildKeys();
@@ -61,7 +63,11 @@ extern "C" __declspec(dllexport) void MLMain()
 				auto p = police::suspect::RandomProfile(t == 0 ? police::ai::Skill::Novice : t == 1 || t == 4 ? police::ai::Skill::Average : police::ai::Skill::Veteran);
 				if (t == 3 || t == 5)
 					p.guilt = 0.95f, p.nerve = 0.8f, p.hostility = 0.1f, p.armed = 0;
-				if (t >= 4)
+				if (t == 6)
+					p.guilt = 0.9f, p.nerve = 0.9f, p.hostility = 0.95f, p.armed = 2, p.impairment = police::ai::Impairment::Sober;
+				if (t == 7)
+					p.guilt = 0.1f, p.nerve = 0.2f, p.hostility = 0.05f, p.armed = 0, p.impairment = police::ai::Impairment::Sober;
+				if (t == 4 || t == 5)
 					police::suspect::SpawnDriver(ENTITY::GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(me, 0.0f, 35.0f, 0.0f), p);
 				else
 					police::suspect::Spawn(at, ENTITY::GET_ENTITY_HEADING(me) + 180.0f, p);
