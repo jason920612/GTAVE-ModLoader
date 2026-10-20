@@ -16,6 +16,11 @@
 // the officer's sight, at night they drive with the lights off; once the officer is lost, those who know better ditch
 // the car somewhere quiet and walk away (the car would give them away). A wrecked or stuck car is left on foot. Those
 // set on shooting stop and get out to do it.
+//
+// Changing what the officer is looking for: running on foot with a lead, those who dare take a car (the driver pulled
+// out if there is one) and go on by road; hiding, those who know better change their look (a different top, the hat
+// off). A suspect who has changed looks like anyone else from a distance: the officer has to come close to recognise
+// them, and they keep walking calmly instead of running when the officer passes by.
 #include "police.hpp"
 
 #include <algorithm>
@@ -45,6 +50,7 @@ namespace police::suspect
 			Pulled,  // stopped at the roadside
 			Evade,   // getting away by road
 			Ditch,   // stopping to leave the vehicle
+			Jack,    // taking a vehicle
 			Gone,    // escaped or dead: to be removed
 		};
 		const char* Name(State s)
@@ -65,6 +71,7 @@ namespace police::suspect
 			case State::Pulled: return "pulled";
 			case State::Evade: return "evade";
 			case State::Ditch: return "ditch";
+			case State::Jack: return "jack";
 			case State::Gone: return "gone";
 			}
 			return "?";
@@ -91,6 +98,8 @@ namespace police::suspect
 			bool ambush = false;         // stopping to get out and shoot
 			uint64_t stuckSince = 0;     // the vehicle not moving while it should
 			uint64_t followedSince = 0;  // a police car with its lights on behind them since
+			bool disguised = false;      // changed their look: not recognised from a distance
+			uint64_t jackCheckAt = 0;    // next look for a vehicle to take
 			Blip blip = 0;
 			Blip area = 0;               // last known area while not seen
 			int id = 0;
@@ -370,6 +379,59 @@ namespace police::suspect
 			TASK::TASK_VEHICLE_DRIVE_TO_COORD(s.ped, s.car, at.x, at.y, at.z, 6.0f, 0, ENTITY::GET_ENTITY_MODEL(s.car), 786603, 2.0f, 0.0f);
 		}
 
+		// The officer recognises them: always unless they changed their look, then only close up.
+		bool Recognised(const Suspect& s)
+		{
+			return s.senses.visible && (!s.disguised || s.senses.distance < 10.0f);
+		}
+
+		// A different top and no hat (what the model has to offer).
+		void ChangeLook(Suspect& s)
+		{
+			for (const int slot : {3, 11}) // upper body (ambient models), top (freemode)
+			{
+				const int drawables = PED::GET_NUMBER_OF_PED_DRAWABLE_VARIATIONS(s.ped, slot);
+				const int now = PED::GET_PED_DRAWABLE_VARIATION(s.ped, slot);
+				if (drawables > 1)
+				{
+					int d = MISC::GET_RANDOM_INT_IN_RANGE(0, drawables - 1);
+					if (d >= now)
+						++d;
+					PED::SET_PED_COMPONENT_VARIATION(s.ped, slot, d, 0, 0);
+				}
+				else if (const int textures = PED::GET_NUMBER_OF_PED_TEXTURE_VARIATIONS(s.ped, slot, now); textures > 1)
+					PED::SET_PED_COMPONENT_VARIATION(s.ped, slot, now, (PED::GET_PED_TEXTURE_VARIATION(s.ped, slot) + 1) % textures, 0);
+			}
+			PED::CLEAR_ALL_PED_PROPS(s.ped, 0);
+			s.disguised = true;
+			ml::Log("suspect {}: changed their look", s.id);
+		}
+
+		// A vehicle within reach to take: on wheels, not the police's, closer to them than to the officer.
+		Vehicle VehicleToTake(const Suspect& s)
+		{
+			int64_t buf[1 + 16] = {16};
+			const int n = PED::GET_PED_NEARBY_VEHICLES(s.ped, reinterpret_cast<Any*>(buf));
+			const Vector3 me = At(s);
+			Vehicle best = 0;
+			float bestD = 18.0f;
+			for (int i = 0; i < n && i < 16; ++i)
+			{
+				const Vehicle v = static_cast<Vehicle>(buf[1 + i]);
+				if (!v || !ENTITY::DOES_ENTITY_EXIST(v) || !VEHICLE::IS_VEHICLE_DRIVEABLE(v, false))
+					continue;
+				const Hash model = ENTITY::GET_ENTITY_MODEL(v);
+				const int cls = VEHICLE::GET_VEHICLE_CLASS(v);
+				if (cls == 18 || cls == 14 || cls == 15 || cls == 16 || cls == 21 || cls == 13 || !(VEHICLE::IS_THIS_MODEL_A_CAR(model) || VEHICLE::IS_THIS_MODEL_A_BIKE(model)))
+					continue; // police, boats, helicopters, planes, trains, bicycles
+				const Vector3 at = ENTITY::GET_ENTITY_COORDS(v, true);
+				const float d = Distance(me, at);
+				if (d < bestD && Distance(at, s.senses.playerAt) > d + 8.0f && v != s.car)
+					best = v, bestD = d;
+			}
+			return best;
+		}
+
 		void OnFootFrom(Suspect& s, State st, const char* why)
 		{
 			if (s.car && ENTITY::DOES_ENTITY_EXIST(s.car))
@@ -488,7 +550,7 @@ namespace police::suspect
 
 		void UpdateBlips(Suspect& s)
 		{
-			const bool seen = s.senses.visible && s.state != State::Gone;
+			const bool seen = Recognised(s) && s.state != State::Gone;
 			if (seen && !s.blip)
 			{
 				s.blip = HUD::ADD_BLIP_FOR_ENTITY(s.ped);
@@ -618,6 +680,21 @@ namespace police::suspect
 						break;
 					}
 				}
+				// A lead and a car within reach: take it (not novices, who do not think of it; not the drunk).
+				if (now >= s.jackCheckAt && s.profile.skill != ai::Skill::Novice && s.profile.impairment != ai::Impairment::Drunk && se.distance > 15.0f)
+				{
+					s.jackCheckAt = now + 1500;
+					const float dare = s.profile.nerve * (s.profile.skill == ai::Skill::Veteran ? 1.0f : 0.6f);
+					if (Random() < dare)
+						if (const Vehicle v = VehicleToTake(s))
+						{
+							s.car = v;
+							ENTITY::SET_ENTITY_AS_MISSION_ENTITY(v, true, true);
+							TASK::TASK_ENTER_VEHICLE(s.ped, v, 10000, -1, 2.0f, 8 /* takes it from whoever is in it */, nullptr);
+							Set(s, State::Jack, "a vehicle within reach");
+							break;
+						}
+				}
 				if (now >= s.planAt || Distance(me, s.goal) < 3.0f)
 				{
 					if (PlanEscape(s))
@@ -635,8 +712,12 @@ namespace police::suspect
 					PED::SET_PED_STEALTH_MOVEMENT(s.ped, true, "DEFAULT_ACTION");
 					TASK::TASK_STAND_STILL(s.ped, -1);
 				}
+				// In cover a while: those who know better change their look.
+				if (!s.disguised && now - s.since > 6000 && Distance(me, s.goal) < 1.5f && s.profile.skill != ai::Skill::Novice &&
+				    Random() < (s.profile.skill == ai::Skill::Veteran ? 0.8f : 0.4f) * 0.05f) // checked every frame: within a few seconds
+					ChangeLook(s);
 				// Found: run again, or give up when the officer is right there (close by, a hedge or fence does not hide them).
-				if ((se.visible && se.distance < 18.0f) || se.distance < 5.0f)
+				if ((se.visible && se.distance < (s.disguised ? 6.0f : 18.0f)) || se.distance < 5.0f)
 				{
 					PED::SET_PED_STEALTH_MOVEMENT(s.ped, false, "DEFAULT_ACTION");
 					const State choice = se.distance < 6.0f ? Decide(s) : State::Flee;
@@ -657,7 +738,7 @@ namespace police::suspect
 				break;
 			}
 			case State::Blend:
-				if (se.visible && se.distance < 15.0f)
+				if (se.visible && se.distance < (s.disguised ? 5.0f : 15.0f))
 				{
 					Begin(s, Decide(s));
 					break;
@@ -783,6 +864,24 @@ namespace police::suspect
 				}
 				break;
 			}
+			case State::Jack:
+				if (Driving(s))
+				{
+					// The officer was looking for another car.
+					if (PlanRoute(s))
+						Drive(s);
+					s.planAt = now + 4000;
+					s.unseenSince = 0;
+					s.disguised = true; // a different vehicle: not recognised by it from a distance
+					Set(s, State::Evade, "took a vehicle");
+				}
+				else if (now - s.since > 10000 || (se.distance < 6.0f && se.visible) || !ENTITY::DOES_ENTITY_EXIST(s.car))
+				{
+					s.car = 0;
+					s.planAt = 0;
+					Set(s, State::Flee, "could not take the vehicle");
+				}
+				break;
 			case State::Ditch:
 				if (ENTITY::GET_ENTITY_SPEED(s.car) < 1.0f || now - s.since > 6000)
 				{
