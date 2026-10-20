@@ -235,6 +235,8 @@ namespace police::suspect
 	ai::Profile RandomProfile(ai::Skill skill);
 	// A suspect at a place (unaware until the officer comes up to them); returns its id.
 	int Spawn(const Vector3& at, float heading, const ai::Profile& profile);
+	// A suspect driving a car on the road nearest to `around` (unaware until a police car with its lights on is behind).
+	int SpawnDriver(const Vector3& around, const ai::Profile& profile);
 	size_t Count();
 	// Removes them all.
 	void Clear();
