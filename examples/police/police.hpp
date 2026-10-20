@@ -175,6 +175,75 @@ namespace police::lights
 	void Tick();
 }
 
+namespace police::ai
+{
+	enum class Skill
+	{
+		Novice,
+		Average,
+		Veteran,
+	};
+	enum class Impairment
+	{
+		Sober,
+		Drunk,
+		Substance, // under a controlled substance (graded 1-4, never named)
+	};
+	// Who a ped is (0..1 values).
+	struct Profile
+	{
+		float nerve = 0.5f;     // dares to run or fight
+		float hostility = 0.3f; // inclined to violence
+		float guilt = 0.5f;     // what they have to lose (warrants, what they carry)
+		int armed = 0;          // 0 none, 1 knife/blunt, 2 handgun, 3 more
+		Impairment impairment = Impairment::Sober;
+		int substanceGrade = 0; // controlled substance grade carried or taken, 0 none
+		Skill skill = Skill::Average;
+	};
+	// What a ped perceives of the officer (the player).
+	struct Senses
+	{
+		Vector3 playerAt{};
+		Vector3 lastSeen{}; // where the officer was last seen
+		uint64_t lastSeenAt = 0;
+		float distance = 1e9f;
+		bool visible = false;    // nothing between them and the officer (either could see the other)
+		bool seesPlayer = false; // ... and the officer is in front of them
+		bool aimedAt = false;  // the officer points a gun at them
+		bool gunDrawn = false; // a firearm in hand
+		int copsNear = 0;      // backup on scene
+		bool siren = false;    // a police car with lights or siren close by
+		bool hurt = false;
+	};
+	float Distance(const Vector3& a, const Vector3& b);
+	float Random();
+	Vector3 Eye(::Ped ped);
+	// Nothing of the map or objects between two points.
+	bool Clear(const Vector3& from, const Vector3& to, Entity ignore);
+	// A point on the navmesh near (x, y, z) a ped can stand on.
+	bool OnFoot(float x, float y, float z, Vector3& out);
+	// The mod decides for this ped: the game's own reactions to events are blocked.
+	void TakeControl(::Ped ped);
+	void Release(::Ped ped);
+	void Sense(::Ped ped, Senses& s);
+	// How much the officer's presence weighs on them (0 none, ~1 strong).
+	float Pressure(const Senses& s);
+}
+
+namespace police::suspect
+{
+	ai::Profile RandomProfile(ai::Skill skill);
+	// A suspect at a place (unaware until the officer comes up to them); returns its id.
+	int Spawn(const Vector3& at, float heading, const ai::Profile& profile);
+	size_t Count();
+	// Removes them all.
+	void Clear();
+	// The world was reset.
+	void Forget();
+	// Every frame.
+	void Tick();
+}
+
 namespace police::look
 {
 	// The officer's model (freemode male or female).

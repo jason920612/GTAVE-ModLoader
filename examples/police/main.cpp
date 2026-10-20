@@ -10,6 +10,7 @@ namespace
 {
 	std::atomic<bool> g_saveRequested = false;
 	std::atomic<bool> g_menuRequested = false;
+	std::atomic<int> g_testSpawn = -1; // development: a test suspect of this skill (or 9 = clear)
 }
 
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
@@ -20,6 +21,15 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
 	police::look::BuildMenu();
+	{
+		// Development: suspects to try the AI on.
+		const ml::Page test = ml::Root().Sub("開發測試（嫌犯 AI）");
+		test.Action("生成新手嫌犯（前方 12 公尺）", [] { g_testSpawn = 0; });
+		test.Action("生成普通嫌犯", [] { g_testSpawn = 1; });
+		test.Action("生成老手嫌犯", [] { g_testSpawn = 2; });
+		test.Action("生成會逃跑的老手（高罪責）", [] { g_testSpawn = 3; });
+		test.Action("清除測試嫌犯", [] { g_testSpawn = 9; });
+	}
 	police::lights::BuildKeys();
 	ml::Hotkey("hkPoliceMenu", "警察選單", 0x78 /* F9 (F6-F8 are the trainer's) */, [] { g_menuRequested = true; });
 	return 1;
@@ -37,6 +47,21 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::duty::Tick();
 		police::units::Tick();
 		police::lights::Tick();
+		police::suspect::Tick();
+		if (const int t = g_testSpawn.exchange(-1); t >= 0)
+		{
+			if (t == 9)
+				police::suspect::Clear();
+			else
+			{
+				const ::Ped me = PLAYER::PLAYER_PED_ID();
+				const Vector3 at = ENTITY::GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(me, 0.0f, 12.0f, 0.0f);
+				auto p = police::suspect::RandomProfile(t == 0 ? police::ai::Skill::Novice : t == 1 ? police::ai::Skill::Average : police::ai::Skill::Veteran);
+				if (t == 3)
+					p.guilt = 0.95f, p.nerve = 0.8f, p.hostility = 0.1f, p.armed = 0;
+				police::suspect::Spawn(at, ENTITY::GET_ENTITY_HEADING(me) + 180.0f, p);
+			}
+		}
 		police::look::Tick();
 		if (g_menuRequested)
 		{
