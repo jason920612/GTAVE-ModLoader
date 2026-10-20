@@ -11,9 +11,20 @@
 #include "../debug/hangdump.hpp"
 #include "../log.hpp"
 #include "../pattern.hpp"
+#include "scripts.hpp"
 
 namespace loader::game::fixes
 {
+	void KeepOnlineVehicles()
+	{
+		constexpr uint32_t kContentCheckOff = 4521040;
+		if (int64_t* g = scripts::Global(kContentCheckOff); g && *g != 1)
+		{
+			*g = 1;
+			log::Info("fix: Online vehicles allowed in story mode (Global {} set)", kContentCheckOff);
+		}
+	}
+
 	namespace
 	{
 		// Fence wrapper: +0x10 ID3D12Fence*, +0x18 last completed value seen. Values carry flags above bit 55.

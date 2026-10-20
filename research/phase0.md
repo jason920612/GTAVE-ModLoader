@@ -1202,3 +1202,24 @@
   - 確認存在：VEHICLES_HORNS_SIREN_1、VEHICLES_HORNS_SIREN_2、VEHICLES_HORNS_POLICE_WARNING、SIRENS_AIRHORN（氣笛）、VEHICLES_HORNS_AMBULANCE_WARNING、VEHICLES_HORNS_FIRETRUCK_WARNING、RESIDENT_VEHICLES_SIREN_WAIL_01、RESIDENT_VEHICLES_SIREN_QUICK_01。
   - 沒辦法錄遊戲聲音，所以音調先叫 A/B/C（SIREN_1、SIREN_2、POLICE_WARNING），請使用者聽過後再命名。
 - 實測：三段燈光與第 1 段左右輪流閃都在畫面上確認；Q、R、氣笛的按鍵流程沒有錯誤。聲音未驗證。
+
+### 53.5 線上車在故事模式會被趕下車（2026-10-20）
+
+- 現象（使用者回報「按 Q／R 就下車」）：
+  - 故事模式中，玩家坐進線上模式專屬的車，約 1–8 秒後就會下車，什麼都不按也一樣，用 `SET_PED_INTO_VEHICLE` 直接放進去也一樣。
+  - 會：polbuffalo、polgreenwood、polgauntlet、buffalo4、jubilee。不會：遊戲原有的 police*、sheriff*。
+  - 關掉其他模組、警察模組只留測試工具，照樣發生。
+- 找法：
+  - 一個個停掉腳本來二分法找，結果不一致（main 會把腳本重新開起來，跟時間有關）。
+  - 改用 scripttrace 追蹤全部 53 個腳本的 native 呼叫，下車那一刻立即傾印，再用反組譯的呼叫位置對出 native 名稱。
+  - 過程中只有 shop_controller 呼叫了 `CLEAR_PED_TASKS_IMMEDIATELY`、`SET_ENTITY_AS_MISSION_ENTITY`、`DELETE_VEHICLE` 各一次。
+- shop_controller：
+  - `@925037` 每 10 秒，每幀檢查一項線上內容，共 516 項。
+  - 每一項 `@925156`：先用 `@933608` 查這項內容能不能用。不能用時，把參數換成車型；如果玩家坐在這種車上，而且車上沒有 MPBitset 裝飾的第 29／30 位元，就用 `CLEAR_PED_TASKS_IMMEDIATELY` 把玩家拉出來，再刪掉 500 公尺內最近的同型車。
+  - 實測刪除常常沒成功，所以車還在原地。
+  - `@933608` 在 Global 4521040 不為 0 時直接回答「可以用」。只有 shop_controller 讀這個 global（兩處）。
+- 修正（載入器，`game::fixes::KeepOnlineVehicles`，每幀、故事模式）：把 Global 4521040 設為 1。
+- 實測：
+  - 四款線上車各坐 15 秒，沒被趕下車。
+  - polbuffalo 坐 45 秒，期間按 Q／R，沒被趕下車。
+  - 重新啟動後，polgreenwood 坐 30 秒，沒被趕下車。

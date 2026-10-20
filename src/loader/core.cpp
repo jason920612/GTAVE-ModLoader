@@ -276,6 +276,8 @@ namespace loader::core
 			// Mods' native overrides are taken out in GTA Online, like the mods themselves.
 			game::scripts::ApplyNativeOverrides(!state::online);
 			if (!state::online)
+				game::fixes::KeepOnlineVehicles();
+			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)
 				mods::Tick();
