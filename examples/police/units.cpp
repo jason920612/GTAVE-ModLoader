@@ -705,9 +705,7 @@ namespace police::units
 	menu::List Menu()
 	{
 		menu::List m{"警察", {}};
-		menu::Item dispatch{"派遣", "", "目前沒有報案（報案功能開發中）"};
-		dispatch.enabled = false;
-		m.items.push_back(dispatch);
+		m.items.push_back(dispatch::MenuItem());
 		menu::Item backup{"呼叫支援", Backup() ? std::to_string(Backup()) + " 組" : "", "一組兩名警員開巡邏車過來，到場後跟著你"};
 		backup.action = CallBackup;
 		m.items.push_back(backup);

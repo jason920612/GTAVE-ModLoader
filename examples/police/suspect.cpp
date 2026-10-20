@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 namespace police::suspect
@@ -51,6 +52,9 @@ namespace police::suspect
 			Evade,   // getting away by road
 			Ditch,   // stopping to leave the vehicle
 			Jack,    // taking a vehicle
+			Cuffed,  // handcuffed, standing
+			Escort,  // walking to the patrol car, cuffed
+			Custody, // in the patrol car
 			Gone,    // escaped or dead: to be removed
 		};
 		const char* Name(State s)
@@ -72,6 +76,9 @@ namespace police::suspect
 			case State::Evade: return "evade";
 			case State::Ditch: return "ditch";
 			case State::Jack: return "jack";
+			case State::Cuffed: return "cuffed";
+			case State::Escort: return "escort";
+			case State::Custody: return "custody";
 			case State::Gone: return "gone";
 			}
 			return "?";
@@ -79,16 +86,17 @@ namespace police::suspect
 
 		struct Suspect
 		{
+			ai::Senses senses;
+			Vector3 goal{};              // where they are going
+			Vector3 policeKnow{};        // where the police (officer or backup) last saw them
 			::Ped ped = 0;
 			ai::Profile profile;
-			ai::Senses senses;
 			State state = State::Unaware;
 			State next = State::Unaware; // what the tell leads to
 			uint64_t since = 0;          // state began
 			uint64_t thinkAt = 0;        // next decision
 			uint64_t senseAt = 0;
 			uint64_t planAt = 0;         // next route (re)plan
-			Vector3 goal{};              // where they are going
 			uint64_t unseenSince = 0;    // the officer out of sight since
 			float stamina = 1.0f;        // 1 fresh, 0 spent: sprinting uses it up, walking and hiding bring it back
 			uint64_t tickAt = 0;         // last frame (for the stamina)
@@ -100,7 +108,8 @@ namespace police::suspect
 			uint64_t followedSince = 0;  // a police car with its lights on behind them since
 			bool disguised = false;      // changed their look: not recognised from a distance
 			uint64_t jackCheckAt = 0;    // next look for a vehicle to take
-			Vector3 policeKnow{};        // where the police (officer or backup) last saw them
+			std::string name;            // as on their ID
+			bool searched = false, checked = false;
 			uint64_t policeSawAt = 0;
 			float policeDist = 1e9f;     // how far the police who saw them last were
 			Blip blip = 0;
@@ -917,9 +926,43 @@ namespace police::suspect
 					Set(s, State::Blend, "ditched the car");
 				}
 				break;
+			case State::Cuffed:
+				// Hands behind the back; the officer leads (they follow a step behind when the officer walks off).
+				STREAMING::REQUEST_ANIM_DICT("mp_arresting"); // kept loaded while someone is cuffed
+				if (STREAMING::HAS_ANIM_DICT_LOADED("mp_arresting") && !ENTITY::IS_ENTITY_PLAYING_ANIM(s.ped, "mp_arresting", "idle", 3))
+					TASK::TASK_PLAY_ANIM(s.ped, "mp_arresting", "idle", 8.0f, -8.0f, -1, 49, 0.0f, false, false, false);
+				if (se.distance > 4.0f && se.distance < 30.0f && now >= s.planAt)
+				{
+					s.planAt = now + 1500;
+					TASK::TASK_GO_TO_ENTITY(s.ped, PLAYER::PLAYER_PED_ID(), -1, 2.0f, 1.0f, 0.0f, 0);
+				}
+				break;
+			case State::Escort:
+				if (PED::IS_PED_IN_VEHICLE(s.ped, s.car, false))
+				{
+					Set(s, State::Custody, "in the patrol car");
+					ml::Notify("嫌犯已押上警車");
+				}
+				else if (now - s.since > 20000)
+				{
+					PED::SET_PED_INTO_VEHICLE(s.ped, s.car, 1); // could not get there: put in
+				}
+				break;
+			case State::Custody:
+				break;
 			case State::Gone:
 				break;
 			}
+		}
+	}
+
+	namespace
+	{
+		std::string RandomName()
+		{
+			static const char* const first[] = {"Marcus", "Tyrone", "Kevin", "Luis", "Derek", "Brandon", "Carlos", "Jamal", "Travis", "Andre"};
+			static const char* const last[] = {"Johnson", "Ramirez", "Walker", "Nguyen", "Brooks", "Morales", "Carter", "Hughes", "Reyes", "Bennett"};
+			return std::string(first[MISC::GET_RANDOM_INT_IN_RANGE(0, 10)]) + " " + last[MISC::GET_RANDOM_INT_IN_RANGE(0, 10)];
 		}
 	}
 
@@ -955,6 +998,7 @@ namespace police::suspect
 		s.id = g_nextId++;
 		s.since = Now();
 		TASK::TASK_START_SCENARIO_IN_PLACE(s.ped, "WORLD_HUMAN_STAND_MOBILE", 0, true);
+		s.name = RandomName();
 		g_suspects.push_back(s);
 		ml::Log("suspect {}: spawned, skill {} nerve {:.2f} hostility {:.2f} guilt {:.2f} armed {} impairment {} (grade {})", s.id,
 		    static_cast<int>(profile.skill), profile.nerve, profile.hostility, profile.guilt, profile.armed, static_cast<int>(profile.impairment),
@@ -996,6 +1040,7 @@ namespace police::suspect
 		s.id = g_nextId++;
 		s.since = Now();
 		s.state = State::Cruise;
+		s.name = RandomName();
 		g_suspects.push_back(s);
 		ml::Log("suspect {}: driver spawned at ({:.0f}, {:.0f}), skill {} nerve {:.2f} hostility {:.2f} guilt {:.2f} armed {}", s.id, node.x, node.y,
 		    static_cast<int>(profile.skill), profile.nerve, profile.hostility, profile.guilt, profile.armed);
@@ -1024,8 +1069,12 @@ namespace police::suspect
 			case State::Comply:
 			case State::PullOver:
 			case State::Pulled:
+			case State::Cuffed:
+			case State::Escort:
 				out.mode = Target::Mode::Stopped;
 				break;
+			case State::Custody:
+				continue; // dealt with
 			case State::Stall:
 				// Standing there arguing (or driving on): covered on foot, followed in a car.
 				out.mode = out.car ? Target::Mode::Vehicle : Target::Mode::Stopped;
@@ -1053,6 +1102,127 @@ namespace police::suspect
 				s.policeKnow = At(s);
 				s.policeSawAt = Now();
 				s.policeDist = d;
+			}
+	}
+
+	int Within(const Vector3& at, float radius)
+	{
+		for (Suspect& s : g_suspects)
+			if (ENTITY::DOES_ENTITY_EXIST(s.ped) && s.state != State::Gone && s.state != State::Custody && ai::Distance(At(s), at) < radius)
+				return s.id;
+		return 0;
+	}
+
+	Status StatusOf(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id)
+			{
+				Status st;
+				st.ped = s.ped;
+				st.inVehicle = PED::IS_PED_IN_ANY_VEHICLE(s.ped, false);
+				st.yielded = s.state == State::Comply || s.state == State::Pulled || s.state == State::Stall;
+				st.cuffed = s.state == State::Cuffed || s.state == State::Escort;
+				st.custody = s.state == State::Custody;
+				st.gone = s.state == State::Gone || !ENTITY::DOES_ENTITY_EXIST(s.ped);
+				st.dead = ENTITY::DOES_ENTITY_EXIST(s.ped) && ENTITY::IS_ENTITY_DEAD(s.ped, false);
+				return st;
+			}
+		Status st;
+		st.gone = true;
+		return st;
+	}
+
+	void OrderOut(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id && PED::IS_PED_IN_ANY_VEHICLE(s.ped, false))
+			{
+				TASK::TASK_LEAVE_ANY_VEHICLE(s.ped, 0, 0);
+				s.thinkAt = Now() + 3000;
+				Set(s, State::Comply, "ordered out");
+				ml::Log("suspect {}: ordered out of the vehicle", s.id);
+			}
+	}
+
+	std::string Search(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id)
+			{
+				s.searched = true;
+				std::string found;
+				if (s.profile.armed == 1)
+					found += "一把刀";
+				else if (s.profile.armed == 2)
+					found += "一把手槍";
+				else if (s.profile.armed >= 3)
+					found += "一把衝鋒槍";
+				if (s.profile.substanceGrade > 0)
+				{
+					static const char* const grades[] = {"", "第一級", "第二級", "第三級", "第四級"};
+					found += std::string(found.empty() ? "" : "、") + grades[std::clamp(s.profile.substanceGrade, 1, 4)] + "管制藥物";
+				}
+				WEAPON::REMOVE_ALL_PED_WEAPONS(s.ped, true);
+				s.profile.armed = 0;
+				return found.empty() ? "沒有搜到東西" : "搜到：" + found;
+			}
+		return "";
+	}
+
+	std::string CheckId(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id)
+			{
+				s.checked = true;
+				const char* record = s.profile.guilt > 0.8f ? "有通緝（竊盜）" : s.profile.guilt > 0.6f ? "有前科" : "無紀錄";
+				return s.name + "，" + record;
+			}
+		return "";
+	}
+
+	bool Cuff(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id && s.state != State::Cuffed)
+			{
+				if (PED::IS_PED_IN_ANY_VEHICLE(s.ped, false))
+					return false;
+				const auto dict = ml::LoadAnimDict("mp_arresting");
+				TASK::CLEAR_PED_TASKS(s.ped);
+				PED::SET_ENABLE_HANDCUFFS(s.ped, true);
+				WEAPON::SET_CURRENT_PED_WEAPON(s.ped, 0xA2719263, true);
+				TASK::TASK_PLAY_ANIM(s.ped, "mp_arresting", "idle", 8.0f, -8.0f, -1, 49, 0.0f, false, false, false);
+				Set(s, State::Cuffed, "cuffed by the officer");
+				return true;
+			}
+		return false;
+	}
+
+	bool PutInCar(int id, Vehicle car)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id && s.state == State::Cuffed && car)
+			{
+				s.car = car;
+				const int seat = VEHICLE::IS_VEHICLE_SEAT_FREE(car, 1, false) ? 1 : 2;
+				TASK::TASK_ENTER_VEHICLE(s.ped, car, 20000, seat, 1.0f, 1, nullptr);
+				Set(s, State::Escort, "to the patrol car");
+				return true;
+			}
+		return false;
+	}
+
+	void Release(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id)
+			{
+				PED::SET_ENABLE_HANDCUFFS(s.ped, false);
+				TASK::CLEAR_PED_TASKS(s.ped);
+				TASK::TASK_WANDER_STANDARD(s.ped, 10.0f, 10);
+				Set(s, State::Gone, "let go");
 			}
 	}
 

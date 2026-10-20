@@ -32,6 +32,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		test.Action("生成開車的老手嫌犯（高罪責）", [] { g_testSpawn = 5; });
 		test.Action("生成持槍的兇嫌", [] { g_testSpawn = 6; });
 		test.Action("生成會配合的路人", [] { g_testSpawn = 7; });
+		test.Action("立即派遣一件報案", [] { police::dispatch::CallNow(); });
 		test.Action("清除測試嫌犯", [] { g_testSpawn = 9; });
 	}
 	police::lights::BuildKeys();
@@ -53,6 +54,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::lights::Tick();
 		police::suspect::Tick();
 		police::ambient::Tick();
+		police::dispatch::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)
 		{
 			if (t == 9)

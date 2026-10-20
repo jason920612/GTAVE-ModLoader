@@ -260,6 +260,29 @@ namespace police::suspect
 		bool known = false;  // someone of the police sees them now
 	};
 	bool Pursued(Target& out);
+	// The officer dealing with a suspect (the action menu).
+	struct Status
+	{
+		::Ped ped = 0;
+		bool inVehicle = false;
+		bool yielded = false; // complying or standing there: can be dealt with
+		bool cuffed = false;
+		bool custody = false; // in the patrol car
+		bool gone = false;
+		bool dead = false;
+	};
+	// A suspect (not in custody) within `radius` of a place: its id, 0 = none.
+	int Within(const Vector3& at, float radius);
+	Status StatusOf(int id);
+	void OrderOut(int id);
+	// What a search finds (weapons are taken), and the ID check (name, record).
+	std::string Search(int id);
+	std::string CheckId(int id);
+	bool Cuff(int id);
+	// A cuffed suspect into the back of a car.
+	bool PutInCar(int id, Vehicle car);
+	// Let go (no arrest).
+	void Release(int id);
 	// A police officer (backup) sees the suspect: tells the others (the suspect's last known place).
 	void Spotted(::Ped by);
 	// Removes them all.
@@ -267,6 +290,18 @@ namespace police::suspect
 	// The world was reset.
 	void Forget();
 	// Every frame.
+	void Tick();
+}
+
+namespace police::dispatch
+{
+	// The police menu's dispatch item (the call on offer, or the one under way).
+	menu::Item MenuItem();
+	// Development: a call now.
+	void CallNow();
+	// The world was reset.
+	void Forget();
+	// Every frame while the officer is played: calls, and the action menu next to a suspect (hold E).
 	void Tick();
 }
 
