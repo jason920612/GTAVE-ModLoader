@@ -4,8 +4,14 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 
+#include <wincodec.h>
+
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <condition_variable>
+#include <cstring>
+#include <format>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -22,6 +28,7 @@
 #include "../state.hpp"
 #include "../web/browser.hpp"
 #include "../web/textures.hpp"
+#include "../debug/remote.hpp"
 #include "dx12_hook.hpp"
 #include "menu.hpp"
 #include "notify.hpp"
@@ -338,6 +345,8 @@ namespace loader::ui
 			}
 		}
 
+		void TakeShot();
+
 		void OnPresent(IDXGISwapChain3* swapChain, ID3D12CommandQueue* queue)
 		{
 			FrameStats();
@@ -369,6 +378,217 @@ namespace loader::ui
 			}
 			g_lastPresent = now;
 			Render(queue);
+			TakeShot();
+		}
+
+		// ---- screenshots (debug/remote) --------------------------------------------------------
+
+		std::mutex g_shotMutex;
+		std::condition_variable g_shotDone;
+		std::wstring g_shotPath; // the request under way ("" = none)
+		uint64_t g_shotId = 0, g_shotFinished = 0;
+		std::string g_shotError;
+		ID3D12CommandAllocator* g_shotAllocator = nullptr;
+		ID3D12GraphicsCommandList* g_shotList = nullptr;
+
+		float Half(uint16_t h)
+		{
+			const uint32_t sign = (h & 0x8000u) << 16, exp = (h >> 10) & 0x1F, man = h & 0x3FF;
+			uint32_t bits;
+			if (exp == 0)
+				bits = sign; // (denormals as zero)
+			else if (exp == 31)
+				bits = sign | 0x7F800000u | (man << 13);
+			else
+				bits = sign | ((exp + 112) << 23) | (man << 13);
+			float f;
+			std::memcpy(&f, &bits, 4);
+			return f;
+		}
+
+		// One row of the back buffer as BGRA bytes; false for a format we do not read.
+		bool ToBgra(DXGI_FORMAT format, const uint8_t* src, uint8_t* dst, UINT width)
+		{
+			for (UINT x = 0; x < width; ++x, dst += 4)
+			{
+				switch (format)
+				{
+				case DXGI_FORMAT_R8G8B8A8_UNORM:
+				case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+					dst[0] = src[x * 4 + 2], dst[1] = src[x * 4 + 1], dst[2] = src[x * 4], dst[3] = 255;
+					break;
+				case DXGI_FORMAT_B8G8R8A8_UNORM:
+				case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+					dst[0] = src[x * 4], dst[1] = src[x * 4 + 1], dst[2] = src[x * 4 + 2], dst[3] = 255;
+					break;
+				case DXGI_FORMAT_R10G10B10A2_UNORM:
+				{
+					uint32_t p;
+					std::memcpy(&p, src + x * 4, 4);
+					dst[2] = static_cast<uint8_t>((p & 0x3FF) >> 2);
+					dst[1] = static_cast<uint8_t>(((p >> 10) & 0x3FF) >> 2);
+					dst[0] = static_cast<uint8_t>(((p >> 20) & 0x3FF) >> 2);
+					dst[3] = 255;
+					break;
+				}
+				case DXGI_FORMAT_R16G16B16A16_FLOAT:
+				{
+					// scRGB (linear, 1.0 = SDR white) to 8-bit sRGB, clipped.
+					uint16_t c[4];
+					std::memcpy(c, src + x * 8, 8);
+					for (int k = 0; k < 3; ++k)
+					{
+						const float v = std::clamp(Half(c[k]), 0.0f, 1.0f);
+						const float s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+						dst[2 - k] = static_cast<uint8_t>(std::clamp(s, 0.0f, 1.0f) * 255.0f + 0.5f);
+					}
+					dst[3] = 255;
+					break;
+				}
+				default:
+					return false;
+				}
+			}
+			return true;
+		}
+
+		bool SavePng(const std::wstring& path, std::vector<uint8_t>& bgra, UINT width, UINT height, std::string& error)
+		{
+			const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+			IWICImagingFactory* factory = nullptr;
+			IWICStream* stream = nullptr;
+			IWICBitmapEncoder* encoder = nullptr;
+			IWICBitmapFrameEncode* frame = nullptr;
+			bool ok = false;
+			if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+			    SUCCEEDED(factory->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) &&
+			    SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+			    SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) && SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) &&
+			    SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(width, height)))
+			{
+				WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+				ok = SUCCEEDED(frame->SetPixelFormat(&fmt)) && IsEqualGUID(fmt, GUID_WICPixelFormat32bppBGRA) &&
+				     SUCCEEDED(frame->WritePixels(height, width * 4, static_cast<UINT>(bgra.size()), bgra.data())) && SUCCEEDED(frame->Commit()) &&
+				     SUCCEEDED(encoder->Commit());
+			}
+			if (frame)
+				frame->Release();
+			if (encoder)
+				encoder->Release();
+			if (stream)
+				stream->Release();
+			if (factory)
+				factory->Release();
+			if (SUCCEEDED(co))
+				CoUninitialize();
+			if (!ok)
+				error = "could not write the PNG";
+			return ok;
+		}
+
+		// The frame about to be presented (the game's picture with the overlay on it), copied out and saved.
+		void TakeShot()
+		{
+			std::wstring path;
+			uint64_t id;
+			{
+				std::lock_guard lock(g_shotMutex);
+				if (g_shotPath.empty())
+					return;
+				path = g_shotPath;
+				id = g_shotId;
+			}
+			std::string error;
+			ID3D12Resource* backBuffer = nullptr;
+			ID3D12Resource* readback = nullptr;
+			if (!g_shotAllocator &&
+			    (FAILED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_shotAllocator))) ||
+			        FAILED(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_shotAllocator, nullptr, IID_PPV_ARGS(&g_shotList))) ||
+			        FAILED(g_shotList->Close())))
+				error = "no command list";
+			else if (FAILED(g_swapChain->GetBuffer(g_swapChain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backBuffer))))
+				error = "no back buffer";
+			else
+			{
+				const D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+				D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+				UINT rows = 0;
+				UINT64 rowSize = 0, total = 0;
+				g_device->GetCopyableFootprints(&desc, 0, 1, 0, &fp, &rows, &rowSize, &total);
+				D3D12_HEAP_PROPERTIES heap{};
+				heap.Type = D3D12_HEAP_TYPE_READBACK;
+				D3D12_RESOURCE_DESC buf{};
+				buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+				buf.Width = total;
+				buf.Height = 1;
+				buf.DepthOrArraySize = 1;
+				buf.MipLevels = 1;
+				buf.SampleDesc.Count = 1;
+				buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+				if (FAILED(g_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
+					error = "no readback buffer";
+				else
+				{
+					g_shotAllocator->Reset();
+					g_shotList->Reset(g_shotAllocator, nullptr);
+					D3D12_RESOURCE_BARRIER barrier{};
+					barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+					barrier.Transition.pResource = backBuffer;
+					barrier.Transition.Subresource = 0;
+					barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+					barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+					g_shotList->ResourceBarrier(1, &barrier);
+					D3D12_TEXTURE_COPY_LOCATION dst{};
+					dst.pResource = readback;
+					dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+					dst.PlacedFootprint = fp;
+					D3D12_TEXTURE_COPY_LOCATION src{};
+					src.pResource = backBuffer;
+					src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+					src.SubresourceIndex = 0;
+					g_shotList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+					std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+					g_shotList->ResourceBarrier(1, &barrier);
+					g_shotList->Close();
+					ID3D12CommandList* lists[] = {g_shotList};
+					g_queue->ExecuteCommandLists(1, lists);
+					g_queue->Signal(g_fence, ++g_fenceCounter);
+					if (g_fence->GetCompletedValue() < g_fenceCounter)
+					{
+						g_fence->SetEventOnCompletion(g_fenceCounter, g_fenceEvent);
+						WaitForSingleObject(g_fenceEvent, 2000);
+					}
+					const UINT width = static_cast<UINT>(desc.Width), height = desc.Height;
+					std::vector<uint8_t> bgra(static_cast<size_t>(width) * height * 4);
+					uint8_t* mapped = nullptr;
+					D3D12_RANGE range{0, static_cast<SIZE_T>(total)};
+					if (FAILED(readback->Map(0, &range, reinterpret_cast<void**>(&mapped))))
+						error = "could not read the frame";
+					else
+					{
+						for (UINT y = 0; y < height && error.empty(); ++y)
+							if (!ToBgra(desc.Format, mapped + fp.Offset + static_cast<size_t>(y) * fp.Footprint.RowPitch,
+							        bgra.data() + static_cast<size_t>(y) * width * 4, width))
+								error = std::format("back buffer format {} not supported", static_cast<int>(desc.Format));
+						D3D12_RANGE none{0, 0};
+						readback->Unmap(0, &none);
+						if (error.empty())
+							SavePng(path, bgra, width, height, error);
+					}
+				}
+			}
+			if (readback)
+				readback->Release();
+			if (backBuffer)
+				backBuffer->Release();
+			std::lock_guard lock(g_shotMutex);
+			if (g_shotId == id)
+			{
+				g_shotPath.clear();
+				g_shotError = error;
+				g_shotFinished = id;
+				g_shotDone.notify_all();
+			}
 		}
 
 		void OnReleaseBuffers(IDXGISwapChain3* swapChain)
@@ -386,6 +606,13 @@ namespace loader::ui
 
 		LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		{
+			// A key a tester sent (debug/remote): the mods' hotkeys only, the game never sees it.
+			if (msg == debug::remote::kKeyMessage)
+			{
+				if (!g_capture && state::story && !state::online)
+					mods::OnKeyDown(static_cast<uint32_t>(wp));
+				return 0;
+			}
 			if (msg == WM_KEYDOWN && !(lp & (1 << 30)) && wp == MenuKey())
 			{
 				ToggleMenu();
@@ -433,6 +660,31 @@ namespace loader::ui
 	HWND GameWindow()
 	{
 		return g_window;
+	}
+
+	bool Capture(const std::wstring& path, std::string& error)
+	{
+		std::unique_lock lock(g_shotMutex);
+		if (!g_imguiReady)
+		{
+			error = "the game has not drawn a frame yet";
+			return false;
+		}
+		if (!g_shotPath.empty())
+		{
+			error = "another screenshot is under way";
+			return false;
+		}
+		g_shotPath = path;
+		const uint64_t id = ++g_shotId;
+		if (!g_shotDone.wait_for(lock, std::chrono::seconds(5), [&] { return g_shotFinished == id; }))
+		{
+			g_shotPath.clear();
+			error = "no frame within 5 s (is the game drawing?)";
+			return false;
+		}
+		error = g_shotError;
+		return error.empty();
 	}
 
 	ID3D12Device* Device()

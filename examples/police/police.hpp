@@ -142,6 +142,8 @@ namespace police::menu
 	void Open(List list);
 	void Close();
 	bool IsOpen();
+	// The open menu and the selected item (nullptr when none is open): what is on screen, for a test player.
+	const List* Current(size_t& cursor);
 	// Every frame: draws the open menu and takes its keys.
 	void Tick();
 }
@@ -159,6 +161,14 @@ namespace police::units
 	void Return(::Ped helper);
 	// Backup officers within `radius` of a place (how many police a suspect has on them).
 	int Near(const Vector3& at, float radius);
+	// The car is a backup unit's.
+	bool IsUnitCar(Vehicle car);
+	// The unit of this car drives a suspect in to `to` (the transport); false when it is not a unit's car.
+	bool Transport(Vehicle car, const Vector3& to);
+	// The transport is there (or out of sight long enough to have got there).
+	bool Delivered(Vehicle car);
+	// The suspect is handed over: the unit goes back on patrol.
+	void TransportDone(Vehicle car);
 	// The backup's cars.
 	std::vector<Vehicle> Cars();
 	// The world was reset.
@@ -289,6 +299,14 @@ namespace police::suspect
 	bool Cuff(int id);
 	// A cuffed suspect into the back of a car.
 	bool PutInCar(int id, Vehicle car);
+	// In custody: out of the car again, cuffed, following the officer (at the station).
+	void TakeOut(int id);
+	// Cuffed: follows someone else than the officer (the jailer taking them in; 0 = the officer again).
+	void LedBy(int id, ::Ped leader);
+	// In custody: breaks out of the car and runs, cuffed.
+	void Escape(int id);
+	// Booked: taken away (removed from the world).
+	void Delete(int id);
 	// Let go (no arrest).
 	void Release(int id);
 	// A police officer (backup) sees the suspect: tells the others (the suspect's last known place).
@@ -330,14 +348,16 @@ namespace police::records
 	};
 	struct Case
 	{
-		std::vector<std::string> log, evidence, people, suggested;
+		std::vector<std::string> log, evidence, people, suggested, conduct;
 		std::string title, place, date, time;
+		int conductPoints = 0;
 	};
 	struct Report
 	{
-		std::vector<std::string> people, evidence, suggested, charges;
+		std::vector<std::string> people, evidence, suggested, charges, conduct;
 		std::string title, date, time, place, outcome, narrative;
 		int id = 0;
+		int conductPoints = 0;
 		int score = 0;
 		bool submitted = false;
 	};
@@ -364,6 +384,10 @@ namespace police::records
 	void Evidence(const std::string& item);
 	void Involved(const std::string& person);
 	void Charge(const std::string& charge);
+	// The charges the case supports so far.
+	std::vector<std::string> Charges();
+	// How the officer did (the transport): points for the report's score, with the reason.
+	void Conduct(int points, const std::string& why);
 	// Ends it: a report is drafted; its id.
 	int EndCase(const std::string& outcome);
 	ml::Json Reports();
@@ -384,8 +408,28 @@ namespace police::search
 	bool Busy();
 	// Frisk a person / search a vehicle area (-1 = every area left), by the officer or a backup officer.
 	void Frisk(::Ped target, bool backup);
+	// Booking: what they carry is listed and kept (recorded as found then when nobody searched them); true when it held
+	// a weapon nobody had found.
+	bool Book(::Ped target);
 	void SearchCar(Vehicle car, int zone, bool backup);
 	void Forget();
+	void Tick();
+}
+
+namespace police::custody
+{
+	// The suspect is to be taken in by the backup (before they are put in the backup's car).
+	void ByBackup(int id);
+	// A suspect sat in a police car (suspect.cpp): the transport begins.
+	void Begin(int id, Vehicle car);
+	// Booked at a station or the prison: the case can close. The facility's name.
+	bool Booked(int id, std::string* where = nullptr);
+	// Booking at the door (the action menu on the suspect is not offered meanwhile).
+	bool Busy();
+	// The police menu's transport item (where to, by whom).
+	menu::Item MenuItem();
+	void Forget();
+	// Every frame while the officer is played: the transport, the arrival, booking.
 	void Tick();
 }
 

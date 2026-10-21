@@ -319,6 +319,23 @@ namespace police::search
 			Start(PLAYER::PLAYER_PED_ID(), true, 0, target, {});
 	}
 
+	bool Book(::Ped target)
+	{
+		auto& items = PersonContents(target);
+		ml::Notify("保管財物：{}", Describe(items));
+		if (g_frisked[target])
+		{
+			records::Note("收押：保管財物（" + Describe(items) + "）");
+			return false;
+		}
+		// Nobody searched them: what they carry comes out at the desk.
+		g_frisked[target] = true;
+		Record(items, "收押清點時嫌犯身上");
+		suspect::Disarm(target);
+		ml::Log("search: booking found {}", Describe(items));
+		return std::any_of(items.begin(), items.end(), [](const Found& f) { return f.charge == "非法持有武器" || f.charge == "持有危險器械"; });
+	}
+
 	void SearchCar(Vehicle car, int zone, bool backup)
 	{
 		std::vector<int> zones = zone >= 0 ? std::vector<int>{zone} : Unsearched(car);

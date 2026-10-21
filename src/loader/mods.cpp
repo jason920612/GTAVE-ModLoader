@@ -451,7 +451,9 @@ namespace loader::mods
 
 		void ApiNotify(const char* text)
 		{
-			const Mod* mod = CallerOrCurrent(_ReturnAddress());
+			Mod* mod = CallerOrCurrent(_ReturnAddress());
+			// Also in the mod's log: what the player was told, next to what happened.
+			ModLog(mod, ML_LOG_INFO, ("notify: " + Text(text)).c_str());
 			ui::Notify(mod ? mod->name : "", Text(text));
 		}
 

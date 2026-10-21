@@ -35,6 +35,7 @@ namespace loader::config
 			c.debugDisableScriptHook = j.value("debugDisableScriptHook", c.debugDisableScriptHook);
 			c.debugWatchLanding = j.value("debugWatchLanding", c.debugWatchLanding);
 			c.debugWatchFile = j.value("debugWatchFile", c.debugWatchFile);
+			c.debugRemote = j.value("debugRemote", c.debugRemote);
 			c.debugWatchBoot = j.value("debugWatchBoot", c.debugWatchBoot);
 			c.debugPoseWatch = j.value("debugPoseWatch", c.debugPoseWatch);
 			c.debugDlssTrace = j.value("debugDlssTrace", c.debugDlssTrace);
@@ -58,6 +59,7 @@ namespace loader::config
 				{"debugDisableScriptHook", c.debugDisableScriptHook},
 				{"debugWatchLanding", c.debugWatchLanding},
 				{"debugWatchFile", c.debugWatchFile},
+				{"debugRemote", c.debugRemote},
 				{"debugWatchBoot", c.debugWatchBoot},
 				{"debugPoseWatch", c.debugPoseWatch},
 				{"debugDlssTrace", c.debugDlssTrace},

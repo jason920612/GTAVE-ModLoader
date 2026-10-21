@@ -71,6 +71,7 @@ add_library(loader SHARED
     src/loader/debug/animprobe.cpp
     src/loader/debug/skelhook.cpp
     src/loader/debug/dred.cpp
+    src/loader/debug/remote.cpp
     src/loader/game/dlcpacks.cpp
     src/loader/game/pools.cpp
     src/loader/convert/resource.cpp
@@ -90,7 +91,7 @@ set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive- /Zi>)
 target_include_directories(loader PRIVATE sdk/include)
-target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json imgui winhttp d3d12 dxgi d3dcompiler shell32 ole32 bcrypt ws2_32 version shlwapi wintrust crypt32 delayimp)
+target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json imgui winhttp d3d12 dxgi d3dcompiler shell32 ole32 windowscodecs bcrypt ws2_32 version shlwapi wintrust crypt32 delayimp)
 # Only needed after startup (crossmap download, overlay); keep them out of DllMain.
 target_link_options(loader PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:d3d12.dll /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll /DELAYLOAD:shell32.dll /DELAYLOAD:ole32.dll /DELAYLOAD:bcrypt.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:shlwapi.dll /DELAYLOAD:wintrust.dll /DELAYLOAD:crypt32.dll /DEBUG /OPT:REF /OPT:ICF)
 

@@ -29,6 +29,9 @@ namespace loader::config
 		bool debugPoseWatch = false;
 		// Research only: log the NVIDIA NGX core's file calls, Streamline / DLSS DLL loads and DLSS calls (research §51).
 		bool debugDlssTrace = false;
+		// Testing only: a tester controls the game through a named pipe (keys, controls, screenshots, the window off
+		// screen) while the person keeps using the computer (debug/remote.hpp).
+		bool debugRemote = false;
 		// Story-mode pause menu: the "Online" tab becomes a "Mods" tab with each mod's settings.
 		bool pauseMenuModsTab = true;
 		// The phone's / computers' web browser is replaced by the loader's (ModLoader\browser, pages in ModLoader\web).

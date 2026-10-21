@@ -1,6 +1,8 @@
 #pragma once
 #include <Windows.h>
 
+#include <string>
+
 struct ID3D12Device;
 
 namespace loader::ui
@@ -16,4 +18,7 @@ namespace loader::ui
 
 	// The game's D3D12 device (nullptr until the overlay attached).
 	ID3D12Device* Device();
+
+	// Saves the next frame the game presents as a PNG (waits up to 5 s for it). Any thread but the render thread.
+	bool Capture(const std::wstring& path, std::string& error);
 }

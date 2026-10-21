@@ -90,6 +90,12 @@ namespace police::menu
 		return !g_stack.empty();
 	}
 
+	const List* Current(size_t& cursor)
+	{
+		cursor = g_cursor;
+		return g_stack.empty() ? nullptr : &g_stack.back();
+	}
+
 	void Tick()
 	{
 		if (g_stack.empty())

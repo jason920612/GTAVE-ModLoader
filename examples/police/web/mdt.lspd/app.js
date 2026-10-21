@@ -118,6 +118,7 @@ function showReport(r) {
     <dl><dt>日期時間</dt><dd>${esc(r.date)} ${esc(r.time)}</dd><dt>地點</dt><dd>${esc(r.place)}</dd><dt>結果</dt><dd>${esc(r.outcome)}</dd>
     <dt>涉案人</dt><dd>${r.people.map(esc).join('、') || '—'}</dd></dl>
     <h3>證物</h3>${list(r.evidence)}
+    ${r.conduct?.length ? `<h3>執勤表現 <span class="hint" style="font-weight:400">（計入評分 ${r.conductPoints >= 0 ? '+' : ''}${r.conductPoints}）</span></h3>${list(r.conduct)}` : ''}
     <h3>罪名 <span class="hint" style="font-weight:400">（藍字＝證據支持的建議）</span></h3>
     <div class="charges">${options.map(c => `<label><input type="checkbox" value="${esc(c)}" ${r.charges.includes(c) ? 'checked' : ''} ${r.submitted ? 'disabled' : ''}>
       ${esc(c)}${r.suggested.includes(c) ? ' <span class="sug">建議</span>' : ''}</label>`).join('')}</div>

@@ -25,6 +25,7 @@ namespace police::units
 			OnScene, // out of the car, following the officer
 			Leaving, // back to the car, then away
 			Pursuit, // after a suspect (see above)
+			Transport, // taking a suspect in (custody.cpp)
 		};
 		enum class Role
 		{
@@ -62,6 +63,10 @@ namespace police::units
 			Vector3 block{};       // the roadblock's place
 			Role role = Role::None;
 			int id = 0;
+			Vector3 dest{};          // the transport's destination
+			uint64_t eta = 0;        // when it would be there at the latest
+			bool driving = false;    // the transport under way
+			bool delivered = false;
 		};
 		int g_nextUnit = 1;
 		std::vector<::Ped> g_borrowed; // officers lent out (a search): their unit leaves them be
@@ -221,6 +226,39 @@ namespace police::units
 				break;
 			case State::Pursuit:
 				break; // see Pursue
+			case State::Transport:
+			{
+				// Everyone aboard (or a while gone by), then off at normal speed; there once close, or once out of the
+				// officer's sight for as long as the drive takes (nobody watches them drive across the map).
+				if (!Exists(u.car) || !Alive(driver))
+				{
+					u.delivered = true;
+					break;
+				}
+				if (!u.driving)
+				{
+					bool aboard = true;
+					for (::Ped p : u.crew)
+						if (Alive(p) && !PED::IS_PED_IN_VEHICLE(p, u.car, false))
+							aboard = false;
+					if (aboard || now - u.since > 25000)
+					{
+						const float d = Distance(ENTITY::GET_ENTITY_COORDS(u.car, true), u.dest);
+						DriveTo(driver, u.car, u.dest, kNormal, 10.0f);
+						u.driving = true;
+						u.eta = now + static_cast<uint64_t>(d / 12.0f * 1000.0f);
+						ml::Log("units: unit {} transporting, {:.0f} m to go", u.id, d);
+					}
+					break;
+				}
+				const Vector3 at = ENTITY::GET_ENTITY_COORDS(u.car, true);
+				if (!u.delivered && (Distance(at, u.dest) < 30.0f || (now > u.eta && Distance(at, me) > 200.0f && !CAMERA::IS_SPHERE_VISIBLE(at.x, at.y, at.z, 4.0f))))
+				{
+					u.delivered = true;
+					ml::Log("units: unit {} delivered the suspect", u.id);
+				}
+				break;
+			}
 			case State::Leaving:
 			{
 				bool aboard = Exists(u.car);
@@ -715,6 +753,51 @@ namespace police::units
 			PED::SET_PED_AS_GROUP_MEMBER(helper, PLAYER::GET_PLAYER_GROUP(PLAYER::PLAYER_ID()));
 	}
 
+	bool IsUnitCar(Vehicle car)
+	{
+		return car && std::any_of(g_units.begin(), g_units.end(), [&](const Unit& u) { return u.car == car; });
+	}
+
+	bool Transport(Vehicle car, const Vector3& to)
+	{
+		for (Unit& u : g_units)
+			if (u.car == car && Exists(car) && u.state != State::Leaving)
+			{
+				for (::Ped p : u.crew)
+					if (Alive(p))
+					{
+						PED::REMOVE_PED_FROM_GROUP(p);
+						TASK::CLEAR_PED_TASKS(p);
+					}
+				g_borrowed.erase(std::remove_if(g_borrowed.begin(), g_borrowed.end(), [&](::Ped p) { return std::find(u.crew.begin(), u.crew.end(), p) != u.crew.end(); }),
+				    g_borrowed.end());
+				lights::Set(u.car, 0);
+				u.state = State::Transport;
+				u.role = Role::None;
+				u.since = ml::TickMs();
+				u.dest = to;
+				u.driving = u.delivered = false;
+				Board(u);
+				return true;
+			}
+		return false;
+	}
+
+	bool Delivered(Vehicle car)
+	{
+		for (const Unit& u : g_units)
+			if (u.car == car)
+				return u.state == State::Transport && u.delivered;
+		return true; // the unit is gone
+	}
+
+	void TransportDone(Vehicle car)
+	{
+		for (Unit& u : g_units)
+			if (u.car == car && u.state == State::Transport)
+				Dismiss(u);
+	}
+
 	std::vector<Vehicle> Cars()
 	{
 		std::vector<Vehicle> cars;
@@ -738,6 +821,7 @@ namespace police::units
 	{
 		menu::List m{"警察", {}};
 		m.items.push_back(dispatch::MenuItem());
+		m.items.push_back(custody::MenuItem());
 		menu::Item computer{"車上電腦", "F10", "附近車輛、查車牌、查人、案件報告（要在警車上）"};
 		computer.action = mdt::Open;
 		m.items.push_back(computer);

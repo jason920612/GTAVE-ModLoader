@@ -23,6 +23,7 @@
 #include "debug/skelhook.hpp"
 #include "debug/hangdump.hpp"
 #include "debug/scripttrace.hpp"
+#include "debug/remote.hpp"
 #include "web/browser.hpp"
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
@@ -280,6 +281,8 @@ namespace loader::core
 			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)
+				debug::remote::Tick();
+			if (!state::online)
 				mods::Tick();
 			if (!state::online)
 				web::Tick();
@@ -310,6 +313,7 @@ namespace loader::core
 		game::pose::Install();
 		game::scripts::Install();
 		debug::hangdump::Start();
+		debug::remote::Start();
 		debug::animprobe::StartIfRequested();
 		debug::skelhook::StartIfRequested();
 		if (config::Get().aiEnabled)

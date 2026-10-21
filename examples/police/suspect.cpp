@@ -107,6 +107,8 @@ namespace police::suspect
 			uint64_t stuckSince = 0;     // the vehicle not moving while it should
 			uint64_t followedSince = 0;  // a police car with its lights on behind them since
 			bool disguised = false;      // changed their look: not recognised from a distance
+		bool cuffs = false;          // running with their hands cuffed behind them (broke out of the patrol car)
+		::Ped leader = 0;            // cuffed, led by someone else than the officer (the jailer)
 			uint64_t jackCheckAt = 0;    // next look for a vehicle to take
 			std::string name;            // as on their ID
 			bool searched = false, checked = false;
@@ -267,7 +269,7 @@ namespace police::suspect
 
 		float RunSpeed(const Suspect& s)
 		{
-			if (s.profile.impairment == ai::Impairment::Drunk)
+			if (s.profile.impairment == ai::Impairment::Drunk || s.cuffs)
 				return 2.2f; // a jog at best
 			return s.stamina > 0.15f ? 3.0f : 2.0f; // spent: a run, no more sprinting
 		}
@@ -301,6 +303,8 @@ namespace police::suspect
 			float flee = p.nerve * 0.4f + p.guilt * 0.8f - pressure * 0.35f;
 			float fight = p.hostility * 0.8f + p.nerve * 0.3f + armed * 0.15f - pressure * 0.6f - (outgunned ? 0.6f : 0.0f) - 0.3f;
 			float shoot = p.armed >= 2 ? p.hostility * 0.9f + p.guilt * 0.3f - pressure * (p.skill == ai::Skill::Veteran ? 0.7f : 0.4f) - 0.2f : -9.0f;
+			if (s.cuffs)
+				fight = shoot = -9.0f, stall = -9.0f; // hands behind the back: run on or give up
 			if (s.senses.distance < 3.0f)
 				flee -= 0.3f; // the officer is right there
 			if (s.senses.hurt)
@@ -543,6 +547,14 @@ namespace police::suspect
 			{
 			case State::Comply:
 				TASK::CLEAR_PED_TASKS(s.ped);
+				if (s.cuffs)
+				{
+					// Caught again: stands there, still cuffed.
+					s.cuffs = false;
+					TASK::TASK_STAND_STILL(s.ped, -1);
+					Set(s, State::Cuffed, "gives up, cuffed");
+					break;
+				}
 				TASK::TASK_HANDS_UP(s.ped, -1, player, 1500, 0);
 				s.gaveUp = true;
 				Set(s, st, "decided");
@@ -638,7 +650,7 @@ namespace police::suspect
 				HUD::REMOVE_BLIP(&s.blip);
 			if (s.area)
 				HUD::REMOVE_BLIP(&s.area);
-			if (s.car && ENTITY::DOES_ENTITY_EXIST(s.car))
+			if (s.car && ENTITY::DOES_ENTITY_EXIST(s.car) && VEHICLE::GET_VEHICLE_CLASS(s.car) != 18) // not the police car they sat in
 				ENTITY::SET_VEHICLE_AS_NO_LONGER_NEEDED(&s.car);
 			if (ENTITY::DOES_ENTITY_EXIST(s.ped))
 			{
@@ -682,6 +694,13 @@ namespace police::suspect
 				s.policeDist = s.senses.distance;
 			}
 			UpdateBlips(s);
+			if (s.cuffs)
+			{
+				// Running cuffed: the hands stay behind the back.
+				STREAMING::REQUEST_ANIM_DICT("mp_arresting");
+				if (STREAMING::HAS_ANIM_DICT_LOADED("mp_arresting") && !ENTITY::IS_ENTITY_PLAYING_ANIM(s.ped, "mp_arresting", "idle", 3))
+					TASK::TASK_PLAY_ANIM(s.ped, "mp_arresting", "idle", 8.0f, -8.0f, -1, 49, 0.0f, false, false, false);
+			}
 			const ai::Senses& se = s.senses;
 			switch (s.state)
 			{
@@ -714,6 +733,8 @@ namespace police::suspect
 			}
 			case State::Flee:
 			{
+				if (s.cuffs && PED::IS_PED_IN_ANY_VEHICLE(s.ped, false))
+					break; // still getting out of the patrol car
 				const Vector3 me = At(s);
 				// Out of the officer's sight for a while and far enough: hide (novices keep running a while longer).
 				if (!se.visible && !SeenByPolice(s))
@@ -745,7 +766,7 @@ namespace police::suspect
 					}
 				}
 				// A lead and a car within reach: take it (not novices, who do not think of it; not the drunk).
-				if (now >= s.jackCheckAt && s.profile.skill != ai::Skill::Novice && s.profile.impairment != ai::Impairment::Drunk && se.distance > 15.0f)
+				if (now >= s.jackCheckAt && s.profile.skill != ai::Skill::Novice && s.profile.impairment != ai::Impairment::Drunk && !s.cuffs && se.distance > 15.0f)
 				{
 					s.jackCheckAt = now + 1500;
 					const float dare = s.profile.nerve * (s.profile.skill == ai::Skill::Veteran ? 1.0f : 0.6f);
@@ -777,7 +798,7 @@ namespace police::suspect
 					TASK::TASK_STAND_STILL(s.ped, -1);
 				}
 				// In cover a while: those who know better change their look.
-				if (!s.disguised && now - s.since > 6000 && Distance(me, s.goal) < 1.5f && s.profile.skill != ai::Skill::Novice &&
+				if (!s.disguised && !s.cuffs && now - s.since > 6000 && Distance(me, s.goal) < 1.5f && s.profile.skill != ai::Skill::Novice &&
 				    Random() < (s.profile.skill == ai::Skill::Veteran ? 0.8f : 0.4f) * 0.05f) // checked every frame: within a few seconds
 					ChangeLook(s);
 				// Found: run again, or give up when the officer is right there (close by, a hedge or fence does not hide them).
@@ -962,14 +983,21 @@ namespace police::suspect
 				}
 				break;
 			case State::Cuffed:
-				// Hands behind the back; the officer leads (they follow a step behind when the officer walks off).
+				// Hands behind the back; the officer leads (they follow a step behind when the officer walks off, around
+				// walls and fences: on the navmesh).
 				STREAMING::REQUEST_ANIM_DICT("mp_arresting"); // kept loaded while someone is cuffed
 				if (STREAMING::HAS_ANIM_DICT_LOADED("mp_arresting") && !ENTITY::IS_ENTITY_PLAYING_ANIM(s.ped, "mp_arresting", "idle", 3))
 					TASK::TASK_PLAY_ANIM(s.ped, "mp_arresting", "idle", 8.0f, -8.0f, -1, 49, 0.0f, false, false, false);
-				if (se.distance > 4.0f && se.distance < 30.0f && now >= s.planAt)
+				if (now >= s.planAt && !PED::IS_PED_IN_ANY_VEHICLE(s.ped, true))
 				{
-					s.planAt = now + 1500;
-					TASK::TASK_GO_TO_ENTITY(s.ped, PLAYER::PLAYER_PED_ID(), -1, 2.0f, 1.0f, 0.0f, 0);
+					const bool led = s.leader && ENTITY::DOES_ENTITY_EXIST(s.leader);
+					const Vector3 to = led ? ENTITY::GET_ENTITY_COORDS(s.leader, true) : se.playerAt;
+					const float d = Distance(At(s), to);
+					if (d > (led ? 1.5f : 3.0f) && d < 80.0f)
+					{
+						s.planAt = now + (led ? 500 : 1500);
+						TASK::TASK_FOLLOW_NAV_MESH_TO_COORD(s.ped, to.x, to.y, to.z, 1.0f, -1, led ? 1.0f : 2.0f, 0, 0.0f);
+					}
 				}
 				break;
 			case State::Escort:
@@ -977,6 +1005,7 @@ namespace police::suspect
 				{
 					Set(s, State::Custody, "in the patrol car");
 					ml::Notify("嫌犯已押上警車");
+					custody::Begin(s.id, s.car);
 				}
 				else if (now - s.since > 40000)
 				{
@@ -1096,12 +1125,12 @@ namespace police::suspect
 			case State::Comply:
 			case State::PullOver:
 			case State::Pulled:
-			case State::Cuffed:
-			case State::Escort:
 				out.mode = Target::Mode::Stopped;
 				break;
+			case State::Cuffed:
+			case State::Escort:
 			case State::Custody:
-				continue; // dealt with
+				continue; // dealt with: nobody needs to cover them
 			case State::Stall:
 				// Standing there arguing (or driving on): covered on foot, followed in a car.
 				out.mode = out.car ? Target::Mode::Vehicle : Target::Mode::Stopped;
@@ -1250,6 +1279,66 @@ namespace police::suspect
 		return false;
 	}
 
+	void TakeOut(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id && s.state == State::Custody)
+			{
+				TASK::TASK_LEAVE_VEHICLE(s.ped, s.car, 0);
+				// Cuffed again (not a new arrest: no note).
+				ml::Log("suspect {}: custody -> cuffed (taken out at the station)", s.id);
+				s.state = State::Cuffed;
+				s.since = Now();
+				s.planAt = Now() + 2500;
+			}
+	}
+
+	void LedBy(int id, ::Ped leader)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id)
+			{
+				s.leader = leader;
+				s.planAt = 0;
+			}
+	}
+
+	void Escape(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id && s.state == State::Custody)
+			{
+				records::Note("嫌犯趁隙自警車脫逃（上銬中）");
+				records::Charge("脫逃");
+				s.cuffs = true;
+				s.gaveUp = false;
+				s.senses.lastSeen = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
+				TASK::TASK_LEAVE_VEHICLE(s.ped, s.car, 256);
+				s.planAt = 0; // the way out once out (Flee)
+				s.unseenSince = 0;
+				Set(s, State::Flee, "broke out of the patrol car");
+			}
+	}
+
+	void Delete(int id)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id)
+			{
+				if (s.blip)
+					HUD::REMOVE_BLIP(&s.blip);
+				if (s.area)
+					HUD::REMOVE_BLIP(&s.area);
+				if (ENTITY::DOES_ENTITY_EXIST(s.ped))
+				{
+					ENTITY::SET_ENTITY_AS_MISSION_ENTITY(s.ped, true, true);
+					PED::DELETE_PED(&s.ped);
+				}
+				s.car = 0; // a police car: stays
+				Set(s, State::Gone, "booked");
+			}
+	}
+
 	void Release(int id)
 	{
 		for (Suspect& s : g_suspects)
@@ -1280,7 +1369,7 @@ namespace police::suspect
 				ENTITY::SET_ENTITY_AS_MISSION_ENTITY(s.ped, true, true);
 				PED::DELETE_PED(&s.ped);
 			}
-			if (s.car && ENTITY::DOES_ENTITY_EXIST(s.car))
+			if (s.car && ENTITY::DOES_ENTITY_EXIST(s.car) && VEHICLE::GET_VEHICLE_CLASS(s.car) != 18)
 			{
 				ENTITY::SET_ENTITY_AS_MISSION_ENTITY(s.car, true, true);
 				VEHICLE::DELETE_VEHICLE(&s.car);

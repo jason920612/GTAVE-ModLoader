@@ -273,6 +273,7 @@ namespace police::officer
 		suspect::Forget();
 		ambient::Forget();
 		dispatch::Forget();
+		custody::Forget();
 		records::Forget();
 		search::Forget();
 		mdt::Forget();

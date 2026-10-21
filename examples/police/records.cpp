@@ -78,7 +78,9 @@ namespace police::records
 
 		Json ToJson(const Report& r)
 		{
-			Json charges = Json::Array(), evidence = Json::Array(), log = Json::Array(), people = Json::Array();
+			Json charges = Json::Array(), evidence = Json::Array(), log = Json::Array(), people = Json::Array(), conduct = Json::Array();
+			for (const std::string& s : r.conduct)
+				conduct.Push(s);
 			for (const std::string& s : r.charges)
 				charges.Push(s);
 			for (const std::string& s : r.suggested)
@@ -89,7 +91,7 @@ namespace police::records
 				people.Push(s);
 			return Json{{"id", r.id}, {"title", r.title}, {"date", r.date}, {"time", r.time}, {"place", r.place}, {"outcome", r.outcome},
 			    {"people", people}, {"evidence", log}, {"suggested", evidence}, {"charges", charges}, {"narrative", r.narrative},
-			    {"submitted", r.submitted}, {"score", r.score}};
+			    {"submitted", r.submitted}, {"score", r.score}, {"conduct", conduct}, {"conductPoints", r.conductPoints}};
 		}
 
 		Report FromJson(const Json& j)
@@ -109,6 +111,9 @@ namespace police::records
 				r.suggested.push_back(s.Str());
 			for (const Json& s : j["charges"].Items())
 				r.charges.push_back(s.Str());
+			for (const Json& s : j["conduct"].Items())
+				r.conduct.push_back(s.Str());
+			r.conductPoints = j["conductPoints"].Int();
 			r.narrative = j["narrative"].Str();
 			r.submitted = j["submitted"].Bool();
 			r.score = j["score"].Int();
@@ -351,6 +356,20 @@ namespace police::records
 			g_case.suggested.push_back(charge);
 	}
 
+	std::vector<std::string> Charges()
+	{
+		return g_open ? g_case.suggested : std::vector<std::string>{};
+	}
+
+	void Conduct(int points, const std::string& why)
+	{
+		if (!g_open)
+			return;
+		g_case.conductPoints += points;
+		g_case.conduct.push_back((points >= 0 ? "+" : "") + std::to_string(points) + " " + why);
+		ml::Log("records: conduct {:+} {}", points, why);
+	}
+
 	int EndCase(const std::string& outcome)
 	{
 		if (!g_open)
@@ -368,6 +387,8 @@ namespace police::records
 		r.evidence = g_case.evidence;
 		r.suggested = g_case.suggested;
 		r.charges = g_case.suggested; // the draft starts with what the evidence supports
+		r.conduct = g_case.conduct;
+		r.conductPoints = g_case.conductPoints;
 		// The account, from the log.
 		const std::string me = look::Name().empty() ? "員警" : "員警 " + look::Name();
 		std::string text = me + " 於 " + r.date + " " + r.time + " 受理「" + r.title + "」。\n";
@@ -411,7 +432,8 @@ namespace police::records
 				r.charges = charges;
 				r.narrative = narrative;
 				r.submitted = true;
-				// The quality the department sees: charges backed by the evidence, none left out, a real account.
+				// The quality the department sees: charges backed by the evidence, none left out, a real account, and how
+				// the officer did.
 				int score = 60;
 				for (const std::string& c : r.charges)
 					score += std::find(r.suggested.begin(), r.suggested.end(), c) != r.suggested.end() ? 8 : -10;
@@ -419,6 +441,7 @@ namespace police::records
 					if (std::find(r.charges.begin(), r.charges.end(), c) == r.charges.end())
 						score -= 5;
 				score += std::min(20, static_cast<int>(narrative.size()) / 60);
+				score += r.conductPoints; // how the officer did (the transport)
 				r.score = std::clamp(score, 0, 100);
 				Store();
 				ml::Log("records: report {} submitted, score {}", r.id, r.score);

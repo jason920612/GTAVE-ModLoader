@@ -4,7 +4,8 @@
 // officer lights them up is theirs to decide (suspect.cpp).
 //
 // The action menu (hold E next to a suspect, user's design): order them out of the vehicle, search them, check their
-// ID, cuff them, put them in the patrol car, or let them go. A suspect in the patrol car ends the call as an arrest.
+// ID, cuff them, put them in the patrol car (or the backup's, for them to take in), or let them go. A suspect booked at a
+// station or the prison (custody.cpp) ends the call as an arrest.
 #include "police.hpp"
 
 #include <algorithm>
@@ -188,6 +189,17 @@ namespace police::dispatch
 			return 0;
 		}
 
+		// The nearest backup car (theirs to drive) within 60 m.
+		Vehicle UnitCarNear(const Vector3& at)
+		{
+			Vehicle best = 0;
+			float bestD = 60.0f;
+			for (const Vehicle v : units::Cars())
+				if (const float d = Distance(ENTITY::GET_ENTITY_COORDS(v, true), at); d < bestD && !ENTITY::IS_ENTITY_DEAD(v, false))
+					best = v, bestD = d;
+			return best;
+		}
+
 		// The vehicle search areas: each one, or all that are left, by the officer or the backup.
 		menu::List CarSearch(Vehicle car)
 		{
@@ -264,10 +276,18 @@ namespace police::dispatch
 				}
 				else
 				{
-					menu::Item put{"押上警車", "", "60 公尺內的警車"};
+					menu::Item put{"押上警車（自己載送）", "", "60 公尺內的警車，之後開去警局或監獄"};
 					put.enabled = PatrolCarNear(ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true)) != 0;
 					put.action = [id] { suspect::PutInCar(id, PatrolCarNear(ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true))); };
 					m.items.push_back(put);
+					const Vehicle unit = UnitCarNear(ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true));
+					menu::Item hand{"交給支援載送", unit ? "" : "沒有支援警車", "押上支援的警車，由他們送去收押"};
+					hand.enabled = unit != 0;
+					hand.action = [id, unit] {
+						custody::ByBackup(id);
+						suspect::PutInCar(id, unit);
+					};
+					m.items.push_back(hand);
 				}
 			}
 			menu::Item go{"放他走", "", "不予逮捕"};
@@ -283,7 +303,7 @@ namespace police::dispatch
 		void TickActions()
 		{
 			const ::Ped player = PLAYER::PLAYER_PED_ID();
-			if (menu::IsOpen() || PED::IS_PED_IN_ANY_VEHICLE(player, false) || !duty::OnDuty())
+			if (menu::IsOpen() || PED::IS_PED_IN_ANY_VEHICLE(player, false) || !duty::OnDuty() || custody::Busy())
 			{
 				g_holdSuspect = 0;
 				return;
@@ -426,9 +446,9 @@ namespace police::dispatch
 		case Call::Active:
 		{
 			const suspect::Status st = suspect::StatusOf(g_suspect);
-			if (st.custody)
+			if (std::string where; custody::Booked(g_suspect, &where))
 			{
-				End("嫌犯已逮捕，案件結束。辛苦了。", "嫌犯逮捕");
+				End(("嫌犯已收押於" + where + "，案件結束。辛苦了。").c_str(), ("嫌犯逮捕，收押於" + where).c_str());
 				break;
 			}
 			if (st.dead)
