@@ -402,6 +402,8 @@ namespace police::duty
 			return;
 		}
 		const ::Ped ped = PLAYER::PLAYER_PED_ID();
+		// Nobody drags an officer on duty out of their car (passers-by jacked the patrol car the officer sat in).
+		PED::SET_PED_CAN_BE_DRAGGED_OUT(ped, !OnDuty());
 		const Station& station = Current();
 		const Vector3 at = ENTITY::GET_ENTITY_COORDS(ped, true);
 		Props(!station.lockers.empty() && Distance(at, station.locker) < 80.0f);
@@ -446,7 +448,8 @@ namespace police::duty
 		for (const auto& [from, to, text] : {std::tuple{station.doorInside, station.doorOutside, "按 ~INPUT_CONTEXT~ 去停車場"},
 		         std::tuple{station.doorOutside, station.doorInside, "按 ~INPUT_CONTEXT~ 進警局"}})
 		{
-			if (station.door || Distance(at, from) >= 25.0f)
+			// (not while booking someone at Mission Row's back door: the same spot)
+			if (station.door || Distance(at, from) >= 25.0f || custody::Busy())
 				continue;
 			Marker(from);
 			if (Distance(at, from) < 1.2f)

@@ -168,6 +168,13 @@ namespace police::dispatch
 
 		// ---- the action menu
 		int g_holdSuspect = 0;
+		// A suspect waiting for the backup's car to come up (handed over to them).
+		struct HandOver
+		{
+			int id = 0;
+			Vehicle car = 0;
+			uint64_t since = 0;
+		} g_handOver;
 		uint64_t g_holdSince = 0;
 
 		Vehicle PatrolCarNear(const Vector3& at)
@@ -189,6 +196,15 @@ namespace police::dispatch
 			return 0;
 		}
 
+		// When there is none within 60 m: how far off the officer's own car is (walked to, a cuffed suspect follows).
+		std::string NoPatrolCar(const Vector3& at)
+		{
+			for (const Vehicle v : {duty::PatrolCar(), PED::GET_VEHICLE_PED_IS_IN(PLAYER::PLAYER_PED_ID(), true)})
+				if (v && ENTITY::DOES_ENTITY_EXIST(v) && VEHICLE::GET_VEHICLE_CLASS(v) == 18)
+					return "警車在 " + std::to_string(static_cast<int>(Distance(ENTITY::GET_ENTITY_COORDS(v, true), at))) + " 公尺外";
+			return "附近沒有警車";
+		}
+
 		// The nearest backup car (theirs to drive) within 60 m.
 		Vehicle UnitCarNear(const Vector3& at)
 		{
@@ -198,6 +214,14 @@ namespace police::dispatch
 				if (const float d = Distance(ENTITY::GET_ENTITY_COORDS(v, true), at); d < bestD && !ENTITY::IS_ENTITY_DEAD(v, false))
 					best = v, bestD = d;
 			return best;
+		}
+
+		// Whether a backup officer is at hand to help ("" = yes, else why not).
+		std::string HelpState(const Vector3& at)
+		{
+			if (!units::Backup())
+				return "沒有支援";
+			return units::Near(at, 120.0f) > 0 ? "" : "支援還沒到";
 		}
 
 		// The vehicle search areas: each one, or all that are left, by the officer or the backup.
@@ -213,8 +237,8 @@ namespace police::dispatch
 			menu::Item all{"全部（剩下的）", "", "依序搜完沒搜過的區域"};
 			all.action = [car] { search::SearchCar(car, -1, false); };
 			m.items.push_back(all);
-			menu::Item help{"請支援搜車", units::Backup() ? "" : "沒有支援", "身邊的支援警員去搜剩下的區域，完成後無線電回報"};
-			help.enabled = units::Backup() > 0;
+			menu::Item help{"請支援搜車", HelpState(ENTITY::GET_ENTITY_COORDS(car, true)), "身邊的支援警員去搜剩下的區域，完成後無線電回報"};
+			help.enabled = help.detail.empty();
 			help.action = [car] { search::SearchCar(car, -1, true); };
 			m.items.push_back(help);
 			return m;
@@ -255,8 +279,8 @@ namespace police::dispatch
 				menu::Item frisk{"搜身", search::Frisked(ped) ? "已搜" : "", "武器、管制藥物"};
 				frisk.action = [ped] { search::Frisk(ped, false); };
 				m.items.push_back(frisk);
-				menu::Item friskHelp{"請支援搜身", units::Backup() ? "" : "沒有支援", "身邊的支援警員來搜"};
-				friskHelp.enabled = units::Backup() > 0;
+				menu::Item friskHelp{"請支援搜身", HelpState(ENTITY::GET_ENTITY_COORDS(ped, true)), "身邊的支援警員來搜"};
+				friskHelp.enabled = friskHelp.detail.empty();
 				friskHelp.action = [ped] { search::Frisk(ped, true); };
 				m.items.push_back(friskHelp);
 				if (car && !PED::IS_PED_IN_VEHICLE(ped, car, false))
@@ -276,16 +300,27 @@ namespace police::dispatch
 				}
 				else
 				{
+					const Vector3 me = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
 					menu::Item put{"押上警車（自己載送）", "", "60 公尺內的警車，之後開去警局或監獄"};
-					put.enabled = PatrolCarNear(ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true)) != 0;
+					put.enabled = PatrolCarNear(me) != 0;
+					if (!put.enabled)
+						put.detail = NoPatrolCar(me);
 					put.action = [id] { suspect::PutInCar(id, PatrolCarNear(ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true))); };
 					m.items.push_back(put);
 					const Vehicle unit = UnitCarNear(ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true));
-					menu::Item hand{"交給支援載送", unit ? "" : "沒有支援警車", "押上支援的警車，由他們送去收押"};
-					hand.enabled = unit != 0;
+					const bool fetchable = !unit && units::Near(ENTITY::GET_ENTITY_COORDS(ped, true), 400.0f) > 0;
+					menu::Item hand{"交給支援載送", unit ? "" : fetchable ? "支援開車過來" : units::Backup() ? "支援還沒到" : "沒有支援",
+					    unit ? "押上支援的警車，由他們送去收押" : "支援把警車開過來，再押上車由他們送去收押"};
+					hand.enabled = unit != 0 || fetchable;
 					hand.action = [id, unit] {
 						custody::ByBackup(id);
-						suspect::PutInCar(id, unit);
+						if (unit)
+							suspect::PutInCar(id, unit);
+						else if (const Vehicle coming = units::Summon(ENTITY::GET_ENTITY_COORDS(suspect::StatusOf(id).ped, true)))
+						{
+							g_handOver = {id, coming, ml::TickMs()};
+							ml::Notify("支援：收到，車開過來了");
+						}
 					};
 					m.items.push_back(hand);
 				}
@@ -409,6 +444,7 @@ namespace police::dispatch
 
 	void Forget()
 	{
+		g_handOver = {};
 		g_call = Call::None;
 		g_suspect = 0;
 		g_area = 0;
@@ -428,6 +464,24 @@ namespace police::dispatch
 			return;
 		}
 		TickActions();
+		if (g_handOver.id)
+		{
+			const suspect::Status st = suspect::StatusOf(g_handOver.id);
+			const bool there = ENTITY::DOES_ENTITY_EXIST(g_handOver.car) &&
+			                   Distance(ENTITY::GET_ENTITY_COORDS(g_handOver.car, true), ENTITY::GET_ENTITY_COORDS(st.ped, true)) < 20.0f;
+			if (st.gone || !st.cuffed)
+				g_handOver = {};
+			else if (there)
+			{
+				suspect::PutInCar(g_handOver.id, g_handOver.car);
+				g_handOver = {};
+			}
+			else if (now - g_handOver.since > 120000)
+			{
+				ml::Notify("支援的車過不來：押上你的警車");
+				g_handOver = {};
+			}
+		}
 		switch (g_call)
 		{
 		case Call::None:
@@ -461,9 +515,11 @@ namespace police::dispatch
 				End("嫌犯逃脫");
 				break;
 			}
-			// Found: the officer sees the car (the suspect's own blip shows from now on).
+			// Found: the officer sees the car or the plate reader reads it (the suspect's own blip shows from now on).
 			suspect::Target t;
 			if (!g_found && suspect::Pursued(t) && t.known)
+				g_found = true;
+			if (!g_found && mdt::Ahead() && mdt::Ahead() == suspect::CarOf(g_suspect))
 				g_found = true;
 			if (!g_found)
 			{

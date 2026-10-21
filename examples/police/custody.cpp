@@ -301,6 +301,16 @@ namespace police::custody
 			const Facility& f = kFacilities[g_job.dest];
 			ClearBlip();
 			suspect::TakeOut(g_job.id);
+			// The door on the map (the marker on the ground is easy to miss from the car park).
+			g_job.blip = HUD::ADD_BLIP_FOR_COORD(f.door.x, f.door.y, f.door.z);
+			HUD::SET_BLIP_SPRITE(g_job.blip, f.prison ? 188 : 60);
+			HUD::SET_BLIP_COLOUR(g_job.blip, 3);
+			HUD::SET_BLIP_SCALE(g_job.blip, 0.7f);
+			HUD::SET_BLIP_ROUTE(g_job.blip, true);
+			HUD::SET_BLIP_ROUTE_COLOUR(g_job.blip, 3);
+			HUD::BEGIN_TEXT_COMMAND_SET_BLIP_NAME("STRING");
+			HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME("收押入口");
+			HUD::END_TEXT_COMMAND_SET_BLIP_NAME(g_job.blip);
 			// The jailer at the door.
 			const Hash model = MISC::GET_HASH_KEY(f.prison ? "s_m_m_prisguard_01" : duty::CopModel());
 			if (const auto loaded = ml::LoadModel(model))
@@ -315,6 +325,7 @@ namespace police::custody
 				}
 			}
 			g_job.stage = Stage::Arrived;
+			ml::Log("custody: door at ({:.1f}, {:.1f}), jailer {}", f.door.x, f.door.y, g_job.jailer);
 			records::Note("抵達" + std::string(f.name));
 			ml::Notify("到了。帶嫌犯到門口，按住 ~INPUT_CONTEXT~ 辦理收押");
 			ml::Log("custody: arrived at {}", f.name);
@@ -462,6 +473,7 @@ namespace police::custody
 						TASK::TASK_GO_STRAIGHT_TO_COORD(g_job.jailer, in.x, in.y, in.z, 1.0f, 8000, f.door.heading + 180.0f, 0.5f);
 						suspect::LedBy(g_job.id, g_job.jailer);
 					}
+					ClearBlip();
 					g_job.stage = Stage::Leaving;
 					g_job.leaveAt = now + 3500;
 					return;
@@ -475,9 +487,18 @@ namespace police::custody
 			if (menu::IsOpen())
 				return;
 			// Both at the door: hold E.
-			const bool ready = Distance(at, door) < 4.0f && Distance(ENTITY::GET_ENTITY_COORDS(g_job.ped, true), door) < 7.0f;
+			const float officerAt = Distance(at, door), suspectAt = Distance(ENTITY::GET_ENTITY_COORDS(g_job.ped, true), door);
+			const bool ready = officerAt < 4.0f && suspectAt < 10.0f;
 			if (!ready)
 			{
+				static uint64_t told = 0;
+				if (officerAt < 6.0f && PAD::IS_CONTROL_PRESSED(0, 51) && now - told > 3000)
+				{
+					told = now;
+					ml::Notify("{}", suspectAt >= 10.0f ? "嫌犯還沒跟上來" : "再靠近門口一點");
+					ml::Log("custody: not ready at the door (officer {:.1f} m, suspect {:.1f} m, jailer {})", officerAt, suspectAt,
+					    g_job.jailer && ENTITY::DOES_ENTITY_EXIST(g_job.jailer));
+				}
 				GRAPHICS::DRAW_MARKER(1, door.x, door.y, door.z - 1.0f, 0, 0, 0, 0, 0, 0, 1.2f, 1.2f, 0.6f, 93, 182, 229, 120, false, false, 2, false, nullptr, nullptr, false);
 				g_hold = 0;
 				return;

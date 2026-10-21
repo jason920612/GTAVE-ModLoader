@@ -95,6 +95,7 @@ namespace police::ai
 		s.aimedAt = s.seesPlayer && (PLAYER::IS_PLAYER_FREE_AIMING_AT_ENTITY(id, ped) || PLAYER::IS_PLAYER_TARGETTING_ENTITY(id, ped));
 		// The officer's side: the backup and the siren of a police car nearby.
 		s.copsNear = units::Near(me, 25.0f);
+		s.covered = units::Covering(me, 10.0f);
 		s.siren = false;
 		if (PED::IS_PED_IN_ANY_VEHICLE(player, false))
 		{
@@ -107,7 +108,7 @@ namespace police::ai
 	float Pressure(const Senses& s)
 	{
 		if (!s.seesPlayer && ml::TickMs() - s.lastSeenAt > 3000)
-			return 0.0f;
+			return s.covered ? 0.3f : 0.0f; // out of the officer's sight, not the backup's
 		float p = 0.0f;
 		if (s.aimedAt)
 			p += 0.5f;
@@ -115,6 +116,8 @@ namespace police::ai
 			p += 0.2f;
 		p += std::clamp(1.0f - s.distance / 30.0f, 0.0f, 1.0f) * 0.3f; // close
 		p += 0.15f * static_cast<float>(std::min(s.copsNear, 3));
+		if (s.covered)
+			p += 0.3f; // a gun on them, if not the officer's
 		if (s.siren)
 			p += 0.1f;
 		if (s.hurt)

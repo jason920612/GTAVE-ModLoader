@@ -93,6 +93,7 @@ namespace police::suspect
 			ai::Profile profile;
 			State state = State::Unaware;
 			State next = State::Unaware; // what the tell leads to
+		State pending = State::Unaware; // a change of mind not yet confirmed (complying or stalling)
 			uint64_t since = 0;          // state began
 			uint64_t thinkAt = 0;        // next decision
 			uint64_t senseAt = 0;
@@ -300,13 +301,16 @@ namespace police::suspect
 			const bool outgunned = s.senses.aimedAt && armed < 1.0f;
 			float comply = (1.0f - p.nerve) * 0.6f + pressure * 0.8f - p.guilt * 0.5f - p.hostility * 0.3f;
 			float stall = 0.35f + p.hostility * 0.2f - pressure * 0.2f;
-			float flee = p.nerve * 0.4f + p.guilt * 0.8f - pressure * 0.35f;
+			// What they have to lose drives them to run only as far as they dare (the timid give up however guilty).
+			float flee = p.nerve * 0.3f + p.guilt * 0.8f * (0.35f + 0.65f * p.nerve) - pressure * 0.35f;
 			float fight = p.hostility * 0.8f + p.nerve * 0.3f + armed * 0.15f - pressure * 0.6f - (outgunned ? 0.6f : 0.0f) - 0.3f;
 			float shoot = p.armed >= 2 ? p.hostility * 0.9f + p.guilt * 0.3f - pressure * (p.skill == ai::Skill::Veteran ? 0.7f : 0.4f) - 0.2f : -9.0f;
 			if (s.cuffs)
 				fight = shoot = -9.0f, stall = -9.0f; // hands behind the back: run on or give up
 			if (s.senses.distance < 3.0f)
 				flee -= 0.3f; // the officer is right there
+			else if (s.senses.covered)
+				flee -= 0.25f; // the backup's gun on them while the officer is busy elsewhere (searching the car)
 			if (s.senses.hurt)
 				flee -= 0.2f, fight -= 0.3f;
 			flee -= (1.0f - s.stamina) * 0.6f; // out of breath
@@ -662,8 +666,15 @@ namespace police::suspect
 		void Tick(Suspect& s)
 		{
 			const uint64_t now = Now();
+			if (s.state == State::Gone)
+				return; // (booked or let go: removed below)
 			if (!ENTITY::DOES_ENTITY_EXIST(s.ped) || ENTITY::IS_ENTITY_DEAD(s.ped, false))
 			{
+				if (ENTITY::DOES_ENTITY_EXIST(s.ped))
+					ml::Log("suspect {}: dead (health {}, killed by {}, cause {:#x})", s.id, ENTITY::GET_ENTITY_HEALTH(s.ped), PED::GET_PED_SOURCE_OF_DEATH(s.ped),
+					    PED::GET_PED_CAUSE_OF_DEATH(s.ped));
+				else
+					ml::Log("suspect {}: no longer exists", s.id);
 				Set(s, State::Gone, "dead or gone");
 				return;
 			}
@@ -718,10 +729,18 @@ namespace police::suspect
 				// A decision holds for a few seconds (no flip-flopping).
 				if (now >= s.thinkAt && now - s.since > (s.state == State::Comply ? 5000u : 2000u))
 				{
+					// A change of mind has to hold over two decisions in a row (no flip-flopping on a whim).
 					s.thinkAt = now + 1000;
 					const State choice = Decide(s);
-					if (choice != s.state)
+					if (choice == s.state)
+						s.pending = State::Unaware;
+					else if (choice != s.pending)
+						s.pending = choice;
+					else
+					{
+						s.pending = State::Unaware;
 						Begin(s, choice);
+					}
 				}
 				break;
 			case State::Tell:
@@ -864,6 +883,8 @@ namespace police::suspect
 				const float speed = ENTITY::GET_ENTITY_SPEED(s.car);
 				if (now - s.since > 2500 && speed < 1.0f)
 				{
+					// Stopped, short of the kerb or not: the drive there ends (it would carry on once the halt is over).
+					TASK::CLEAR_PED_TASKS(s.ped);
 					VEHICLE::BRING_VEHICLE_TO_HALT(s.car, 1.0f, 1, false);
 					VEHICLE::SET_VEHICLE_INDICATOR_LIGHTS(s.car, 0, false);
 					if (s.ambush)
@@ -878,6 +899,7 @@ namespace police::suspect
 				}
 				else if (now - s.since > 15000)
 				{
+					TASK::CLEAR_PED_TASKS(s.ped);
 					VEHICLE::BRING_VEHICLE_TO_HALT(s.car, 3.0f, 1, false);
 					Set(s, State::Pulled, "stopped where they were");
 				}
@@ -995,8 +1017,9 @@ namespace police::suspect
 					const float d = Distance(At(s), to);
 					if (d > (led ? 1.5f : 3.0f) && d < 80.0f)
 					{
+						// A walk; a jog when left behind (the officer hurrying on).
 						s.planAt = now + (led ? 500 : 1500);
-						TASK::TASK_FOLLOW_NAV_MESH_TO_COORD(s.ped, to.x, to.y, to.z, 1.0f, -1, led ? 1.0f : 2.0f, 0, 0.0f);
+						TASK::TASK_FOLLOW_NAV_MESH_TO_COORD(s.ped, to.x, to.y, to.z, d > 6.0f ? 2.0f : 1.0f, -1, led ? 1.0f : 2.0f, 0, 0.0f);
 					}
 				}
 				break;

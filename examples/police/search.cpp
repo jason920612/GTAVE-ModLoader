@@ -9,6 +9,7 @@
 #include <cmath>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace police::search
@@ -145,6 +146,7 @@ namespace police::search
 			Vector3 at{};
 			::Ped who = 0;
 			bool officer = false;   // the player (else a backup officer)
+			bool leaving = false;   // getting out of their car first
 			Vehicle car = 0;
 			::Ped target = 0;       // a person to frisk
 			std::vector<int> zones; // areas still to do (vehicle)
@@ -212,6 +214,22 @@ namespace police::search
 			}
 			if (j.stage == 0)
 			{
+				// A backup officer still in their car gets out first.
+				if (PED::IS_PED_IN_ANY_VEHICLE(j.who, false))
+				{
+					if (!j.leaving)
+					{
+						j.leaving = true;
+						TASK::TASK_LEAVE_VEHICLE(j.who, PED::GET_VEHICLE_PED_IS_IN(j.who, false), 0);
+					}
+					j.started = now; // (the walk's time starts once out)
+					return false;
+				}
+				if (std::exchange(j.leaving, false))
+				{
+					Walk(j);
+					return false;
+				}
 				const Vector3 me = ENTITY::GET_ENTITY_COORDS(j.who, true);
 				if (Distance(me, j.at) < 1.0f || now - j.started > 15000)
 				{
@@ -357,6 +375,22 @@ namespace police::search
 		}
 		else
 			Start(PLAYER::PLAYER_PED_ID(), true, car, 0, zones);
+	}
+
+	void Drop(::Ped who)
+	{
+		const auto it = std::find_if(g_jobs.begin(), g_jobs.end(), [&](const Job& j) { return j.who == who && !j.officer; });
+		if (it == g_jobs.end())
+			return;
+		if (it->car && ENTITY::DOES_ENTITY_EXIST(it->car))
+		{
+			VEHICLE::SET_VEHICLE_DOOR_SHUT(it->car, Door(it->zones.front()), false);
+			ml::Notify("支援：搜車先停在這裡，剩下的區域還沒搜");
+		}
+		else if (!it->car)
+			ml::Notify("支援：搜身先停，還沒搜完");
+		ml::Log("search: backup called away, {} left", it->car ? it->zones.size() : 1);
+		g_jobs.erase(it);
 	}
 
 	void Forget()

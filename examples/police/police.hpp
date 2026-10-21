@@ -161,8 +161,12 @@ namespace police::units
 	void Return(::Ped helper);
 	// Backup officers within `radius` of a place (how many police a suspect has on them).
 	int Near(const Vector3& at, float radius);
+	// A backup officer on foot has a gun on them from within `radius` (covering a suspect who complies).
+	bool Covering(const Vector3& at, float radius);
 	// The car is a backup unit's.
 	bool IsUnitCar(Vehicle car);
+	// The nearest unit drives its car up to a place (to take a suspect over): the car, 0 = no unit.
+	Vehicle Summon(const Vector3& to);
 	// The unit of this car drives a suspect in to `to` (the transport); false when it is not a unit's car.
 	bool Transport(Vehicle car, const Vector3& to);
 	// The transport is there (or out of sight long enough to have got there).
@@ -229,6 +233,7 @@ namespace police::ai
 		bool aimedAt = false;  // the officer points a gun at them
 		bool gunDrawn = false; // a firearm in hand
 		int copsNear = 0;      // backup on scene
+		bool covered = false;  // a backup officer has a gun on them from a few metres
 		bool siren = false;    // a police car with lights or siren close by
 		bool hurt = false;
 	};
@@ -412,6 +417,8 @@ namespace police::search
 	// a weapon nobody had found.
 	bool Book(::Ped target);
 	void SearchCar(Vehicle car, int zone, bool backup);
+	// A backup officer called away by their unit: their search stops where it is (what is left stays unsearched).
+	void Drop(::Ped who);
 	void Forget();
 	void Tick();
 }

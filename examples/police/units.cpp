@@ -26,6 +26,7 @@ namespace police::units
 			Leaving, // back to the car, then away
 			Pursuit, // after a suspect (see above)
 			Transport, // taking a suspect in (custody.cpp)
+			Fetch,     // bringing their car up to the officer (to take a suspect over)
 		};
 		enum class Role
 		{
@@ -67,6 +68,7 @@ namespace police::units
 			uint64_t eta = 0;        // when it would be there at the latest
 			bool driving = false;    // the transport under way
 			bool delivered = false;
+			bool tagging = false;    // after the officer's car from a scene (not called in): lights as the officer's
 		};
 		int g_nextUnit = 1;
 		std::vector<::Ped> g_borrowed; // officers lent out (a search): their unit leaves them be
@@ -75,7 +77,27 @@ namespace police::units
 			return std::find(g_borrowed.begin(), g_borrowed.end(), p) != g_borrowed.end();
 		}
 		std::vector<Unit> g_units;
-		constexpr size_t kMaxUnits = 2;
+		// How many units dispatch sends depends on how serious it is (user's design): a quiet patrol one, a call two, a
+		// pursuit or a suspect known to be armed or fighting three, shots at the police four.
+		size_t MaxUnits(const char*& why)
+		{
+			size_t n = 1;
+			why = "一般勤務";
+			if (records::CaseOpen())
+				n = 2, why = "處理中的案件";
+			const std::vector<std::string> charges = records::Charges();
+			const auto charged = [&](const char* c) { return std::find(charges.begin(), charges.end(), c) != charges.end(); };
+			suspect::Target t;
+			if (suspect::Pursued(t) && (t.mode == suspect::Target::Mode::Foot || t.mode == suspect::Target::Mode::Vehicle))
+				n = 3, why = "追捕中";
+			if (charged("非法持有武器") || charged("持有危險器械"))
+				n = std::max<size_t>(n, 3), why = n == 3 ? "嫌犯持有武器" : why;
+			if (suspect::Pursued(t) && t.mode == suspect::Target::Mode::Armed)
+				n = 3, why = "嫌犯反抗";
+			if (charged("以武器攻擊警察"))
+				n = 4, why = "嫌犯開槍攻擊員警";
+			return n;
+		}
 
 		// The colleague bringing the patrol car.
 		struct Valet
@@ -177,6 +199,29 @@ namespace police::units
 			}
 		}
 
+		bool InCar(const Unit& u, ::Ped p)
+		{
+			return Exists(u.car) && PED::IS_PED_IN_VEHICLE(p, u.car, false);
+		}
+
+		void Board(Unit& u)
+		{
+			int seat = -1;
+			for (::Ped p : u.crew)
+			{
+				if (Alive(p) && !Borrowed(p) && !PED::IS_PED_IN_VEHICLE(p, u.car, true))
+					TASK::TASK_ENTER_VEHICLE(p, u.car, 10000, seat, 2.0f, 1, nullptr);
+				++seat;
+			}
+		}
+
+		void Unboard(Unit& u)
+		{
+			for (::Ped p : u.crew)
+				if (Alive(p) && InCar(u, p))
+					TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
+		}
+
 		void TickUnit(Unit& u, bool& done)
 		{
 			const uint64_t now = ml::TickMs();
@@ -186,9 +231,16 @@ namespace police::units
 			{
 			case State::Coming:
 			{
+				bool aboard = true;
+				for (::Ped p : u.crew)
+					if (Alive(p) && !Borrowed(p) && !InCar(u, p))
+						aboard = false;
+				if (!aboard && Exists(u.car) && Alive(driver) && now - u.since < 20000)
+					break; // getting back in
 				if (!Exists(u.car) || !Alive(driver) || !PED::IS_PED_IN_VEHICLE(driver, u.car, false))
 				{
 					u.state = State::OnScene; // whatever is left of them helps on foot
+					u.tagging = false;
 					for (::Ped p : u.crew)
 						if (Alive(p))
 						{
@@ -198,11 +250,15 @@ namespace police::units
 					break;
 				}
 				const Vector3 at = ENTITY::GET_ENTITY_COORDS(u.car, true);
-				if (Distance(at, me) < 25.0f)
+				const ::Ped pl = PLAYER::PLAYER_PED_ID();
+				const Vehicle officerCar = PED::GET_VEHICLE_PED_IS_IN(pl, true);
+				const int stage = Exists(officerCar) ? lights::Stage(officerCar) : 0;
+				if (Distance(at, me) < 25.0f && !PED::IS_PED_IN_ANY_VEHICLE(pl, true))
 				{
 					// There: stop (lights on, siren quiet), get out and join the officer.
 					VEHICLE::BRING_VEHICLE_TO_HALT(u.car, 5.0f, 2, false);
-					lights::Set(u.car, 2);
+					lights::Set(u.car, !u.tagging ? 2 : stage >= 2 ? 2 : 0);
+					u.tagging = false;
 					for (::Ped p : u.crew)
 						if (Alive(p))
 						{
@@ -217,15 +273,70 @@ namespace police::units
 				else if (now >= u.nextTask && Distance(u.target, me) > 15.0f)
 				{
 					u.target = me;
-					DriveTo(driver, u.car, me, kEmergency, 15.0f);
+					if (u.tagging)
+						lights::Set(u.car, stage >= 2 ? stage : 0);
+					DriveTo(driver, u.car, me, !u.tagging || stage >= 2 ? kEmergency : kNormal, 15.0f);
 					u.nextTask = now + 3000;
 				}
 				break;
 			}
 			case State::OnScene:
+			{
+				// The officer getting in a car: nobody climbs in with them (the group would); once it drives off, back in
+				// their own car and after it. On foot again: with the officer.
+				const ::Ped pl = PLAYER::PLAYER_PED_ID();
+				const int group = PLAYER::GET_PLAYER_GROUP(PLAYER::PLAYER_ID());
+				const Vehicle officerCar = PED::GET_VEHICLE_PED_IS_USING(pl);
+				if (!Exists(officerCar) || officerCar == u.car)
+				{
+					for (::Ped p : u.crew)
+						if (Alive(p) && !Borrowed(p) && !PED::IS_PED_GROUP_MEMBER(p, group))
+						{
+							PED::SET_PED_AS_GROUP_MEMBER(p, group);
+							PED::SET_PED_NEVER_LEAVES_GROUP(p, true);
+						}
+					break;
+				}
+				for (::Ped p : u.crew)
+					if (Alive(p) && !Borrowed(p) && PED::IS_PED_GROUP_MEMBER(p, group))
+					{
+						PED::REMOVE_PED_FROM_GROUP(p);
+						if (PED::IS_PED_IN_VEHICLE(p, officerCar, true))
+							TASK::TASK_LEAVE_VEHICLE(p, officerCar, 0);
+						else
+							TASK::CLEAR_PED_TASKS(p);
+					}
+				if (ENTITY::GET_ENTITY_SPEED(officerCar) > 2.0f && Exists(u.car) && Alive(driver) &&
+				    Distance(ENTITY::GET_ENTITY_COORDS(driver, true), ENTITY::GET_ENTITY_COORDS(u.car, true)) < 80.0f)
+				{
+					Board(u);
+					u.state = State::Coming;
+					u.tagging = true;
+					u.since = now;
+					u.target = {};
+					u.nextTask = now + 2000;
+					ml::Log("units: unit {} back in the car, after the officer", u.id);
+				}
 				break;
+			}
 			case State::Pursuit:
 				break; // see Pursue
+			case State::Fetch:
+			{
+				// Back in the car, then up to the place; there they wait in it.
+				if (!Exists(u.car) || !Alive(driver))
+					break;
+				bool aboard = true;
+				for (::Ped p : u.crew)
+					if (Alive(p) && !PED::IS_PED_IN_VEHICLE(p, u.car, false))
+						aboard = false;
+				if (!u.driving && (aboard || now - u.since > 20000))
+				{
+					DriveTo(driver, u.car, u.dest, kNormal | 512 | 262144, 6.0f);
+					u.driving = true;
+				}
+				break;
+			}
 			case State::Transport:
 			{
 				// Everyone aboard (or a while gone by), then off at normal speed; there once close, or once out of the
@@ -292,10 +403,22 @@ namespace police::units
 			}
 		}
 
+		// The unit wants its officers back (a transport, its car, back on patrol): any lent out stop what they do.
+		void Recall(Unit& u)
+		{
+			for (::Ped p : u.crew)
+				if (Borrowed(p))
+				{
+					search::Drop(p);
+					g_borrowed.erase(std::remove(g_borrowed.begin(), g_borrowed.end(), p), g_borrowed.end());
+				}
+		}
+
 		void Dismiss(Unit& u)
 		{
 			if (u.state == State::Leaving)
 				return;
+			Recall(u);
 			u.state = State::Leaving;
 			u.since = ml::TickMs();
 			int seat = -1;
@@ -309,29 +432,6 @@ namespace police::units
 				}
 			if (Exists(u.car))
 				lights::Set(u.car, 0);
-		}
-
-		bool InCar(const Unit& u, ::Ped p)
-		{
-			return Exists(u.car) && PED::IS_PED_IN_VEHICLE(p, u.car, false);
-		}
-
-		void Board(Unit& u)
-		{
-			int seat = -1;
-			for (::Ped p : u.crew)
-			{
-				if (Alive(p) && !PED::IS_PED_IN_VEHICLE(p, u.car, true))
-					TASK::TASK_ENTER_VEHICLE(p, u.car, 10000, seat, 2.0f, 1, nullptr);
-				++seat;
-			}
-		}
-
-		void Unboard(Unit& u)
-		{
-			for (::Ped p : u.crew)
-				if (Alive(p) && InCar(u, p))
-					TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
 		}
 
 		// The unit in a pursuit: its role from what the suspect does, re-given when it changes (and the driver's
@@ -352,6 +452,19 @@ namespace police::units
 			if (now < u.nextTask)
 				return;
 			u.nextTask = now + 2500;
+			// In the car and the suspect further than `reach`: the driver drives up, the others sit tight (true). Closer: out.
+			const auto driveUp = [&](::Ped p, float reach) {
+				if (!InCar(u, p))
+					return false;
+				if (Distance(ENTITY::GET_ENTITY_COORDS(u.car, true), ENTITY::GET_ENTITY_COORDS(t.ped, true)) > reach)
+				{
+					if (p == VEHICLE::GET_PED_IN_VEHICLE_SEAT(u.car, -1, false))
+						TASK::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(p, u.car, t.lastKnown.x, t.lastKnown.y, t.lastKnown.z, 30.0f, kEmergency, 15.0f);
+				}
+				else
+					TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
+				return true;
+			};
 			switch (want)
 			{
 			case Role::Follow:
@@ -408,49 +521,24 @@ namespace police::units
 				if (Exists(u.car))
 					lights::Set(u.car, 2);
 				for (::Ped p : u.crew)
-					if (Alive(p) && !Borrowed(p))
-					{
-						if (InCar(u, p))
-						{
-							// Drive up close first when far.
-							if (p == VEHICLE::GET_PED_IN_VEHICLE_SEAT(u.car, -1, false) &&
-							    Distance(ENTITY::GET_ENTITY_COORDS(u.car, true), ENTITY::GET_ENTITY_COORDS(t.ped, true)) > 40.0f)
-								TASK::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(p, u.car, t.lastKnown.x, t.lastKnown.y, t.lastKnown.z, 30.0f, kEmergency, 15.0f);
-							else
-								TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
-						}
-						else
-							TASK::TASK_GO_TO_ENTITY(p, t.ped, -1, 1.2f, 3.0f, 0.0f, 0); // run them down, no shooting
-					}
+					if (Alive(p) && !Borrowed(p) && !driveUp(p, 40.0f))
+						TASK::TASK_GO_TO_ENTITY(p, t.ped, -1, 1.2f, 3.0f, 0.0f, 0); // run them down, no shooting
 				break;
 			case Role::Engage:
 				for (::Ped p : u.crew)
-					if (Alive(p) && !Borrowed(p))
-					{
-						if (InCar(u, p))
-							TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
-						else
-							TASK::TASK_COMBAT_PED(p, t.ped, 0, 16);
-					}
+					if (Alive(p) && !Borrowed(p) && !driveUp(p, 60.0f))
+						TASK::TASK_COMBAT_PED(p, t.ped, 0, 16);
 				break;
 			case Role::Cover:
 				for (::Ped p : u.crew)
-					if (Alive(p) && !Borrowed(p))
+					if (Alive(p) && !Borrowed(p) && !driveUp(p, 40.0f))
 					{
-						if (InCar(u, p))
-						{
-							if (Distance(ENTITY::GET_ENTITY_COORDS(p, true), ENTITY::GET_ENTITY_COORDS(t.ped, true)) < 40.0f)
-								TASK::TASK_LEAVE_VEHICLE(p, u.car, 256);
-						}
+						// Weapon on them from a few metres.
+						const Vector3 at = ENTITY::GET_ENTITY_COORDS(t.ped, true);
+						if (Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) > 7.0f)
+							TASK::TASK_GO_TO_ENTITY_WHILE_AIMING_AT_ENTITY(p, t.ped, t.ped, 1.0f, false, 5.0f, 2.0f, false, false, 0);
 						else
-						{
-							// Weapon on them from a few metres.
-							const Vector3 at = ENTITY::GET_ENTITY_COORDS(t.ped, true);
-							if (Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) > 7.0f)
-								TASK::TASK_GO_TO_ENTITY_WHILE_AIMING_AT_ENTITY(p, t.ped, t.ped, 1.0f, false, 5.0f, 2.0f, false, false, 0);
-							else
-								TASK::TASK_AIM_GUN_AT_ENTITY(p, t.ped, -1, false);
-						}
+							TASK::TASK_AIM_GUN_AT_ENTITY(p, t.ped, -1, false);
 					}
 				break;
 			case Role::Search:
@@ -583,9 +671,10 @@ namespace police::units
 		size_t active = 0;
 		for (const Unit& u : g_units)
 			active += u.state != State::Leaving;
-		if (active >= kMaxUnits)
+		const char* why = "";
+		if (const size_t most = MaxUnits(why); active >= most)
 		{
-			ml::Notify("支援已經有 {} 組在路上或在現場", active);
+			ml::Notify("調度：目前狀況（{}）最多派 {} 組支援，已經有 {} 組", why, most, active);
 			return;
 		}
 		Place road{};
@@ -729,13 +818,15 @@ namespace police::units
 
 	::Ped Borrow(const Vector3& around)
 	{
+		// The nearest, on foot or still in their car (they get out); not the driver of a car that would be left
+		// standing in the road while the other sits in it, when an officer on foot is not much further.
 		::Ped best = 0;
-		float bestD = 60.0f;
+		float bestD = 120.0f;
 		for (const Unit& u : g_units)
-			if (u.state != State::Leaving)
+			if (u.state != State::Leaving && u.state != State::Transport)
 				for (::Ped p : u.crew)
-					if (Alive(p) && !Borrowed(p) && !PED::IS_PED_IN_ANY_VEHICLE(p, false))
-						if (const float d = Distance(ENTITY::GET_ENTITY_COORDS(p, true), around); d < bestD)
+					if (Alive(p) && !Borrowed(p))
+						if (const float d = Distance(ENTITY::GET_ENTITY_COORDS(p, true), around) + (PED::IS_PED_IN_ANY_VEHICLE(p, false) ? 15.0f : 0.0f); d < bestD)
 							best = p, bestD = d;
 		if (best)
 		{
@@ -763,14 +854,15 @@ namespace police::units
 		for (Unit& u : g_units)
 			if (u.car == car && Exists(car) && u.state != State::Leaving)
 			{
+				if (u.state == State::Fetch && Alive(u.crew.empty() ? 0 : u.crew[0]))
+					TASK::CLEAR_PED_TASKS(u.crew[0]); // (stopped where they came to)
 				for (::Ped p : u.crew)
 					if (Alive(p))
 					{
 						PED::REMOVE_PED_FROM_GROUP(p);
 						TASK::CLEAR_PED_TASKS(p);
 					}
-				g_borrowed.erase(std::remove_if(g_borrowed.begin(), g_borrowed.end(), [&](::Ped p) { return std::find(u.crew.begin(), u.crew.end(), p) != u.crew.end(); }),
-				    g_borrowed.end());
+				Recall(u);
 				lights::Set(u.car, 0);
 				u.state = State::Transport;
 				u.role = Role::None;
@@ -781,6 +873,34 @@ namespace police::units
 				return true;
 			}
 		return false;
+	}
+
+	Vehicle Summon(const Vector3& to)
+	{
+		Unit* best = nullptr;
+		float bestD = 1e9f;
+		for (Unit& u : g_units)
+			if (Exists(u.car) && (u.state == State::OnScene || u.state == State::Pursuit || u.state == State::Coming))
+				if (const float d = Distance(ENTITY::GET_ENTITY_COORDS(u.car, true), to); d < bestD && d < 600.0f)
+					best = &u, bestD = d;
+		if (!best)
+			return 0;
+		Unit& u = *best;
+		for (::Ped p : u.crew)
+			if (Alive(p))
+			{
+				PED::REMOVE_PED_FROM_GROUP(p);
+				TASK::CLEAR_PED_TASKS(p);
+			}
+		Recall(u);
+		u.state = State::Fetch;
+		u.role = Role::None;
+		u.since = ml::TickMs();
+		u.dest = to;
+		u.driving = false;
+		Board(u);
+		ml::Log("units: unit {} brings its car ({:.0f} m)", u.id, bestD);
+		return u.car;
 	}
 
 	bool Delivered(Vehicle car)
@@ -815,6 +935,16 @@ namespace police::units
 				if (Alive(p) && Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) < radius)
 					++n;
 		return n;
+	}
+
+	bool Covering(const Vector3& at, float radius)
+	{
+		for (const Unit& u : g_units)
+			if (u.role == Role::Cover)
+				for (::Ped p : u.crew)
+					if (Alive(p) && !Borrowed(p) && !InCar(u, p) && Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) < radius)
+						return true;
+		return false;
 	}
 
 	menu::List Menu()
@@ -855,7 +985,10 @@ namespace police::units
 			return q;
 		};
 		m.items.push_back(query);
-		menu::Item backup{"呼叫支援", Backup() ? std::to_string(Backup()) + " 組" : "", "一組兩名警員開巡邏車過來，到場後跟著你"};
+		const char* why = "";
+		const size_t most = MaxUnits(why);
+		menu::Item backup{"呼叫支援", std::to_string(Backup()) + "/" + std::to_string(most) + " 組",
+		    std::string("一組兩名警員開巡邏車過來（") + why + "最多 " + std::to_string(most) + " 組）"};
 		backup.action = CallBackup;
 		m.items.push_back(backup);
 		menu::Item car{"叫巡邏車開過來", "", "同事把你選的巡邏車開到你身邊"};

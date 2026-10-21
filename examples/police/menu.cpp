@@ -98,8 +98,16 @@ namespace police::menu
 
 	void Tick()
 	{
+		static uint64_t lastOpen = 0;
 		if (g_stack.empty())
+		{
+			// The key that closed the menu is still down for a few frames: kept from the game (Backspace or Enter
+			// in a vehicle got the officer out or in).
+			if (ml::TickMs() - lastOpen < 350)
+				Block();
 			return;
+		}
+		lastOpen = ml::TickMs();
 		Block();
 		const List& list = g_stack.back();
 		const auto& items = list.items;
