@@ -1440,7 +1440,15 @@ Every scenario runs on **≥ 3–4 launches**, with success rates reported (memo
   - Additions to §3.4: the MONEY_TOTAL_SPENT loose triple is in every copy of the money library, so the triple tool must handle it (template: the case-2 body). Identity switches get CASE3 with PUSH 3. The per-character packed index switch in the debit routine (95/97/96) is DEFAULT.
   - Open for the user: launcher_racing @44421 lets only Franklin start race types other than 3.
   - Lists and tools in research/phase0.md §55.6 and `D:\Projects\gtav-research\char4\u9`.
-- Still open: U5 (watches on entry 3), U9 in-game check (with M2), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
+- U5 (static part): owner-array writes in story scripts take their owner from parameters, from the constants 0/1/2, or from G21666 (3 only for the officer). No loop runs over owners up to 3.
+  - Constant owner-3 writes:
+    - standard_global_reg sets entry 96 to 1 (known).
+    - main_persistent @485208 clears every owner-3 element except value 2, on the MP/creator → SP transition path @470260 (not reached while Online is refused).
+    - appcontacts @45335–@45385: after a protagonist calls contact 130 it sets 130's owner 4 to 1 and owner 3 to 0, so protagonist play does write owner-3 data, for that contact only.
+    - Several appinternet sites and act_cinema @428823 look MP-only and still need the dynamic check.
+  - Consequence: D1 holds. The officer's phonebook (his owner-3 elements) is restored from block 13 whenever he becomes the player.
+  - The dynamic part (write watch tool ready) was blocked by a Rockstar launcher sign-in failure.
+- Still open: U5 dynamic check, U9 in-game check (with M2), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
 
 ---
 
