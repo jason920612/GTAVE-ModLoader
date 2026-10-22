@@ -206,8 +206,8 @@ namespace police::discipline
 				g_hurtAt = now;
 			g_lastHealth = health;
 
-			// Shots on duty: one use of force per firing.
-			if (onDuty && PED::IS_PED_SHOOTING(pl))
+			// Shots on duty (or dealing with a crime off duty): one use of force per firing.
+			if ((onDuty || offduty::Responding()) && PED::IS_PED_SHOOTING(pl))
 			{
 				if (!g_firing.last)
 					g_firing = {};

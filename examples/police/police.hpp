@@ -221,6 +221,8 @@ namespace police::shift
 		int shifts = 0, late = 0, early = 0, absent = 0, overdue = 0;
 	};
 	Counts Totals();
+	// Game minutes until the next shift begins (-1 = it is under way or none).
+	int MinutesToShift();
 	// The game's date, as the roster writes it ("6/11（四）"), and as a day number.
 	std::string Today();
 	int64_t Day();
@@ -348,6 +350,26 @@ namespace police::discipline
 	// A save is loading.
 	void Loading();
 	// Every frame: what the officer does (while played), decisions when due.
+	void Tick();
+}
+
+namespace police::offduty
+{
+	// The police menu off duty (F9): reporting a crime, the car of their own, fatigue and skills.
+	menu::List Menu();
+	// Dealing with a crime off duty (a shot then is reviewed too).
+	bool Responding();
+	// Development: a crime off duty now.
+	void CallNow();
+	// Fatigue, 0..100.
+	int Tiredness();
+	// The bed at home: sleeping (8 hours, or until an hour before the shift), rested.
+	void Sleep();
+	// The computer's duty page: fatigue, skills, the car.
+	ml::Json Json();
+	// A save is loading.
+	void Loading();
+	// Every frame: the car, fatigue, training, crime off duty.
 	void Tick();
 }
 

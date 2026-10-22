@@ -1031,6 +1031,14 @@ namespace police::shift
 		return Date(DayOf(Now()));
 	}
 
+	int MinutesToShift()
+	{
+		if (!g_loaded)
+			return -1;
+		const double now = Now();
+		return static_cast<double>(g.planned.start) > now ? static_cast<int>(static_cast<double>(g.planned.start) - now) : -1;
+	}
+
 	int64_t Day()
 	{
 		return DayOf(Now());

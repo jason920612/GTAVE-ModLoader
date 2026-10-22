@@ -184,9 +184,15 @@ namespace police::life
 			}
 			else if (Distance(at, kBedside) < 1.2f)
 			{
-				Help("按 ~INPUT_CONTEXT~ 睡覺並存檔");
-				if (Pressed())
+				if (duty::OnDuty())
+					Help("上班中不能睡覺：先回警局下班");
+				else
+					Help("按 ~INPUT_CONTEXT~ 睡覺並存檔");
+				if (Pressed() && !duty::OnDuty())
+				{
+					offduty::Sleep();
 					officer::SaveForOfficer();
+				}
 			}
 		}
 	}

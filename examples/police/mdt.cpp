@@ -185,7 +185,7 @@ namespace police::mdt
 		ml::Json Charges()
 		{
 			ml::Json out = ml::Json::Array();
-			for (const char* c : {"竊盜（車輛）", "收受贓物", "駕車逃避警察攔查", "危險駕駛", "拒捕", "妨害公務", "以武器攻擊警察", "強盜（劫車）",
+			for (const char* c : {"竊盜（車輛）", "收受贓物", "駕車逃避警察攔查", "危險駕駛", "拒捕", "妨害公務", "以武器攻擊警察", "強盜", "強盜（劫車）",
 			         "非法持有武器", "持有危險器械", "持有第一級管制藥物", "持有第二級管制藥物", "持有第三級管制藥物", "持有第四級管制藥物",
 			         "車內有開封酒類", "酒後駕駛", "無照駕駛", "吊銷駕照駕駛", "通緝犯（竊盜）", "通緝犯（持械搶劫）", "通緝犯（未出庭）"})
 				out.Push(c);
@@ -270,6 +270,7 @@ namespace police::mdt
 		ml::web::Function("mdt.reports", [] { return records::Reports(); });
 		ml::web::Function("mdt.charges", [] { return Charges(); });
 		ml::web::Function("mdt.shift", [] { return shift::Json(); });
+		ml::web::Function("mdt.offduty", [] { return offduty::Json(); });
 		ml::web::Function("mdt.career", [] { return career::Json(); });
 		ml::web::Function("mdt.colleagues", [] { return colleagues::Json(); });
 		ml::web::Function("mdt.chat", [](int id) { return colleagues::Chat(id); });

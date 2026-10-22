@@ -150,6 +150,13 @@ async function loadDuty() {
     <dt>班別</dt><dd>${esc(d.kind)}${d.request ? `，已申請改 ${esc(d.request)}` : ''}</dd>
     <dt>出勤紀錄</dt><dd>遲到 ${d.late}、早退 ${d.early}、缺勤 ${d.absent}、報告逾期 ${d.overdue}</dd>
     ${d.fired ? '<dt>狀態</dt><dd class="bad">已免職</dd>' : d.suspended ? `<dt>狀態</dt><dd class="bad">停職中（還有 ${d.suspended} 班）</dd>` : ''}</dl>`;
+  const o = await call('mdt.offduty');
+  const meter = (v, warn) => `<div class="bar"><span style="width:${v}%;${warn ? 'background:var(--bad)' : ''}"></span></div><small>${v}</small>`;
+  $('dutyLife').innerHTML = `<h2>身體狀況</h2><dl>
+    <dt>疲勞</dt><dd>${meter(o.fatigue, o.fatigue >= 70)}</dd><dt>力量</dt><dd>${meter(o.strength)}</dd>
+    <dt>體力</dt><dd>${meter(o.stamina)}</dd><dt>射擊</dt><dd>${meter(o.shooting)}</dd>
+    <dt>私家車</dt><dd>${esc(o.car || '—')}</dd></dl>
+    <p class="hint">回家睡覺消除疲勞；海灘重訓區健身、靶場練槍，三天沒練會退步。</p>`;
   $('dutyWeek').innerHTML = `<h2>本週班表</h2><table class="table"><tbody>${d.week.map(w =>
     `<tr class="${w.work ? '' : 'off'}"><td>${esc(w.date)}</td><td>${esc(w.kind)}</td><td>${esc(w.hours)}</td></tr>`).join('')}</tbody></table>`;
   const pays = [...d.payslips].reverse();

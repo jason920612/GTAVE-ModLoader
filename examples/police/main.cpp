@@ -26,6 +26,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		police::assist::Forget();
 		police::partner::Forget();
 		police::discipline::Loading();
+		police::offduty::Loading();
 	});
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
@@ -61,6 +62,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		test.Action("立即派遣（嫌犯會配合，測試搜查用）", [] { police::dispatch::CallNow(true); });
 		test.Action("立即有同事請求支援", [] { police::assist::CallNow(false); });
 		test.Action("立即有員警需要協助", [] { police::assist::CallNow(true); });
+		test.Action("立即遇到下班時的搶案", [] { police::offduty::CallNow(); });
 		test.Action("清除測試嫌犯", [] { g_testSpawn = 9; });
 	}
 	police::lights::BuildKeys();
@@ -93,6 +95,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::assist::Tick();
 		police::partner::Tick();
 		police::discipline::Tick();
+		police::offduty::Tick();
 		police::search::Tick();
 		police::mdt::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)
@@ -125,7 +128,7 @@ extern "C" __declspec(dllexport) void MLMain()
 			else if (!police::officer::IsPlayer())
 				ml::Notify("警察選單只在當警察時能用");
 			else if (!police::duty::OnDuty())
-				ml::Notify("要先上班（到警局換上制服）");
+				police::menu::Open(police::offduty::Menu());
 			else
 				police::menu::Open(police::units::Menu());
 		}
