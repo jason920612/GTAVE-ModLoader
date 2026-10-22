@@ -14,7 +14,8 @@ usage:
       shot:<file.png>              the next frame
       wait:<seconds>
       log:<regex>[,<timeout s>]    waits for a line in the police mod's log (newer than this run's start)
-      raw:<command line>           any pipe command (ping, story, window offscreen|restore, mute on|off, release)
+      raw:<command line>           any pipe command (ping, story, window offscreen|restore, mute on|off, release,
+                                   fakefocus <ms>: GetForegroundWindow reports the game for that long)
 Exits 1 on the first step that fails.
 """
 import json, os, re, shutil, subprocess, sys, time

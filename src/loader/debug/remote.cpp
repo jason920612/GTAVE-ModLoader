@@ -332,6 +332,16 @@ namespace loader::debug::remote
 				if (!vk || !w)
 					return vk ? "err no game window yet" : "err unknown key";
 				g_fakeFocusUntil = GetTickCount64() + static_cast<ULONGLONG>(std::clamp(ms, 1, 5000)) + 300;
+				// Frontend menus (pause, save) and replay recording also want the game to think it is the active app.
+				// It is told so and left so: telling it "inactive" afterwards stops a replay recording and the injected
+				// controls. Raw input from the person's real keyboard and mouse still goes only to the real foreground
+				// window, and the cursor hooks above keep the cursor free while the game is not really in front.
+				if (!GameReallyInFront())
+				{
+					PostMessageW(w, WM_ACTIVATEAPP, TRUE, 0);
+					PostMessageW(w, WM_ACTIVATE, WA_ACTIVE, 0);
+					Sleep(50);
+				}
 				if (!PostGameKey(w, vk, false))
 					return "err raw input hook";
 				Sleep(static_cast<DWORD>(std::clamp(ms, 1, 5000)));
@@ -347,6 +357,14 @@ namespace loader::debug::remote
 					return "err control id";
 				std::lock_guard lock(g_mutex);
 				g_held[id] = {value, GetTickCount64() + static_cast<ULONGLONG>(std::max(ms, 1))};
+				return "ok";
+			}
+			if (cmd == "fakefocus")
+			{
+				// GetForegroundWindow reports the game for this long.
+				int ms = 0;
+				in >> ms;
+				g_fakeFocusUntil = GetTickCount64() + static_cast<ULONGLONG>(std::clamp(ms, 0, 120000));
 				return "ok";
 			}
 			if (cmd == "release")

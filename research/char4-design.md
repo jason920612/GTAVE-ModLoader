@@ -1420,6 +1420,20 @@ Every scenario runs on **≥ 3–4 launches**, with success rates reported (memo
 | U43 | **(revision 5)** Is NETWORK_IS_SIGNED_IN true in a `-nobattleye` story session, so that main@465645 syncs G62254[0..2] from SPn_TOTAL_CASH there? Once the mirror exists: do the ATM and cable-car readings equal the HUD cash? | log NETWORK_IS_SIGNED_IN and G62254[0..2] against SP0..2_TOTAL_CASH once a second over a session with purchases, a street pickup, a respray and a load (G62254[3] against SP3_TOTAL_CASH once U6 registers it); ≥ 3 launches | whether the mirror follows main's condition (vanilla parity) or runs unconditionally | M0 |
 | U44 | **(revision 5)** Phase B creation of the officer ped: does @108260 run for character 3 whenever his ped is missing or injured (@126716, IS_PED_INJURED @126741)? What does s.2 mean (@39787–@39859 releases and clears an existing target ped when it is 1)? Does a pre-created ped handed over through 99964[3] survive @108297–@108309? | the M3 test of §5.4 (despawned officer; game wheel and 99964+45/+46/+44; both genders), logging @108260 entries, the model passed to REQUEST_MODEL and 99964[3] before and after; then the same with a pre-created ped; ≥ 3 launches | Phase B creation rule; whether the pre-create alternative is usable | M3 |
 
+**M0 answers (2026-10-22; details in research/phase0.md §55.6):**
+- U1–U4, U6, U7, U21: done (see §55.6). U7 met the M0 done criterion; U6 chose the slot-4 alias (§3.7).
+- U26: PLAYER_PED_ID changes at every SET_PLAYER_MODEL (3330 → 41986 → 50178) and the old handle stops existing. The OFFICER_PED re-bind in the SET_PLAYER_MODEL hook is required. The police mod's `officer::IsPlayer()` compares handles, so it must re-bind too.
+- U28: a save load (also an in-session one, SHUTDOWN_AND_LOAD_MOST_RECENT_SAVE) frees every block (0x3ED1BD0 → 0, all 0x3ED15A8 pointers null) and re-creates them about 12 s later.
+  - Block 13 comes back about 0.25 s after blocks 0, 12 and 17, once the loader has started ml_char4_reg in startup again. Gate 0 (block pointer non-null) is needed for that window.
+  - The saved block-13 values were applied by an in-session load of a test save, as at boot (U4).
+- U25 (broker off): as the officer, QUEUE_MISSION_REPEAT_SAVE_FOR_BENCHMARK_TEST shows its restore-point prompt; after "yes" the engine wrote MISREP0000 (no refusal), and GET_STATUS_OF_MISSION_REPEAT_SAVE then read 0. The §3.11 refusal hooks are required.
+- U24: with the guard's override, the Editor menu shows Director Mode greyed out while the officer is the player and selectable again as Trevor after a switch.
+- U23 (partial): the pause menu's Rockstar Editor screen and its exit do not touch the session (blocks unchanged). Entering the Editor proper needs a recorded clip. A clip could not be recorded with background input (each F1 press ends in "clip shorter than 3 s"), so the round trip is still open.
+- U40 (part 1): a corrupt (truncated) ml_char4_reg that the loader requests while startup runs crashes the game when startup terminates (access violation at 0x58e00ed, startup saved ip 769, the TERMINATE_THIS_THREAD at the end of its main). Reproduced twice. The same file present but never requested is harmless.
+  - The loader must therefore check the generated ml_char4_reg (size and hash of what it wrote) before requesting it. On a mismatch it does not request it and the officer slot degrades with a warning.
+  - Declaring label-type SP3 stats in the pack gave the same crash, and ml_char4_reg had not started in that run either (§55.6).
+- Still open: U5 (watches on entry 3), U9 (services map), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
+
 ---
 
 ## 8. Phased plan
