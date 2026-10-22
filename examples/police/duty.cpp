@@ -318,6 +318,12 @@ namespace police::duty
 		void StationMenu()
 		{
 			menu::List m{Current().name, {}};
+			if (shift::MayRejoin())
+			{
+				menu::Item rejoin{"重新申請入職", "", "從警員一級的試用期重新開始"};
+				rejoin.action = [] { shift::Rejoin(); };
+				m.items.push_back(rejoin);
+			}
 			menu::Item computer{"警局電腦", "", "升遷與考試、勤務、薪資、案件報告"};
 			computer.action = [] {
 				if (!ml::web::Available())
@@ -509,6 +515,13 @@ namespace police::duty
 						// Reports not submitted: said once, the next press goes.
 						warning = w;
 						warningUntil = ml::TickMs() + 8000;
+						go = false;
+					}
+				if (go && !on)
+					if (std::string why; !shift::MayWork(why))
+					{
+						warning = why;
+						warningUntil = ml::TickMs() + 6000;
 						go = false;
 					}
 				if (go)

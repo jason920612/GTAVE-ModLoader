@@ -208,6 +208,13 @@ namespace police::shift
 	void ClockOut();
 	// Asking for another shift (after probation): a menu.
 	void RequestShift();
+	// Discipline (discipline.cpp): may the officer go on duty (why not); a suspension of some shifts (unpaid); dismissal
+	// (may apply again after `days`), and applying again (back to probation).
+	bool MayWork(std::string& why);
+	void Suspend(int shifts);
+	void Fire(int days);
+	bool MayRejoin();
+	void Rejoin();
 	// The career's counters so far (career.cpp keeps them at each promotion).
 	struct Counts
 	{
@@ -264,6 +271,11 @@ namespace police::career
 	// rookie, supervising; at most 15 a rank) with the reason.
 	void AddTrainerRating(int rating);
 	void AddBonus(int points, const char* why);
+	// Discipline: points off the evaluation (this rank), a rank down, dismissal, and starting over when rehired.
+	void AddPenalty(int points, const char* why);
+	void Demote();
+	void Fire();
+	void Rejoin();
 	// One of the officers' exam questions, its options shuffled, and which is right (the rookie asks them).
 	bool Quiz(std::string& text, std::vector<std::string>& options, int& right);
 	// A save is loading.
@@ -322,6 +334,20 @@ namespace police::partner
 	// The world was reset.
 	void Forget();
 	// Every frame: the FTO on probation shifts, the rookie when asked for; what they say.
+	void Tick();
+}
+
+namespace police::discipline
+{
+	// A shift missed (shift.cpp).
+	void Absent();
+	// Dismissal: off duty, the uniform back.
+	void Dismiss();
+	// The cases, newest first.
+	ml::Json Json();
+	// A save is loading.
+	void Loading();
+	// Every frame: what the officer does (while played), decisions when due.
 	void Tick();
 }
 
@@ -444,6 +470,8 @@ namespace police::suspect
 	// That driver, still unaware, takes the car to a place, leaves it at the roadside and waits nearby a while.
 	void HeadFor(int id, const Vector3& at);
 	size_t Count();
+	// Every suspect's id.
+	std::vector<int> Ids();
 	// What the police know of the suspect being pursued (the first one active), for the backup.
 	struct Target
 	{

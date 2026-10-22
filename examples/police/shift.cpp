@@ -169,6 +169,9 @@ namespace police::shift
 			int request = -1;
 			int64_t requestFrom = 0; // day
 			int late = 0, early = 0, absent = 0, overdue = 0;
+			int suspended = 0;   // shifts of suspension left (discipline.cpp)
+			bool fired = false;  // dismissed ...
+			int64_t rehire = 0;  // ... may apply again from this day
 			int unit = 0;
 			std::string sergeant;
 			Session session;
@@ -244,6 +247,7 @@ namespace police::shift
 			ml::save::Set("officer_career",
 			    ml::Json{{"hired", g.hired}, {"shifts", g.shifts}, {"kind", g.kind}, {"request", g.request},
 			        {"requestFrom", g.requestFrom}, {"late", g.late}, {"early", g.early}, {"absent", g.absent}, {"overdue", g.overdue},
+			        {"suspended", g.suspended}, {"fired", g.fired}, {"rehire", g.rehire},
 			        {"unit", g.unit}, {"sergeant", g.sergeant}, {"session", ToJson(g.session)}, {"planned", ToJson(g.planned)},
 			        {"payslips", g.payslips}, {"attendance", g.attendance}});
 			g_nextStore = ml::TickMs() + 10000;
@@ -277,6 +281,9 @@ namespace police::shift
 			g.late = j["late"].Int();
 			g.early = j["early"].Int();
 			g.absent = j["absent"].Int();
+			g.suspended = j["suspended"].Int();
+			g.fired = j["fired"].Bool();
+			g.rehire = j["rehire"].Int64();
 			g.overdue = j["overdue"].Int();
 			g.unit = j["unit"].Int(42);
 			g.sergeant = j["sergeant"].Str("Sgt. Reyes");
@@ -408,9 +415,10 @@ namespace police::shift
 			Session& s = g.session;
 			if (!s.active)
 				return;
-			if (now < s.last)
+			if (now < s.last || (played && now - s.last > 10.0))
 			{
-				s.last = now; // the clock went back (a trainer): from here
+				// The clock went back, or jumped ahead while the officer was played (a trainer, a skip): not time worked.
+				s.last = now;
 				return;
 			}
 			for (double t = s.last; t < now;)
@@ -469,6 +477,8 @@ namespace police::shift
 			for (const auto& [what, hours] : {std::pair{"正常", regular}, std::pair{"加班", overtime}, std::pair{"夜間加給", night}})
 				if (hours >= 0.05)
 					parts += std::format("{}{} {:.1f} 小時", parts.empty() ? "" : "、", what, hours);
+			if (parts.empty())
+				parts = "不到 0.1 小時";
 			if (officer::IsPlayer())
 				ml::Notify("薪資單：{}，共 ${}{}", parts, pay, received ? " 已存入帳戶" : "（入帳失敗）");
 			else
@@ -623,21 +633,43 @@ namespace police::shift
 				Plan(now);
 
 			Count(now, played);
+			// Suspended or dismissed: no duty (a suspension counts down by the roster's shifts).
+			const bool barred = g.suspended > 0 || g.fired;
 
 			// The planned shift is over.
 			if (static_cast<double>(g.planned.end) <= now)
 			{
 				if (g.session.active && !played)
 					End("alone");
-				if (!g.planned.attended && g.planned.pending)
+				if (g.suspended > 0 && !g.planned.attended)
+				{
+					--g.suspended;
+					Note("停職");
+					if (g.suspended == 0)
+						ml::Notify("停職期滿，下一班可以回來上班");
+				}
+				else if (!barred && !g.planned.attended && g.planned.pending)
 				{
 					++g.absent;
 					Note("缺勤");
 					ml::Log("shift: absent");
 					if (played)
 						ml::Notify("你今天的{}缺勤了，會記錄在考評裡", kKinds[g.planned.kind].name);
+					discipline::Absent();
 				}
 				Plan(now);
+			}
+			if (barred)
+			{
+				if (g.session.active)
+				{
+					End("");
+					officer::Dress(false);
+				}
+				g_lastStep = now;
+				if (ml::TickMs() >= g_nextStore)
+					Store();
+				return;
 			}
 
 			Planned& p = g.planned;
@@ -848,6 +880,72 @@ namespace police::shift
 		ShiftRequestMenu();
 	}
 
+	bool MayWork(std::string& why)
+	{
+		if (!g_loaded)
+			return true;
+		if (g.fired)
+		{
+			why = Day() >= g.rehire ? "你已被免職：按 G「警局事務」可以重新申請入職" : std::format("你已被免職：{} 起可以重新申請", Date(g.rehire));
+			return false;
+		}
+		if (g.suspended > 0)
+		{
+			why = std::format("停職中（還有{}班），不能上班", g.suspended);
+			return false;
+		}
+		return true;
+	}
+
+	void Suspend(int shifts)
+	{
+		if (!g_loaded)
+			return;
+		// (the shifts from now on: a planned shift already over is not one of them)
+		if (const double now = Now(); static_cast<double>(g.planned.end) <= now)
+			Plan(now);
+		g.suspended += shifts;
+		Store();
+		ml::Log("shift: suspended for {} shifts", shifts);
+	}
+
+	void Fire(int days)
+	{
+		if (!g_loaded)
+			return;
+		g.fired = true;
+		g.suspended = 0;
+		g.rehire = Day() + days;
+		Store();
+		ml::Log("shift: dismissed; may apply again on day {}", g.rehire);
+	}
+
+	bool MayRejoin()
+	{
+		return g_loaded && g.fired && Day() >= g.rehire;
+	}
+
+	void Rejoin()
+	{
+		if (!MayRejoin())
+			return;
+		const double now = Now();
+		const std::vector<ml::Json> payslips = g.payslips, attendance = g.attendance;
+		const std::string sergeant = g.sergeant;
+		const int unit = g.unit;
+		g = Career{};
+		g.hired = DayOf(now);
+		g.payslips = payslips;
+		g.attendance = attendance;
+		g.sergeant = sergeant;
+		g.unit = unit;
+		Plan(now);
+		career::Rejoin();
+		Store();
+		ml::Notify("重新入職：從{}的試用期開始，先上大夜班", career::Title());
+		ml::Log("shift: rejoined on day {}", g.hired);
+	}
+
 	bool OnProbation()
 	{
 		return g_loaded && g.shifts < kProbation;
@@ -860,7 +958,7 @@ namespace police::shift
 
 	bool OnShift()
 	{
-		if (!g_loaded)
+		if (!g_loaded || g.suspended > 0 || g.fired)
 			return false;
 		const double now = Now();
 		return InWindow(now) && !(g.planned.pending && !g.session.active);
@@ -977,6 +1075,7 @@ namespace police::shift
 		const Session& s = g.session;
 		return ml::Json{{"ready", true}, {"name", look::Name()}, {"rank", career::Title()}, {"rate", Rate()}, {"shifts", g.shifts},
 		    {"probation", std::max(0, kProbation - g.shifts)}, {"hired", Date(g.hired)}, {"kind", kKinds[g.kind].name},
+		    {"suspended", g.suspended}, {"fired", g.fired},
 		    {"request", g.request >= 0 ? std::string(kKinds[g.request].name) + "（" + Date(g.requestFrom) + " 起）" : ""},
 		    {"late", g.late}, {"early", g.early}, {"absent", g.absent}, {"overdue", g.overdue},
 		    {"now", Date(DayOf(now)) + " " + Clock(now)},

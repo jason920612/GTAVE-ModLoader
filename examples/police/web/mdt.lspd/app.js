@@ -148,7 +148,8 @@ async function loadDuty() {
     <dl><dt>職級</dt><dd>${esc(d.rank)}（時薪 $${d.rate}）</dd><dt>到職</dt><dd>${esc(d.hired)}</dd>
     <dt>年資</dt><dd>${d.shifts} 班${d.probation ? `（試用期還有 ${d.probation} 班）` : ''}</dd>
     <dt>班別</dt><dd>${esc(d.kind)}${d.request ? `，已申請改 ${esc(d.request)}` : ''}</dd>
-    <dt>出勤紀錄</dt><dd>遲到 ${d.late}、早退 ${d.early}、缺勤 ${d.absent}、報告逾期 ${d.overdue}</dd></dl>`;
+    <dt>出勤紀錄</dt><dd>遲到 ${d.late}、早退 ${d.early}、缺勤 ${d.absent}、報告逾期 ${d.overdue}</dd>
+    ${d.fired ? '<dt>狀態</dt><dd class="bad">已免職</dd>' : d.suspended ? `<dt>狀態</dt><dd class="bad">停職中（還有 ${d.suspended} 班）</dd>` : ''}</dl>`;
   $('dutyWeek').innerHTML = `<h2>本週班表</h2><table class="table"><tbody>${d.week.map(w =>
     `<tr class="${w.work ? '' : 'off'}"><td>${esc(w.date)}</td><td>${esc(w.kind)}</td><td>${esc(w.hours)}</td></tr>`).join('')}</tbody></table>`;
   const pays = [...d.payslips].reverse();
@@ -180,11 +181,16 @@ async function loadCareer() {
     <dl><dt>報告平均</dt><dd>${e.reportsAvg} 分（${e.reports} 份）</dd>
     ${e.trainer >= 0 ? `<dt>訓練官評分</dt><dd>${e.trainer} 分（試用期，與報告各佔一半）</dd>` : ''}
     <dt>扣分</dt><dd>${e.penalty ? `−${e.penalty}` : '0'}<span class="hint">（遲到 ${e.late}、早退 ${e.early}、缺勤 ${e.absent}、報告逾期 ${e.overdue}）</span></dd>
-    ${e.bonus ? `<dt>加分</dt><dd>+${e.bonus}<span class="hint">（帶新人、督導，每個職級最多 +15）</span></dd>` : ''}</dl>
+    ${e.bonus ? `<dt>加分</dt><dd>+${e.bonus}<span class="hint">（帶新人、督導，每個職級最多 +15）</span></dd>` : ''}
+    ${e.discipline ? `<dt>懲處</dt><dd class="bad">−${e.discipline}<span class="hint">（警告 −5、停職 −10）</span></dd>` : ''}</dl>
     <p class="hint">升遷後重新計算。遲到 −3、早退 −4、缺勤 −10、報告逾期 −5；沒有報告時以 60 分計。</p>`;
   $('careerUnlocks').innerHTML = `<h2>職級與解鎖</h2><table class="table"><tbody>${c.unlocks.map(u =>
     `<tr class="${u.have ? '' : 'off'}"><td>${u.have ? '✔' : ''}</td><td><b>${esc(u.title)}</b><br><small>$${u.rate}/小時</small></td><td>${esc(u.items)}</td></tr>`).join('')}</tbody></table>`;
-  const rows = [...c.history.map(h => ({ date: h.date, text: `升任 ${h.to}`, ok: true })),
+  const cases = c.discipline || [];
+  $('careerDiscipline').innerHTML = `<h2>內部調查</h2>${cases.length ? `<table class="table"><thead><tr><th>案號</th><th>案由</th><th>說明</th><th>結果</th></tr></thead><tbody>${cases.map(k =>
+    `<tr><td>IA-${k.id}</td><td>${esc(k.title)}</td><td class="hint">${esc(k.detail)}</td><td>${k.closed ? `<span class="${k.sustained ? 'bad' : 'ok'}">${esc(k.result)}</span>` : '<span class="tag warn">調查中</span>'}</td></tr>`).join('')}</tbody></table>`
+    : '<p class="hint">沒有調查案件。開槍會自動列入使用武力審查；傷及民眾、對已上銬者施暴、棄置嫌犯、遭通緝、缺勤與民眾投訴都會立案。</p>'}`;
+  const rows = [...c.history.map(h => ({ date: h.date, text: /降為|免職|重新/.test(h.to) ? h.to : `升任 ${h.to}`, ok: !/降為|免職/.test(h.to) })),
     ...c.exams.map(x => ({ date: x.date, text: `${x.title}考試：${x.correct}/${x.total} ${x.pass ? '及格' : '不及格'}`, ok: x.pass }))];
   $('careerHistory').innerHTML = `<h2>紀錄</h2>${rows.length ? `<table class="table"><tbody>${rows.map(r =>
     `<tr><td>${esc(r.date)}</td><td class="${r.ok ? 'ok' : 'warn'}">${esc(r.text)}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">還沒有紀錄。</p>'}`;

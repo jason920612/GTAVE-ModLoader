@@ -249,7 +249,9 @@ namespace police::partner
 		if (g_role == Role::None)
 			return;
 		const uint64_t minutes = (ml::TickMs() - g_since) / 60000; // real minutes
-		if (g_role == Role::Trainer)
+		if (g_role == Role::Trainer && minutes < 10)
+			Say("今天才跑一下子，這班先不打分數。");
+		else if (g_role == Role::Trainer)
 		{
 			const int rating = std::clamp(75 + g_good * 5 - g_bad * 8, 0, 100);
 			const char* word = rating >= 85 ? "表現很好，繼續保持" : rating >= 70 ? "還可以，有幾個地方要注意" : "今天要檢討的地方不少";

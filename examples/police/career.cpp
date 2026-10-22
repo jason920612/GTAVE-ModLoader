@@ -149,6 +149,7 @@ namespace police::career
 			std::vector<ml::Json> history, exams;
 			std::vector<int> trainer; // the training officer's ratings of probation shifts
 			int bonus = 0;            // training a rookie, supervising (this rank)
+			int penalty = 0;          // discipline (this rank)
 		};
 		constexpr int kMaxBonus = 15;
 		State g;
@@ -168,7 +169,7 @@ namespace police::career
 		{
 			ml::save::Set("officer_promotion", ml::Json{{"rank", g.rank}, {"since", CountsJson(g.since)}, {"reportsAfter", g.reportsAfter},
 			                                       {"retryAt", g.retryAt}, {"history", g.history}, {"exams", g.exams}, {"trainer", g.trainer},
-			                                       {"bonus", g.bonus}});
+			                                       {"bonus", g.bonus}, {"penalty", g.penalty}});
 		}
 
 		void Load()
@@ -190,6 +191,7 @@ namespace police::career
 			for (const ml::Json& r : j["trainer"].Items())
 				g.trainer.push_back(r.Int());
 			g.bonus = j["bonus"].Int();
+			g.penalty = j["penalty"].Int();
 		}
 
 		int Department()
@@ -207,7 +209,7 @@ namespace police::career
 
 		struct Evaluation
 		{
-			int score = 60, reportsAvg = 60, reports = 0, penalty = 0, trainer = -1, bonus = 0;
+			int score = 60, reportsAvg = 60, reports = 0, penalty = 0, trainer = -1, bonus = 0, discipline = 0;
 		};
 		Evaluation Evaluate()
 		{
@@ -233,7 +235,8 @@ namespace police::career
 				base = (base + e.trainer) / 2; // the FTO's word counts half on probation
 			}
 			e.bonus = std::min(g.bonus, kMaxBonus);
-			e.score = std::clamp(base - e.penalty + e.bonus, 0, 100);
+			e.discipline = g.penalty;
+			e.score = std::clamp(base - e.penalty + e.bonus - e.discipline, 0, 100);
 			return e;
 		}
 
@@ -278,6 +281,7 @@ namespace police::career
 			g.reportsAfter = records::LastId();
 			g.retryAt = -1;
 			g.bonus = 0;
+			g.penalty = 0;
 			g.history.push_back(ml::Json{{"date", shift::Today()}, {"from", kRanks[from].title[Department()]}, {"to", kRanks[g.rank].title[Department()]}});
 			Store();
 			AUDIO::PLAY_SOUND_FRONTEND(-1, "RANK_UP", "HUD_AWARDS", true);
@@ -332,9 +336,10 @@ namespace police::career
 		}
 		return ml::Json{{"title", Title()}, {"rate", Rate()}, {"rank", g.rank}, {"next", next},
 		    {"eval", ml::Json{{"score", e.score}, {"reportsAvg", e.reportsAvg}, {"reports", e.reports}, {"penalty", e.penalty}, {"trainer", e.trainer},
-		                 {"bonus", e.bonus}, {"late", c.late},
+		                 {"bonus", e.bonus}, {"discipline", e.discipline}, {"late", c.late},
 		                 {"early", c.early}, {"absent", c.absent}, {"overdue", c.overdue}}},
-		    {"unlocks", unlocks}, {"history", g.history}, {"exams", g.exams}, {"questions", kQuestions}, {"pass", kPass}};
+		    {"unlocks", unlocks}, {"history", g.history}, {"exams", g.exams}, {"questions", kQuestions}, {"pass", kPass},
+		    {"discipline", discipline::Json()}};
 	}
 
 	ml::Json StartExam()
@@ -409,6 +414,50 @@ namespace police::career
 			ml::Notify("升等考試答對 {} 題，沒有通過（要 {} 題）。再上 {} 班可以重考", correct, kPass, kRetryShifts);
 		}
 		return ml::Json{{"ok", true}, {"correct", correct}, {"total", total}, {"pass", pass}, {"results", results}, {"title", Title()}};
+	}
+
+	void AddPenalty(int points, const char* why)
+	{
+		Load();
+		g.penalty = std::min(60, g.penalty + points);
+		Store();
+		ml::Log("career: evaluation -{} ({}), discipline {}", points, why, g.penalty);
+	}
+
+	void Demote()
+	{
+		Load();
+		const int from = g.rank;
+		g.rank = std::max(0, g.rank - 1);
+		g.since = shift::Totals();
+		g.reportsAfter = records::LastId();
+		g.bonus = 0;
+		g.penalty = 0;
+		g.history.push_back(ml::Json{{"date", shift::Today()}, {"from", kRanks[from].title[Department()]}, {"to", "降為" + std::string(kRanks[g.rank].title[Department()])}});
+		Store();
+		ml::Log("career: demoted to rank {}", g.rank);
+	}
+
+	void Fire()
+	{
+		Load();
+		g.history.push_back(ml::Json{{"date", shift::Today()}, {"from", kRanks[g.rank].title[Department()]}, {"to", "免職"}});
+		Store();
+		ml::Log("career: dismissed");
+	}
+
+	void Rejoin()
+	{
+		Load();
+		g.rank = 0;
+		g.since = shift::Totals();
+		g.reportsAfter = records::LastId();
+		g.retryAt = -1;
+		g.trainer.clear();
+		g.bonus = 0;
+		g.penalty = 0;
+		g.history.push_back(ml::Json{{"date", shift::Today()}, {"from", ""}, {"to", "重新入職：" + std::string(kRanks[0].title[Department()])}});
+		Store();
 	}
 
 	void AddTrainerRating(int rating)

@@ -1513,6 +1513,14 @@ namespace police::suspect
 		return g_suspects.size();
 	}
 
+	std::vector<int> Ids()
+	{
+		std::vector<int> out;
+		for (const Suspect& s : g_suspects)
+			out.push_back(s.id);
+		return out;
+	}
+
 	void Clear()
 	{
 		for (Suspect& s : g_suspects)

@@ -33,6 +33,8 @@ namespace loader::game::char4
 		constexpr uint64_t kStatGetInt = 0x767FBC2AC802EF3DULL, kStatSetInt = 0xB3271D7AB655B441ULL;
 
 		constexpr uint64_t kHideHudComponentThisFrame = 0x6806C51AD12B83B8ULL;
+		constexpr uint64_t kIsScreenFadedIn = 0x5A859503B0C08678ULL, kIsPlayerSwitchInProgress = 0xD9D2CFFF49FAB35FULL,
+		                   kGetIsLoadingScreenActive = 0x10D0A8F259E93EC9ULL;
 		constexpr uint64_t kQueueMissionRepeatSave = 0x44A0BDC559B35F6EULL, kQueueBenchmarkSave = 0xEB2104E905C6F2E9ULL;
 		constexpr uint64_t kStartNewScriptWithArgs = 0xB8BA7F44DF1575E1ULL;
 		// Shops the officer does not use the game's way: clothes, hair and tattoos are for the protagonists' models
@@ -62,6 +64,7 @@ namespace loader::game::char4
 		    {kSheet + 1 + kTaxiContact * kSheetEntry + 28, 1}, // (the protagonists have it too: the name is shown)
 		};
 		uint64_t g_hideCashUntil = 0; // the HUD cash and its change are hidden after the stats slot changes
+		bool g_cashUnseen = false;    // ... and until the screen is shown again after it
 
 		std::filesystem::path Dir()
 		{
@@ -270,6 +273,7 @@ namespace loader::game::char4
 				const uint32_t four = 4;
 				Write(g_alias.index, &four, 4);
 				g_hideCashUntil = GetTickCount64() + 3000;
+				g_cashUnseen = true;
 			}
 			auto& cache = arrayfault::Shadows()[kCashCache];
 			if (cache.size() < 1)
@@ -308,6 +312,7 @@ namespace loader::game::char4
 			if (g_alias.patched && *g_alias.index == 4)
 				Write(g_alias.index, &g_alias.protagonist, 4);
 			g_hideCashUntil = GetTickCount64() + 3000;
+			g_cashUnseen = true;
 		}
 
 		std::filesystem::path SaveFile(int32_t nonce)
@@ -407,6 +412,17 @@ namespace loader::game::char4
 			return;
 		const int32_t ped = g_ped;
 		const bool player = ped && natives::Invoke<int32_t>(kPlayerPedId) == ped;
+		// While the screen is dark or a switch is under way (a load putting the officer back, the switch camera) the HUD
+		// has not taken the new character's cash yet: hidden until a moment after (the first change after it would show
+		// the jump between the two characters' cash).
+		if (g_cashUnseen)
+		{
+			if (!natives::Invoke<int32_t>(kIsScreenFadedIn) || natives::Invoke<int32_t>(kIsPlayerSwitchInProgress) ||
+			    natives::Invoke<int32_t>(kGetIsLoadingScreenActive))
+				g_hideCashUntil = std::max(g_hideCashUntil, GetTickCount64() + 3000);
+			else if (GetTickCount64() >= g_hideCashUntil)
+				g_cashUnseen = false;
+		}
 		if (GetTickCount64() < g_hideCashUntil)
 		{
 			// The HUD would show the jump between two characters' cash as a change.

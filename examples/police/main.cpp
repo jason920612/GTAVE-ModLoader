@@ -25,6 +25,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		police::colleagues::Loading();
 		police::assist::Forget();
 		police::partner::Forget();
+		police::discipline::Loading();
 	});
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
@@ -91,6 +92,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::dispatch::Tick();
 		police::assist::Tick();
 		police::partner::Tick();
+		police::discipline::Tick();
 		police::search::Tick();
 		police::mdt::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)
