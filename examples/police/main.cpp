@@ -23,6 +23,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		police::shift::Loading();
 		police::career::Loading();
 		police::colleagues::Loading();
+		police::assist::Forget();
 	});
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
@@ -56,6 +57,8 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		test.Action("生成會配合的路人", [] { g_testSpawn = 7; });
 		test.Action("立即派遣一件報案", [] { police::dispatch::CallNow(); });
 		test.Action("立即派遣（嫌犯會配合，測試搜查用）", [] { police::dispatch::CallNow(true); });
+		test.Action("立即有同事請求支援", [] { police::assist::CallNow(false); });
+		test.Action("立即有員警需要協助", [] { police::assist::CallNow(true); });
 		test.Action("清除測試嫌犯", [] { g_testSpawn = 9; });
 	}
 	police::lights::BuildKeys();
@@ -85,6 +88,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::custody::Tick();
 		police::ambient::Tick();
 		police::dispatch::Tick();
+		police::assist::Tick();
 		police::search::Tick();
 		police::mdt::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)

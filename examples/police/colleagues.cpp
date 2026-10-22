@@ -537,6 +537,16 @@ namespace police::colleagues
 		return -1;
 	}
 
+	int PickRequester()
+	{
+		Load();
+		std::vector<int> free;
+		for (const Colleague& c : g)
+			if (OnDuty(c) && !Busy(c.id) && !Here(c.id))
+				free.push_back(c.id);
+		return free.empty() ? -1 : free[static_cast<size_t>(Rand(0, static_cast<int>(free.size()) - 1))];
+	}
+
 	menu::Item RadioItem()
 	{
 		menu::Item radio{"無線電", "", "值勤中的同事：請求支援、問狀況"};

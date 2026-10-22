@@ -535,6 +535,11 @@ namespace police::dispatch
 		return i;
 	}
 
+	bool Idle()
+	{
+		return g_call == Call::None;
+	}
+
 	void CallNow(bool easy)
 	{
 		g_easy = easy;
@@ -591,7 +596,7 @@ namespace police::dispatch
 		case Call::None:
 			if (!g_nextCall)
 				g_nextCall = now + 120000 + static_cast<uint64_t>(ai::Random() * 180000.0f); // 2-5 minutes on duty
-			if (duty::OnDuty() && now >= g_nextCall && suspect::Count() == 0)
+			if (duty::OnDuty() && now >= g_nextCall && suspect::Count() == 0 && !assist::Busy())
 				Offer();
 			break;
 		case Call::Offered:

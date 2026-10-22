@@ -737,6 +737,40 @@ namespace police::units
 		ml::Log("units: backup from ({:.0f}, {:.0f})", road.x, road.y);
 	}
 
+	void Adopt(int colleague, Vehicle car, ::Ped cop)
+	{
+		Unit u;
+		u.car = car;
+		u.crew.push_back(cop);
+		ENTITY::SET_ENTITY_AS_MISSION_ENTITY(cop, true, true);
+		PED::SET_PED_RELATIONSHIP_GROUP_HASH(cop, MISC::GET_HASH_KEY("COP"));
+		ai::TakeControl(cop);
+		PED::SET_PED_KEEP_TASK(cop, true);
+		PED::SET_PED_AS_GROUP_MEMBER(cop, PLAYER::GET_PLAYER_GROUP(PLAYER::PLAYER_ID()));
+		PED::SET_PED_NEVER_LEAVES_GROUP(cop, true);
+		u.blip = HUD::ADD_BLIP_FOR_ENTITY(car);
+		HUD::SET_BLIP_SPRITE(u.blip, 56);
+		HUD::SET_BLIP_COLOUR(u.blip, 38);
+		HUD::BEGIN_TEXT_COMMAND_SET_BLIP_NAME("STRING");
+		HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(("支援：" + colleagues::Name(colleague)).c_str());
+		HUD::END_TEXT_COMMAND_SET_BLIP_NAME(u.blip);
+		u.state = State::OnScene;
+		u.since = ml::TickMs();
+		u.id = g_nextUnit++;
+		u.colleague = colleague;
+		u.arrived = true;
+		colleagues::SetBusy(colleague, true);
+		g_units.push_back(u);
+		ml::Log("units: {} joins on their own scene", colleagues::Name(colleague));
+	}
+
+	void Dismiss(int colleague)
+	{
+		for (Unit& u : g_units)
+			if (u.colleague == colleague)
+				Dismiss(u);
+	}
+
 	void BringCar()
 	{
 		Vehicle car = duty::PatrolCar();
@@ -974,6 +1008,8 @@ namespace police::units
 	{
 		menu::List m{"警察", {}};
 		m.items.push_back(shift::MenuItem());
+		if (menu::Item help = assist::MenuItem(); !help.label.empty())
+			m.items.push_back(help);
 		m.items.push_back(dispatch::MenuItem());
 		m.items.push_back(custody::MenuItem());
 		menu::Item computer{"車上電腦", "F10", "附近車輛、查車牌、查人、案件報告（要在警車上）"};

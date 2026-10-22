@@ -280,6 +280,8 @@ namespace police::colleagues
 	// Who comes as backup (`wanted` = that colleague, -1 = whoever answers): their id, -1 = no colleague (a unit
 	// without a name); how far away they are (rapport: liked ones are closer, after a refusal further).
 	int PickBackup(int wanted, float& minDistance, float& maxDistance);
+	// A colleague out on patrol (on duty, not busy, not at the station) to have an incident of their own; -1 = none.
+	int PickRequester();
 	// The police menu's radio (the colleagues on duty).
 	menu::Item RadioItem();
 	// The computer's list.
@@ -294,6 +296,9 @@ namespace police::units
 {
 	// Backup: a colleague on duty (`colleague` = that one, -1 = whoever answers).
 	void CallBackup(int colleague = -1);
+	// A colleague already on a scene of their own (assist.cpp) joins the officer as backup; later back to patrol.
+	void Adopt(int colleague, Vehicle car, ::Ped cop);
+	void Dismiss(int colleague);
 	void BringCar();
 	// Ends the incident: the backup goes back to patrol.
 	void Clear();
@@ -474,11 +479,27 @@ namespace police::dispatch
 {
 	// The police menu's dispatch item (the call on offer, or the one under way).
 	menu::Item MenuItem();
+	// No call offered or under way.
+	bool Idle();
 	// Development: a call now.
 	void CallNow(bool easy = false);
 	// The world was reset.
 	void Forget();
 	// Every frame while the officer is played: calls, and the action menu next to a suspect (hold E).
+	void Tick();
+}
+
+namespace police::assist
+{
+	// A colleague asking for help: offered, the officer on the way, or on scene.
+	bool Busy();
+	// Development: a colleague asks now (`urgent` = an officer in danger).
+	void CallNow(bool urgent);
+	// The police menu's item (to go or not; where it is), an empty label = nothing.
+	menu::Item MenuItem();
+	// The world was reset.
+	void Forget();
+	// Every frame while the officer is played on duty.
 	void Tick();
 }
 
