@@ -27,6 +27,8 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		police::partner::Forget();
 		police::discipline::Loading();
 		police::offduty::Loading();
+		police::callouts::Forget();
+		police::services::Forget();
 	});
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
@@ -60,6 +62,11 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		test.Action("生成會配合的路人", [] { g_testSpawn = 7; });
 		test.Action("立即派遣一件報案", [] { police::dispatch::CallNow(); });
 		test.Action("立即派遣（嫌犯會配合，測試搜查用）", [] { police::dispatch::CallNow(true); });
+		test.Action("立即派遣：商店搶案", [] { police::dispatch::CallNow(false, 1); });
+		test.Action("立即派遣：交通事故", [] { police::dispatch::CallNow(false, 2); });
+		test.Action("立即派遣：打架", [] { police::dispatch::CallNow(false, 3); });
+		test.Action("立即派遣：開槍", [] { police::dispatch::CallNow(false, 4); });
+		test.Action("立即派遣：可疑人物", [] { police::dispatch::CallNow(false, 5); });
 		test.Action("立即有同事請求支援", [] { police::assist::CallNow(false); });
 		test.Action("立即有員警需要協助", [] { police::assist::CallNow(true); });
 		test.Action("立即遇到下班時的搶案", [] { police::offduty::CallNow(); });
@@ -96,6 +103,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::partner::Tick();
 		police::discipline::Tick();
 		police::offduty::Tick();
+		police::services::Tick();
 		police::search::Tick();
 		police::mdt::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)

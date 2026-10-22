@@ -116,6 +116,7 @@ namespace police::suspect
 			uint64_t followedSince = 0;  // a police car with its lights on behind them since
 			bool disguised = false;      // changed their look: not recognised from a distance
 		bool cuffs = false;          // running with their hands cuffed behind them (broke out of the patrol car)
+		bool letGo = false;          // the officer let them go
 		::Ped leader = 0;            // cuffed, led by someone else than the officer (the jailer)
 			uint64_t jackCheckAt = 0;    // next look for a vehicle to take
 			std::string name;            // as on their ID
@@ -1338,6 +1339,7 @@ namespace police::suspect
 				st.cuffed = s.state == State::Cuffed || s.state == State::Escort;
 				st.custody = s.state == State::Custody;
 				st.gone = s.state == State::Gone || !ENTITY::DOES_ENTITY_EXIST(s.ped);
+				st.released = s.state == State::Gone && s.letGo;
 				st.dead = ENTITY::DOES_ENTITY_EXIST(s.ped) && ENTITY::IS_ENTITY_DEAD(s.ped, false);
 				return st;
 			}
@@ -1504,6 +1506,7 @@ namespace police::suspect
 				PED::SET_ENABLE_HANDCUFFS(s.ped, false);
 				TASK::CLEAR_PED_TASKS(s.ped);
 				TASK::TASK_WANDER_STANDARD(s.ped, 10.0f, 10);
+				s.letGo = true;
 				Set(s, State::Gone, "let go");
 			}
 	}

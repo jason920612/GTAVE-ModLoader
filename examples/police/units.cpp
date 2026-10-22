@@ -1013,6 +1013,8 @@ namespace police::units
 		if (menu::Item help = assist::MenuItem(); !help.label.empty())
 			m.items.push_back(help);
 		m.items.push_back(dispatch::MenuItem());
+		if (menu::Item scene = callouts::Actions(); !scene.label.empty())
+			m.items.push_back(scene);
 		m.items.push_back(custody::MenuItem());
 		menu::Item computer{"車上電腦", "F10", "附近車輛、查車牌、查人、案件報告（要在警車上）"};
 		computer.action = mdt::Open;
@@ -1048,6 +1050,7 @@ namespace police::units
 		};
 		m.items.push_back(query);
 		m.items.push_back(colleagues::RadioItem());
+		m.items.push_back(services::TowItem());
 		const char* why = "";
 		const size_t most = MaxUnits(why);
 		menu::Item backup{"呼叫支援", std::to_string(Backup()) + "/" + std::to_string(most) + " 組",

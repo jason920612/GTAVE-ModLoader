@@ -520,6 +520,7 @@ namespace police::suspect
 		bool yielded = false; // complying or standing there: can be dealt with
 		bool cuffed = false;
 		bool custody = false; // in the patrol car
+		bool released = false; // let go by the officer (gone, not escaped)
 		bool gone = false;
 		bool dead = false;
 	};
@@ -564,8 +565,8 @@ namespace police::dispatch
 	menu::Item MenuItem();
 	// No call offered or under way.
 	bool Idle();
-	// Development: a call now.
-	void CallNow(bool easy = false);
+	// Development: a call now (`kind`: -1 any, 0 a stolen car, 1.. callouts::Kind + 1).
+	void CallNow(bool easy = false, int kind = -1);
 	// The world was reset.
 	void Forget();
 	// Every frame while the officer is played: calls, and the action menu next to a suspect (hold E).
@@ -583,6 +584,52 @@ namespace police::assist
 	// The world was reset.
 	void Forget();
 	// Every frame while the officer is played on duty.
+	void Tick();
+}
+
+namespace police::callouts
+{
+	// The callouts besides the stolen car (dispatch.cpp offers them; callouts.cpp makes and follows the scene).
+	enum class Kind
+	{
+		Robbery,
+		Accident,
+		Fight,
+		Shots,
+		Suspicious,
+	};
+	struct Offer
+	{
+		Vector3 at{};
+		Kind kind = Kind::Robbery;
+		float heading = 0;
+		std::string place, title, radio;
+		bool fled = false; // a robbery: the robber ran off before the police came
+	};
+	// Where it happens (false = nowhere suitable now).
+	bool Plan(Kind kind, Offer& out);
+	// Accepted: the area on the map, the case.
+	void Begin(const Offer& offer);
+	bool Active();
+	// Every frame while it is under way: "" until it is over, then the outcome.
+	std::string Tick();
+	// Given up / handed over.
+	void Abandon();
+	// The police menu's item for the scene (the ambulance), an empty label = nothing.
+	menu::Item Actions();
+	void Forget();
+}
+
+namespace police::services
+{
+	// An ambulance for the injured at a place: paramedics tend them and take them away.
+	bool Ambulance(const Vector3& at, const std::vector<::Ped>& injured);
+	// A tow truck for a vehicle: hooked and hauled away (the user's police towing).
+	bool Tow(Vehicle v);
+	bool Towing(Vehicle v);
+	// The police menu's tow item (the vehicle nearest the officer).
+	menu::Item TowItem();
+	void Forget();
 	void Tick();
 }
 

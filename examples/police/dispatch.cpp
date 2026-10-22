@@ -37,6 +37,10 @@ namespace police::dispatch
 		Vehicle g_car = 0;          // the stolen car (kept while the call lasts, whoever is in it)
 		uint64_t g_acceptedAt = 0;
 		bool g_easy = false; // development: the next call's suspect gives up
+		// A callout other than the stolen car (callouts.cpp).
+		bool g_other = false;
+		callouts::Offer g_offer;
+		int g_forceKind = -1; // development: the next call's kind (0 the stolen car, 1.. callouts::Kind + 1)
 		// A call a sergeant gave to a colleague: they report back later.
 		struct Assigned
 		{
@@ -111,6 +115,7 @@ namespace police::dispatch
 			LetCarGo();
 			g_call = Call::None;
 			g_suspect = 0;
+			g_other = false;
 			g_nextCall = ml::TickMs() + 120000 + static_cast<uint64_t>(ai::Random() * 180000.0f);
 		}
 
@@ -160,15 +165,48 @@ namespace police::dispatch
 		// A stolen car somewhere on the roads 500-900 m away, in the officer's beat when it can be (shift.cpp). Out of
 		// their beat, half the calls go to the units there. It may be the stolen car of the shift's BOLO, and the thief
 		// the wanted person of the BOLO.
+		// One of the other callouts (by chance: robbery, accident, fight, shots fired, a suspicious person).
+		bool OfferOther(int forced)
+		{
+			static const std::pair<callouts::Kind, float> kinds[] = {{callouts::Kind::Robbery, 0.26f}, {callouts::Kind::Accident, 0.26f},
+			    {callouts::Kind::Fight, 0.2f}, {callouts::Kind::Shots, 0.1f}, {callouts::Kind::Suspicious, 0.18f}};
+			callouts::Kind kind = kinds[0].first;
+			if (forced >= 1)
+				kind = static_cast<callouts::Kind>(forced - 1);
+			else
+			{
+				float r = ai::Random();
+				for (const auto& [k, w] : kinds)
+					if ((r -= w) <= 0.0f || k == callouts::Kind::Suspicious)
+					{
+						kind = k;
+						break;
+					}
+			}
+			if (!callouts::Plan(kind, g_offer))
+				return false;
+			g_other = true;
+			g_call = Call::Offered;
+			g_offeredAt = ml::TickMs();
+			Radio();
+			ml::Notify("調度：{}，{}。按 F9「派遣」接受或忽略。", shift::Callsign(), g_offer.radio);
+			ml::Log("dispatch: offered {} at ({:.1f}, {:.1f}, {:.1f}) heading {:.0f}", g_offer.title, g_offer.at.x, g_offer.at.y, g_offer.at.z, g_offer.heading);
+			return true;
+		}
+
 		void Offer()
 		{
 			const Vector3 me = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
-			if (!shift::InBeat(me) && ai::Random() < 0.5f)
+			if (!shift::InBeat(me) && ai::Random() < 0.5f && g_forceKind < 0)
 			{
 				g_nextCall = ml::TickMs() + 60000 + static_cast<uint64_t>(ai::Random() * 120000.0f);
 				ml::Log("dispatch: the officer is out of their beat: this call went to another unit");
 				return;
 			}
+			// Stolen cars are about a third of the calls; the rest are the other callouts.
+			const int forced = std::exchange(g_forceKind, -1);
+			if ((forced >= 1 || (forced < 0 && ai::Random() < 0.68f)) && OfferOther(forced))
+				return;
 			Vector3 around{};
 			for (int i = 0; i < 8; ++i)
 			{
@@ -252,6 +290,15 @@ namespace police::dispatch
 		{
 			if (g_call != Call::Offered)
 				return;
+			if (g_other)
+			{
+				g_call = Call::Active;
+				g_acceptedAt = ml::TickMs();
+				Radio();
+				ml::Notify("收到，前往處理。");
+				callouts::Begin(g_offer);
+				return;
+			}
 			g_call = Call::Active;
 			g_found = false;
 			g_acceptedAt = ml::TickMs();
@@ -276,15 +323,18 @@ namespace police::dispatch
 				ml::Notify("目前沒有巡邏中的同事可以指派");
 				return;
 			}
-			g_assigned = {who, ml::TickMs() + 180000 + static_cast<uint64_t>(ai::Random() * 180000.0f), g_carName};
+			g_assigned = {who, ml::TickMs() + 180000 + static_cast<uint64_t>(ai::Random() * 180000.0f), g_other ? g_offer.title : g_carName};
 			colleagues::SetBusy(who, true);
-			ml::Notify("（無線電）你：{}，失竊的{}交給你處理。{}：收到。", colleagues::Callsign(who), g_carName, colleagues::Name(who));
+			ml::Notify("（無線電）你：{}，{}交給你處理。{}：收到。", colleagues::Callsign(who), g_other ? g_offer.title : "失竊的" + g_carName,
+			    colleagues::Name(who));
 			ml::Log("dispatch: the call was given to {}", colleagues::Name(who));
-			suspect::Release(g_suspect);
+			if (!g_other)
+				suspect::Release(g_suspect);
 			ClearArea();
 			LetCarGo();
 			g_call = Call::None;
 			g_suspect = 0;
+			g_other = false;
 			g_nextCall = ml::TickMs() + 120000 + static_cast<uint64_t>(ai::Random() * 180000.0f);
 		}
 
@@ -293,8 +343,8 @@ namespace police::dispatch
 			if (g_assigned.colleague < 0 || ml::TickMs() < g_assigned.at)
 				return;
 			const float r = ai::Random();
-			const char* outcome = r < 0.6f ? "嫌犯逮捕，車輛尋獲" : r < 0.85f ? "車輛尋獲，嫌犯逃逸" : "一直沒找到，轉為協尋";
-			ml::Notify("（無線電）{} {}：那台{}{}。", colleagues::Callsign(g_assigned.colleague), colleagues::Name(g_assigned.colleague), g_assigned.car, outcome);
+			const char* outcome = r < 0.6f ? "處理完畢，嫌犯逮捕" : r < 0.85f ? "處理完畢，嫌犯逃逸" : "到場時已經沒有人了";
+			ml::Notify("（無線電）{} {}：{}，{}。", colleagues::Callsign(g_assigned.colleague), colleagues::Name(g_assigned.colleague), g_assigned.car, outcome);
 			colleagues::SetBusy(g_assigned.colleague, false);
 			colleagues::Rapport(g_assigned.colleague, 1, "巡佐交付案件");
 			career::AddBonus(1, "督導指派案件");
@@ -305,6 +355,11 @@ namespace police::dispatch
 		{
 			if (g_call != Call::Offered)
 				return;
+			if (g_other)
+			{
+				End("已轉給其他單位");
+				return;
+			}
 			suspect::Release(g_suspect);
 			End("已轉給其他單位");
 		}
@@ -545,9 +600,9 @@ namespace police::dispatch
 	{
 		if (g_call == Call::Offered)
 		{
-			menu::Item i{"派遣", "失竊車輛", "有新的報案"};
+			menu::Item i{"派遣", g_other ? g_offer.title : "失竊車輛", g_other ? g_offer.radio : "有新的報案"};
 			i.sub = [] {
-				menu::List m{"派遣：失竊車輛", {}};
+				menu::List m{g_other ? "派遣：" + g_offer.title : "派遣：失竊車輛", {}};
 				menu::Item yes{"接受", "", "前往處理"};
 				yes.action = Accept;
 				m.items.push_back(yes);
@@ -566,12 +621,15 @@ namespace police::dispatch
 		}
 		if (g_call == Call::Active)
 		{
-			menu::Item i{"派遣", "處理中", "目前的案件"};
+			menu::Item i{"派遣", "處理中", g_other ? g_offer.title : "目前的案件"};
 			i.sub = [] {
-				menu::List m{"派遣：失竊車輛", {}};
-				menu::Item quit{"放棄案件", "", "嫌犯交給其他單位"};
+				menu::List m{g_other ? "派遣：" + g_offer.title : "派遣：失竊車輛", {}};
+				menu::Item quit{"放棄案件", "", "交給其他單位"};
 				quit.action = [] {
-					suspect::Release(g_suspect);
+					if (g_other)
+						callouts::Abandon();
+					else
+						suspect::Release(g_suspect);
 					End("案件已轉出");
 				};
 				m.items.push_back(quit);
@@ -589,9 +647,10 @@ namespace police::dispatch
 		return g_call == Call::None;
 	}
 
-	void CallNow(bool easy)
+	void CallNow(bool easy, int kind)
 	{
 		g_easy = easy;
+		g_forceKind = kind;
 		if (g_call == Call::None)
 			g_nextCall = 1; // due
 	}
@@ -613,10 +672,14 @@ namespace police::dispatch
 		{
 			if (g_call != Call::None)
 			{
-				suspect::Release(g_suspect);
+				if (g_other)
+					callouts::Abandon();
+				else
+					suspect::Release(g_suspect);
 				ClearArea();
 				LetCarGo();
 				g_call = Call::None;
+				g_other = false;
 			}
 			return;
 		}
@@ -652,12 +715,22 @@ namespace police::dispatch
 		case Call::Offered:
 			if (now - g_offeredAt > kOfferTime)
 			{
-				suspect::Release(g_suspect);
+				if (!g_other)
+					suspect::Release(g_suspect);
 				End("沒有回應，已轉給其他單位");
 			}
 			break;
 		case Call::Active:
-		{
+			if (g_other)
+			{
+				if (const std::string outcome = callouts::Tick(); !outcome.empty())
+				{
+					const bool good = outcome.find("逮捕") != std::string::npos || outcome.find("放行") != std::string::npos || outcome.find("處理完畢") != std::string::npos;
+					End(good ? ("案件結束：" + outcome + "。辛苦了。").c_str() : ("案件結束：" + outcome).c_str(), outcome.c_str());
+				}
+				break;
+			}
+			{
 			const suspect::Status st = suspect::StatusOf(g_suspect);
 			const ::Ped player = PLAYER::PLAYER_PED_ID();
 			const bool car = g_car && ENTITY::DOES_ENTITY_EXIST(g_car);
