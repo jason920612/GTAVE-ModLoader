@@ -492,6 +492,20 @@ namespace ml
 		}
 	}
 
+	// ---- the fourth story character -----------------------------------------------------------
+	// A character of the mod's own as the game's fourth protagonist (see MLApi::Char4SetPed): while its ped is the
+	// player, shops, ATMs, services and activities treat it as character 3 with its own money (SP3_TOTAL_CASH).
+	namespace char4
+	{
+		inline bool Available() { return detail::Has(&MLApi::Char4Ready) && Api().Char4Ready() != 0; }
+		// The character's ped (0 = none). Call again whenever the ped is replaced.
+		inline void SetPed(int32_t ped)
+		{
+			if (detail::Has(&MLApi::Char4SetPed))
+				Api().Char4SetPed(ped);
+		}
+	}
+
 	// ---- script globals ------------------------------------------------------------------------
 	// A script global by index, with offsets and arrays instead of raw pointer arithmetic:
 	//   ml::Global gens = ml::Global(114990) + 32759;   // a field 32759 slots in

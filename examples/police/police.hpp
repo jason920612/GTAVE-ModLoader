@@ -79,6 +79,16 @@ namespace police::guard
 	void Restore();
 }
 
+namespace police::money
+{
+	// Every frame: the loader's fourth character follows the officer; a new officer gets savings and unlocks.
+	void Tick();
+	// A save is loading.
+	void Loading();
+	// The officer's cash (SP3_TOTAL_CASH).
+	int Cash();
+}
+
 namespace police::persist
 {
 	// Where the officer was last (false when the save has no officer yet).

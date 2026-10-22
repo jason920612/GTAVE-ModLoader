@@ -44,6 +44,7 @@ namespace loader::config
 			c.aiEnabled = j.value("aiEnabled", c.aiEnabled);
 			c.dlssUpgrade = j.value("dlssUpgrade", c.dlssUpgrade);
 			c.dlssPreset = j.value("dlssPreset", c.dlssPreset);
+			c.fourthCharacter = j.value("fourthCharacter", c.fourthCharacter);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -68,6 +69,7 @@ namespace loader::config
 				{"aiEnabled", c.aiEnabled},
 				{"dlssUpgrade", c.dlssUpgrade},
 				{"dlssPreset", c.dlssPreset},
+				{"fourthCharacter", c.fourthCharacter},
 			};
 		}
 	}

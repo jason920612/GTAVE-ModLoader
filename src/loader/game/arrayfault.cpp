@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -43,6 +44,8 @@ namespace loader::game::arrayfault
 			uintptr_t stack;
 			uint32_t stackSize;
 			bool served;
+			enum class How : uint8_t { Shadow, Nested, Sink } how;
+			uint32_t nestedCount; // Nested: the count given
 			char name[64];
 		};
 		constexpr uint32_t kRing = 256;
@@ -51,15 +54,34 @@ namespace loader::game::arrayfault
 		uint32_t g_logged = 0;
 		uint64_t g_total = 0;
 
-		// Serving (experiment U7, development only): ModLoader\debug_arrayfault.txt lines "serve <script>" name scripts
-		// whose access to the element just past the end (index == count: the fourth character's element of a
-		// three-element array) gets a shadow element instead of the thread being killed. A shadow starts as a copy of
-		// element 0, or with the values of a "shadow <global index> <value> ..." line, and lives for the session.
-		std::vector<uint32_t> g_serve;                                  // program hashes
+		// Serving. The fourth character: index 3 of a three-element array, for the programs in g_fourth; the shadow
+		// of a global array is kept by its global index (saved with the game, game/char4), others by thread stack
+		// slot. Development (ModLoader\debug_arrayfault.txt): "serve <script>" serves the element just past the end
+		// of any array of that script, starting as a copy of element 0 or with the values of a "shadow <global index>
+		// <value> ..." line.
+		std::unordered_set<uint32_t> g_fourth;                          // program hashes
+		std::vector<uint32_t> g_serve;                                  // program hashes (development)
 		std::vector<std::pair<uint32_t, std::vector<int64_t>>> g_shadowInit; // global index of an array -> first values
-		std::unordered_map<uintptr_t, std::vector<int64_t>> g_shadows; // array (its count slot) -> shadow element
+		std::map<uint32_t, std::vector<int64_t>> g_globalShadows;       // global index (count slot) -> shadow element
+		std::map<uint64_t, std::vector<int64_t>> g_otherShadows;        // program << 32 ^ stack slot (or address)
+		std::unordered_map<uintptr_t, std::vector<int64_t>*> g_byAddress; // array (its count slot) -> its shadow
+		// Where each shadow lives, and the global index of element 0 of its array (UINT32_MAX for stack arrays): a
+		// shadow starts as zeros, so an array inside it has count 0 until its first use takes the count from the same
+		// place in element 0 (the elements stay zero, the character's own).
+		struct Range
+		{
+			size_t slots;
+			uint32_t source;
+		};
+		std::map<uintptr_t, Range> g_ranges;
+		// While the fourth character is the player, other failures of the rewritten scripts use a zeroed scratch
+		// element instead of ending the thread.
+		bool g_fourthActive = false;
+		std::vector<int64_t> g_sink(0x10000);
 		std::array<uintptr_t, 76> g_continuation{};                     // by opcode: the handler after its bounds check
 		uintptr_t* g_jumpTo = nullptr;                                  // the thunk's target for a served access
+		bool g_serving = false;
+		bool g_debug = false;
 		std::unordered_set<uint64_t> g_servedLogged;                    // program << 32 | ip, logged once
 
 		// While watching: the first access violations (and bad instructions) are logged with the running script, to
@@ -92,6 +114,58 @@ namespace loader::game::arrayfault
 			return (op >= kArrayU8 && op <= kArrayU8Store) || (op >= kArrayU16 && op <= kArrayU16Store);
 		}
 
+		// The global index of the array whose count slot is at `base`, or UINT32_MAX.
+		uint32_t GlobalIndex(const int64_t* base)
+		{
+			const auto at = reinterpret_cast<uintptr_t>(base);
+			for (uint32_t block = 0; block < 64; ++block)
+				if (const int64_t* first = scripts::Global(block << 18))
+				{
+					const auto start = reinterpret_cast<uintptr_t>(first);
+					if (at >= start && at < start + (size_t{1} << 18) * 8)
+						return (block << 18) + static_cast<uint32_t>((at - start) / 8);
+				}
+			return UINT32_MAX;
+		}
+
+		// The shadow element of the array at `base` (made on first use: zeros, or for development a copy of element 0
+		// and the "shadow" line's values).
+		std::vector<int64_t>* ShadowOf(const Fault& f, int64_t* base, bool copyFirst)
+		{
+			auto& cached = g_byAddress[f.base];
+			if (!cached)
+			{
+				const uint32_t global = GlobalIndex(base);
+				if (global != UINT32_MAX)
+					cached = &g_globalShadows[global];
+				else
+				{
+					const uint64_t slot = f.stack && f.base >= f.stack && f.base < f.stack + size_t{f.stackSize} * 8 ? (f.base - f.stack) / 8 : f.base;
+					cached = &g_otherShadows[(uint64_t{f.program} << 32) ^ slot];
+				}
+			}
+			std::vector<int64_t>& shadow = *cached;
+			if (shadow.size() < f.elementSize || !g_ranges.contains(reinterpret_cast<uintptr_t>(shadow.data())))
+			{
+				const size_t had = shadow.size();
+				if (had < f.elementSize)
+				{
+					std::erase_if(g_ranges, [&](const auto& r) { return r.first == reinterpret_cast<uintptr_t>(shadow.data()); });
+					shadow.resize(f.elementSize, 0);
+				}
+				const uint32_t first = GlobalIndex(base);
+				g_ranges[reinterpret_cast<uintptr_t>(shadow.data())] = {shadow.size(), first == UINT32_MAX ? UINT32_MAX : first + 1};
+				if (copyFirst && !had)
+				{
+					std::copy(base + 1, base + 1 + f.elementSize, shadow.begin());
+					for (const auto& [global, values] : g_shadowInit)
+						if (scripts::Global(global) == base)
+							std::copy_n(values.begin(), std::min<size_t>(values.size(), shadow.size()), shadow.begin());
+				}
+			}
+			return &shadow;
+		}
+
 		// Called by the thunk with the failing instruction, and for ARRAY opcodes the array (its count slot) and the
 		// index. Script thread, inside the interpreter. Returns 0 (the game's failure code runs), or for a served access
 		// the array base that makes the handler's own arithmetic land on the shadow (and sets the thunk's target).
@@ -118,20 +192,42 @@ namespace loader::game::arrayfault
 				strncpy_s(f.name, reinterpret_cast<const char*>(t + kName), _TRUNCATE);
 			}
 			uintptr_t served = 0;
-			if (IsArray(f.op) && index == f.count && f.elementSize && g_continuation[f.op] &&
-			    std::find(g_serve.begin(), g_serve.end(), f.program) != g_serve.end())
+			const bool aware = IsArray(f.op) && g_fourth.contains(f.program);
+			const bool fourth = aware && index == 3 && f.count == 3;
+			const bool debug = IsArray(f.op) && index == f.count && std::find(g_serve.begin(), g_serve.end(), f.program) != g_serve.end();
+			if ((fourth || debug) && f.elementSize && g_serving)
 			{
-				auto& shadow = g_shadows[f.base];
-				if (shadow.empty())
-				{
-					shadow.assign(base + 1, base + 1 + f.elementSize);
-					for (const auto& [global, values] : g_shadowInit)
-						if (scripts::Global(global) == base)
-							std::copy_n(values.begin(), std::min<size_t>(values.size(), shadow.size()), shadow.begin());
-				}
+				std::vector<int64_t>* shadow = ShadowOf(f, base, debug && !fourth);
+				served = reinterpret_cast<uintptr_t>(shadow->data()) - (uintptr_t{index} * f.elementSize + 1) * 8;
+				f.how = Fault::How::Shadow;
+			}
+			else if (aware && g_serving && f.count == 0)
+			{
+				// An array inside a shadow, not used before: its count from element 0.
+				auto it = g_ranges.upper_bound(f.base);
+				if (it != g_ranges.begin() && f.base < (--it)->first + it->second.slots * 8 && it->second.source != UINT32_MAX)
+					if (const int64_t* source = scripts::Global(it->second.source + static_cast<uint32_t>((f.base - it->first) / 8)))
+						if (*source > int64_t{index} && *source <= 0xFFFF)
+						{
+							*base = *source;
+							served = f.base;
+							f.how = Fault::How::Nested;
+							f.nestedCount = static_cast<uint32_t>(*source);
+						}
+			}
+			if (!served && aware && g_fourthActive && g_serving && f.elementSize)
+			{
+				std::fill_n(g_sink.begin(), f.elementSize, 0);
+				served = reinterpret_cast<uintptr_t>(g_sink.data()) - (uintptr_t{index} * f.elementSize + 1) * 8;
+				f.how = Fault::How::Sink;
+			}
+			if (served)
+			{
 				*g_jumpTo = g_continuation[f.op];
-				served = reinterpret_cast<uintptr_t>(shadow.data()) - (uintptr_t{index} * f.elementSize + 1) * 8;
 				f.served = true;
+				// Served places are logged once; the rest of their (frequent) accesses are not recorded.
+				if (g_servedLogged.contains(uint64_t{f.program} << 32 | f.ip))
+					return served;
 			}
 			g_written.store(n + 1, std::memory_order_release);
 			return served;
@@ -215,8 +311,7 @@ namespace loader::game::arrayfault
 	{
 		std::error_code ec;
 		const auto config = paths::Get().root / L"debug_arrayfault.txt";
-		if (!std::filesystem::exists(config, ec))
-			return;
+		g_debug = std::filesystem::exists(config, ec);
 		std::ifstream in(config);
 		for (std::string line; std::getline(in, line);)
 			if (line.starts_with("serve "))
@@ -239,7 +334,8 @@ namespace loader::game::arrayfault
 		// mov rax,[r15]; mov ecx,[r15-8]; cmp ecx,[rax]; jnb <failure block> (short or near): the six ARRAY handlers.
 		const auto module = pattern::Module::Main();
 		g_moduleBase = module.base;
-		AddVectoredExceptionHandler(1, OnException);
+		if (g_debug)
+			AddVectoredExceptionHandler(1, OnException);
 		const auto handler = pattern::Pattern::Parse("49 8B 07 41 8B 4F F8 3B 08");
 		uintptr_t block = 0;
 		size_t handlers = 0;
@@ -337,12 +433,37 @@ namespace loader::game::arrayfault
 		VirtualProtect(reinterpret_cast<void*>(block), sizeof(jump), old, &old);
 		FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(block), sizeof(jump));
 		const size_t continuations = std::count_if(g_continuation.begin(), g_continuation.end(), [](uintptr_t c) { return c != 0; });
-		if (continuations != 6)
-		{
-			g_serve.clear();
+		g_serving = continuations == 6;
+		if (!g_serving)
 			log::Warn("array faults: {} of 6 handlers recognised, nothing is served", continuations);
-		}
-		log::Info("array faults: watching the failure block at rva {:#x} (6 handlers), serving {} script(s)", block - module.base, g_serve.size());
+		log::Info("array faults: watching the failure block at rva {:#x} (6 handlers){}", block - module.base,
+		    g_serve.empty() ? std::string() : std::format(", development serving for {} script(s)", g_serve.size()));
+	}
+
+	bool Serving()
+	{
+		return g_serving;
+	}
+
+	void ServeFourth(const std::vector<uint32_t>& programs)
+	{
+		g_fourth = std::unordered_set<uint32_t>(programs.begin(), programs.end());
+	}
+
+	std::map<uint32_t, std::vector<int64_t>>& Shadows()
+	{
+		return g_globalShadows;
+	}
+
+	void ForgetAddresses()
+	{
+		g_byAddress.clear();
+		g_ranges.clear();
+	}
+
+	void SetFourthActive(bool active)
+	{
+		g_fourthActive = active;
 	}
 
 	void Tick()
@@ -359,9 +480,17 @@ namespace loader::game::arrayfault
 			++g_total;
 			if (f.served)
 			{
-				if (g_servedLogged.insert(uint64_t{f.program} << 32 | f.ip).second)
+				if (!g_servedLogged.insert(uint64_t{f.program} << 32 | f.ip).second)
+					continue;
+				if (f.how == Fault::How::Shadow)
 					log::Info("array fault served: {} ip {} {} index {} element {} slots, array {}", f.name, f.ip, OpName(f.op), f.index, f.elementSize,
 					    Where(f));
+				else if (f.how == Fault::How::Nested)
+					log::Info("array fault served: {} ip {} {} index {}: an array in a shadow element gets its count {} from element 0", f.name, f.ip,
+					    OpName(f.op), f.index, f.nestedCount);
+				else
+					log::Warn("array fault absorbed: {} ip {} {} index {} count {} element {} slots, array {} (a zeroed scratch element)", f.name, f.ip,
+					    OpName(f.op), f.index, f.count, f.elementSize, Where(f));
 				continue;
 			}
 			if (IsArray(f.op))

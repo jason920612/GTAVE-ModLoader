@@ -2,6 +2,7 @@
 
 #include "../convert/replace.hpp"
 #include "../convert/ypt.hpp"
+#include "char4.hpp"
 #include "datafiles.hpp"
 
 #include <Windows.h>
@@ -311,6 +312,11 @@ namespace loader::game::dlcpacks
 		// for the mods' save data (mods.cpp, "data that follows the game's save"). Written when missing or changed.
 		Pack CorePack()
 		{
+			static std::once_flag fourth;
+			std::call_once(fourth, [] {
+				WatchdogPause pause;
+				char4::Prepare(g_decrypt ? &g_decryptor : nullptr);
+			});
 			static constexpr std::string_view kStats =
 			    "<StatsSetup version=\"1\">\n"
 			    "    <stats>\n"

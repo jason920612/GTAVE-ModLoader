@@ -25,6 +25,7 @@
 #include "debug/hangdump.hpp"
 #include "debug/scripttrace.hpp"
 #include "debug/bootscript.hpp"
+#include "game/char4.hpp"
 #include "debug/remote.hpp"
 #include "web/browser.hpp"
 #include "game/datafiles.hpp"
@@ -217,6 +218,7 @@ namespace loader::core
 				log::Warn("crossmap: download still running, using the existing file");
 			game::natives::LoadCrossmap(CrossmapPath());
 			game::natives::ResolveHandlers();
+			game::char4::Install();
 			mods::LoadAll();
 			game::models::StartNameScan(); // the DLC list (mod packs) is known by now
 
@@ -282,6 +284,10 @@ namespace loader::core
 			if (!state::online)
 				game::fixes::KeepOnlineVehicles();
 			game::arrayfault::Tick();
+			if (!state::online)
+				game::char4::Tick();
+			else
+				game::char4::Suspend();
 			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)

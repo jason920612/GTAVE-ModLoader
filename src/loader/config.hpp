@@ -44,6 +44,9 @@ namespace loader::config
 		// DLSS Super Resolution model: "auto" (K for DLAA / Quality / Balanced, M for Performance, L for Ultra
 		// Performance; needs DLSS 310.5 or newer), "game" (what the game asks for) or a preset letter ("K", "L", "M").
 		std::string dlssPreset = "auto";
+		// The fourth story character (game/char4.hpp): the loader's pack carries the game scripts rewritten for it.
+		// Without it a mod's own character (the police mod's officer) has no money, shops or activities of its own.
+		bool fourthCharacter = true;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

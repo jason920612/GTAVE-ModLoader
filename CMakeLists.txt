@@ -88,7 +88,11 @@ add_library(loader SHARED
     src/loader/convert/rel.cpp
     src/loader/convert/replace.cpp
     src/loader/convert/xmlmerge.cpp
-    src/loader/convert/ysc.cpp)
+    src/loader/convert/ysc.cpp
+    src/loader/char4/program.cpp
+    src/loader/char4/rewrite.cpp
+    src/loader/char4/generate.cpp
+    src/loader/game/char4.cpp)
 set_target_properties(loader PROPERTIES OUTPUT_NAME ModLoader)
 target_compile_definitions(loader PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /permissive- /Zi>)
@@ -96,6 +100,12 @@ target_include_directories(loader PRIVATE sdk/include)
 target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json imgui winhttp d3d12 dxgi d3dcompiler shell32 ole32 windowscodecs bcrypt ws2_32 version shlwapi wintrust crypt32 delayimp)
 # Only needed after startup (crossmap download, overlay); keep them out of DllMain.
 target_link_options(loader PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:d3d12.dll /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll /DELAYLOAD:shell32.dll /DELAYLOAD:ole32.dll /DELAYLOAD:bcrypt.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:shlwapi.dll /DELAYLOAD:wintrust.dll /DELAYLOAD:crypt32.dll /DEBUG /OPT:REF /OPT:ICF)
+
+# Research tool: runs the fourth-character rewrite (src/loader/char4) on extracted scripts. Not default.
+add_executable(char4gen EXCLUDE_FROM_ALL tools/char4gen/main.cpp src/loader/char4/program.cpp src/loader/char4/rewrite.cpp
+    src/loader/convert/resource.cpp)
+target_compile_definitions(char4gen PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(char4gen PRIVATE /W4 /utf-8 /permissive-)
 
 # SDK: header-only, used by mods.
 add_library(modloader_sdk INTERFACE)

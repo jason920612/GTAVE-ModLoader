@@ -296,6 +296,16 @@ typedef struct MLApi
 	/* Replaces the ped's overrides with `bones` (count 0 clears them). They stay until replaced, cleared, the ped is
 	 * gone, or 2 seconds pass without a new PoseSet (so set them every frame while you drive the ped). */
 	int32_t (*PoseSet)(int32_t ped, const MLBonePose* bones, int32_t count);
+
+	/* ---- the fourth story character (check `size`) ----
+	 * A mod that lets the player play a character of its own (the police mod's officer) can make it the game's fourth
+	 * protagonist: while the ped named here is the player, the game's shops, ATMs, services and paid activities treat it
+	 * as character 3, with money of its own (the SP3_ stats; SP3_TOTAL_CASH is the cash the HUD shows), its own bank
+	 * account and its own records, all kept with the game's save. 0 = none. One character for all mods (the last call
+	 * wins); name the ped again whenever it is replaced (SET_PLAYER_MODEL gives the player a new handle). Any thread. */
+	void (*Char4SetPed)(int32_t ped);
+	/* 1 when the fourth character works in this game (the loader's rewritten game scripts are in place). Any thread. */
+	int32_t (*Char4Ready)(void);
 } MLApi;
 
 /* States of the local text model (AiState). */

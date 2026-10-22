@@ -21,6 +21,7 @@
 #include "ai/ai.hpp"
 #include "config.hpp"
 #include "log.hpp"
+#include "game/char4.hpp"
 #include "game/models.hpp"
 #include "game/pose.hpp"
 #include "convert/resource.hpp"
@@ -902,6 +903,7 @@ namespace loader::mods
 				mod->saveCommitted = mod->saveWorking;
 				mod->saveDirty = false;
 			}
+			game::char4::Saved(saved);
 			if (saved)
 				NewSaveNonce();
 		}
@@ -933,12 +935,14 @@ namespace loader::mods
 				mod->saveDirty = false;
 			}
 			log::Info("save loaded: it carries save number {:08x}; {} mod(s) have data for it", static_cast<uint32_t>(carried), found);
+			game::char4::Loaded(carried);
 			NewSaveNonce();
 		}
 
 		// A save is being loaded: unsaved changes are dropped. Game thread.
 		void DropSaveData()
 		{
+			game::char4::Loading();
 			for (auto& mod : g_mods)
 			{
 				std::lock_guard lock(g_saveMutex);
@@ -1222,6 +1226,18 @@ namespace loader::mods
 			return InModFiber("PoseSet", _ReturnAddress()) && count >= 0 && (count == 0 || bones) ? game::pose::SetPose(ped, bones, count) : 0;
 		}
 
+		// ---- high-level API: the fourth story character -----------------------------------------
+
+		void ApiChar4SetPed(int32_t ped)
+		{
+			game::char4::SetPed(ped);
+		}
+
+		int32_t ApiChar4Ready()
+		{
+			return game::char4::Ready() ? 1 : 0;
+		}
+
 		// ---- high-level API: the local text model ------------------------------------------------
 
 		int32_t ApiAiState()
@@ -1318,6 +1334,8 @@ namespace loader::mods
 			.PoseBoneInfo = ApiPoseBoneInfo,
 			.PoseGetBone = ApiPoseGetBone,
 			.PoseSet = ApiPoseSet,
+			.Char4SetPed = ApiChar4SetPed,
+			.Char4Ready = ApiChar4Ready,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

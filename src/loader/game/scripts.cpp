@@ -245,7 +245,7 @@ namespace loader::game::scripts
 			NativeOverride fn;
 			bool used = false;
 		};
-		constexpr int kOverrideSlots = 64;
+		constexpr int kOverrideSlots = 192; // mods' and the fourth character's (one per rewritten script)
 		Override g_overrides[kOverrideSlots];
 
 		// Native handlers get the call context in rcx; the interpreter may pass more in rdx, r8 and r9, which are kept
