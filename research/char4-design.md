@@ -1489,6 +1489,17 @@ Effort is in engineer-weeks for one experienced engineer, with ranges. M1b runs 
   - a written go/no-go exists for D1 (value 3), D4 (detour vs stubs), D6 (alias k = 0 vs MP slot; SP3 save category), D7 (own save block vs side file; autosave policy);
   - the tracer bullet buys a weapon as the officer with no thread deaths, Trevor's phone, calls and blips are unchanged, and the clothes shop does not open for the officer.
 
+**M1 + M2 status 2026-10-23 (implemented simpler than planned; phase0.md §55.8):**
+- Done (2d443b90, c58c0f88):
+  - C++ script library and rules in `src/loader/char4` (identity, character switches with stat triples / loose / identity cases, inline chains, account checks, the Q9 weapon rules); the generator writes 41 rewritten scripts and the SP3 stats into the loader's own pack (`ModLoader\core\char4`), cached by the archives' stamps; `tools/char4gen` runs it offline.
+  - Runtime `game/char4`: the officer native answered per rewritten program; account 3 (G2349[3].17, G143050[3].17) while the officer plays; the stats slot alias found at runtime (setter pattern, prefix table and stat objects by data scan); the G62254[3] cash mirror.
+  - Index-3 serving in arrayfault for the rewritten programs, zero-initialised shadows, nested-array counts from element 0 on first use, a zeroed scratch element for other failures while the officer plays.
+  - Shadows persisted per game save through the loader's save-number files (instead of block 13 and ml_char4_reg: no boot script, no startup patch, no sentinel needed).
+  - SDK `Char4SetPed` / `Char4Ready`.
+- Tested: Ammu-Nation purchase charged to the officer with the HUD showing SP3 cash; ATM with the officer's own log and balance; the hospital fee; protagonists' cash unchanged; save/load of SP3 stats and shadows; Q9 at Ammu-Nation.
+- Not done yet: the paid activities run end to end; service contacts (taxi by phone); repeat/benchmark save refusal; phone quick save as the officer; the cash animation on switch; the arrest fee.
+- Dropped as unnecessary with this approach: block 13 / ml_char4_reg / the boot sentinel (U3, U4, U40 production parts), the slot-serving InitNativeTables hook (the per-program native override does it), dependency groups and path-ready bits (a script that cannot be rewritten simply stays vanilla).
+
 **M1: Toolchain and catalog (10–12 weeks; +1 in revision 3 for the slot-serving hook, statics and frame growth, site guards, the ownership scan and the pattern redirect; +1 in revision 4 for the argument-last statics, the placement identity check, the D11 sinks and the boot sentinel; +1 in revision 5 for dependency groups and path-ready bits, the blind maintenance report, and the sentinel's markers and staged fallback; estimate).**
 - Work:
   - C++ script library: CFG, stack analysis, assembler with page and branch rules, resource writer for code, statics, globals pages **and native table (re-encoding, append)**;
