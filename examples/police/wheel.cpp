@@ -2,9 +2,11 @@
 //
 // The selector script draws the wheel on a PLAYER_SWITCH scaleform movie (its static 207) and keeps its state in
 // global 24447: +1 wheel open, +69 hovered slot, +20..+23 slot states (1 selectable), +25..+28 slot types. Its layout
-// statics 199..204 place the movie (right/bottom aligned). Story mode leaves the bottom slot (GTA Online's) empty and
-// never switches to it, so while a protagonist is played the mod only draws the officer into that slot and acts when
-// the wheel closes on it.
+// statics 199..204 place the movie (right/bottom aligned). While a protagonist is played the mod draws the officer into
+// the bottom slot (GTA Online's) and acts when the wheel closes on it. Signed in, story mode leaves that slot empty and
+// never acts on it; in the launcher's offline mode the selector offers it (state 1, type 3) and, on release, starts its
+// GTA Online path, which shows "sign in to play GTA Online". So for the selector only, the wheel key's release is not
+// reported while the officer's slot is hovered (Init), and the selector closes the wheel without acting.
 //
 // The script refuses to open the wheel for anyone but the three protagonists (it reads the player's model), so while
 // the officer is played the mod runs its own wheel: its own instance of the same movie, the same layout, the same
@@ -99,6 +101,8 @@ namespace police::wheel
 			}
 			else if (g_wasOpen && g_lastHover == kSlotOfficer)
 				officer::SwitchTo();
+			else if (PAD::IS_CONTROL_JUST_RELEASED(0, 169) && !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
+				officer::SwitchTo(); // F8, the bottom slot's key (hidden from the selector, see Init)
 			else if (g_wasOpen)
 				officer::Drop(); // the wheel closed on someone else: the officer is not needed here
 			g_wasOpen = open;
@@ -171,6 +175,22 @@ namespace police::wheel
 			if (g_hover != kSlotOfficer)
 				officer::SwitchFrom(g_hover);
 		}
+	}
+
+	void Init()
+	{
+		constexpr uint64_t kIsControlJustReleased = 0x50F940259D3841E6ULL;
+		constexpr uint64_t kIsDisabledControlJustReleased = 0x305C8DCD79DA8B0FULL;
+		constexpr int kSelectMultiplayer = 169; // F8: the bottom slot directly
+		for (const uint64_t hash : {kIsControlJustReleased, kIsDisabledControlJustReleased})
+			ml::scripts::OverrideNative("selector", hash, [](ml::scripts::NativeCall& call) {
+				const int action = call.Arg<int32_t>(1);
+				const bool onOfficer = Selector(1) != 0 && Selector(69) == kSlotOfficer;
+				if ((action == kWheelControl && onOfficer) || action == kSelectMultiplayer)
+					call.Return<int32_t>(0);
+				else
+					call.CallOriginal();
+			});
 	}
 
 	void Tick()

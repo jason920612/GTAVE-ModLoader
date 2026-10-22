@@ -88,6 +88,8 @@ namespace police::persist
 
 namespace police::wheel
 {
+	// Once at load: keeps the selector script from taking the officer's slot as GTA Online's.
+	void Init();
 	// Every frame: adds the officer to the game's wheel while a protagonist is played, or draws the wheel itself while
 	// the officer is played (the game's wheel only works for the three protagonists).
 	void Tick();
