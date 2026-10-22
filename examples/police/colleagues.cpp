@@ -6,6 +6,9 @@
 //   sooner; disliked, some say no and someone else comes, later.
 // - The radio (F9): the colleagues on duty, to ask one of them for backup or how things are.
 // - The roll call's sergeant is the sergeant of the officer's shift.
+// - Talking with them by typing (the computer's colleagues page, from the station or the radio): the local text model
+//   (research §40) answers as them (who they are, how they get on with the officer, the shift, the case under way),
+//   or, without it, a few lines of their own.
 // Rapport: a greeting a day, backup that came and was thanked (the scene cleared), help given or refused when they ask
 // for it (later).
 //
@@ -14,7 +17,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <format>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -35,16 +41,24 @@ namespace police::colleagues
 			const char* name;
 			const char* hello[3];
 			const char* radio;
+			const char* persona; // for the text model
 		};
 		const Trait kTraits[] = {
-		    {"熱心", {"嗯，你好。", "嘿，{}！今天還好嗎？有需要就叫我。", "{}！來得正好，咖啡我幫你倒了一杯。"}, "這邊一切正常，你那邊需要幫忙就說。"},
-		    {"嚴肅", {"報告寫好了嗎？", "早。照程序來，別給大家添麻煩。", "你最近表現不錯，繼續保持。"}, "巡邏中，狀況正常，完畢。"},
-		    {"愛開玩笑", {"喔，是你啊。", "又是你，今天別又把巡邏車開進水溝。", "{}！聽說你追車追到嫌犯都想自首了，哈！"}, "無聊到快睡著了，誰來搶個銀行吧……開玩笑的。"},
-		    {"老鳥", {"菜鳥，別擋路。", "幹這行久了就知道，活著回家最重要。", "這區的巷子我閉著眼睛都會走，有事問我。"}, "老樣子，平安無事。"},
-		    {"菜鳥", {"呃……你好。", "前輩好！今天有什麼要注意的嗎？", "{}前輩！上次你教我的我都記住了！"}, "報告，目前巡邏中，沒有狀況！"},
-		    {"冷淡", {"……", "嗯。", "喔，是你。今天還行。"}, "沒事。"},
-		    {"衝動", {"看什麼看？", "今天最好來點刺激的，巡邏快無聊死了。", "有追車記得叫我，我馬上到！"}, "安靜得要命，有追車記得叫我。"},
+		    {"熱心", {"嗯，你好。", "嘿，{}！今天還好嗎？有需要就叫我。", "{}！來得正好，咖啡我幫你倒了一杯。"}, "這邊一切正常，你那邊需要幫忙就說。",
+		        "熱心助人，說話親切，常關心同事"},
+		    {"嚴肅", {"報告寫好了嗎？", "早。照程序來，別給大家添麻煩。", "你最近表現不錯，繼續保持。"}, "巡邏中，狀況正常，完畢。",
+		        "一板一眼，重視程序與紀律，話不多但認真"},
+		    {"愛開玩笑", {"喔，是你啊。", "又是你，今天別又把巡邏車開進水溝。", "{}！聽說你追車追到嫌犯都想自首了，哈！"}, "無聊到快睡著了，誰來搶個銀行吧……開玩笑的。",
+		        "愛開玩笑，講話輕鬆，喜歡調侃同事，但關鍵時刻可靠"},
+		    {"老鳥", {"菜鳥，別擋路。", "幹這行久了就知道，活著回家最重要。", "這區的巷子我閉著眼睛都會走，有事問我。"}, "老樣子，平安無事。",
+		        "資深老警察，有點憤世嫉俗，喜歡分享經驗與街頭智慧"},
+		    {"菜鳥", {"呃……你好。", "前輩好！今天有什麼要注意的嗎？", "{}前輩！上次你教我的我都記住了！"}, "報告，目前巡邏中，沒有狀況！",
+		        "剛當警察不久，熱情又有點緊張，常向前輩請教"},
+		    {"冷淡", {"……", "嗯。", "喔，是你。今天還行。"}, "沒事。", "冷淡寡言，回話很短，不太表露情緒"},
+		    {"衝動", {"看什麼看？", "今天最好來點刺激的，巡邏快無聊死了。", "有追車記得叫我，我馬上到！"}, "安靜得要命，有追車記得叫我。",
+		        "急性子、好勝，喜歡追車和刺激的案子"},
 		};
+		const char* const kDepartmentNames[4] = {"洛聖都警局（LSPD）", "布萊恩郡警局（BCSO）", "聖安地列斯公路巡警（SAHP）", "國家特勤隊（NOOSE）"};
 
 		struct Colleague
 		{
@@ -372,6 +386,172 @@ namespace police::colleagues
 			return std::any_of(g_present.begin(), g_present.end(), [id](const Present& p) { return p.id == id && Exists(p.ped); });
 		}
 
+		// ---- typing with them --------------------------------------------------------------------------------------
+		struct Line
+		{
+			bool mine; // the officer's
+			std::string text;
+		};
+		std::map<int, std::vector<Line>> g_chat;
+		std::map<int, int64_t> g_chatted; // the game day of the last talk (rapport once a day)
+		std::vector<int> g_pending;       // waiting for their answer
+		int g_chatLoadedFor = -1;
+
+		std::string ChatKey()
+		{
+			return std::format("officer_chat_{}", Department());
+		}
+
+		void LoadChat()
+		{
+			if (g_chatLoadedFor == Department())
+				return;
+			g_chatLoadedFor = Department();
+			g_chat.clear();
+			const ml::Json j = ml::save::Get(ChatKey().c_str());
+			for (const auto& [key, lines] : j.Members())
+				for (const ml::Json& l : lines.Items())
+					g_chat[std::atoi(key.c_str())].push_back({l[0].Bool(), l[1].Str()});
+		}
+
+		void StoreChat()
+		{
+			ml::Json j = ml::Json::Object();
+			for (const auto& [id, lines] : g_chat)
+			{
+				ml::Json list = ml::Json::Array();
+				for (const Line& l : lines)
+					list.Push(ml::Json::Array({l.mine, l.text}));
+				j[std::to_string(id)] = list;
+			}
+			ml::save::Set(ChatKey().c_str(), j);
+		}
+
+		void AddLine(int id, bool mine, const std::string& text)
+		{
+			auto& lines = g_chat[id];
+			lines.push_back({mine, text});
+			if (lines.size() > 24)
+				lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(lines.size() - 24));
+			StoreChat();
+		}
+
+		size_t Chars(const std::string& s)
+		{
+			return static_cast<size_t>(std::count_if(s.begin(), s.end(), [](char ch) { return (static_cast<unsigned char>(ch) & 0xC0) != 0x80; }));
+		}
+
+		// Cleans what the model wrote; empty when it will not do (as the social mod's check, research §40).
+		std::string Check(std::string s, const std::string& name)
+		{
+			const auto trim = [&] {
+				while (!s.empty() && (s.front() == ' ' || s.front() == '\n' || s.front() == '\r'))
+					s.erase(0, 1);
+				while (!s.empty() && (s.back() == ' ' || s.back() == '\n' || s.back() == '\r'))
+					s.pop_back();
+			};
+			trim();
+			for (size_t at; (at = s.find('\n')) != std::string::npos;)
+				s.replace(at, 1, " ");
+			if (s.starts_with(name))
+				s.erase(0, name.size());
+			for (const char* colon : {"：", ":"})
+				if (const size_t at = s.find(colon); at != std::string::npos && Chars(s.substr(0, at)) <= 12 &&
+				    s.substr(0, at).find_first_of(" ，。！？,.!?") == std::string::npos)
+				{
+					s.erase(0, at + std::strlen(colon));
+					break;
+				}
+			trim();
+			for (const auto& [open, close] : std::vector<std::pair<std::string, std::string>>{{"「", "」"}, {"“", "”"}, {"\"", "\""}, {"『", "』"}})
+				if (s.starts_with(open) && s.ends_with(close) && s.size() > open.size() + close.size())
+					s = s.substr(open.size(), s.size() - open.size() - close.size());
+			static const char* kBad[] = {"抱歉，我", "我不能", "無法協助", "作為一個", "AI", "人工智慧", "語言模型", "遊戲", "GTA", "虛構", "玩家"};
+			for (const char* bad : kBad)
+				if (s.find(bad) != std::string::npos)
+					return {};
+			static const char* kSimplified[] = {"们", "这", "说", "时", "会", "对", "发", "经", "过", "还", "为", "没", "从", "见", "问", "应", "让", "该", "车", "门",
+			    "开", "关", "长", "东", "风", "书", "买", "卖", "头", "钱", "实", "现", "国", "动", "学", "当", "点", "样", "边", "认", "识", "话", "请", "谢", "讲",
+			    "变", "别", "吗", "给", "觉", "带", "处", "难", "听", "网", "务", "刚", "帮", "机", "钟", "杀", "枪", "个", "么", "里", "后", "气", "脑", "饭", "货"};
+			for (const char* ch : kSimplified)
+				if (s.find(ch) != std::string::npos)
+					return {};
+			const size_t n = Chars(s);
+			return n >= 1 && n <= 160 ? s : std::string();
+		}
+
+		// What they say without the text model: a line of their own by what was said.
+		std::string Scripted(const Colleague& c, const std::string& said)
+		{
+			const auto has = [&](const char* w) { return said.find(w) != std::string::npos; };
+			if (has("支援") || has("幫忙") || has("救"))
+				return c.trait == 5 ? "要支援就用無線電叫。" : "需要的話用無線電叫我，我盡量趕過去。";
+			if (has("案") || has("嫌犯") || has("報告"))
+				return c.trait == 1 ? "案子照程序走，報告寫清楚，證物別漏了。" : "那個案子小心點，有什麼不對勁就叫支援。";
+			if (has("下班") || has("吃") || has("喝") || has("咖啡"))
+				return c.trait == 2 ? "下班喝一杯？你請客的話我就去。" : "下班再說吧，現在先把班上完。";
+			if (has("謝"))
+				return c.trait == 5 ? "嗯。" : "別客氣，大家互相。";
+			const int level = c.rapport < -20 ? 0 : c.rapport > 40 ? 2 : 1;
+			return Fill(level == 1 ? kTraits[c.trait].radio : kTraits[c.trait].hello[level]);
+		}
+
+		std::string Persona(const Colleague& c)
+		{
+			const std::string me = look::Name().empty() ? "這位同事" : look::Name();
+			std::string p = std::format(
+			    "你是{}的{} {}，{}，當警察 {} 年，個性：{}。你在跟同事{}（{}）講話，你們的關係：{}。"
+			    "用繁體中文口語回覆，一到三句話，像同事之間聊天或無線電通話；只寫你說的話，不要加名字、引號或旁白。"
+			    "不要提到遊戲、AI 或模型。提到毒品一律說「管制藥物」加級數（例如第二級管制藥物），不說任何毒品名稱。",
+			    kDepartmentNames[Department()], Title(c), c.name, c.female ? "女性" : "男性", c.years, kTraits[c.trait].persona, me, career::Title(),
+			    RapportName(c.rapport));
+			p += std::format("現在是 {:02}:{:02}，你{}。", CLOCK::GET_CLOCK_HOURS(), CLOCK::GET_CLOCK_MINUTES(),
+			    OnDuty(c) ? (Busy(c.id) ? "正在出勤支援" : "在值勤") : "沒有上班");
+			if (shift::OnShift())
+				p += std::format("對方今天在{}勤務。", shift::BeatName());
+			if (const ml::Json k = records::CurrentCase(); k.IsObject())
+			{
+				p += "對方正在處理的案件：" + k["title"].Str();
+				const auto& log = k["log"].Items();
+				for (size_t i = log.size() > 2 ? log.size() - 2 : 0; i < log.size(); ++i)
+					p += "；" + log[i].Str();
+				p += "。";
+			}
+			return p;
+		}
+
+		void Answer(int id, int attempt)
+		{
+			const Colleague* c = Find(id);
+			if (!c)
+				return;
+			const auto& lines = g_chat[id];
+			std::string prompt;
+			for (size_t i = lines.size() > 8 ? lines.size() - 8 : 0; i < lines.size(); ++i)
+				prompt += (lines[i].mine ? std::string("同事：") : c->name + "：") + lines[i].text + "\n";
+			prompt += "請以" + c->name + "的身分回覆最後一句。";
+			const std::string name = c->name;
+			const bool sent = ml::ai::Generate({Persona(*c), prompt, 120, 0.8f}, [id, attempt, name](std::optional<std::string> text) {
+				const std::string ok = text ? Check(*text, name) : std::string();
+				if (ok.empty() && text && attempt < 1)
+				{
+					Answer(id, attempt + 1);
+					return;
+				}
+				std::erase(g_pending, id);
+				const Colleague* c = Find(id);
+				if (!c)
+					return;
+				const std::string said = g_chat[id].empty() ? "" : g_chat[id].back().text;
+				AddLine(id, false, ok.empty() ? Scripted(*c, said) : ok);
+			});
+			if (!sent)
+			{
+				std::erase(g_pending, id);
+				AddLine(id, false, Scripted(*c, lines.empty() ? "" : lines.back().text));
+			}
+		}
+
 		void Greet(int id, ::Ped ped)
 		{
 			Colleague* c = Find(id);
@@ -409,6 +589,9 @@ namespace police::colleagues
 					Say(*c, std::format("你今天在{}吧？{}。協尋那台{}多注意一下。", shift::BeatName(), shift::FocusText(), shift::BoloCar()), ped);
 			};
 			m.items.push_back(beat);
+			menu::Item chat{"聊天（打字）", "", "用電腦打字跟他聊（本機文字模型開著時是他自己回話）"};
+			chat.action = [id] { OpenChat(id); };
+			m.items.push_back(chat);
 			const int seed = c->seed;
 			m.leave = [ped, seed] {
 				if (Exists(ped))
@@ -572,6 +755,9 @@ namespace police::colleagues
 							ml::Notify("（無線電）{} {}：{}", CallsignOf(*c), c->name, Busy(id) ? "在支援現場，晚點再說。" : Here(id) ? "我在警局，有事過來說。" : kTraits[c->trait].radio);
 					};
 					s.items.push_back(status);
+					menu::Item chat{"聊天（打字）", "", "用電腦打字跟他聊"};
+					chat.action = [id] { OpenChat(id); };
+					s.items.push_back(chat);
 					return s;
 				};
 				m.items.push_back(i);
@@ -582,6 +768,48 @@ namespace police::colleagues
 		};
 		return radio;
 	}
+
+	void OpenChat(int id)
+	{
+		if (!ml::web::Available())
+		{
+			ml::Notify("沒有遊戲內瀏覽器，無法打字聊天");
+			return;
+		}
+		ml::web::Open(std::format("https://mdt.lspd/#colleagues/{}", id).c_str());
+	}
+
+	ml::Json Chat(int id)
+	{
+		Load();
+		LoadChat();
+		ml::Json lines = ml::Json::Array();
+		for (const Line& l : g_chat[id])
+			lines.Push(ml::Json{{"mine", l.mine}, {"text", l.text}});
+		return ml::Json{{"lines", lines}, {"pending", std::find(g_pending.begin(), g_pending.end(), id) != g_pending.end()}, {"ai", ml::ai::Usable()}};
+	}
+
+	ml::Json Say(int id, const std::string& text)
+	{
+		Load();
+		LoadChat();
+		const Colleague* c = Find(id);
+		if (!c || text.empty() || Chars(text) > 200)
+			return ml::Json{{"ok", false}};
+		if (std::find(g_pending.begin(), g_pending.end(), id) != g_pending.end())
+			return ml::Json{{"ok", false}, {"error", "他還在回你"}};
+		AddLine(id, true, text);
+		g_pending.push_back(id);
+		if (const int64_t today = shift::Day(); g_chatted[id] != today)
+		{
+			g_chatted[id] = today;
+			if (c->rapport < 40)
+				Rapport(id, 1, "聊天");
+		}
+		Answer(id, 0);
+		return ml::Json{{"ok", true}};
+	}
+
 
 	ml::Json Json()
 	{
@@ -597,6 +825,9 @@ namespace police::colleagues
 	void Loading()
 	{
 		g_loaded = false;
+		g_chatLoadedFor = -1;
+		g_pending.clear();
+		g_chatted.clear();
 		g_present.clear();
 		g_busy.clear();
 	}

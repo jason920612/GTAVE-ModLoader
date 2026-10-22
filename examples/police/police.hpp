@@ -284,6 +284,11 @@ namespace police::colleagues
 	int PickRequester();
 	// The police menu's radio (the colleagues on duty).
 	menu::Item RadioItem();
+	// Talking with one by typing: the computer's page opened on them; what was said; the officer saying something
+	// (the answer comes later, by the local text model or their own lines).
+	void OpenChat(int id);
+	ml::Json Chat(int id);
+	ml::Json Say(int id, const std::string& text);
 	// The computer's list.
 	ml::Json Json();
 	// A save is loading.

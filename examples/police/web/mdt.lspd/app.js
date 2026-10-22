@@ -9,7 +9,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click
 function show(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === tab));
-  ({ cars: loadCars, search: loadSearch, people: loadPeople, cases: loadCases, duty: loadDuty, career: loadCareer })[tab]();
+  ({ cars: loadCars, search: loadSearch, people: loadPeople, cases: loadCases, duty: loadDuty, career: loadCareer, colleagues: loadMates })[tab]();
 }
 $('close').addEventListener('click', () => game.close());
 
@@ -219,6 +219,54 @@ async function startExam() {
   });
 }
 
+// ---- colleagues: who they are, rapport, typing with them (colleagues.cpp)
+let mate = 0, mateTimer = 0;
+async function loadMates(open) {
+  const list = await call('mdt.colleagues');
+  if (open) mate = open;
+  $('mateList').innerHTML = list.map(c => `
+    <div class="item ${c.id === mate ? 'on' : ''}" data-id="${c.id}"><div class="main">
+      <div><b>${esc(c.name)}</b> <span class="hint">${esc(c.title)}</span>${c.onDuty ? `<span class="tag ${c.busy ? 'warn' : 'ok'}">${c.busy ? '出勤中' : '值勤'}</span>` : ''}</div>
+      <div class="sub">${esc(c.callsign)} · ${esc(c.shift)} · ${esc(c.trait)} · 年資 ${c.years} 年</div>
+      <div class="rapport"><span style="width:${(c.rapport + 100) / 2}%"></span></div><div class="sub">關係：${esc(c.rapportName)}（${c.rapport > 0 ? '+' : ''}${c.rapport}）</div>
+    </div></div>`).join('');
+  $('mateList').querySelectorAll('.item').forEach(el => el.addEventListener('click', () => openMate(+el.dataset.id, list)));
+  if (mate) openMate(mate, list);
+}
+async function openMate(id, list) {
+  mate = id;
+  $('mateList').querySelectorAll('.item').forEach(el => el.classList.toggle('on', +el.dataset.id === id));
+  const c = list.find(x => x.id === id);
+  if (!c) return;
+  $('mateChat').innerHTML = `<h2>${esc(c.title)} ${esc(c.name)}</h2><div class="bubbles" id="bubbles"></div>
+    <form id="sayForm" class="row"><input id="sayText" autocomplete="off" maxlength="200" placeholder="想跟${esc(c.name)}說什麼？"><button>送出</button></form>
+    <p class="hint" id="aiHint"></p>`;
+  $('sayForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const text = $('sayText').value.trim();
+    if (!text) return;
+    const r = await call('mdt.say', id, text);
+    if (r.ok) $('sayText').value = '';
+    refreshChat();
+  });
+  refreshChat();
+}
+async function refreshChat() {
+  clearTimeout(mateTimer);
+  if (!mate || !$('bubbles')) return;
+  const c = await call('mdt.chat', mate);
+  $('bubbles').innerHTML = c.lines.map(l => `<div class="bubble ${l.mine ? 'mine' : ''}">${esc(l.text)}</div>`).join('') +
+    (c.pending ? '<div class="bubble typing">⋯</div>' : '');
+  $('bubbles').scrollTop = $('bubbles').scrollHeight;
+  $('aiHint').textContent = c.ai ? '' : '本機文字模型沒有開（載入器設定）：同事會用預設的話回答。';
+  if (c.pending) mateTimer = setTimeout(refreshChat, 1500);
+}
+
 // ---- start
 call('mdt.state').then(s => { $('who').textContent = s.officer ? `員警 ${s.officer}` : ''; });
-show(['cars', 'search', 'people', 'cases', 'duty', 'career'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'cars');
+{
+  const [tab, arg] = location.hash.slice(1).split('/');
+  if (tab === 'colleagues' && arg) { document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === tab)); loadMates(+arg); }
+  else show(['cars', 'search', 'people', 'cases', 'duty', 'career', 'colleagues'].includes(tab) ? tab : 'cars');
+}

@@ -73,3 +73,11 @@ ul.log { margin: 4px 0; padding-left: 18px; color: var(--ink); }
 .result.pass { background: color-mix(in srgb, var(--ok) 18%, transparent); }
 .result.fail { background: color-mix(in srgb, var(--bad) 18%, transparent); }
 .result button { margin-left: auto; }
+.rapport { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 4px 0 2px; position: relative; }
+.rapport span { display: block; height: 100%; background: linear-gradient(90deg, var(--bad), var(--warn) 45%, var(--ok)); }
+.chat { display: flex; flex-direction: column; min-height: calc(100vh - 110px); }
+.bubbles { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px 0; max-height: calc(100vh - 260px); }
+.bubble { align-self: flex-start; max-width: 75%; padding: 8px 12px; border-radius: 14px; background: var(--sel); }
+.bubble.mine { align-self: flex-end; background: var(--accent); color: #fff; }
+.bubble.typing { color: var(--muted); }
+.chat form { margin-top: 8px; }

@@ -17,6 +17,7 @@
     <button data-tab="cases">案件與報告</button>
     <button data-tab="duty">勤務與薪資</button>
     <button data-tab="career">升遷與考試</button>
+    <button data-tab="colleagues">同事</button>
   </nav>
   <div class="end"><button class="theme-toggle" data-theme-toggle></button><button id="close" title="關閉">✕</button></div>
 </header>
@@ -66,6 +67,12 @@
       <div class="card wide" id="careerHistory"></div>
     </div>
     <div id="examView" class="card exam" hidden></div>
+  </section>
+  <section id="colleagues" class="tab">
+    <div class="split">
+      <div class="list" id="mateList"></div>
+      <div class="detail chat" id="mateChat"><p class="hint">選一位同事聊天。</p></div>
+    </div>
   </section>
 </main>
 <script src="app.js"></script>

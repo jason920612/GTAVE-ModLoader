@@ -271,6 +271,9 @@ namespace police::mdt
 		ml::web::Function("mdt.charges", [] { return Charges(); });
 		ml::web::Function("mdt.shift", [] { return shift::Json(); });
 		ml::web::Function("mdt.career", [] { return career::Json(); });
+		ml::web::Function("mdt.colleagues", [] { return colleagues::Json(); });
+		ml::web::Function("mdt.chat", [](int id) { return colleagues::Chat(id); });
+		ml::web::Function("mdt.say", [](int id, std::string text) { return colleagues::Say(id, text); });
 		ml::web::Function("mdt.examStart", [] { return career::StartExam(); });
 		ml::web::Function("mdt.examSubmit", [](std::vector<int> answers) { return career::SubmitExam(answers); });
 		ml::web::Function("mdt.submit", [](int id, std::vector<std::string> charges, std::string narrative) { return records::Submit(id, charges, narrative); });
