@@ -1447,8 +1447,11 @@ Every scenario runs on **≥ 3–4 launches**, with success rates reported (memo
     - appcontacts @45335–@45385: after a protagonist calls contact 130 it sets 130's owner 4 to 1 and owner 3 to 0, so protagonist play does write owner-3 data, for that contact only.
     - Several appinternet sites and act_cinema @428823 look MP-only and still need the dynamic check.
   - Consequence: D1 holds. The officer's phonebook (his owner-3 elements) is restored from block 13 whenever he becomes the player.
-  - The dynamic part (write watch tool ready) was blocked by a Rockstar launcher sign-in failure.
-- Still open: U5 dynamic check, U9 in-game check (with M2), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
+  - U5 (dynamic part, offline mode): a 50 ms write watch on G118, G2349, G143050 and G129050 ran for about 15 minutes.
+    - Covered: Trevor calling four contacts, the phone browser (the loader's own, so vanilla appinternet did not run), and switches Trevor → Michael → Franklin → officer.
+    - Entry 3 and the owner-3 elements were never written. Contact 130 is already 1 for Michael in this save, so the appcontacts path did not trigger. D1 confirmed.
+  - New issue, police mod: in offline mode, picking the officer slot on the game's wheel (control 169, the MP slot) switches to the officer, but the selector also takes it as "go to GTA Online" and shows the sign-in warning (selector @28087–@30255). The wheel has to suppress the selector's MP action for that slot.
+- Still open: U9 in-game check (with M2), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
 
 ---
 
