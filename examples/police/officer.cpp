@@ -25,6 +25,45 @@ namespace police::officer
 		::Ped g_protagonist = 0; // the protagonist left behind while the officer is played
 		int g_headshot = 0;
 		bool g_wasPlayer = false; // the officer was the player at the last tick (or after the mod's own change)
+		// After a switch to a protagonist the officer stays in the world, going about, until out of sight; where they
+		// were then is kept, and a switch back within an hour of game time finds them there (the game's own rule for
+		// the protagonists, player_controller_b@599363: under 60 game minutes). Killed while left: the next switch to
+		// them starts at the nearest hospital.
+		bool g_leftBehind = false;
+		uint64_t g_leftAtMs = 0;
+		uint64_t g_offScreenSinceMs = 0;
+		struct Left
+		{
+			bool valid = false;
+			Place at{};
+			int64_t clock = 0; // game minutes
+			bool hospital = false;
+		} g_left;
+
+		int64_t GameMinutes()
+		{
+			const int64_t days = CLOCK::GET_CLOCK_YEAR() * 372LL + CLOCK::GET_CLOCK_MONTH() * 31LL + CLOCK::GET_CLOCK_DAY_OF_MONTH();
+			return days * 1440 + CLOCK::GET_CLOCK_HOURS() * 60 + CLOCK::GET_CLOCK_MINUTES();
+		}
+
+		// The story's respawn hospitals.
+		Place NearestHospital(const Place& from)
+		{
+			static constexpr Place kHospitals[] = {{298.2f, -584.5f, 43.3f, 70.0f}, {340.3f, -1396.2f, 32.5f, 50.0f}, {-449.2f, -340.6f, 34.5f, 80.0f},
+			    {1151.2f, -1529.5f, 35.4f, 330.0f}, {1839.6f, 3672.9f, 34.3f, 210.0f}, {-247.5f, 6331.2f, 32.4f, 220.0f}};
+			const Place* best = &kHospitals[0];
+			float bestDistance = 1e30f;
+			for (const Place& h : kHospitals)
+			{
+				const float dx = h.x - from.x, dy = h.y - from.y, d = dx * dx + dy * dy;
+				if (d < bestDistance)
+				{
+					bestDistance = d;
+					best = &h;
+				}
+			}
+			return *best;
+		}
 		constexpr uint32_t kSwitchRequest = 99964;
 		constexpr uint32_t kCurrentCharacter = 122220; // 0..2 a protagonist, 145 none
 
@@ -254,10 +293,32 @@ namespace police::officer
 	{
 		if (!Exists(g_officer))
 		{
-			// Where the hour puts them (the scene's activity starts when they are switched to).
-			const life::Scene scene = life::Now();
-			g_scene = life::Pick(scene, g_scenario);
-			g_officer = Create({g_scene.x, g_scene.y, g_scene.z}, g_scene.heading, scene == life::Scene::OnDuty);
+			g_leftBehind = false;
+			const int64_t since = GameMinutes() - g_left.clock;
+			if (g_left.valid && g_left.hospital)
+			{
+				// Out of the hospital they were taken to.
+				ml::Log("the officer comes out of a hospital");
+				g_scene = NearestHospital(g_left.at);
+				g_scenario = nullptr;
+				g_officer = Create({g_scene.x, g_scene.y, g_scene.z}, g_scene.heading, false);
+				g_left = {};
+			}
+			else if (g_left.valid && since >= 0 && since < 60)
+			{
+				// Where they were left a short while ago.
+				ml::Log("the officer is where they were left {} game minutes ago", since);
+				g_scene = g_left.at;
+				g_scenario = nullptr;
+				g_officer = Create({g_scene.x, g_scene.y, g_scene.z}, g_scene.heading, g_uniform);
+			}
+			else
+			{
+				// Where the hour puts them (the scene's activity starts when they are switched to).
+				const life::Scene scene = life::Now();
+				g_scene = life::Pick(scene, g_scenario);
+				g_officer = Create({g_scene.x, g_scene.y, g_scene.z}, g_scene.heading, scene == life::Scene::OnDuty);
+			}
 			if (g_headshot)
 				PED::UNREGISTER_PEDHEADSHOT(g_headshot);
 			g_headshot = 0;
@@ -317,6 +378,14 @@ namespace police::officer
 	{
 		if (!Exists(g_officer) || IsPlayer())
 			return;
+		if (g_leftBehind)
+		{
+			// Where they went after the switch away is where a quick switch back finds them.
+			const Vector3 at = ENTITY::GET_ENTITY_COORDS(g_officer, true);
+			g_left = {true, {at.x, at.y, at.z, ENTITY::GET_ENTITY_HEADING(g_officer)}, GameMinutes(), ENTITY::IS_ENTITY_DEAD(g_officer, false) != 0};
+			g_leftBehind = false;
+			ml::Log("the officer left behind makes room at ({:.0f}, {:.0f}, {:.0f}){}", at.x, at.y, at.z, g_left.hospital ? ", dead: next time from a hospital" : "");
+		}
 		if (g_headshot)
 			PED::UNREGISTER_PEDHEADSHOT(g_headshot);
 		g_headshot = 0;
@@ -342,6 +411,8 @@ namespace police::officer
 		g_protagonist = 0;
 		g_headshot = 0;
 		g_wasPlayer = false;
+		g_leftBehind = false;
+		g_left = {};
 	}
 
 	void SwitchTo()
@@ -358,12 +429,17 @@ namespace police::officer
 			return;
 		const ::Ped from = PLAYER::PLAYER_PED_ID();
 		StoreProtagonist(from);
-		// The scene's place loads first, so it is there when the camera comes down.
-		life::Load(g_scene);
-		ENTITY::SET_ENTITY_COORDS(g_officer, g_scene.x, g_scene.y, g_scene.z, false, false, false, false);
-		ENTITY::SET_ENTITY_HEADING(g_officer, g_scene.heading);
-		if (Switch(g_officer, g_scenario))
+		if (!g_leftBehind)
 		{
+			// The scene's place loads first, so it is there when the camera comes down.
+			life::Load(g_scene);
+			ENTITY::SET_ENTITY_COORDS(g_officer, g_scene.x, g_scene.y, g_scene.z, false, false, false, false);
+			ENTITY::SET_ENTITY_HEADING(g_officer, g_scene.heading);
+		}
+		// (Still about where they were left: the switch goes to them there, as they are.)
+		if (Switch(g_officer, g_leftBehind ? nullptr : g_scenario))
+		{
+			g_leftBehind = false;
 			KeepProtagonist(from);
 			if (!look::Exists())
 				ml::Notify("第一次當警察：按 F4 →「Police」→「外觀（角色建立）」建立你的警察");
@@ -390,6 +466,12 @@ namespace police::officer
 		if (Exists(g_protagonist) && CharacterOfModel(ENTITY::GET_ENTITY_MODEL(g_protagonist)) == character)
 			LetGoOfProtagonist();
 		guard::Restore();
+		// The game deletes the player's old ped when it is no protagonist (player_controller_b@3639-@3692), so where
+		// the officer is now is kept for after the switch.
+		const Vector3 was = ENTITY::GET_ENTITY_COORDS(g_officer, true);
+		const float wasHeading = ENTITY::GET_ENTITY_HEADING(g_officer);
+		const Vehicle wasIn = PED::GET_VEHICLE_PED_IS_IN(g_officer, false);
+		const bool wasDriving = wasIn && VEHICLE::GET_PED_IN_VEHICLE_SEAT(wasIn, -1, false) == g_officer;
 		SetGlobal(kSwitchRequest + 45, character);
 		SetGlobal(kSwitchRequest + 46, 0);
 		SetGlobal(kSwitchRequest + 44, 1);
@@ -405,7 +487,39 @@ namespace police::officer
 		for (const uint64_t end = ml::TickMs() + 60000; ml::TickMs() < end && STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS();)
 			ml::Wait(0);
 		g_wasPlayer = false;
-		Drop();
+		// The officer goes on with their day where they were until out of sight (Tick), then makes room. The game
+		// deleted their ped; when the new player is near, an officer like them takes their place there.
+		g_left = {true, {was.x, was.y, was.z, wasHeading}, GameMinutes(), false};
+		if (!Exists(g_officer))
+			g_officer = 0;
+		const Vector3 now = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
+		const float dx = now.x - was.x, dy = now.y - was.y;
+		if (!g_officer && dx * dx + dy * dy < 150.0f * 150.0f)
+		{
+			g_officer = Create({was.x, was.y, was.z - 1.0f}, wasHeading, g_uniform);
+			if (g_officer && wasDriving && ENTITY::DOES_ENTITY_EXIST(wasIn) && VEHICLE::IS_VEHICLE_SEAT_FREE(wasIn, -1, false))
+				PED::SET_PED_INTO_VEHICLE(g_officer, wasIn, -1);
+		}
+		if (Exists(g_officer) && !ENTITY::IS_ENTITY_DEAD(g_officer, false))
+		{
+			Hold(g_officer, false);
+			const Vehicle car = PED::GET_VEHICLE_PED_IS_IN(g_officer, false);
+			if (car && VEHICLE::GET_PED_IN_VEHICLE_SEAT(car, -1, false) == g_officer)
+				TASK::TASK_VEHICLE_DRIVE_WANDER(g_officer, car, 15.0f, 786603);
+			else
+				TASK::TASK_WANDER_STANDARD(g_officer, 10.0f, 10);
+			g_leftBehind = true;
+			g_leftAtMs = ml::TickMs();
+			g_offScreenSinceMs = 0;
+			if (g_headshot)
+				PED::UNREGISTER_PEDHEADSHOT(g_headshot);
+			g_headshot = PED::REGISTER_PEDHEADSHOT(g_officer);
+		}
+		else
+		{
+			ml::Log("the officer was left at ({:.0f}, {:.0f}, {:.0f}), away from the new player", was.x, was.y, was.z);
+			Drop();
+		}
 		// A protagonist other than the one switched to stays the mod's no longer: the game looks after them now.
 		if (Exists(g_protagonist))
 		{
@@ -453,6 +567,23 @@ namespace police::officer
 				ml::LogError("the game made the player a {:08X} while the officer was played", model);
 		}
 		g_wasPlayer = IsPlayer();
+		// The officer left behind makes room once out of sight: far off, off screen for a while, after a few minutes,
+		// or dead (then they wake up in a hospital).
+		if (g_leftBehind && Exists(g_officer) && !g_wasPlayer)
+		{
+			const uint64_t now = ml::TickMs();
+			const Vector3 a = ENTITY::GET_ENTITY_COORDS(g_officer, true), b = ENTITY::GET_ENTITY_COORDS(player, true);
+			const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+			if (ENTITY::IS_ENTITY_ON_SCREEN(g_officer))
+				g_offScreenSinceMs = 0;
+			else if (!g_offScreenSinceMs)
+				g_offScreenSinceMs = now;
+			if (ENTITY::IS_ENTITY_DEAD(g_officer, false) || dx * dx + dy * dy + dz * dz > 150.0f * 150.0f ||
+			    (g_offScreenSinceMs && now - g_offScreenSinceMs > 10000) || now - g_leftAtMs > 180000)
+				Drop();
+		}
+		else if (g_leftBehind && !Exists(g_officer))
+			g_leftBehind = false;
 		// The scene's activity lasts until the player moves (as after the game's own switches).
 		if (g_busy && IsPlayer() && (std::abs(PAD::GET_CONTROL_NORMAL(0, 30)) > 0.2f || std::abs(PAD::GET_CONTROL_NORMAL(0, 31)) > 0.2f))
 		{
