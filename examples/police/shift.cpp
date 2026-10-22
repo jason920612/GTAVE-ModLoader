@@ -578,7 +578,8 @@ namespace police::shift
 			const Beat& beat = kBeats[Department()][static_cast<size_t>(p.beat) % kBeats[Department()].size()];
 			menu::List m{held ? "勤前教育" : "今日勤務", {}};
 			m.items.push_back({"日期", Date(DayOf(static_cast<double>(p.start))) + " " + kKinds[p.kind].name, std::format("{}–{}", Clock(static_cast<double>(p.start)), Clock(static_cast<double>(p.end)))});
-			m.items.push_back({"帶班", g.sergeant, "今天的帶班巡佐"});
+			const std::string sergeant = colleagues::Sergeant(p.kind);
+			m.items.push_back({"帶班", sergeant.empty() ? g.sergeant : sergeant, "今天的帶班巡佐"});
 			m.items.push_back({"勤務區", beat.name, "調度會優先派這一區的案件給你，地圖上淡藍色的範圍"});
 			m.items.push_back({"呼號", CallsignOf(p), "無線電上叫你的代號"});
 			m.items.push_back({"協尋車輛", CarName(p.boloCar) + " " + p.boloPlate, "失竊車輛：看到就攔停（車牌辨識也會警示）"});
@@ -919,6 +920,21 @@ namespace police::shift
 	std::string Today()
 	{
 		return Date(DayOf(Now()));
+	}
+
+	int64_t Day()
+	{
+		return DayOf(Now());
+	}
+
+	std::string FocusText()
+	{
+		return kFocus[static_cast<size_t>(g.planned.focus) % std::size(kFocus)].detail;
+	}
+
+	std::string BoloCar()
+	{
+		return CarName(g.planned.boloCar) + "（" + g.planned.boloPlate + "）";
 	}
 
 	menu::Item MenuItem()

@@ -69,6 +69,8 @@ namespace police::units
 			bool driving = false;    // the transport under way
 			bool delivered = false;
 			bool tagging = false;    // after the officer's car from a scene (not called in): lights as the officer's
+			int colleague = -1;      // who leads it (colleagues.cpp), -1 = a unit without a name
+			bool arrived = false;    // it got to the officer
 		};
 		int g_nextUnit = 1;
 		std::vector<::Ped> g_borrowed; // officers lent out (a search): their unit leaves them be
@@ -159,9 +161,9 @@ namespace police::units
 			return fallback;
 		}
 
-		::Ped Crew(Vehicle car, int seat)
+		::Ped Crew(Vehicle car, int seat, int colleague = -1)
 		{
-			const Hash model = MISC::GET_HASH_KEY(duty::CopModel());
+			const Hash model = colleague >= 0 ? colleagues::Model(colleague) : MISC::GET_HASH_KEY(duty::CopModel());
 			const auto loaded = ml::LoadModel(model);
 			if (!loaded)
 				return 0;
@@ -169,7 +171,10 @@ namespace police::units
 			if (!p)
 				return 0;
 			ENTITY::SET_ENTITY_AS_MISSION_ENTITY(p, true, true);
-			PED::SET_PED_RANDOM_COMPONENT_VARIATION(p, 0);
+			if (colleague >= 0)
+				colleagues::Dress(p, colleague);
+			else
+				PED::SET_PED_RANDOM_COMPONENT_VARIATION(p, 0);
 			PED::SET_PED_RELATIONSHIP_GROUP_HASH(p, MISC::GET_HASH_KEY("COP"));
 			ai::TakeControl(p);
 			WEAPON::GIVE_WEAPON_TO_PED(p, MISC::GET_HASH_KEY("WEAPON_PISTOL"), 200, false, true);
@@ -185,6 +190,8 @@ namespace police::units
 
 		void Release(Unit& u)
 		{
+			if (u.colleague >= 0)
+				colleagues::SetBusy(u.colleague, false);
 			if (u.blip && HUD::DOES_BLIP_EXIST(u.blip))
 				HUD::REMOVE_BLIP(&u.blip);
 			for (::Ped& p : u.crew)
@@ -270,6 +277,7 @@ namespace police::units
 						}
 					u.state = State::OnScene;
 					u.since = now;
+					u.arrived = true;
 					ml::Log("units: backup on scene");
 				}
 				else if (now >= u.nextTask && Distance(u.target, me) > 15.0f)
@@ -668,7 +676,7 @@ namespace police::units
 		}
 	}
 
-	void CallBackup()
+	void CallBackup(int colleague)
 	{
 		size_t active = 0;
 		for (const Unit& u : g_units)
@@ -679,8 +687,11 @@ namespace police::units
 			ml::Notify("調度：目前狀況（{}）最多派 {} 組支援，已經有 {} 組", why, most, active);
 			return;
 		}
+		// Who comes (a colleague on duty, as they get on with the officer) and from how far.
+		float nearest = 120.0f, farthest = 300.0f;
+		const int who = colleagues::PickBackup(colleague, nearest, farthest);
 		Place road{};
-		if (!FindRoad(120.0f, 300.0f, road))
+		if (!FindRoad(nearest, farthest, road) && !FindRoad(120.0f, 300.0f, road))
 		{
 			ml::Notify("附近沒有路可以讓支援過來");
 			return;
@@ -692,8 +703,9 @@ namespace police::units
 			ml::LogError("units: no car for the backup");
 			return;
 		}
+		u.colleague = who;
 		for (const int seat : {-1, 0})
-			if (const ::Ped p = Crew(u.car, seat))
+			if (const ::Ped p = Crew(u.car, seat, seat == -1 ? who : -1))
 				u.crew.push_back(p);
 		if (u.crew.empty())
 		{
@@ -707,8 +719,10 @@ namespace police::units
 		HUD::SET_BLIP_SPRITE(u.blip, 56);
 		HUD::SET_BLIP_COLOUR(u.blip, 38);
 		HUD::BEGIN_TEXT_COMMAND_SET_BLIP_NAME("STRING");
-		HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME("支援");
+		HUD::ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(who >= 0 ? ("支援：" + colleagues::Name(who)).c_str() : "支援");
 		HUD::END_TEXT_COMMAND_SET_BLIP_NAME(u.blip);
+		if (who >= 0)
+			colleagues::SetBusy(who, true);
 		u.since = ml::TickMs();
 		u.target = PlayerAt();
 		u.id = g_nextUnit++;
@@ -716,7 +730,10 @@ namespace police::units
 		u.nextTask = u.since + 3000;
 		g_units.push_back(u);
 		const Vector3 me = PlayerAt();
-		ml::Notify("調度：支援已出發，距離約 {:.0f} 公尺", Distance({road.x, road.y, road.z}, me));
+		if (who >= 0)
+			ml::Notify("（無線電）{} {}：收到，前往支援，距離約 {:.0f} 公尺", colleagues::Callsign(who), colleagues::Name(who), Distance({road.x, road.y, road.z}, me));
+		else
+			ml::Notify("調度：支援已出發，距離約 {:.0f} 公尺", Distance({road.x, road.y, road.z}, me));
 		ml::Log("units: backup from ({:.0f}, {:.0f})", road.x, road.y);
 	}
 
@@ -772,7 +789,11 @@ namespace police::units
 			return;
 		}
 		for (Unit& u : g_units)
+		{
+			if (u.colleague >= 0 && u.arrived)
+				colleagues::Rapport(u.colleague, 2, "支援後道謝收隊");
 			Dismiss(u);
+		}
 		ml::Notify("收隊：支援回去巡邏了");
 	}
 
@@ -988,11 +1009,12 @@ namespace police::units
 			return q;
 		};
 		m.items.push_back(query);
+		m.items.push_back(colleagues::RadioItem());
 		const char* why = "";
 		const size_t most = MaxUnits(why);
 		menu::Item backup{"呼叫支援", std::to_string(Backup()) + "/" + std::to_string(most) + " 組",
 		    std::string("一組兩名警員開巡邏車過來（") + why + "最多 " + std::to_string(most) + " 組）"};
-		backup.action = CallBackup;
+		backup.action = [] { CallBackup(); };
 		m.items.push_back(backup);
 		menu::Item car{"叫巡邏車開過來", "", "同事把你選的巡邏車開到你身邊"};
 		car.action = BringCar;

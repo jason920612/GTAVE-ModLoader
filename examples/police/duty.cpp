@@ -392,6 +392,16 @@ namespace police::duty
 		return Distance(at, Current().locker) < 60.0f || Distance(at, Current().lot) < 40.0f;
 	}
 
+	Place StationPlace()
+	{
+		return Current().locker;
+	}
+
+	bool NearLocker(const Vector3& at)
+	{
+		return Distance(at, Current().locker) < 1.6f;
+	}
+
 	const char* CopModel()
 	{
 		return Current().cop;

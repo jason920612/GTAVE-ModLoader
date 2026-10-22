@@ -150,8 +150,10 @@ namespace police::duty
 	Vehicle UnitCar(const Place& at);
 	// The patrol car the officer picked in the lot (0 = none).
 	Vehicle PatrolCar();
-	// Within the officer's department's station (its grounds).
+	// Within the officer's department's station (its grounds); the station's place (the locker); next to the locker.
 	bool AtStation(const Vector3& at);
+	Place StationPlace();
+	bool NearLocker(const Vector3& at);
 	// The duty equipment (pistol, taser, baton, flashlight) given or taken.
 	void Equip(::Ped ped, bool on);
 	// The world was reset: the patrol car is gone.
@@ -212,8 +214,12 @@ namespace police::shift
 		int shifts = 0, late = 0, early = 0, absent = 0, overdue = 0;
 	};
 	Counts Totals();
-	// The game's date, as the roster writes it ("6/11（四）").
+	// The game's date, as the roster writes it ("6/11（四）"), and as a day number.
 	std::string Today();
+	int64_t Day();
+	// Roll call's focus of the day (a sentence) and the BOLO car ("model plate").
+	std::string FocusText();
+	std::string BoloCar();
 	// The roster has the officer at work now.
 	bool OnShift();
 	// Where the hour puts the officer when nobody plays them.
@@ -259,9 +265,35 @@ namespace police::career
 	ml::Json SubmitExam(const std::vector<int>& answers);
 }
 
+namespace police::colleagues
+{
+	// A colleague's ped model and look (the same face every time), name, callsign.
+	Hash Model(int id);
+	void Dress(::Ped ped, int id);
+	std::string Name(int id);
+	std::string Callsign(int id);
+	// The sergeant of a shift (roll call), "" = none.
+	std::string Sergeant(int kind);
+	// Out as backup (or at an incident): not at the station, not asked again.
+	void SetBusy(int id, bool busy);
+	void Rapport(int id, int delta, const char* why);
+	// Who comes as backup (`wanted` = that colleague, -1 = whoever answers): their id, -1 = no colleague (a unit
+	// without a name); how far away they are (rapport: liked ones are closer, after a refusal further).
+	int PickBackup(int wanted, float& minDistance, float& maxDistance);
+	// The police menu's radio (the colleagues on duty).
+	menu::Item RadioItem();
+	// The computer's list.
+	ml::Json Json();
+	// A save is loading.
+	void Loading();
+	// Every frame: those at the station, talking to them.
+	void Tick();
+}
+
 namespace police::units
 {
-	void CallBackup();
+	// Backup: a colleague on duty (`colleague` = that one, -1 = whoever answers).
+	void CallBackup(int colleague = -1);
 	void BringCar();
 	// Ends the incident: the backup goes back to patrol.
 	void Clear();
