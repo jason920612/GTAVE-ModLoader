@@ -70,8 +70,11 @@ class Program:
         name = self.name.encode('latin1') + b'\0'
 
         # The root (program header, page map, page tables, name) is the block's first bytes.
+        # The page map gets the address of every page of the block when the game loads it: 0x10 bytes and a slot per
+        # page plus one (as in the game's files); room for the most pages a block can have.
         pagemap_at = 0x80
-        code_table_at = pagemap_at + 0x20
+        pagemap_size = 0x10 + 8 * (127 + 1)
+        code_table_at = pagemap_at + pagemap_size
         str_table_at = code_table_at + 8 * len(code_pages)
         glob_table_at = str_table_at + 8 * len(str_pages)
         name_at = glob_table_at + 8 * len(glob_pages)
@@ -90,24 +93,29 @@ class Program:
         shift = 0
         while (0x2000 << shift) < largest:
             shift += 1
+        # A full code or string page starts on a 0x4000 boundary, as in the game's files: the interpreter runs from one
+        # code page into the next (NOP padding at a page's end) by address, so a misplaced page runs into other data.
+        def align(key, size):
+            return CODE_PAGE if isinstance(key, tuple) and key[0] in ('code', 'str') and size == CODE_PAGE else 16
         while True:
             page = 0x2000 << shift
-            free, at = [], {}
+            used, at = [], {}
             for key, size, _ in [items[0]] + sorted(items[1:], key=lambda it: -it[1]):
-                need = (size + 15) & ~15
-                for i, f in enumerate(free):
-                    if f >= need:
-                        at[key] = i * page + (page - f)
-                        free[i] -= need
+                a = align(key, size)
+                for i, u in enumerate(used):
+                    pos = (u + a - 1) & ~(a - 1)
+                    if pos + size <= page:
+                        at[key] = i * page + pos
+                        used[i] = (pos + size + 15) & ~15
                         break
                 else:
-                    at[key] = len(free) * page
-                    free.append(page - need)
-            if len(free) <= 127:
+                    at[key] = len(used) * page
+                    used.append((size + 15) & ~15)
+            if len(used) <= 127:
                 break
             shift += 1
-        vflags = (self.vflags & 0xF0000000) | shift | (len(free) << 17)
-        assert block_size(vflags) == len(free) * page and page_count(vflags) == len(free)
+        vflags = (self.vflags & 0xF0000000) | shift | (len(used) << 17)
+        assert block_size(vflags) == len(used) * page and page_count(vflags) == len(used)
 
         block = bytearray(block_size(vflags))
         for key, size, data in items[1:]:
@@ -126,8 +134,8 @@ class Program:
         struct.pack_into('<Q', block, 0x60, vp(name_at))
         struct.pack_into('<Q', block, 0x68, vp(str_table_at))
         struct.pack_into('<I', block, 0x70, len(self.strings))
-        block[pagemap_at:pagemap_at + 0x20] = bytes(0x20)
-        block[pagemap_at + 8] = len(free)
+        block[pagemap_at:pagemap_at + pagemap_size] = bytes(pagemap_size)
+        block[pagemap_at + 8] = len(used)
         for i in range(len(code_pages)):
             struct.pack_into('<Q', block, code_table_at + 8 * i, vp(at[('code', i)]))
         for i in range(len(str_pages)):

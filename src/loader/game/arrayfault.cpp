@@ -2,17 +2,23 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../pattern.hpp"
 #include "pointers.hpp"
+#include "script.hpp"
 #include "scripts.hpp"
 
 namespace loader::game::arrayfault
@@ -35,6 +41,7 @@ namespace loader::game::arrayfault
 			uintptr_t base;
 			uintptr_t stack;
 			uint32_t stackSize;
+			bool served;
 			char name[64];
 		};
 		constexpr uint32_t kRing = 256;
@@ -43,14 +50,50 @@ namespace loader::game::arrayfault
 		uint32_t g_logged = 0;
 		uint64_t g_total = 0;
 
+		// Serving (experiment U7, development only): ModLoader\debug_arrayfault.txt lines "serve <script>" name scripts
+		// whose access to the element just past the end (index == count: the fourth character's element of a
+		// three-element array) gets a shadow element instead of the thread being killed. A shadow starts as a copy of
+		// element 0 and lives for the session.
+		std::vector<uint32_t> g_serve;                                  // program hashes
+		std::unordered_map<uintptr_t, std::vector<int64_t>> g_shadows; // array (its count slot) -> shadow element
+		std::array<uintptr_t, 76> g_continuation{};                     // by opcode: the handler after its bounds check
+		uintptr_t* g_jumpTo = nullptr;                                  // the thunk's target for a served access
+		std::unordered_set<uint64_t> g_servedLogged;                    // program << 32 | ip, logged once
+
+		// While watching: the first access violations (and bad instructions) are logged with the running script, to
+		// tell a crash in rewritten script code from one elsewhere.
+		uintptr_t g_moduleBase = 0;
+		LONG CALLBACK OnException(EXCEPTION_POINTERS* e)
+		{
+			const DWORD code = e->ExceptionRecord->ExceptionCode;
+			if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION)
+				return EXCEPTION_CONTINUE_SEARCH;
+			static std::atomic<int> logged = 0;
+			if (logged++ >= 20)
+				return EXCEPTION_CONTINUE_SEARCH;
+			const CONTEXT& c = *e->ContextRecord;
+			char script[64] = "-";
+			uint32_t ip = 0;
+			if (g_pointers.ActiveThread && *g_pointers.ActiveThread)
+			{
+				const auto* t = reinterpret_cast<const uint8_t*>(*g_pointers.ActiveThread);
+				strncpy_s(script, reinterpret_cast<const char*>(t + kName), _TRUNCATE);
+				ip = *reinterpret_cast<const uint32_t*>(t + 0x1C);
+			}
+			log::Warn("exception {:#x} at rva {:#x} (address {:#x}); script {} (saved ip {}), r13-r14 {:#x}", code, c.Rip - g_moduleBase,
+			    e->ExceptionRecord->NumberParameters > 1 ? e->ExceptionRecord->ExceptionInformation[1] : 0, script, ip, c.R13 - c.R14);
+			return EXCEPTION_CONTINUE_SEARCH;
+		}
+
 		bool IsArray(uint8_t op)
 		{
 			return (op >= kArrayU8 && op <= kArrayU8Store) || (op >= kArrayU16 && op <= kArrayU16Store);
 		}
 
 		// Called by the thunk with the failing instruction, and for ARRAY opcodes the array (its count slot) and the
-		// index. Script thread, inside the interpreter: records only.
-		void OnFault(const uint8_t* ip, const int64_t* base, uint32_t index, uint64_t ipOffset)
+		// index. Script thread, inside the interpreter. Returns 0 (the game's failure code runs), or for a served access
+		// the array base that makes the handler's own arithmetic land on the shadow (and sets the thunk's target).
+		uintptr_t OnFault(const uint8_t* ip, int64_t* base, uint32_t index, uint64_t ipOffset)
 		{
 			const uint32_t n = g_written.load(std::memory_order_relaxed);
 			Fault& f = g_ring[n % kRing];
@@ -72,7 +115,34 @@ namespace loader::game::arrayfault
 				f.stackSize = *reinterpret_cast<const uint32_t*>(t + kStackSize);
 				strncpy_s(f.name, reinterpret_cast<const char*>(t + kName), _TRUNCATE);
 			}
+			uintptr_t served = 0;
+			if (IsArray(f.op) && index == f.count && f.elementSize && g_continuation[f.op] &&
+			    std::find(g_serve.begin(), g_serve.end(), f.program) != g_serve.end())
+			{
+				auto& shadow = g_shadows[f.base];
+				if (shadow.empty())
+					shadow.assign(base + 1, base + 1 + f.elementSize);
+				*g_jumpTo = g_continuation[f.op];
+				served = reinterpret_cast<uintptr_t>(shadow.data()) - (uintptr_t{index} * f.elementSize + 1) * 8;
+				f.served = true;
+			}
 			g_written.store(n + 1, std::memory_order_release);
+			return served;
+		}
+
+		// The handler's opcode from the code after its bounds check (address, load or store; u8 or u16 element size).
+		uint8_t HandlerOp(const uint8_t* next)
+		{
+			const auto has = [next](std::initializer_list<uint8_t> bytes) { return std::search(next, next + 32, bytes.begin(), bytes.end()) != next + 32; };
+			const bool u16 = has({0x0F, 0xB7, 0x55, 0x01}); // movzx edx, word ptr [r13+1]
+			if (!u16 && !has({0x0F, 0xB6, 0x55, 0x01}))     // movzx edx, byte ptr [r13+1]
+				return 0;
+			const uint8_t first = u16 ? kArrayU16 : kArrayU8;
+			if (has({0x48, 0x8D, 0x04, 0xC8})) // lea rax,[rax+rcx*8]: the element's address
+				return first;
+			if (has({0x48, 0x8B, 0x04, 0xC8})) // mov rax,[rax+rcx*8]: its value
+				return first + 1;
+			return first + 2;
 		}
 
 		// Where an array lives: a global index, a slot of the thread's stack (statics first, then frames), or an address.
@@ -137,8 +207,13 @@ namespace loader::game::arrayfault
 	void Install()
 	{
 		std::error_code ec;
-		if (!std::filesystem::exists(paths::Get().root / L"debug_arrayfault.txt", ec))
+		const auto config = paths::Get().root / L"debug_arrayfault.txt";
+		if (!std::filesystem::exists(config, ec))
 			return;
+		std::ifstream in(config);
+		for (std::string line; std::getline(in, line);)
+			if (line.starts_with("serve "))
+				g_serve.push_back(script::Joaat(line.substr(6).c_str()));
 		if (!g_pointers.TlsIndex)
 		{
 			log::Warn("array faults: TLS index not resolved, not watching");
@@ -146,6 +221,8 @@ namespace loader::game::arrayfault
 		}
 		// mov rax,[r15]; mov ecx,[r15-8]; cmp ecx,[rax]; jnb <failure block> (short or near): the six ARRAY handlers.
 		const auto module = pattern::Module::Main();
+		g_moduleBase = module.base;
+		AddVectoredExceptionHandler(1, OnException);
 		const auto handler = pattern::Pattern::Parse("49 8B 07 41 8B 4F F8 3B 08");
 		uintptr_t block = 0;
 		size_t handlers = 0;
@@ -165,6 +242,8 @@ namespace loader::game::arrayfault
 			}
 			block = target;
 			++handlers;
+			if (const uint8_t op = HandlerOp(jnb + (jnb[0] == 0x73 ? 2 : 6)))
+				g_continuation[op] = reinterpret_cast<uintptr_t>(jnb + (jnb[0] == 0x73 ? 2 : 6));
 			offset = *hit + 1 - reinterpret_cast<uintptr_t>(module.text.data());
 		}
 		// The block starts with mov eax,[_tls_index]; mov rcx,gs:[58h] (6 + 9 bytes).
@@ -198,16 +277,34 @@ namespace loader::game::arrayfault
 		e.Bytes({0x48, 0xB8});             // mov rax,OnFault
 		e.U64(reinterpret_cast<uint64_t>(&OnFault));
 		e.Bytes({0xFF, 0xD0});             // call rax
-		for (uint8_t r = 0; r < 6; ++r)    // movdqu xmm r,[rsp+20h+16r]
-			e.Bytes({0xF3, 0x0F, 0x6F, static_cast<uint8_t>(0x44 | r << 3), 0x24, static_cast<uint8_t>(0x20 + 0x10 * r)});
-		e.Bytes({0x48, 0x89, 0xEC, 0x5D}); // mov rsp,rbp; pop rbp
-		e.Bytes({0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5A, 0x59, 0x58, 0x9D}); // r11-r8 rdx rcx rax; popfq
+		const auto restore = [&] {
+			for (uint8_t r = 0; r < 6; ++r) // movdqu xmm r,[rsp+20h+16r]
+				e.Bytes({0xF3, 0x0F, 0x6F, static_cast<uint8_t>(0x44 | r << 3), 0x24, static_cast<uint8_t>(0x20 + 0x10 * r)});
+			e.Bytes({0x48, 0x89, 0xEC, 0x5D}); // mov rsp,rbp; pop rbp
+			e.Bytes({0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5A, 0x59, 0x58, 0x9D}); // r11-r8 rdx rcx rax; popfq
+		};
+		// Served: the returned base replaces rax, and the handler goes on after its bounds check.
+		e.Bytes({0x48, 0x85, 0xC0, 0x0F, 0x84}); // test rax,rax; jz not served
+		uint8_t* notServed = e.at;
+		e.Bytes({0, 0, 0, 0});
+		e.Bytes({0x48, 0x89, 0x45, 0x38}); // mov [rbp+38h],rax (the saved rax)
+		restore();
+		e.Bytes({0xFF, 0x25});             // jmp [g_jumpTo]
+		uint8_t* jumpSlot = e.at;
+		e.Bytes({0, 0, 0, 0});
+		const int32_t skip = static_cast<int32_t>(e.at - (notServed + 4));
+		std::memcpy(notServed, &skip, 4);
+		restore();
 		// The instruction the jump replaced, then back to the block.
 		e.Bytes({0x48, 0xB8}); // mov rax,&_tls_index
 		e.U64(reinterpret_cast<uint64_t>(g_pointers.TlsIndex));
 		e.Bytes({0x8B, 0x00});                         // mov eax,[rax]
 		e.Bytes({0xFF, 0x25, 0x00, 0x00, 0x00, 0x00}); // jmp [rip]
 		e.U64(block + 6);
+		g_jumpTo = reinterpret_cast<uintptr_t*>(e.at);
+		e.U64(0);
+		const int32_t slot = static_cast<int32_t>(reinterpret_cast<uint8_t*>(g_jumpTo) - (jumpSlot + 4));
+		std::memcpy(jumpSlot, &slot, 4);
 		FlushInstructionCache(GetCurrentProcess(), thunk, static_cast<size_t>(e.at - thunk));
 
 		uint8_t jump[6] = {0xE9, 0, 0, 0, 0, 0x90};
@@ -222,7 +319,13 @@ namespace loader::game::arrayfault
 		std::memcpy(reinterpret_cast<void*>(block), jump, sizeof(jump));
 		VirtualProtect(reinterpret_cast<void*>(block), sizeof(jump), old, &old);
 		FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(block), sizeof(jump));
-		log::Info("array faults: watching the failure block at rva {:#x} (6 handlers)", block - module.base);
+		const size_t continuations = std::count_if(g_continuation.begin(), g_continuation.end(), [](uintptr_t c) { return c != 0; });
+		if (continuations != 6)
+		{
+			g_serve.clear();
+			log::Warn("array faults: {} of 6 handlers recognised, nothing is served", continuations);
+		}
+		log::Info("array faults: watching the failure block at rva {:#x} (6 handlers), serving {} script(s)", block - module.base, g_serve.size());
 	}
 
 	void Tick()
@@ -237,6 +340,13 @@ namespace loader::game::arrayfault
 		{
 			const Fault& f = g_ring[g_logged % kRing];
 			++g_total;
+			if (f.served)
+			{
+				if (g_servedLogged.insert(uint64_t{f.program} << 32 | f.ip).second)
+					log::Info("array fault served: {} ip {} {} index {} element {} slots, array {}", f.name, f.ip, OpName(f.op), f.index, f.elementSize,
+					    Where(f));
+				continue;
+			}
 			if (IsArray(f.op))
 				log::Warn("array fault #{}: {} ip {} {} index {} count {} element {} slots, array {}", g_total, f.name, f.ip, OpName(f.op), f.index,
 				    f.count, f.elementSize, Where(f));
