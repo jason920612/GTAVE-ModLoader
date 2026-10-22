@@ -1,8 +1,8 @@
 // Bank mod: the Maze Bank, Fleeca and Bank of Liberty websites of the loader's browser (web\www.maze-bank.com,
 // web\www.fleeca.com, web\www.thebankofliberty.com; research/phase0.md §38).
 //
-// Each story character banks at one of them (Michael Maze Bank, Franklin Fleeca, Trevor Bank of Liberty). The balance
-// is the character's money. The game keeps the last 11 payments of each character (appinternet's bank function,
+// Each story character banks at one of them (Michael Maze Bank, Franklin Fleeca, Trevor Bank of Liberty; the fourth
+// character, ml::char4, Fleeca too). The balance is the character's money. The game keeps the last 11 payments of each character (appinternet's bank function,
 // ml::game::Pay, logs them, without dates): this mod watches that log and the balance, dates every change with the
 // game clock and keeps the history in the save (ml::save, per character). Money that moves without a log entry
 // (mission rewards paid directly, pickups, cheats) shows as "other".
@@ -24,11 +24,20 @@ ML_MOD_INFO("Bank", "0.1.0", "ModLoader", "The Maze Bank, Fleeca and Bank of Lib
 namespace
 {
 	// ---- the game's bank data ------------------------------------------------------------------
-	// Global 114990+20573+233: per character 69 slots: +0 entries ever logged, +1 next slot, +2 eleven entries of
-	// 6 slots (+0 0 paid / 1 received, +1 payee, +2 amount, +3..+5 a copy).
+	// Global 114990+20573+233: per character 69 slots: +0 entries ever logged, +1 next slot, +2 an array of eleven entries
+	// of 6 slots (+0 0 paid / 1 received, +1 payee, +2 amount, +3..+5 a copy).
 	constexpr int kGameSlots = 11;
-	ml::Global Log(int c) { return (ml::Global(114990) + (20573 + 233)).At(c, 69); }
-	ml::Global GameEntry(int c, int i) { return (Log(c) + 2).At(i, 6); }
+	constexpr uint32_t kLogArray = 114990 + 20573 + 233;
+	constexpr int kCharacters = 4; // the protagonists and the fourth character
+
+	// The character's 69 slots: the game's global for the protagonists, the loader's element for the fourth character.
+	int LogSlot(int c, int slot)
+	{
+		const int64_t* p = c < 3 ? ml::Global(kLogArray).At(c, 69).Ptr() : ml::char4::Element(kLogArray, 69);
+		return p ? static_cast<int32_t>(p[slot]) : 0;
+	}
+	int EntrySlot(int c, int i, int field) { return LogSlot(c, 3 + i * 6 + field); } // +2 is the entries' array size
+	bool Tracked(int c) { return c < 3 || ml::char4::Available(); }
 
 	// ---- payees: the game's names (ACCNA_* / shop labels) and a category for the pages --------
 	struct Payee
@@ -155,7 +164,7 @@ namespace
 		int64_t pendingBalance = 0;
 		uint32_t pendingSince = 0;
 	};
-	Account g_accounts[3];
+	Account g_accounts[kCharacters];
 	std::atomic_bool g_reload = true;
 
 	ml::game::Character Who(int c) { return static_cast<ml::game::Character>(c); }
@@ -171,7 +180,7 @@ namespace
 
 	void Load()
 	{
-		for (int c = 0; c < 3; ++c)
+		for (int c = 0; c < kCharacters; ++c)
 		{
 			Account& a = g_accounts[c];
 			a = {};
@@ -208,12 +217,12 @@ namespace
 	std::vector<Entry> GameEntries(int c, int n)
 	{
 		std::vector<Entry> out;
-		const int next = Log(c).Field(1).Int();
+		const int next = LogSlot(c, 1);
 		for (int k = n; k >= 1; --k)
 		{
-			const ml::Global g = GameEntry(c, ((next - k) % kGameSlots + kGameSlots) % kGameSlots);
-			const int64_t amount = g.Field(2).Int();
-			out.push_back({-1, g.Field(1).Int(), g.Field(0).Int() == 1 ? amount : -amount, -1});
+			const int i = ((next - k) % kGameSlots + kGameSlots) % kGameSlots;
+			const int64_t amount = EntrySlot(c, i, 2);
+			out.push_back({-1, EntrySlot(c, i, 1), EntrySlot(c, i, 0) == 1 ? amount : -amount, -1});
 		}
 		return out;
 	}
@@ -221,7 +230,7 @@ namespace
 	void Track(int c)
 	{
 		Account& a = g_accounts[c];
-		const int count = Log(c).Field(0).Int();
+		const int count = LogSlot(c, 0);
 		const int64_t balance = ml::game::Cash(Who(c));
 		if (!a.known)
 		{
@@ -281,16 +290,18 @@ namespace
 	// ---- pages -------------------------------------------------------------------------------------
 
 	constexpr const char* kBanks[3] = {"maze", "fleeca", "liberty"}; // by owner: Michael, Franklin, Trevor
+	constexpr const char* kBankOf[kCharacters] = {"maze", "fleeca", "liberty", "fleeca"};
 
 	ml::Json AccountJson(const std::string& bank)
 	{
-		const int c = ml::game::CharacterIndex();
+		const int c = ml::game::PlayerCharacterIndex();
 		int owner = -1;
 		for (int i = 0; i < 3; ++i)
 			if (bank == kBanks[i])
 				owner = i;
-		ml::Json out{{"bank", bank}, {"character", c}, {"owner", owner}, {"customer", c >= 0 && c == owner}, {"now", GameMinute()}};
-		if (c < 0 || c != owner)
+		const bool customer = c >= 0 && bank == kBankOf[c];
+		ml::Json out{{"bank", bank}, {"character", c}, {"owner", owner}, {"customer", customer}, {"now", GameMinute()}};
+		if (!customer)
 			return out;
 		const Account& a = g_accounts[c];
 		ml::Json entries = ml::Json::Array();
@@ -320,12 +331,13 @@ extern "C" __declspec(dllexport) void MLMain()
 {
 	for (;;)
 	{
-		if (ml::game::CharacterIndex() >= 0 && !ml::game::IsLoadingScreen())
+		if (ml::game::PlayerCharacterIndex() >= 0 && !ml::game::IsLoadingScreen())
 		{
 			if (g_reload.exchange(false))
 				Load();
-			for (int c = 0; c < 3; ++c)
-				Track(c);
+			for (int c = 0; c < kCharacters; ++c)
+				if (Tracked(c))
+					Track(c);
 		}
 		ml::Wait(250);
 	}

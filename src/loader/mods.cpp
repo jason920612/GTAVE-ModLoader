@@ -1243,6 +1243,11 @@ namespace loader::mods
 			return game::char4::IsPlayer() ? 1 : 0;
 		}
 
+		int64_t* ApiChar4Element(uint32_t array, uint32_t slots)
+		{
+			return InModFiber("Char4Element", _ReturnAddress()) ? game::char4::Element(array, slots) : nullptr;
+		}
+
 		// ---- high-level API: the local text model ------------------------------------------------
 
 		int32_t ApiAiState()
@@ -1342,6 +1347,7 @@ namespace loader::mods
 			.Char4SetPed = ApiChar4SetPed,
 			.Char4Ready = ApiChar4Ready,
 			.Char4IsPlayer = ApiChar4IsPlayer,
+			.Char4Element = ApiChar4Element,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

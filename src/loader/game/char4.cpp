@@ -451,6 +451,19 @@ namespace loader::game::char4
 		return g_player;
 	}
 
+	int64_t* Element(uint32_t array, uint32_t slots)
+	{
+		if (!g_installed || slots == 0 || slots > 0xFFFF)
+			return nullptr;
+		auto& shadow = arrayfault::Shadows()[array];
+		if (shadow.size() < slots)
+		{
+			shadow.resize(slots, 0);
+			arrayfault::ForgetAddresses(); // the element moved
+		}
+		return shadow.data();
+	}
+
 	void Saved(int32_t nonce)
 	{
 		if (!g_installed || !nonce)

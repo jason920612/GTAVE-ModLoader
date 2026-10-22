@@ -309,6 +309,11 @@ typedef struct MLApi
 	int32_t (*Char4Ready)(void);
 	/* 1 while the fourth character is the player (as of this frame). Any thread. */
 	int32_t (*Char4IsPlayer)(void);
+	/* The fourth character's element of a per-character script array (three elements in the game; `array` is the global
+	 * index of its size slot, `slots` its element size): the loader keeps it, with the game's save. Made (zeros) when
+	 * missing. Valid until the next loading screen: ask again each time. NULL when the fourth character is off.
+	 * MLMain, a callback or a task. */
+	int64_t* (*Char4Element)(uint32_t array, uint32_t slots);
 } MLApi;
 
 /* States of the local text model (AiState). */

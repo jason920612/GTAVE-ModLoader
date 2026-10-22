@@ -501,6 +501,11 @@ namespace ml
 		inline bool Available() { return detail::Has(&MLApi::Char4Ready) && Api().Char4Ready() != 0; }
 		// The fourth character is the player now.
 		inline bool IsPlayer() { return detail::Has(&MLApi::Char4IsPlayer) && Api().Char4IsPlayer() != 0; }
+		// The fourth character's element of a per-character script array (see MLApi::Char4Element); nullptr when off.
+		inline int64_t* Element(uint32_t array, uint32_t slots)
+		{
+			return detail::Has(&MLApi::Char4Element) ? Api().Char4Element(array, slots) : nullptr;
+		}
 		// The character's ped (0 = none). Call again whenever the ped is replaced.
 		inline void SetPed(int32_t ped)
 		{

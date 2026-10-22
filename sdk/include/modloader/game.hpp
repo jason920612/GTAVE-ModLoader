@@ -182,6 +182,20 @@ namespace ml
 			return AddCash(-amount, who);
 		}
 
+		// Pays `amount` to the character the way the game does (appinternet's bank function, as Pay): the money comes in
+		// and shows in the bank history from `payee`. Falls back to AddCash. False when there is no character.
+		inline bool Receive(int32_t amount, int32_t payee, Character who = PlayerCharacter())
+		{
+			if (who == Character::None || amount < 0)
+				return false;
+			const int32_t before = Cash(who);
+			if (scripts::RunFunction("appinternet", "2d 05 0d 00 00 5d ?? ?? ?? 38 03 72 5b ?? ?? 71 2e 05 01 7b",
+			        {static_cast<int32_t>(who), 1, payee, amount, 0}, 4000) == scripts::RunResult::Ran)
+				return Cash(who) > before || amount == 0;
+			LogError("ml::game::Receive: the game's bank function was not found (game update?); paying without bank history");
+			return AddCash(amount, who);
+		}
+
 		inline bool IsLoadingScreen() { return DLC::GET_IS_LOADING_SCREEN_ACTIVE() != 0; }
 
 		// Asks story mode to autosave (it does unless autosave is off in the settings). False when one is already waiting.

@@ -73,9 +73,45 @@ namespace stocks
 
 		constexpr int kSlots = 10;
 		ml::Global Portfolio(int c) { return ml::Global(114990) + (20573 + 33 * c); }
-		int SlotStock(int c, int slot) { return Portfolio(c).At(slot).Int(); }
-		float SlotCost(int c, int slot) { return (Portfolio(c) + 11).At(slot).Float(); }
-		int SlotShares(int c, int slot) { return (Portfolio(c) + 22).At(slot).Int(); }
+
+		// The fourth character (ml::char4) has no portfolio in the game (appinternet keeps the three protagonists' at
+		// fixed places): theirs is the mod's, in the save (slot 3), traded at the same prices through the bank.
+		constexpr int kFourth = 3;
+		struct Holding
+		{
+			int stock = -1;
+			float cost = 0;
+			int shares = 0;
+		};
+		Holding g_fourth[kSlots];
+		bool g_fourthRead = false;
+
+		void ReadFourth()
+		{
+			if (g_fourthRead)
+				return;
+			g_fourthRead = true;
+			for (Holding& h : g_fourth)
+				h = {};
+			const ml::Json j = ml::save::Get("portfolio", kFourth);
+			int slot = 0;
+			for (const ml::Json& h : j.Items())
+				if (slot < kSlots)
+					g_fourth[slot++] = {h[0].Int(), h[1].Float(), h[2].Int()};
+		}
+
+		void SaveFourth()
+		{
+			ml::Json j = ml::Json::Array();
+			for (const Holding& h : g_fourth)
+				if (h.shares > 0)
+					j.Push(ml::Json::Array({h.stock, h.cost, h.shares}));
+			ml::save::Set("portfolio", j, kFourth);
+		}
+
+		int SlotStock(int c, int slot) { return c == kFourth ? (ReadFourth(), g_fourth[slot].stock) : Portfolio(c).At(slot).Int(); }
+		float SlotCost(int c, int slot) { return c == kFourth ? (ReadFourth(), g_fourth[slot].cost) : (Portfolio(c) + 11).At(slot).Float(); }
+		int SlotShares(int c, int slot) { return c == kFourth ? (ReadFourth(), g_fourth[slot].shares) : (Portfolio(c) + 22).At(slot).Int(); }
 		int Held(int c, int stock)
 		{
 			for (int slot = 0; slot < kSlots; ++slot)
@@ -108,9 +144,45 @@ namespace stocks
 			return {{"ok", !*error}, {"error", error}, {"cash", ml::game::Cash()}};
 		}
 
+		// The fourth character's trade: the money through the bank (the stockbroker), the shares in the mod's portfolio.
+		const char* TradeFourth(bool buy, int id, int shares, float total)
+		{
+			ReadFourth();
+			const int amount = static_cast<int>(std::ceil(total));
+			Holding* h = nullptr;
+			for (Holding& s : g_fourth)
+				if (s.shares > 0 && s.stock == id)
+					h = &s;
+			if (buy)
+			{
+				if (!h)
+					for (Holding& s : g_fourth)
+						if (s.shares <= 0 && !h)
+							h = &s, *h = {id, 0, 0};
+				if (!h)
+					return "slots";
+				if (!ml::game::Pay(amount, ml::game::account::StockBroker, ml::game::Character::Fourth))
+					return "money";
+				h->shares += shares;
+				h->cost += static_cast<float>(amount);
+			}
+			else
+			{
+				if (!h || h->shares < shares)
+					return "shares";
+				ml::game::Receive(static_cast<int>(std::floor(total)), ml::game::account::StockBroker, ml::game::Character::Fourth);
+				h->cost -= h->cost * static_cast<float>(shares) / static_cast<float>(h->shares);
+				h->shares -= shares;
+				if (h->shares == 0)
+					*h = {};
+			}
+			SaveFourth();
+			return "";
+		}
+
 		ml::Json Trade(bool buy, int id, int shares)
 		{
-			const int c = ml::game::CharacterIndex();
+			const int c = ml::game::PlayerCharacterIndex();
 			if (c < 0)
 				return Result("character");
 			if (id < 0 || id >= kStockCount || shares <= 0)
@@ -129,6 +201,13 @@ namespace stocks
 			}
 			else if (before < shares)
 				return Result("shares");
+			if (c == kFourth)
+			{
+				if (const char* error = TradeFourth(buy, id, shares, total); *error)
+					return Result(error);
+				ml::Log("the fourth character {} {} shares of {} at ${:.2f}", buy ? "bought" : "sold", shares, Ticker(id), price);
+				return Result("");
+			}
 			const auto ran = ml::scripts::RunFunction("appinternet", buy ? kBuyPattern : kSellPattern, {c, c, id, shares, FloatArg(total)}, 4000);
 			if (ran != ml::scripts::RunResult::Ran)
 			{
@@ -178,7 +257,7 @@ namespace stocks
 		ml::Json List(const std::string& exchange)
 		{
 			const bool bawsaq = exchange == "bawsaq";
-			const int c = ml::game::CharacterIndex();
+			const int c = ml::game::PlayerCharacterIndex();
 			ml::Json list = ml::Json::Array(), portfolio = ml::Json::Array();
 			bool tradable = false;
 			for (int id = 0; id < kStockCount; ++id)
@@ -230,7 +309,10 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	ml::web::Function("stocks.list", [](std::string exchange) { return List(exchange); });
 	ml::web::Function("stocks.buy", [](int id, int shares) { return Trade(true, id, shares); });
 	ml::web::Function("stocks.sell", [](int id, int shares) { return Trade(false, id, shares); });
-	ml::game::On(ml::game::Event::SaveLoading, [] { g_saveLoading = true; });
+	ml::game::On(ml::game::Event::SaveLoading, [] {
+		g_saveLoading = true;
+		g_fourthRead = false;
+	});
 	return 1;
 }
 
@@ -240,7 +322,7 @@ extern "C" __declspec(dllexport) void MLMain()
 	{
 		if (g_saveLoading.exchange(false))
 			market::Reload();
-		if (ml::game::CharacterIndex() >= 0 && !ml::game::IsLoadingScreen())
+		if (ml::game::PlayerCharacterIndex() >= 0 && !ml::game::IsLoadingScreen())
 			market::Tick();
 		ml::Wait(250);
 	}

@@ -30,6 +30,9 @@ namespace loader::game::char4
 	bool Ready();
 	// The fourth character is the player now (as of the last Tick).
 	bool IsPlayer();
+	// The fourth character's element of the per-character array whose size slot is global `array` (made, zeros, when
+	// missing). Valid until the next load. nullptr when off. Game thread.
+	int64_t* Element(uint32_t array, uint32_t slots);
 
 	// The game saved with this save number (0 = none): the shadows are written for it. Game thread.
 	void Saved(int32_t nonce);
