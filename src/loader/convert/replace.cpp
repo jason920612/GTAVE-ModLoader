@@ -52,7 +52,7 @@ namespace loader::convert
 		constexpr std::array<std::string_view, 3> kNamed{".awc", ".gfx", ".dat"};
 
 		// Data file types by root element (content.xml fileType). Other XML files only override entries.
-		constexpr std::array<std::pair<std::string_view, std::string_view>, 8> kDataFileTypes{{
+		constexpr std::array<std::pair<std::string_view, std::string_view>, 9> kDataFileTypes{{
 		    {"CHandlingDataMgr", "HANDLING_FILE"},
 		    {"CVehicleModelInfo__InitDataList", "VEHICLE_METADATA_FILE"},
 		    {"CVehicleModelInfoVarGlobal", "CARCOLS_FILE"},
@@ -61,6 +61,7 @@ namespace loader::convert
 		    {"CWeaponInfoBlob", "WEAPONINFO_FILE"},
 		    {"CPedModelInfo__InitDataList", "PED_METADATA_FILE"},
 		    {"CWeaponAnimationsSets", "WEAPON_ANIMATIONS_FILE"},
+		    {"StatsSetup", "SP_STATS_DISPLAY_LIST_FILE"}, // story-mode stats added by the mod
 		}};
 
 		struct Input
