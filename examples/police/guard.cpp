@@ -18,6 +18,9 @@
 // only by @48025 and @49927), so that part is skipped; the officer loses their weapons as a protagonist would, and pays
 // no fee (they have no account yet). That part also holds the walk out of the police station that fades the screen in
 // (@28282), so once respawn_controller is done the mod fades in and gives control back.
+// A death goes the same way: respawn_controller takes the officer to a hospital and ends (TERMINATE_THIS_THREAD @474054)
+// without the hospital walk-out that fades a protagonist back in, so the same release follows (tested: black screen
+// with a spinner before).
 #include "police.hpp"
 
 #include <algorithm>
@@ -37,6 +40,7 @@ namespace police::guard
 		bool g_mainWantsDirectorMode = true; // main's last SET_DIRECTOR_MODE_AVAILABLE
 		bool g_directorModeOff = false;      // the mod took Director Mode away
 		bool g_arrested = false;             // the officer is being arrested
+		bool g_dead = false;
 		uint64_t g_releaseUntil = 0;         // after an arrest: until then, the screen is faded in once respawn_controller is done
 		uint64_t g_releaseFrom = 0;          // ... and not before (main may start respawn_controller a little later)
 
@@ -88,6 +92,7 @@ namespace police::guard
 		if (!officer::IsPlayer())
 		{
 			g_arrested = false;
+			g_dead = false;
 			g_releaseUntil = 0;
 			Restore();
 			return;
@@ -103,13 +108,21 @@ namespace police::guard
 			else
 				g_releaseFrom = ml::TickMs() + 3000, g_releaseUntil = ml::TickMs() + 120000;
 		}
+		// Wasted: respawn_controller brings the officer to a hospital and ends without the walk out that fades a
+		// protagonist's screen back in (no hospital scene for character 145), so the same release follows.
+		if (const bool dead = PLAYER::IS_PLAYER_DEAD(PLAYER::PLAYER_ID()); dead != g_dead)
+		{
+			g_dead = dead;
+			if (!dead)
+				g_releaseFrom = ml::TickMs() + 3000, g_releaseUntil = ml::TickMs() + 120000;
+		}
 		if (g_releaseUntil && ml::TickMs() >= g_releaseFrom && (ml::TickMs() >= g_releaseUntil || !Running("respawn_controller")))
 		{
 			if (ml::TickMs() < g_releaseUntil && CAMERA::IS_SCREEN_FADED_OUT())
 			{
 				PLAYER::SET_PLAYER_CONTROL(PLAYER::PLAYER_ID(), true, 0);
 				CAMERA::DO_SCREEN_FADE_IN(800);
-				ml::Log("the officer is released");
+				ml::Log("the officer is back in control (after an arrest or at a hospital)");
 			}
 			g_releaseUntil = 0;
 		}
