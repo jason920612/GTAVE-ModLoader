@@ -178,7 +178,9 @@ async function loadCareer() {
   const e = c.eval;
   $('careerEval').innerHTML = `<h2>考評 <span class="score">${e.score}</span></h2>
     <dl><dt>報告平均</dt><dd>${e.reportsAvg} 分（${e.reports} 份）</dd>
-    <dt>扣分</dt><dd>${e.penalty ? `−${e.penalty}` : '0'}<span class="hint">（遲到 ${e.late}、早退 ${e.early}、缺勤 ${e.absent}、報告逾期 ${e.overdue}）</span></dd></dl>
+    ${e.trainer >= 0 ? `<dt>訓練官評分</dt><dd>${e.trainer} 分（試用期，與報告各佔一半）</dd>` : ''}
+    <dt>扣分</dt><dd>${e.penalty ? `−${e.penalty}` : '0'}<span class="hint">（遲到 ${e.late}、早退 ${e.early}、缺勤 ${e.absent}、報告逾期 ${e.overdue}）</span></dd>
+    ${e.bonus ? `<dt>加分</dt><dd>+${e.bonus}<span class="hint">（帶新人、督導，每個職級最多 +15）</span></dd>` : ''}</dl>
     <p class="hint">升遷後重新計算。遲到 −3、早退 −4、缺勤 −10、報告逾期 −5；沒有報告時以 60 分計。</p>`;
   $('careerUnlocks').innerHTML = `<h2>職級與解鎖</h2><table class="table"><tbody>${c.unlocks.map(u =>
     `<tr class="${u.have ? '' : 'off'}"><td>${u.have ? '✔' : ''}</td><td><b>${esc(u.title)}</b><br><small>$${u.rate}/小時</small></td><td>${esc(u.items)}</td></tr>`).join('')}</tbody></table>`;

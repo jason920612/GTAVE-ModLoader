@@ -331,6 +331,13 @@ namespace police::duty
 			request.keepOpen = true;
 			m.items.push_back(request);
 			m.items.push_back(shift::MenuItem());
+			if (partner::MayTrain())
+			{
+				const bool on = partner::RookieWanted();
+				menu::Item rookie{"帶新人", on ? "今天這班" : "", on ? "不帶了：新人回去" : "這班帶一個新人出勤（新人會問問題，帶滿一班考評 +2）"};
+				rookie.action = [on] { partner::WantRookie(!on); };
+				m.items.push_back(rookie);
+			}
 			menu::Open(m);
 		}
 

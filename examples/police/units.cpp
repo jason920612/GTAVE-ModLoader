@@ -987,6 +987,8 @@ namespace police::units
 	int Near(const Vector3& at, float radius)
 	{
 		int n = 0;
+		if (const ::Ped p = partner::Ped(); p && Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) < radius)
+			++n; // the colleague riding with the officer
 		for (const Unit& u : g_units)
 			for (::Ped p : u.crew)
 				if (Alive(p) && Distance(ENTITY::GET_ENTITY_COORDS(p, true), at) < radius)

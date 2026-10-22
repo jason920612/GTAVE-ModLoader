@@ -147,7 +147,10 @@ namespace police::career
 			int reportsAfter = 0;  // reports with a higher id count for this rank
 			int retryAt = -1;      // shifts worked before the exam may be taken again (-1 = any time)
 			std::vector<ml::Json> history, exams;
+			std::vector<int> trainer; // the training officer's ratings of probation shifts
+			int bonus = 0;            // training a rookie, supervising (this rank)
 		};
+		constexpr int kMaxBonus = 15;
 		State g;
 		bool g_loaded = false;
 		std::vector<Asked> g_exam;
@@ -164,7 +167,8 @@ namespace police::career
 		void Store()
 		{
 			ml::save::Set("officer_promotion", ml::Json{{"rank", g.rank}, {"since", CountsJson(g.since)}, {"reportsAfter", g.reportsAfter},
-			                                       {"retryAt", g.retryAt}, {"history", g.history}, {"exams", g.exams}});
+			                                       {"retryAt", g.retryAt}, {"history", g.history}, {"exams", g.exams}, {"trainer", g.trainer},
+			                                       {"bonus", g.bonus}});
 		}
 
 		void Load()
@@ -183,6 +187,9 @@ namespace police::career
 			g.retryAt = j["retryAt"].Int(-1);
 			g.history = j["history"].Items();
 			g.exams = j["exams"].Items();
+			for (const ml::Json& r : j["trainer"].Items())
+				g.trainer.push_back(r.Int());
+			g.bonus = j["bonus"].Int();
 		}
 
 		int Department()
@@ -200,7 +207,7 @@ namespace police::career
 
 		struct Evaluation
 		{
-			int score = 60, reportsAvg = 60, reports = 0, penalty = 0;
+			int score = 60, reportsAvg = 60, reports = 0, penalty = 0, trainer = -1, bonus = 0;
 		};
 		Evaluation Evaluate()
 		{
@@ -216,7 +223,17 @@ namespace police::career
 			}
 			const shift::Counts c = Since();
 			e.penalty = c.late * 3 + c.early * 4 + c.absent * 10 + c.overdue * 5;
-			e.score = std::clamp(e.reportsAvg - e.penalty, 0, 100);
+			int base = e.reportsAvg;
+			if (g.rank == 0 && !g.trainer.empty())
+			{
+				int sum = 0;
+				for (const int r : g.trainer)
+					sum += r;
+				e.trainer = sum / static_cast<int>(g.trainer.size());
+				base = (base + e.trainer) / 2; // the FTO's word counts half on probation
+			}
+			e.bonus = std::min(g.bonus, kMaxBonus);
+			e.score = std::clamp(base - e.penalty + e.bonus, 0, 100);
 			return e;
 		}
 
@@ -260,6 +277,7 @@ namespace police::career
 			g.since = shift::Totals();
 			g.reportsAfter = records::LastId();
 			g.retryAt = -1;
+			g.bonus = 0;
 			g.history.push_back(ml::Json{{"date", shift::Today()}, {"from", kRanks[from].title[Department()]}, {"to", kRanks[g.rank].title[Department()]}});
 			Store();
 			AUDIO::PLAY_SOUND_FRONTEND(-1, "RANK_UP", "HUD_AWARDS", true);
@@ -313,7 +331,8 @@ namespace police::career
 			    {"reports", ml::Json::Array({e.reports, n.reports})}, {"why", NotReady()}, {"atStation", AtStation()}};
 		}
 		return ml::Json{{"title", Title()}, {"rate", Rate()}, {"rank", g.rank}, {"next", next},
-		    {"eval", ml::Json{{"score", e.score}, {"reportsAvg", e.reportsAvg}, {"reports", e.reports}, {"penalty", e.penalty}, {"late", c.late},
+		    {"eval", ml::Json{{"score", e.score}, {"reportsAvg", e.reportsAvg}, {"reports", e.reports}, {"penalty", e.penalty}, {"trainer", e.trainer},
+		                 {"bonus", e.bonus}, {"late", c.late},
 		                 {"early", c.early}, {"absent", c.absent}, {"overdue", c.overdue}}},
 		    {"unlocks", unlocks}, {"history", g.history}, {"exams", g.exams}, {"questions", kQuestions}, {"pass", kPass}};
 	}
@@ -390,6 +409,43 @@ namespace police::career
 			ml::Notify("升等考試答對 {} 題，沒有通過（要 {} 題）。再上 {} 班可以重考", correct, kPass, kRetryShifts);
 		}
 		return ml::Json{{"ok", true}, {"correct", correct}, {"total", total}, {"pass", pass}, {"results", results}, {"title", Title()}};
+	}
+
+	void AddTrainerRating(int rating)
+	{
+		Load();
+		g.trainer.push_back(std::clamp(rating, 0, 100));
+		if (g.trainer.size() > 20)
+			g.trainer.erase(g.trainer.begin());
+		Store();
+		ml::Log("career: FTO rating {}", rating);
+	}
+
+	void AddBonus(int points, const char* why)
+	{
+		Load();
+		if (g.bonus >= kMaxBonus)
+			return;
+		g.bonus = std::min(kMaxBonus, g.bonus + points);
+		Store();
+		ml::Log("career: evaluation +{} ({}), bonus {}", points, why, g.bonus);
+	}
+
+	bool Quiz(std::string& text, std::vector<std::string>& options, int& right)
+	{
+		const Question& q = kOfficer[static_cast<size_t>(MISC::GET_RANDOM_INT_IN_RANGE(0, static_cast<int>(std::size(kOfficer))))];
+		std::array<int, 4> order{0, 1, 2, 3};
+		for (int i = 3; i > 0; --i)
+			std::swap(order[static_cast<size_t>(i)], order[static_cast<size_t>(MISC::GET_RANDOM_INT_IN_RANGE(0, i + 1))]);
+		text = q.text;
+		options.clear();
+		for (int i = 0; i < 4; ++i)
+		{
+			options.push_back(q.options[static_cast<size_t>(order[static_cast<size_t>(i)])]);
+			if (order[static_cast<size_t>(i)] == 0)
+				right = i;
+		}
+		return true;
 	}
 
 	bool May(Unlock what)

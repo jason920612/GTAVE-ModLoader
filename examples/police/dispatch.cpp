@@ -37,6 +37,13 @@ namespace police::dispatch
 		Vehicle g_car = 0;          // the stolen car (kept while the call lasts, whoever is in it)
 		uint64_t g_acceptedAt = 0;
 		bool g_easy = false; // development: the next call's suspect gives up
+		// A call a sergeant gave to a colleague: they report back later.
+		struct Assigned
+		{
+			int colleague = -1;
+			uint64_t at = 0;
+			std::string car;
+		} g_assigned;
 		// Where the thief takes the car: a road a few kilometres on, looked up once the path nodes there are loaded.
 		struct DropOff
 		{
@@ -256,6 +263,42 @@ namespace police::dispatch
 			records::BeginCase("失竊車輛（" + g_carName + "，車牌 " + records::VehicleOf(g_car).plate + "）", Zone(ENTITY::GET_ENTITY_COORDS(g_car, true)));
 			records::Charge("竊盜（車輛）");
 			ml::Log("dispatch: accepted");
+		}
+
+		// The sergeant gives the call to a colleague on patrol: they deal with it out of sight and report back.
+		void Assign()
+		{
+			if (g_call != Call::Offered)
+				return;
+			const int who = colleagues::PickRequester();
+			if (who < 0)
+			{
+				ml::Notify("目前沒有巡邏中的同事可以指派");
+				return;
+			}
+			g_assigned = {who, ml::TickMs() + 180000 + static_cast<uint64_t>(ai::Random() * 180000.0f), g_carName};
+			colleagues::SetBusy(who, true);
+			ml::Notify("（無線電）你：{}，失竊的{}交給你處理。{}：收到。", colleagues::Callsign(who), g_carName, colleagues::Name(who));
+			ml::Log("dispatch: the call was given to {}", colleagues::Name(who));
+			suspect::Release(g_suspect);
+			ClearArea();
+			LetCarGo();
+			g_call = Call::None;
+			g_suspect = 0;
+			g_nextCall = ml::TickMs() + 120000 + static_cast<uint64_t>(ai::Random() * 180000.0f);
+		}
+
+		void AssignedReport()
+		{
+			if (g_assigned.colleague < 0 || ml::TickMs() < g_assigned.at)
+				return;
+			const float r = ai::Random();
+			const char* outcome = r < 0.6f ? "嫌犯逮捕，車輛尋獲" : r < 0.85f ? "車輛尋獲，嫌犯逃逸" : "一直沒找到，轉為協尋";
+			ml::Notify("（無線電）{} {}：那台{}{}。", colleagues::Callsign(g_assigned.colleague), colleagues::Name(g_assigned.colleague), g_assigned.car, outcome);
+			colleagues::SetBusy(g_assigned.colleague, false);
+			colleagues::Rapport(g_assigned.colleague, 1, "巡佐交付案件");
+			career::AddBonus(1, "督導指派案件");
+			g_assigned = {};
 		}
 
 		void Ignore()
@@ -511,6 +554,12 @@ namespace police::dispatch
 				menu::Item no{"忽略", "", "交給其他單位"};
 				no.action = Ignore;
 				m.items.push_back(no);
+				if (career::May(career::Unlock::Supervise))
+				{
+					menu::Item give{"指派給同事", "", "巡佐督導：交給巡邏中的同事處理，之後回報"};
+					give.action = Assign;
+					m.items.push_back(give);
+				}
 				return m;
 			};
 			return i;
@@ -594,6 +643,7 @@ namespace police::dispatch
 		switch (g_call)
 		{
 		case Call::None:
+			AssignedReport();
 			if (!g_nextCall)
 				g_nextCall = now + 120000 + static_cast<uint64_t>(ai::Random() * 180000.0f); // 2-5 minutes on duty
 			if (duty::OnDuty() && now >= g_nextCall && suspect::Count() == 0 && !assist::Busy())

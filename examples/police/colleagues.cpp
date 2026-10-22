@@ -730,6 +730,26 @@ namespace police::colleagues
 		return free.empty() ? -1 : free[static_cast<size_t>(Rand(0, static_cast<int>(free.size()) - 1))];
 	}
 
+	int PickTrainer()
+	{
+		Load();
+		const int kind = shift::ShiftKind();
+		const Colleague* best = nullptr;
+		for (const Colleague& c : g)
+			if (c.rank >= 2 && c.rank <= 3 && !Busy(c.id) && !Here(c.id) && (!best || (c.kind == kind && best->kind != kind)))
+				best = &c;
+		return best ? best->id : -1;
+	}
+
+	int PickRookie()
+	{
+		Load();
+		for (const Colleague& c : g)
+			if (c.rank == 0 && !Busy(c.id) && !Here(c.id))
+				return c.id;
+		return -1;
+	}
+
 	menu::Item RadioItem()
 	{
 		menu::Item radio{"無線電", "", "值勤中的同事：請求支援、問狀況"};

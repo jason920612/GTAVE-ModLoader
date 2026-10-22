@@ -222,6 +222,9 @@ namespace police::shift
 	std::string BoloCar();
 	// The roster has the officer at work now.
 	bool OnShift();
+	// Still on probation (nights, with a field training officer); the planned shift's kind (0 day, 1 evening, 2 night).
+	bool OnProbation();
+	int ShiftKind();
 	// Where the hour puts the officer when nobody plays them.
 	life::Scene Scene();
 	// The beat of the shift (dispatch prefers calls in it).
@@ -257,6 +260,12 @@ namespace police::career
 	bool May(Unlock what);
 	// The officer is at their department's station (the exam is taken there).
 	bool AtStation();
+	// The field training officer's rating of a probation shift (0..100), and points for the evaluation (training a
+	// rookie, supervising; at most 15 a rank) with the reason.
+	void AddTrainerRating(int rating);
+	void AddBonus(int points, const char* why);
+	// One of the officers' exam questions, its options shuffled, and which is right (the rookie asks them).
+	bool Quiz(std::string& text, std::vector<std::string>& options, int& right);
 	// A save is loading.
 	void Loading();
 	// The computer's promotion page, and the exam (started at the station; the answers by the options' shown order).
@@ -282,6 +291,9 @@ namespace police::colleagues
 	int PickBackup(int wanted, float& minDistance, float& maxDistance);
 	// A colleague out on patrol (on duty, not busy, not at the station) to have an incident of their own; -1 = none.
 	int PickRequester();
+	// Someone to ride along: a training officer (Officer III or above, of the officer's shift if possible) / a rookie.
+	int PickTrainer();
+	int PickRookie();
 	// The police menu's radio (the colleagues on duty).
 	menu::Item RadioItem();
 	// Talking with one by typing: the computer's page opened on them; what was said; the officer saying something
@@ -294,6 +306,22 @@ namespace police::colleagues
 	// A save is loading.
 	void Loading();
 	// Every frame: those at the station, talking to them.
+	void Tick();
+}
+
+namespace police::partner
+{
+	// The colleague riding with the officer (0 = none).
+	::Ped Ped();
+	// From Officer III, after probation: a rookie may ride along (asked for at the station, this shift).
+	bool MayTrain();
+	void WantRookie(bool want);
+	bool RookieWanted();
+	// Clocking out: the training officer's rating of the shift, or the training counted; they go.
+	void ShiftOver();
+	// The world was reset.
+	void Forget();
+	// Every frame: the FTO on probation shifts, the rookie when asked for; what they say.
 	void Tick();
 }
 

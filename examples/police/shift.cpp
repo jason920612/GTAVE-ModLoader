@@ -822,6 +822,7 @@ namespace police::shift
 
 	void ClockOut()
 	{
+		partner::ShiftOver();
 		if (!g_loaded)
 			return;
 		const double now = Now();
@@ -845,6 +846,16 @@ namespace police::shift
 			return;
 		}
 		ShiftRequestMenu();
+	}
+
+	bool OnProbation()
+	{
+		return g_loaded && g.shifts < kProbation;
+	}
+
+	int ShiftKind()
+	{
+		return g_loaded ? g.planned.kind : kNight;
 	}
 
 	bool OnShift()
