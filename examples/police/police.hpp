@@ -259,6 +259,8 @@ namespace police::suspect
 	int Spawn(const Vector3& at, float heading, const ai::Profile& profile);
 	// A suspect driving a car on the road nearest to `around` (unaware until a police car with its lights on is behind).
 	int SpawnDriver(const Vector3& around, const ai::Profile& profile);
+	// That driver, still unaware, takes the car to a place, leaves it at the roadside and waits nearby a while.
+	void HeadFor(int id, const Vector3& at);
 	size_t Count();
 	// What the police know of the suspect being pursued (the first one active), for the backup.
 	struct Target

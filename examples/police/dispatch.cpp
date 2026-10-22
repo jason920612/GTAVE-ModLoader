@@ -1,7 +1,9 @@
 // Dispatch and callouts (user's design: calls come over the radio every few minutes while on duty; the officer accepts
 // or ignores them in the police menu, F9). The first callout: a stolen car reported on the move, somewhere in the
 // city; dispatch narrows down where it was last reported until the officer finds it. What the driver does when the
-// officer lights them up is theirs to decide (suspect.cpp).
+// officer lights them up is theirs to decide (suspect.cpp). The thief is taking the car somewhere a few kilometres on to
+// leave it there, and waits nearby a while: the officer may find the car parked, with the thief close by or gone. A car
+// not found in 15 minutes is lost track of (the call ends).
 //
 // The action menu (hold E next to a suspect, user's design): order them out of the vehicle, search them, check their
 // ID, cuff them, put them in the patrol car (or the backup's, for them to take in), or let them go. A suspect booked at a
@@ -32,9 +34,20 @@ namespace police::dispatch
 		Blip g_area = 0;
 		bool g_found = false;
 		std::string g_carName;
+		Vehicle g_car = 0;          // the stolen car (kept while the call lasts, whoever is in it)
+		uint64_t g_acceptedAt = 0;
 		bool g_easy = false; // development: the next call's suspect gives up
+		// Where the thief takes the car: a road a few kilometres on, looked up once the path nodes there are loaded.
+		struct DropOff
+		{
+			Vector3 from{}, at{};
+			uint64_t since = 0;
+			int tries = 0;
+			bool done = true;
+		} g_dropOff;
 
-		constexpr uint64_t kOfferTime = 45000; // an offer stands this long
+		constexpr uint64_t kOfferTime = 45000;      // an offer stands this long
+		constexpr uint64_t kLostAfter = 15 * 60000; // a car not found by then is lost track of
 
 		std::string Text(const char* label)
 		{
@@ -69,6 +82,15 @@ namespace police::dispatch
 			g_area = 0;
 		}
 
+		// The call over: the stolen car is the world's again.
+		void LetCarGo()
+		{
+			if (g_car && ENTITY::DOES_ENTITY_EXIST(g_car) && VEHICLE::GET_VEHICLE_CLASS(g_car) != 18)
+				ENTITY::SET_VEHICLE_AS_NO_LONGER_NEEDED(&g_car);
+			g_car = 0;
+			g_dropOff.done = true;
+		}
+
 		void End(const char* how, const char* outcome = nullptr)
 		{
 			ClearArea();
@@ -79,9 +101,53 @@ namespace police::dispatch
 			}
 			ml::Notify("調度：{}", how);
 			ml::Log("dispatch: call over: {}", how);
+			LetCarGo();
 			g_call = Call::None;
 			g_suspect = 0;
 			g_nextCall = ml::TickMs() + 120000 + static_cast<uint64_t>(ai::Random() * 180000.0f);
+		}
+
+		// The next place to try for where the thief takes the car: 2-4 km on from where they were.
+		void NextDropOff()
+		{
+			const float a = ai::Random() * 6.283f, r = 2000.0f + ai::Random() * 2000.0f;
+			g_dropOff.at = {g_dropOff.from.x + std::cos(a) * r, g_dropOff.from.y + std::sin(a) * r, g_dropOff.from.z};
+			g_dropOff.since = ml::TickMs();
+			++g_dropOff.tries;
+		}
+
+		// Every frame until done: the road nearest the place tried once its path nodes are in, or the next place (the sea,
+		// the hills, not loaded in time). Not a motorway, if it can be helped.
+		void PlanDropOff()
+		{
+			if (g_dropOff.done)
+				return;
+			const Vector3 c = g_dropOff.at;
+			constexpr float r = 200.0f;
+			PATH::REQUEST_PATH_NODES_IN_AREA_THIS_FRAME(c.x - r, c.y - r, c.x + r, c.y + r);
+			if (PATH::ARE_NODES_LOADED_FOR_AREA(c.x - r, c.y - r, c.x + r, c.y + r))
+			{
+				Vector3 node{};
+				float heading = 0;
+				int lanes = 0;
+				if (PATH::GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING(c.x, c.y, c.z, 1, &node, &heading, &lanes, 0, 3.0f, 0.0f) &&
+				    std::hypot(node.x - c.x, node.y - c.y) < 300.0f && Distance(node, g_dropOff.from) > 1500.0f && (lanes <= 2 || g_dropOff.tries > 5))
+				{
+					g_dropOff.done = true;
+					suspect::HeadFor(g_suspect, node);
+					ml::Log("dispatch: the thief takes the car to ({:.0f}, {:.0f}), {:.0f} m on ({} lanes)", node.x, node.y, Distance(node, g_dropOff.from), lanes);
+					return;
+				}
+			}
+			else if (ml::TickMs() - g_dropOff.since < 3000)
+				return;
+			if (g_dropOff.tries >= 8)
+			{
+				g_dropOff.done = true;
+				ml::Log("dispatch: no place found for the thief to take the car: drives around");
+				return;
+			}
+			NextDropOff();
 		}
 
 		// A stolen car somewhere on the roads 500-900 m away.
@@ -104,11 +170,14 @@ namespace police::dispatch
 			g_carName = Text(VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(ENTITY::GET_ENTITY_MODEL(car)));
 			if (g_carName.empty())
 				g_carName = "轎車";
+			g_car = car;
 			g_suspect = id;
 			g_call = Call::Offered;
 			g_offeredAt = ml::TickMs();
 			Radio();
 			const Vector3 at = ENTITY::GET_ENTITY_COORDS(st.ped, true);
+			g_dropOff = {at, {}, 0, 0, false};
+			NextDropOff();
 			ml::Notify("調度：{}有一台失竊的{}，車主剛報案。按 F9「派遣」接受或忽略。", Zone(at), g_carName);
 			ml::Log("dispatch: offered a stolen car ({}) at ({:.0f}, {:.0f})", g_carName, at.x, at.y);
 		}
@@ -117,9 +186,10 @@ namespace police::dispatch
 		void Report(bool first)
 		{
 			const suspect::Status st = suspect::StatusOf(g_suspect);
-			if (st.gone)
+			const bool car = g_car && ENTITY::DOES_ENTITY_EXIST(g_car);
+			if (!car && st.gone)
 				return;
-			const Vector3 at = ENTITY::GET_ENTITY_COORDS(st.ped, true);
+			const Vector3 at = ENTITY::GET_ENTITY_COORDS(car ? g_car : st.ped, true);
 			const float off = 60.0f;
 			const Vector3 c = {at.x + (ai::Random() - 0.5f) * off, at.y + (ai::Random() - 0.5f) * off, at.z};
 			ClearArea();
@@ -130,9 +200,11 @@ namespace police::dispatch
 			HUD::SET_BLIP_ROUTE_COLOUR(g_area, 5);
 			if (!first)
 			{
-				const Vector3 v = ENTITY::GET_ENTITY_VELOCITY(PED::GET_VEHICLE_PED_IS_IN(st.ped, false));
+				const Vector3 v = car ? ENTITY::GET_ENTITY_VELOCITY(g_car) : Vector3{};
 				if (std::sqrt(v.x * v.x + v.y * v.y) > 2.0f)
 					ml::Notify("調度：有民眾看到那台{}在{}，往{}邊開。", g_carName, Zone(at), Compass(v.x, v.y));
+				else if (car && VEHICLE::IS_VEHICLE_SEAT_FREE(g_car, -1, false))
+					ml::Notify("調度：有民眾看到那台{}停在{}路邊。", g_carName, Zone(at));
 				else
 					ml::Notify("調度：有民眾看到那台{}在{}。", g_carName, Zone(at));
 			}
@@ -144,17 +216,14 @@ namespace police::dispatch
 				return;
 			g_call = Call::Active;
 			g_found = false;
+			g_acceptedAt = ml::TickMs();
 			Radio();
 			ml::Notify("收到，前往處理。找到後打開警燈攔停。");
 			Report(true);
 			g_reportAt = ml::TickMs() + 20000;
-			{
-				const suspect::Status st = suspect::StatusOf(g_suspect);
-				const Vehicle car = PED::GET_VEHICLE_PED_IS_IN(st.ped, false);
-				records::MarkStolen(car);
-				records::BeginCase("失竊車輛（" + g_carName + "，車牌 " + records::VehicleOf(car).plate + "）", Zone(ENTITY::GET_ENTITY_COORDS(st.ped, true)));
-				records::Charge("竊盜（車輛）");
-			}
+			records::MarkStolen(g_car);
+			records::BeginCase("失竊車輛（" + g_carName + "，車牌 " + records::VehicleOf(g_car).plate + "）", Zone(ENTITY::GET_ENTITY_COORDS(g_car, true)));
+			records::Charge("竊盜（車輛）");
 			ml::Log("dispatch: accepted");
 		}
 
@@ -448,6 +517,8 @@ namespace police::dispatch
 		g_call = Call::None;
 		g_suspect = 0;
 		g_area = 0;
+		g_car = 0;
+		g_dropOff.done = true;
 	}
 
 	void Tick()
@@ -459,6 +530,7 @@ namespace police::dispatch
 			{
 				suspect::Release(g_suspect);
 				ClearArea();
+				LetCarGo();
 				g_call = Call::None;
 			}
 			return;
@@ -482,6 +554,7 @@ namespace police::dispatch
 				g_handOver = {};
 			}
 		}
+		PlanDropOff();
 		switch (g_call)
 		{
 		case Call::None:
@@ -500,6 +573,10 @@ namespace police::dispatch
 		case Call::Active:
 		{
 			const suspect::Status st = suspect::StatusOf(g_suspect);
+			const ::Ped player = PLAYER::PLAYER_PED_ID();
+			const bool car = g_car && ENTITY::DOES_ENTITY_EXIST(g_car);
+			if (car && !ENTITY::IS_ENTITY_A_MISSION_ENTITY(g_car))
+				ENTITY::SET_ENTITY_AS_MISSION_ENTITY(g_car, true, true); // kept when the thief is gone (until the call ends)
 			if (std::string where; custody::Booked(g_suspect, &where))
 			{
 				End(("嫌犯已收押於" + where + "，案件結束。辛苦了。").c_str(), ("嫌犯逮捕，收押於" + where).c_str());
@@ -510,29 +587,64 @@ namespace police::dispatch
 				End("嫌犯死亡，案件結束", "嫌犯死亡");
 				break;
 			}
-			if (st.gone)
-			{
-				End("嫌犯逃脫");
-				break;
-			}
-			// Found: the officer sees the car or the plate reader reads it (the suspect's own blip shows from now on).
+			// Found: the officer sees the car (the thief at the wheel or not) or the thief being pursued, or the plate
+			// reader reads it (the suspect's own blip shows from now on).
+			const bool wasFound = g_found;
 			suspect::Target t;
-			if (!g_found && suspect::Pursued(t) && t.known)
+			if (!g_found && !st.gone && suspect::Pursued(t) && t.known)
 				g_found = true;
-			if (!g_found && mdt::Ahead() && mdt::Ahead() == suspect::CarOf(g_suspect))
+			if (!g_found && mdt::Ahead() && (mdt::Ahead() == g_car || mdt::Ahead() == suspect::CarOf(g_suspect)))
 				g_found = true;
-			if (!g_found)
+			if (!g_found && (car || !st.gone))
 			{
-				const Vector3 me = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
-				const Vector3 at = ENTITY::GET_ENTITY_COORDS(st.ped, true);
-				if (Distance(me, at) < 90.0f && ENTITY::HAS_ENTITY_CLEAR_LOS_TO_ENTITY(PLAYER::PLAYER_PED_ID(), st.ped, 17))
+				const Entity seen = car ? g_car : st.ped;
+				if (Distance(ENTITY::GET_ENTITY_COORDS(player, true), ENTITY::GET_ENTITY_COORDS(seen, true)) < 90.0f &&
+				    ENTITY::HAS_ENTITY_CLEAR_LOS_TO_ENTITY(player, seen, 17))
 					g_found = true;
 			}
-			if (g_found && g_area)
+			if (g_found && !wasFound)
 			{
 				ClearArea();
-				ml::Notify("找到那台{}了", g_carName);
-				records::Note("發現失竊車輛（" + Zone(ENTITY::GET_ENTITY_COORDS(st.ped, true)) + "）");
+				const Vector3 at = ENTITY::GET_ENTITY_COORDS(car ? g_car : st.ped, true);
+				records::Note("發現失竊車輛（" + Zone(at) + "）");
+				if (!st.gone && car && !PED::IS_PED_IN_VEHICLE(st.ped, g_car, false))
+				{
+					// Left at the roadside: the thief may still be about.
+					records::Note("車輛停放路邊，駕駛已離開車輛");
+					const Vector3 thief = ENTITY::GET_ENTITY_COORDS(st.ped, true);
+					if (Distance(thief, at) > 8.0f)
+						ml::Notify("找到那台{}了：停在路邊，車上沒人。有民眾看到駕駛下車往{}邊走，可能還在附近。", g_carName, Compass(thief.x - at.x, thief.y - at.y));
+					else
+						ml::Notify("找到那台{}了：停在路邊，駕駛就在旁邊。", g_carName);
+				}
+				else if (!st.gone)
+					ml::Notify("找到那台{}了", g_carName);
+			}
+			if (st.gone)
+			{
+				// Away at the wheel, the car with them; left somewhere, the car recovered once found (until then, still to be
+				// found).
+				const ::Ped driver = car ? VEHICLE::GET_PED_IN_VEHICLE_SEAT(g_car, -1, false) : 0;
+				if (!car || (driver && driver != player))
+				{
+					End("嫌犯逃脫");
+					break;
+				}
+				if (g_found)
+				{
+					if (wasFound)
+						End("嫌犯逃脫，失竊車輛已尋獲", "嫌犯逃脫，尋獲失竊車輛");
+					else
+						End("失竊車輛已尋獲，竊嫌已經離開", "尋獲失竊車輛，竊嫌不明");
+					break;
+				}
+			}
+			if (!g_found && now - g_acceptedAt > kLostAfter)
+			{
+				if (!st.gone)
+					suspect::Release(g_suspect);
+				End(("一直沒有找到那台" + g_carName + "，失去蹤跡，轉為協尋").c_str(), "失去蹤跡，車輛未尋獲");
+				break;
 			}
 			if (!g_found && now >= g_reportAt)
 			{

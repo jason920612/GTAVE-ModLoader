@@ -15,7 +15,8 @@
 // the officer), veterans preferring side streets and driving fast but well, novices driving faster and worse. Out of
 // the officer's sight, at night they drive with the lights off; once the officer is lost, those who know better ditch
 // the car somewhere quiet and walk away (the car would give them away). A wrecked or stuck car is left on foot. Those
-// set on shooting stop and get out to do it.
+// set on shooting stop and get out to do it. Unaware, a driver with somewhere to take the car (a stolen one) leaves it
+// at the roadside there and waits nearby a while, then walks off.
 //
 // Changing what the officer is looking for: running on foot with a lead, those who dare take a car (the driver pulled
 // out if there is one) and go on by road; hiding, those who know better change their look (a different top, the hat
@@ -47,6 +48,7 @@ namespace police::suspect
 			Resist,  // fists
 			Shoot,
 			Cruise,  // driving, unaware
+			Park,    // where they were taking the car: to the roadside, out, and the car left there
 			PullOver, // complying in a vehicle: to the roadside
 			Pulled,  // stopped at the roadside
 			Evade,   // getting away by road
@@ -71,6 +73,7 @@ namespace police::suspect
 			case State::Resist: return "resist";
 			case State::Shoot: return "shoot";
 			case State::Cruise: return "cruise";
+			case State::Park: return "park";
 			case State::PullOver: return "pull over";
 			case State::Pulled: return "pulled";
 			case State::Evade: return "evade";
@@ -88,7 +91,11 @@ namespace police::suspect
 		{
 			ai::Senses senses;
 			Vector3 goal{};              // where they are going
+			Vector3 dest{};              // where an unaware driver is taking the car (to leave it there)
 			Vector3 policeKnow{};        // where the police (officer or backup) last saw them
+			bool hasDest = false;
+			uint64_t waitUntil = 0;      // left the car there: waits nearby until then (for whoever is to take it on)
+			bool waitSpot = false;       // ... where (goal) is known
 			::Ped ped = 0;
 			ai::Profile profile;
 			State state = State::Unaware;
@@ -433,6 +440,35 @@ namespace police::suspect
 			TASK::TASK_VEHICLE_DRIVE_TO_COORD(s.ped, s.car, at.x, at.y, at.z, 6.0f, 0, ENTITY::GET_ENTITY_MODEL(s.car), 786603, 2.0f, 0.0f);
 		}
 
+		// Driving as anyone would: where they are taking the car, or around.
+		void DriveOn(Suspect& s)
+		{
+			if (s.hasDest)
+				TASK::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(s.ped, s.car, s.dest.x, s.dest.y, s.dest.z, 15.0f, 786603, 20.0f);
+			else
+				TASK::TASK_VEHICLE_DRIVE_WANDER(s.ped, s.car, 15.0f, 786603);
+		}
+
+		// Somewhere to wait near the car they left, not right by it: 20-50 m off, on foot (none while the navmesh there is
+		// not loaded, far from the officer).
+		bool PlanWait(Suspect& s)
+		{
+			if (!s.car || !ENTITY::DOES_ENTITY_EXIST(s.car))
+				return false;
+			const Vector3 at = ENTITY::GET_ENTITY_COORDS(s.car, true);
+			for (int i = 0; i < 8; ++i)
+			{
+				const float a = Random() * 6.283f, r = 20.0f + Random() * 30.0f;
+				Vector3 p{};
+				if (ai::OnFoot(at.x + std::cos(a) * r, at.y + std::sin(a) * r, at.z, p) && std::abs(p.z - at.z) < 6.0f && Distance(p, at) > 12.0f)
+				{
+					s.goal = p;
+					return true;
+				}
+			}
+			return false;
+		}
+
 		// Any of the police (the officer or the backup) has them in sight now.
 		bool SeenByPolice(const Suspect& s)
 		{
@@ -723,9 +759,53 @@ namespace police::suspect
 					Set(s, State::Stall, "noticed the officer");
 					TASK::TASK_TURN_PED_TO_FACE_ENTITY(s.ped, PLAYER::PLAYER_PED_ID(), -1);
 				}
+				else if (s.waitUntil)
+				{
+					const Vector3 me = At(s);
+					if (now >= s.waitUntil && !se.visible)
+					{
+						// Nobody came: off, calmly, away from the car.
+						const Vector3 car = s.car && ENTITY::DOES_ENTITY_EXIST(s.car) ? ENTITY::GET_ENTITY_COORDS(s.car, true) : me;
+						float dx = me.x - car.x, dy = me.y - car.y;
+						if (std::abs(dx) + std::abs(dy) < 1.0f)
+						{
+							const float a = Random() * 6.283f;
+							dx = std::cos(a), dy = std::sin(a);
+						}
+						const float l = std::sqrt(dx * dx + dy * dy);
+						s.goal = {me.x + dx / l * 250.0f, me.y + dy / l * 250.0f, me.z};
+						s.waitUntil = 0;
+						TASK::CLEAR_PED_TASKS(s.ped);
+						TASK::TASK_FOLLOW_NAV_MESH_TO_COORD(s.ped, s.goal.x, s.goal.y, s.goal.z, 1.0f, -1, 5.0f, 0, 0.0f);
+						Set(s, State::Blend, "nobody came");
+					}
+					else if (now >= s.planAt && !PED::IS_PED_IN_ANY_VEHICLE(s.ped, true))
+					{
+						// Over to the spot, then hanging about there (a smoke, the phone); by the car until there is one.
+						if (!s.waitSpot)
+							s.waitSpot = PlanWait(s);
+						if (s.waitSpot && Distance(me, s.goal) > 2.0f)
+						{
+							TASK::TASK_FOLLOW_NAV_MESH_TO_COORD(s.ped, s.goal.x, s.goal.y, s.goal.z, 1.0f, -1, 1.0f, 0, 0.0f);
+							s.planAt = now + 8000;
+						}
+						else
+						{
+							if (!PED::IS_PED_USING_ANY_SCENARIO(s.ped))
+								TASK::TASK_START_SCENARIO_IN_PLACE(s.ped, s.id % 2 ? "WORLD_HUMAN_SMOKING" : "WORLD_HUMAN_STAND_MOBILE", 0, true);
+							s.planAt = now + 3000;
+						}
+					}
+				}
 				break;
 			case State::Comply:
 			case State::Stall:
+				// Lights behind them: not to where they were taking the car (round the streets instead).
+				if (s.hasDest && s.state == State::Stall && Driving(s))
+				{
+					s.hasDest = false;
+					TASK::TASK_VEHICLE_DRIVE_WANDER(s.ped, s.car, 15.0f, 786603);
+				}
 				// A decision holds for a few seconds (no flip-flopping).
 				if (now >= s.thinkAt && now - s.since > (s.state == State::Comply ? 5000u : 2000u))
 				{
@@ -877,6 +957,48 @@ namespace police::suspect
 				}
 				else if (!Driving(s))
 					Set(s, State::Unaware, "out of the vehicle");
+				else if (s.hasDest && Distance(At(s), s.dest) < 35.0f)
+				{
+					PullOver(s);
+					s.hasDest = false;
+					Set(s, State::Park, "where they were taking the car");
+				}
+				else if (s.hasDest)
+				{
+					// Held up a long while (the drive given up on, or stuck): on again.
+					if (ENTITY::GET_ENTITY_SPEED(s.car) > 1.0f)
+						s.stuckSince = 0;
+					else if (!s.stuckSince)
+						s.stuckSince = now;
+					else if (now - s.stuckSince > 30000)
+					{
+						DriveOn(s);
+						s.stuckSince = 0;
+					}
+				}
+				break;
+			case State::Park:
+				if (se.siren && se.visible && se.distance < 45.0f)
+				{
+					s.thinkAt = now + 700 + static_cast<uint64_t>(Random() * 800.0f);
+					Set(s, State::Stall, "lights behind");
+				}
+				else if (!Driving(s) || (now - s.since > 2500 && ENTITY::GET_ENTITY_SPEED(s.car) < 1.0f) || now - s.since > 15000)
+				{
+					// Stopped: engine off, out, and over to somewhere near to wait.
+					TASK::CLEAR_PED_TASKS(s.ped);
+					VEHICLE::BRING_VEHICLE_TO_HALT(s.car, 1.0f, 1, false);
+					VEHICLE::SET_VEHICLE_INDICATOR_LIGHTS(s.car, 0, false);
+					VEHICLE::SET_VEHICLE_ENGINE_ON(s.car, false, true, false);
+					TASK::TASK_LEAVE_VEHICLE(s.ped, s.car, 0);
+					s.waitSpot = PlanWait(s);
+					s.waitUntil = now + 240000 + static_cast<uint64_t>(Random() * 240000.0f); // 4-8 minutes
+					s.planAt = now + 3000;                                                       // out of the car first
+					const Vector3 at = ENTITY::GET_ENTITY_COORDS(s.car, true);
+					ml::Log("suspect {}: left the car at ({:.0f}, {:.0f}), waits {} for {} s", s.id, at.x, at.y,
+					    s.waitSpot ? std::format("at ({:.0f}, {:.0f})", s.goal.x, s.goal.y) : std::string("by it for now"), (s.waitUntil - now) / 1000);
+					Set(s, State::Unaware, "left the car");
+				}
 				break;
 			case State::PullOver:
 			{
@@ -1126,11 +1248,23 @@ namespace police::suspect
 		return s.id;
 	}
 
+	void HeadFor(int id, const Vector3& at)
+	{
+		for (Suspect& s : g_suspects)
+			if (s.id == id && s.state == State::Cruise && Driving(s))
+			{
+				s.dest = at;
+				s.hasDest = true;
+				s.stuckSince = 0;
+				DriveOn(s);
+			}
+	}
+
 	bool Pursued(Target& out)
 	{
 		for (Suspect& s : g_suspects)
 		{
-			if (s.state == State::Unaware || s.state == State::Cruise || s.state == State::Gone || !ENTITY::DOES_ENTITY_EXIST(s.ped))
+			if (s.state == State::Unaware || s.state == State::Cruise || s.state == State::Park || s.state == State::Gone || !ENTITY::DOES_ENTITY_EXIST(s.ped))
 				continue;
 			out.ped = s.ped;
 			out.car = Driving(s) ? s.car : 0;
