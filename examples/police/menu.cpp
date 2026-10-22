@@ -49,6 +49,15 @@ namespace police::menu
 			return PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, control);
 		}
 
+		void Hover()
+		{
+			if (g_stack.empty())
+				return;
+			const auto& items = g_stack.back().items;
+			if (g_cursor < items.size() && items[g_cursor].hover)
+				items[g_cursor].hover();
+		}
+
 		void Move(int by)
 		{
 			const auto& items = g_stack.back().items;
@@ -57,6 +66,7 @@ namespace police::menu
 			const size_t n = items.size();
 			g_cursor = (g_cursor + n + static_cast<size_t>(by + static_cast<int>(n))) % n;
 			AUDIO::PLAY_SOUND_FRONTEND(-1, "NAV_UP_DOWN", "HUD_FRONTEND_DEFAULT_SOUNDSET", true);
+			Hover();
 		}
 
 		// The controls the menu takes over while it is open: the phone, weapon selection and firing.
@@ -76,13 +86,18 @@ namespace police::menu
 		g_cursor = 0;
 		g_openedAt = ml::TickMs();
 		AUDIO::PLAY_SOUND_FRONTEND(-1, "SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET", true);
+		Hover();
 	}
 
 	void Close()
 	{
+		auto stack = std::move(g_stack); // a leave callback may open another menu
 		g_stack.clear();
 		g_cursors.clear();
 		g_cursor = 0;
+		for (auto it = stack.rbegin(); it != stack.rend(); ++it)
+			if (it->leave)
+				it->leave();
 	}
 
 	bool IsOpen()
@@ -155,15 +170,24 @@ namespace police::menu
 			Move(-1);
 		else if (Pressed(kDown) || Pressed(kWheelDown))
 			Move(1);
+		else if ((Pressed(174) || Pressed(175)) && !items.empty() && items[g_cursor].step)
+		{
+			AUDIO::PLAY_SOUND_FRONTEND(-1, "NAV_LEFT_RIGHT", "HUD_FRONTEND_DEFAULT_SOUNDSET", true);
+			const auto step = items[g_cursor].step;
+			step(Pressed(174) ? -1 : 1);
+		}
 		else if (Pressed(kBack) || Pressed(kAim))
 		{
 			AUDIO::PLAY_SOUND_FRONTEND(-1, "BACK", "HUD_FRONTEND_DEFAULT_SOUNDSET", true);
+			const auto leave = g_stack.back().leave;
 			g_stack.pop_back();
 			if (!g_cursors.empty())
 			{
 				g_cursor = g_cursors.back();
 				g_cursors.pop_back();
 			}
+			if (leave)
+				leave();
 		}
 		else if ((Pressed(kSelect) || Pressed(kAttack)) && !items.empty())
 		{

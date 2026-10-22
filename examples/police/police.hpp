@@ -79,6 +79,12 @@ namespace police::guard
 	void Restore();
 }
 
+namespace police::shops
+{
+	// Every frame: the officer's clothes, hair and tattoo shops (in the game's shops).
+	void Tick();
+}
+
 namespace police::money
 {
 	// Every frame: the loader's fourth character follows the officer; a new officer gets savings and unlocks.
@@ -160,11 +166,14 @@ namespace police::menu
 		bool keepOpen = false;
 		std::function<void()> action;
 		std::function<struct List()> sub; // opens a submenu instead
+		std::function<void()> hover;      // the cursor came to this item (a shop's preview)
+		std::function<void(int)> step;    // ←/→ on this item (-1 / +1)
 	};
 	struct List
 	{
 		std::string title;
 		std::vector<Item> items;
+		std::function<void()> leave; // this menu is gone (Back, or the whole menu closed)
 	};
 	// Opens a menu (on top of the open one, Back returns to it).
 	void Open(List list);
@@ -509,4 +518,25 @@ namespace police::look
 	void BuildMenu();
 	// Every frame: the editing camera.
 	void Tick();
+
+	// Own clothes bought in the shops (shops.cpp), worn off duty: a component or prop slot's drawable and texture
+	// (drawable -1: the default clothes / no prop). Kept in the save ("officer_wardrobe") with the tattoos.
+	struct Piece
+	{
+		int drawable = -1, texture = 0;
+	};
+	Piece Worn(bool prop, int slot);
+	void Wear(bool prop, int slot, Piece piece);
+	// Tattoos (collection and overlay hashes), on duty and off.
+	bool HasTattoo(Hash collection, Hash overlay);
+	void AddTattoo(Hash collection, Hash overlay);
+	void RemoveTattoo(Hash collection, Hash overlay);
+	// Hair, eyebrows and beard (the barber; the creator sets them too).
+	struct Hair
+	{
+		int hair, hairColor, highlight, brows, browColor, beard, beardColor;
+	};
+	Hair GetHair();
+	void SetHair(const Hair& hair);
+	bool Female();
 }

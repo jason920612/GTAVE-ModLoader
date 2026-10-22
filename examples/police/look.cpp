@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,41 @@ namespace police::look
 		const char* const kFeatures[] = {"鼻子寬度", "鼻峰高度", "鼻子長度", "鼻樑", "鼻尖", "鼻樑歪斜", "眉毛高度", "眉毛深度", "顴骨高度", "顴骨寬度",
 		    "臉頰", "眼睛", "嘴唇", "下顎寬度", "下顎長度", "下巴高度", "下巴長度", "下巴寬度", "下巴凹痕", "脖子粗細"};
 		const std::vector<std::string> kDepartments = {"洛聖都警局 LSPD", "郡警 BCSO", "公路巡警 SAHP", "特勤 NOOSE（高階解鎖）"};
+
+		// ---- own clothes and tattoos ----
+		std::map<int, Piece> g_clothes, g_props; // by slot
+		std::vector<std::pair<Hash, Hash>> g_tattoos;
+
+		void LoadWardrobe()
+		{
+			g_clothes.clear();
+			g_props.clear();
+			g_tattoos.clear();
+			const ml::Json j = ml::save::Get("officer_wardrobe");
+			for (const auto& [key, out] : {std::pair{"clothes", &g_clothes}, std::pair{"props", &g_props}})
+				for (const ml::Json& p : j[key].Items())
+					(*out)[p[0].Int()] = {p[1].Int(), p[2].Int()};
+			for (const ml::Json& t : j["tattoos"].Items())
+				g_tattoos.push_back({static_cast<Hash>(t[0].Int64()), static_cast<Hash>(t[1].Int64())});
+		}
+
+		void StoreWardrobe()
+		{
+			ml::Json clothes = ml::Json::Array(), props = ml::Json::Array(), tattoos = ml::Json::Array();
+			for (const auto& [slot, p] : g_clothes)
+				clothes.Push(ml::Json::Array({slot, p.drawable, p.texture}));
+			for (const auto& [slot, p] : g_props)
+				props.Push(ml::Json::Array({slot, p.drawable, p.texture}));
+			for (const auto& [c, o] : g_tattoos)
+				tattoos.Push(ml::Json::Array({static_cast<int64_t>(c), static_cast<int64_t>(o)}));
+			ml::save::Set("officer_wardrobe", {{"clothes", clothes}, {"props", props}, {"tattoos", tattoos}});
+		}
+
+		void Reapply()
+		{
+			if (const ::Ped ped = officer::Ped())
+				Apply(ped, officer::InUniform());
+		}
 
 		// ---- menu items ----
 		ml::Item g_sex, g_mother, g_father, g_resemblance, g_skin, g_hair, g_hairColor, g_highlight, g_brows, g_browColor, g_beard, g_beardColor,
@@ -259,12 +295,85 @@ namespace police::look
 			PED::SET_PED_COMPONENT_VARIATION(ped, 11, female ? 0 : 0, 0, 0);  // T-shirt / top
 			PED::SET_PED_COMPONENT_VARIATION(ped, 9, 0, 0, 0);
 			PED::CLEAR_PED_PROP(ped, 0, 0);
+			// What the officer bought in the shops.
+			for (const auto& [slot, p] : g_clothes)
+				if (p.drawable >= 0)
+					PED::SET_PED_COMPONENT_VARIATION(ped, slot, p.drawable, p.texture, 0);
+			for (const auto& [slot, p] : g_props)
+				if (p.drawable >= 0)
+					PED::SET_PED_PROP_INDEX(ped, slot, p.drawable, p.texture, true, 0);
+				else
+					PED::CLEAR_PED_PROP(ped, slot, 0);
 		}
+		PED::CLEAR_PED_DECORATIONS(ped);
+		for (const auto& [collection, overlay] : g_tattoos)
+			PED::ADD_PED_DECORATION_FROM_HASHES(ped, collection, overlay);
+	}
+
+	Piece Worn(bool prop, int slot)
+	{
+		const auto& m = prop ? g_props : g_clothes;
+		const auto it = m.find(slot);
+		return it == m.end() ? Piece{} : it->second;
+	}
+
+	void Wear(bool prop, int slot, Piece piece)
+	{
+		(prop ? g_props : g_clothes)[slot] = piece;
+		StoreWardrobe();
+		Reapply();
+	}
+
+	bool HasTattoo(Hash collection, Hash overlay)
+	{
+		return std::find(g_tattoos.begin(), g_tattoos.end(), std::pair{collection, overlay}) != g_tattoos.end();
+	}
+
+	void AddTattoo(Hash collection, Hash overlay)
+	{
+		if (HasTattoo(collection, overlay))
+			return;
+		g_tattoos.push_back({collection, overlay});
+		StoreWardrobe();
+		Reapply();
+	}
+
+	void RemoveTattoo(Hash collection, Hash overlay)
+	{
+		std::erase(g_tattoos, std::pair{collection, overlay});
+		StoreWardrobe();
+		Reapply();
+	}
+
+	Hair GetHair()
+	{
+		return {g.hair, g.hairColor, g.highlight, g.brows, g.browColor, g.beard, g.beardColor};
+	}
+
+	void SetHair(const Hair& h)
+	{
+		g.hair = h.hair;
+		g.hairColor = h.hairColor;
+		g.highlight = h.highlight;
+		g.brows = h.brows;
+		g.browColor = h.browColor;
+		g.beard = h.beard;
+		g.beardColor = h.beardColor;
+		Store();
+		Sync();
+		g_headshotStale = true;
+		Reapply();
+	}
+
+	bool Female()
+	{
+		return g.sex == 1;
 	}
 
 	void Loaded()
 	{
 		FromJson(ml::save::Get("officer_look"));
+		LoadWardrobe();
 		Sync();
 	}
 

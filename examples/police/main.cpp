@@ -69,6 +69,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::wheel::Tick();
 		police::officer::Tick();
 		police::money::Tick();
+		police::shops::Tick();
 		police::guard::Tick();
 		police::life::Tick();
 		police::duty::Tick();
