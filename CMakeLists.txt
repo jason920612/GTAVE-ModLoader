@@ -49,6 +49,7 @@ add_library(loader SHARED
     src/loader/game/pointers.cpp
     src/loader/game/natives.cpp
     src/loader/game/script.cpp
+    src/loader/game/arrayfault.cpp
     src/loader/game/text.cpp
     src/loader/game/text_override.cpp
     src/loader/game/datafiles.cpp
@@ -67,6 +68,7 @@ add_library(loader SHARED
     src/loader/web/textures.cpp
     src/loader/debug/hangdump.cpp
     src/loader/debug/scripttrace.cpp
+    src/loader/debug/bootscript.cpp
     src/loader/debug/watch.cpp
     src/loader/debug/animprobe.cpp
     src/loader/debug/skelhook.cpp

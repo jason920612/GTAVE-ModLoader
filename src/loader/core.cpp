@@ -19,10 +19,12 @@
 #include "game/dlcpacks.hpp"
 #include "game/models.hpp"
 #include "game/scripts.hpp"
+#include "game/arrayfault.hpp"
 #include "debug/animprobe.hpp"
 #include "debug/skelhook.hpp"
 #include "debug/hangdump.hpp"
 #include "debug/scripttrace.hpp"
+#include "debug/bootscript.hpp"
 #include "debug/remote.hpp"
 #include "web/browser.hpp"
 #include "game/datafiles.hpp"
@@ -256,6 +258,7 @@ namespace loader::core
 					debug::ArmWriteWatches({{0x3DE3030, 2}, {0x29C7D1C, 4}, {0x29C7D30, 4}, {0x3DFA798, 8}});
 				}).detach();
 			}
+			debug::bootscript::Tick();
 			state::story = host != nullptr;
 			if (landing && state::storyRequested.exchange(false))
 				RequestStoryMode();
@@ -278,6 +281,7 @@ namespace loader::core
 			game::scripts::ApplyNativeOverrides(!state::online);
 			if (!state::online)
 				game::fixes::KeepOnlineVehicles();
+			game::arrayfault::Tick();
 			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)
@@ -312,6 +316,7 @@ namespace loader::core
 		game::models::Install();
 		game::pose::Install();
 		game::scripts::Install();
+		game::arrayfault::Install();
 		debug::hangdump::Start();
 		debug::remote::Start();
 		debug::animprobe::StartIfRequested();

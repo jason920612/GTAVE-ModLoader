@@ -1,6 +1,7 @@
 #include "remote.hpp"
 
 #include <Windows.h>
+#include <MinHook.h>
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
 
@@ -34,6 +35,140 @@ namespace loader::debug::remote
 		};
 		std::mutex g_mutex;
 		std::map<int, Held> g_held; // control -> how long
+
+		// Keys for the game itself, frontend menus included (they pause scripts, so controls cannot reach them). The
+		// game reads the keyboard through raw input: a WM_INPUT is posted whose handle is ours, and GetRawInputData
+		// answers it with the keyboard event.
+		constexpr uintptr_t kFakeInput = 0x4D4C0000; // | sequence
+		struct FakeKey
+		{
+			uint16_t vk;
+			bool up;
+		};
+		std::mutex g_fakeMutex;
+		std::map<uintptr_t, FakeKey> g_fake;
+		uint16_t g_fakeSequence = 0;
+		using GetRawInputDataFn = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
+		GetRawInputDataFn g_getRawInputData = nullptr;
+		std::atomic<HWND> g_keyboardTarget = nullptr; // where the game has the keyboard's raw input sent
+		std::atomic<int> g_fakeServed = 0;
+		using RegisterRawInputDevicesFn = BOOL(WINAPI*)(PCRAWINPUTDEVICE, UINT, UINT);
+		RegisterRawInputDevicesFn g_registerRawInputDevices = nullptr;
+
+		// The game only acts on keyboard input while its window is in front (GetForegroundWindow). For a game key it is
+		// told so for a moment; and while it is not really in front it may not move or confine the person's cursor.
+		std::atomic<ULONGLONG> g_fakeFocusUntil = 0;
+		using GetForegroundWindowFn = HWND(WINAPI*)();
+		GetForegroundWindowFn g_getForegroundWindow = nullptr;
+		using ClipCursorFn = BOOL(WINAPI*)(const RECT*);
+		ClipCursorFn g_clipCursor = nullptr;
+		using SetCursorPosFn = BOOL(WINAPI*)(int, int);
+		SetCursorPosFn g_setCursorPos = nullptr;
+		HWND GameWindow();
+
+		bool GameReallyInFront()
+		{
+			const HWND w = GameWindow();
+			return w && g_getForegroundWindow() == w;
+		}
+		HWND WINAPI HookGetForegroundWindow()
+		{
+			if (GetTickCount64() < g_fakeFocusUntil)
+				if (const HWND w = GameWindow())
+					return w;
+			return g_getForegroundWindow();
+		}
+		BOOL WINAPI HookClipCursor(const RECT* rect)
+		{
+			return rect && !GameReallyInFront() ? TRUE : g_clipCursor(rect);
+		}
+		BOOL WINAPI HookSetCursorPos(int x, int y)
+		{
+			return !GameReallyInFront() ? TRUE : g_setCursorPos(x, y);
+		}
+
+		template<class Fn>
+		void HookApi(const char* name, void* detour, Fn& original)
+		{
+			void* target = nullptr;
+			if (MH_CreateHookApiEx(L"user32", name, detour, reinterpret_cast<void**>(&original), &target) == MH_OK)
+				MH_EnableHook(target);
+			else
+				log::Warn("remote: cannot hook {}", name);
+		}
+
+		BOOL WINAPI HookRegisterRawInputDevices(PCRAWINPUTDEVICE devices, UINT count, UINT size)
+		{
+			for (UINT i = 0; i < count; ++i)
+			{
+				log::Info("remote: raw input device page {:#x} usage {:#x} flags {:#x} target {}", devices[i].usUsagePage, devices[i].usUsage,
+				    devices[i].dwFlags, static_cast<void*>(devices[i].hwndTarget));
+				if (devices[i].usUsagePage == 1 && devices[i].usUsage == 6 && !(devices[i].dwFlags & RIDEV_REMOVE))
+					g_keyboardTarget = devices[i].hwndTarget;
+			}
+			return g_registerRawInputDevices(devices, count, size);
+		}
+
+		UINT WINAPI HookGetRawInputData(HRAWINPUT input, UINT command, LPVOID data, PUINT size, UINT headerSize)
+		{
+			const auto id = reinterpret_cast<uintptr_t>(input);
+			FakeKey key{};
+			{
+				std::lock_guard lock(g_fakeMutex);
+				const auto it = (id & ~uintptr_t{0xFFFF}) == kFakeInput ? g_fake.find(id) : g_fake.end();
+				if (it == g_fake.end())
+					return g_getRawInputData(input, command, data, size, headerSize);
+				key = it->second;
+			}
+			if (g_fakeServed++ < 8)
+				log::Info("remote: game key {:#x} {} read (command {:#x}, buffer {})", key.vk, key.up ? "up" : "down", command, data != nullptr);
+			const UINT need = command == RID_HEADER ? sizeof(RAWINPUTHEADER) : sizeof(RAWINPUT);
+			if (!size)
+				return static_cast<UINT>(-1);
+			if (!data)
+			{
+				*size = need;
+				return 0;
+			}
+			if (*size < need)
+			{
+				SetLastError(ERROR_INSUFFICIENT_BUFFER);
+				return static_cast<UINT>(-1);
+			}
+			RAWINPUT r{};
+			r.header.dwType = RIM_TYPEKEYBOARD;
+			r.header.dwSize = sizeof(RAWINPUT);
+			r.header.wParam = RIM_INPUT;
+			r.data.keyboard.MakeCode = static_cast<USHORT>(MapVirtualKeyW(key.vk, MAPVK_VK_TO_VSC));
+			const bool extended = key.vk == VK_UP || key.vk == VK_DOWN || key.vk == VK_LEFT || key.vk == VK_RIGHT;
+			r.data.keyboard.Flags = static_cast<USHORT>((key.up ? RI_KEY_BREAK : RI_KEY_MAKE) | (extended ? RI_KEY_E0 : 0));
+			r.data.keyboard.VKey = key.vk;
+			r.data.keyboard.Message = key.up ? WM_KEYUP : WM_KEYDOWN;
+			std::memcpy(data, &r, need);
+			return need;
+		}
+
+		bool PostGameKey(HWND window, uint32_t vk, bool up)
+		{
+			if (!g_getRawInputData)
+			{
+				void* target = nullptr;
+				if (MH_CreateHookApiEx(L"user32", "GetRawInputData", reinterpret_cast<void*>(&HookGetRawInputData),
+				        reinterpret_cast<void**>(&g_getRawInputData), &target) != MH_OK ||
+				    MH_EnableHook(target) != MH_OK)
+					return false;
+			}
+			uintptr_t id = 0;
+			{
+				std::lock_guard lock(g_fakeMutex);
+				id = kFakeInput | ++g_fakeSequence;
+				g_fake[id] = {static_cast<uint16_t>(vk), up};
+				while (g_fake.size() > 64)
+					g_fake.erase(g_fake.begin());
+			}
+			const HWND target = g_keyboardTarget ? g_keyboardTarget.load() : window;
+			return PostMessageW(target, WM_INPUT, RIM_INPUT, static_cast<LPARAM>(id)) != 0;
+		}
 
 		RECT g_restore{};
 		std::atomic_bool g_offscreen = false;
@@ -187,6 +322,22 @@ namespace loader::debug::remote
 				PostMessageW(w, kKeyMessage, vk, 0);
 				return "ok";
 			}
+			if (cmd == "gamekey")
+			{
+				std::string name;
+				int ms = 100;
+				in >> name >> ms;
+				const uint32_t vk = ParseKey(name);
+				const HWND w = GameWindow();
+				if (!vk || !w)
+					return vk ? "err no game window yet" : "err unknown key";
+				g_fakeFocusUntil = GetTickCount64() + static_cast<ULONGLONG>(std::clamp(ms, 1, 5000)) + 300;
+				if (!PostGameKey(w, vk, false))
+					return "err raw input hook";
+				Sleep(static_cast<DWORD>(std::clamp(ms, 1, 5000)));
+				PostGameKey(w, vk, true);
+				return "ok";
+			}
 			if (cmd == "control")
 			{
 				int id = -1, ms = 120;
@@ -282,6 +433,11 @@ namespace loader::debug::remote
 		if (!config::Get().debugRemote)
 			return;
 		std::thread(Serve).detach();
+		// Where the game's keyboard input goes, and its view of being in front (for gamekey); the person's cursor.
+		HookApi("RegisterRawInputDevices", reinterpret_cast<void*>(&HookRegisterRawInputDevices), g_registerRawInputDevices);
+		HookApi("GetForegroundWindow", reinterpret_cast<void*>(&HookGetForegroundWindow), g_getForegroundWindow);
+		HookApi("ClipCursor", reinterpret_cast<void*>(&HookClipCursor), g_clipCursor);
+		HookApi("SetCursorPos", reinterpret_cast<void*>(&HookSetCursorPos), g_setCursorPos);
 		// Out of view and silent from the moment the window shows, and kept out of view (the game moves its window
 		// back when it applies its display settings).
 		std::thread([] {

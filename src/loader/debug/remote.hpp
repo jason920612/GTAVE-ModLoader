@@ -8,6 +8,7 @@
 //   ping                      the game's state (landing / story / online)
 //   story                     continues story mode from the home screen
 //   key <vk>                  a mod hotkey press (F9, Q, 0x78 ...)
+//   gamekey <vk> [ms]         a key press for the game itself (raw input), frontend menus included
 //   control <id> [ms] [value] a game control held for ms (default 120) at value (default 1)
 //   release                   lets go of every held control
 //   shot <path>               the next frame as a PNG

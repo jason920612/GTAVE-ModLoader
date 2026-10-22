@@ -8,6 +8,7 @@ usage:
   gtactl.py quit                   closes the game, then restore
   gtactl.py <step> [<step> ...]    steps run in order:
       key:<name>                   a mod hotkey (F9, F10, Q, ...)
+      gamekey:<name>[,<ms>]        a key for the game itself (raw input; works in frontend menus such as the save screen)
       ctl:<id>[,<ms>[,<value>]]    a game control held (51 = context/E, 172-177 = phone/menu up down left right select back)
       hold:<id>,<ms>               the same, then waits until it was let go
       shot:<file.png>              the next frame
@@ -153,6 +154,8 @@ def main(args):
             continue
         if kind == "key":
             reply = p.send(f"key {arg}")
+        elif kind == "gamekey":
+            reply = p.send("gamekey " + " ".join(arg.split(",")))
         elif kind in ("ctl", "hold"):
             parts = arg.split(",")
             reply = p.send("control " + " ".join(parts))

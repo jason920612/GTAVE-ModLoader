@@ -129,7 +129,7 @@ namespace loader::debug::scripttrace
 			p.patched = program;
 			if (const auto probe = reinterpret_cast<uintptr_t>(game::natives::FindHandler(0x85F01B8D5B90570EULL)))
 				log::Info("scripttrace: HAS_SCALEFORM_MOVIE_LOADED handler at +{:#x}", probe - reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
-			log::Info("scripttrace: tracing {} natives of program {:08X}", count, p.hash);
+			log::Info("scripttrace: tracing {} natives of program {:08X} (code {} bytes)", count, p.hash, *reinterpret_cast<uint32_t*>(program + 0x1C));
 		}
 	}
 
