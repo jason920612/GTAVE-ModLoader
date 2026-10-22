@@ -70,6 +70,7 @@ namespace loader::game::story
 		{
 			g_loading = loading;
 			changes.loading = loading;
+			changes.loaded = !loading;
 		}
 		// The save folder is looked at once a second.
 		if (const auto now = std::chrono::steady_clock::now(); now >= g_nextSaveCheck)

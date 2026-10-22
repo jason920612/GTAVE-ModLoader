@@ -14,6 +14,8 @@
 #include <fstream>
 #include <format>
 #include <mutex>
+#include <optional>
+#include <random>
 #include <set>
 
 #include "ai/ai.hpp"
@@ -757,12 +759,38 @@ namespace loader::mods
 		}
 
 		// ---- high-level API: data that follows the game's save -----------------------------
+		// Every story save carries a number of the loader's: the SP stat ML_SAVE_NONCE, declared by the loader's own
+		// pack (ModLoader\core). The mods' data at that save is data\saves\<number>.json, so each save slot, autosave
+		// and quick save has its own. After a load and after each save the stat gets a new number, so the next save is
+		// told apart. data\save.json keeps the newest data too: saves made before the numbers (stat 0) and a save
+		// whose file is missing fall back to it, as all saves did before.
 
 		std::mutex g_saveMutex;
+		constexpr uint64_t kStatGetInt = 0x767FBC2AC802EF3D;
+		constexpr uint64_t kStatSetInt = 0xB3271D7AB655B441;
+		constexpr uint32_t kSaveNonceStat = 0xB0F47994; // joaat("ML_SAVE_NONCE")
+		int32_t g_saveNonce = 0; // the number the next game save carries; 0 = none (no stat: one file for all saves)
 
 		std::filesystem::path SaveFile(const Mod& mod)
 		{
 			return mod.dir / L"data" / L"save.json";
+		}
+		std::filesystem::path SaveFile(const Mod& mod, int32_t nonce)
+		{
+			return mod.dir / L"data" / L"saves" / std::format(L"{:08x}.json", static_cast<uint32_t>(nonce));
+		}
+
+		// The JSON object in `file`, or nullopt when there is none.
+		std::optional<nlohmann::json> ReadJsonFile(Mod& mod, const std::filesystem::path& file)
+		{
+			std::ifstream in(file);
+			if (!in)
+				return std::nullopt;
+			auto j = nlohmann::json::parse(in, nullptr, false);
+			if (j.is_object())
+				return j;
+			ModLog(&mod, ML_LOG_WARN, std::format("{} is not valid JSON; ignored", std::string(reinterpret_cast<const char*>(file.filename().u8string().c_str()))));
+			return std::nullopt;
 		}
 
 		// Save mutex held.
@@ -771,17 +799,18 @@ namespace loader::mods
 			if (mod.saveRead)
 				return;
 			mod.saveRead = true;
-			if (std::ifstream in(SaveFile(mod)); in)
-			{
-				auto j = nlohmann::json::parse(in, nullptr, false);
-				if (j.is_object())
-					mod.saveCommitted = std::move(j);
-				else
-					ModLog(&mod, ML_LOG_WARN, "data\\save.json is not valid JSON; starting empty");
-			}
-			if (!mod.saveCommitted.is_object())
-				mod.saveCommitted = nlohmann::json::object();
+			mod.saveCommitted = ReadJsonFile(mod, SaveFile(mod)).value_or(nlohmann::json::object());
 			mod.saveWorking = mod.saveCommitted;
+		}
+
+		// A fresh number for the next save. Game thread, script context.
+		void NewSaveNonce()
+		{
+			static std::mt19937 random{std::random_device{}()};
+			int32_t n = 0;
+			while (n == 0 || n == g_saveNonce)
+				n = static_cast<int32_t>(random());
+			g_saveNonce = game::natives::Invoke<int32_t>(kStatSetInt, kSaveNonceStat, n, 1) ? n : 0;
 		}
 
 		std::string SlotKey(int32_t slot)
@@ -843,25 +872,68 @@ namespace loader::mods
 			return 1;
 		}
 
-		// The game saved: the mods' save data is written. Game thread.
+		bool WriteJsonFile(Mod& mod, const std::filesystem::path& file, const nlohmann::json& j)
+		{
+			std::error_code ec;
+			std::filesystem::create_directories(file.parent_path(), ec);
+			std::ofstream out(file, std::ios::trunc);
+			if (out)
+				out << j.dump(1) << "\n";
+			if (!out)
+				ModLog(&mod, ML_LOG_ERROR, std::format("could not write {}", std::string(reinterpret_cast<const char*>(file.u8string().c_str()))));
+			return static_cast<bool>(out);
+		}
+
+		// The game saved: the mods' save data is written (its own file for the number the save carries). Game thread,
+		// script context.
 		void CommitSaveData()
 		{
+			const int32_t saved = g_saveNonce;
 			for (auto& mod : g_mods)
 			{
 				std::lock_guard lock(g_saveMutex);
-				if (!mod->saveDirty)
-					continue;
-				std::ofstream out(SaveFile(*mod), std::ios::trunc);
-				if (!out)
-				{
-					ModLog(mod.get(), ML_LOG_ERROR, "could not write data\\save.json");
-					continue;
-				}
-				out << mod->saveWorking.dump(1) << "\n";
+				ReadSaveData(*mod);
+				if (mod->saveDirty)
+					WriteJsonFile(*mod, SaveFile(*mod), mod->saveWorking);
+				if (saved && !mod->saveWorking.empty())
+					WriteJsonFile(*mod, SaveFile(*mod, saved), mod->saveWorking);
+				if (mod->saveDirty || (saved && !mod->saveWorking.empty()))
+					ModLog(mod.get(), ML_LOG_INFO, std::format("game saved: save data written (save {:08x})", static_cast<uint32_t>(saved)));
 				mod->saveCommitted = mod->saveWorking;
 				mod->saveDirty = false;
-				ModLog(mod.get(), ML_LOG_INFO, "game saved: save data written");
 			}
+			if (saved)
+				NewSaveNonce();
+		}
+
+		// A loading screen ended: when a save was loaded, its number picks the mods' data. Game thread, script context.
+		void PickSaveData()
+		{
+			int32_t carried = 0;
+			if (!game::natives::Invoke<int32_t>(kStatGetInt, kSaveNonceStat, &carried, -1))
+			{
+				g_saveNonce = 0; // the loader's pack is not mounted: one file for all saves
+				return;
+			}
+			if (carried && carried == g_saveNonce)
+				return; // the session's own number: a loading screen without a load
+			int found = 0;
+			for (auto& mod : g_mods)
+			{
+				std::lock_guard lock(g_saveMutex);
+				mod->saveRead = true;
+				std::optional<nlohmann::json> data;
+				if (carried)
+					data = ReadJsonFile(*mod, SaveFile(*mod, carried));
+				found += data.has_value();
+				if (!data)
+					data = ReadJsonFile(*mod, SaveFile(*mod));
+				mod->saveCommitted = data.value_or(nlohmann::json::object());
+				mod->saveWorking = mod->saveCommitted;
+				mod->saveDirty = false;
+			}
+			log::Info("save loaded: it carries save number {:08x}; {} mod(s) have data for it", static_cast<uint32_t>(carried), found);
+			NewSaveNonce();
 		}
 
 		// A save is being loaded: unsaved changes are dropped. Game thread.
@@ -1474,6 +1546,8 @@ namespace loader::mods
 			DropSaveData();
 			Dispatch(ML_EVENT_SAVE_LOADING);
 		}
+		if (changes.loaded)
+			PickSaveData();
 		if (changes.character)
 			Dispatch(ML_EVENT_CHARACTER_CHANGED);
 

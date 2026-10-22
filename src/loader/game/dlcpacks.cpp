@@ -307,9 +307,37 @@ namespace loader::game::dlcpacks
 			g_entries.merge(found);
 		}
 
+		// The loader's own pack (ModLoader\core, a replacement mod of the loader's): the SP stat every story save carries
+		// for the mods' save data (mods.cpp, "data that follows the game's save"). Written when missing or changed.
+		Pack CorePack()
+		{
+			static constexpr std::string_view kStats =
+			    "<StatsSetup version=\"1\">\n"
+			    "    <stats>\n"
+			    "\t\t<stat Name=\"ML_SAVE_NONCE\" Type=\"int\" SaveCategory=\"0\" online=\"false\" profile=\"false\" Owner=\"script\" characterStat=\"false\" />\n"
+			    "\t</stats>\n"
+			    "</StatsSetup>\n";
+			const auto dir = paths::Get().root / L"core";
+			const auto file = dir / L"mlcore_stats.xml";
+			std::error_code ec;
+			std::filesystem::create_directories(dir, ec);
+			std::string current;
+			if (std::ifstream in(file, std::ios::binary); in)
+				current.assign(std::istreambuf_iterator<char>(in), {});
+			if (current != kStats)
+				std::ofstream(file, std::ios::binary | std::ios::trunc) << kStats;
+			Pack pack;
+			pack.replacement = true;
+			pack.name = "mlcore";
+			pack.source = dir;
+			pack.dir = dir;
+			pack.enabled = true;
+			return pack;
+		}
+
 		std::vector<Pack> Discover()
 		{
-			std::vector<Pack> packs;
+			std::vector<Pack> packs{CorePack()};
 			const auto& disabled = config::Get().disabledAssets;
 			std::error_code ec;
 			for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))

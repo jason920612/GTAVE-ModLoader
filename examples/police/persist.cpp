@@ -43,7 +43,17 @@ namespace police::persist
 	{
 		const ::Ped ped = officer::Ped();
 		if (!ped)
+		{
+			// The officer is out of the world (a protagonist is played): a save now is not the officer's. Where they
+			// were stays recorded.
+			ml::Json s = State();
+			if (s["active"].Bool())
+			{
+				s["active"] = false;
+				ml::save::Set("officer", s);
+			}
 			return;
+		}
 		const Vector3 at = ENTITY::GET_ENTITY_COORDS(ped, true);
 		ml::save::Set("officer", ml::Json{{"active", active}, {"x", at.x}, {"y", at.y}, {"z", at.z}, {"heading", ENTITY::GET_ENTITY_HEADING(ped)},
 		    {"clock", Clock()}, {"uniform", officer::InUniform()}});

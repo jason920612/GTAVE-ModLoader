@@ -9,6 +9,7 @@ namespace loader::game::story
 		bool character = false; // the player became another story character (or none)
 		bool saved = false;     // a story save file was written
 		bool loading = false;   // a loading screen began
+		bool loaded = false;    // a loading screen ended
 	};
 	// Call once per frame while story mode runs.
 	Changes Update();

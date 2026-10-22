@@ -115,6 +115,20 @@ namespace police::officer
 				*g = value;
 		}
 
+		// The game's own record of a protagonist it switches away from (PP_INFO under global 114990: health, armour,
+		// weapons and wheel slots, place and room, velocity, wanted level, time; player_controller_b@28969, the store
+		// its switches make). The mod's switch to the officer bypasses the game's, so without this the protagonist
+		// would come back later with what they had at the game's last switch. Run by itself in a thread of its own:
+		// the routine reads no statics and does not wait.
+		void StoreProtagonist(::Ped p)
+		{
+			constexpr const char* kStore = "2d 02 04 00 00 38 00 5d ?? ?? ?? 38 00 38 01 5d ?? ?? ?? 38 00 5d ?? ?? ?? 38 00 5d ?? ?? ?? 38 00 5d ?? ?? ?? 38 00 "
+			                               "5d ?? ?? ?? 38 00 5d ?? ?? ?? 2e 02 00";
+			const auto ran = ml::scripts::RunFunction("player_controller_b", kStore, {p, 0}, 1424, 3000);
+			if (ran != ml::scripts::RunResult::Ran)
+				ml::LogError("could not record the protagonist's state for the game (result {})", static_cast<int>(ran));
+		}
+
 		// The game's switch from the player's ped to `to`, busy with `scenario` (or nothing) when the camera comes down;
 		// false when it did not complete.
 		bool Switch(::Ped to, const char* scenario = nullptr)
@@ -343,6 +357,7 @@ namespace police::officer
 		if (!Exists(g_officer))
 			return;
 		const ::Ped from = PLAYER::PLAYER_PED_ID();
+		StoreProtagonist(from);
 		// The scene's place loads first, so it is there when the camera comes down.
 		life::Load(g_scene);
 		ENTITY::SET_ENTITY_COORDS(g_officer, g_scene.x, g_scene.y, g_scene.z, false, false, false, false);
@@ -407,6 +422,7 @@ namespace police::officer
 		if (!Exists(g_officer))
 			return;
 		const ::Ped from = PLAYER::PLAYER_PED_ID();
+		StoreProtagonist(from);
 		if (life::InApartment(at))
 			life::Load({at.x, at.y, at.z, heading});
 		ENTITY::SET_ENTITY_COORDS_NO_OFFSET(g_officer, at.x, at.y, at.z, false, false, false);
