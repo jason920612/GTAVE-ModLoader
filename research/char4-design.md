@@ -1513,6 +1513,19 @@ Effort is in engineer-weeks for one experienced engineer, with ranges. M1b runs 
   - the boot tests pass (normal, ml_char4_reg missing, ml_char4_reg failing S7, **ml_char4_reg corrupt, game killed during boot**; **(revision 5)** a kill before the first script tick takes no fallback, and ml_char4_reg failing twice takes the staged fallback and then one retry; ≥ 3 launches each), and R3 shows every officer_mode slot written after each load, with the identity check passing.
 
 **M1b: Police-mod switching hygiene, Phase A (2–3 weeks, parallel).**
+- **Status 2026-10-23:**
+  - Done:
+    - the selector's Online path hidden for the officer's slot and F8 (2ef63e58);
+    - OFFICER_PED re-bind after SET_PLAYER_MODEL (8be6d4df);
+    - one "may switch now" gate (WhyNoSwitch, AVAILABLE[c]) for SwitchTo, SwitchFrom, the mod's wheel and F8 (8be6d4df);
+    - PP_INFO store through player_controller_b@28969 before the mod's switch and the load take-over (7a670d36);
+    - per-save officer records: the loader keeps every mod's save data per game save (ML_SAVE_NONCE stat, 7a670d36), which replaces the interim nonce side file planned here;
+    - the left-behind officer (re-created near the new player because the game deletes a non-protagonist old ped, @3639-@3692), back where left within 60 game minutes, hospital after a death while left (b2489588);
+    - the death release (45ceaf3d).
+  - Moved to M2:
+    - the hand-over of the left-behind protagonist to player_controller. It needs step 2b (materialise him for the officer's saves), which is part of the broker; until then KeepProtagonist stays.
+    - The session states / OfficerAvailable(): they belong to the char4 teardowns.
+  - Open: peyote (U33).
 - Work:
   - everything listed in §3.10 Phase A, including the availability rules (U34), the "may switch now" gate, the left-behind injury policy (U30) and peyote (U33);
   - OFFICER_PED re-bind and look re-apply on player-ped replacement;
