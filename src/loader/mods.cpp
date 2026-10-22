@@ -822,7 +822,7 @@ namespace loader::mods
 		int32_t ApiSaveDataGet(int32_t slot, const char* key, char* buffer, int32_t size)
 		{
 			Mod* mod = CallerOrCurrent(_ReturnAddress());
-			if (!mod || !key || slot < ML_SAVE_SHARED || slot > 2)
+			if (!mod || !key || slot < ML_SAVE_SHARED || slot > 3)
 				return -1;
 			std::string text;
 			{
@@ -848,7 +848,7 @@ namespace loader::mods
 		int32_t ApiSaveDataSet(int32_t slot, const char* key, const char* json)
 		{
 			Mod* mod = CallerOrCurrent(_ReturnAddress());
-			if (!mod || !key || slot < ML_SAVE_SHARED || slot > 2)
+			if (!mod || !key || slot < ML_SAVE_SHARED || slot > 3)
 				return 0;
 			nlohmann::json value;
 			if (json)
@@ -1238,6 +1238,11 @@ namespace loader::mods
 			return game::char4::Ready() ? 1 : 0;
 		}
 
+		int32_t ApiChar4IsPlayer()
+		{
+			return game::char4::IsPlayer() ? 1 : 0;
+		}
+
 		// ---- high-level API: the local text model ------------------------------------------------
 
 		int32_t ApiAiState()
@@ -1336,6 +1341,7 @@ namespace loader::mods
 			.PoseSet = ApiPoseSet,
 			.Char4SetPed = ApiChar4SetPed,
 			.Char4Ready = ApiChar4Ready,
+			.Char4IsPlayer = ApiChar4IsPlayer,
 		};
 
 		// ---- loading --------------------------------------------------------------------------

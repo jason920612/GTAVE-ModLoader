@@ -119,13 +119,13 @@ namespace property
 
 	// ---- ownership: the mod's save data, per character ("owned": [ids]) ------------------------------
 
-	std::set<int> g_owned[3];
-	bool g_ownedRead[3] = {};
+	std::set<int> g_owned[4]; // by character (the fourth character too)
+	bool g_ownedRead[4] = {};
 
 	const std::set<int>& Owned(int c)
 	{
 		static const std::set<int> none;
-		if (c < 0 || c > 2)
+		if (c < 0 || c > 3)
 			return none;
 		if (!g_ownedRead[c])
 		{
@@ -163,7 +163,7 @@ namespace property
 
 	ml::Json List()
 	{
-		const int c = ml::game::CharacterIndex();
+		const int c = ml::game::PlayerCharacterIndex();
 		ml::Json properties = ml::Json::Array();
 		for (int id = 1; id <= kLastProperty; ++id)
 		{
@@ -185,7 +185,7 @@ namespace property
 		const auto fail = [](const char* error) { return ml::Json{{"ok", false}, {"error", error}, {"cash", ml::game::Cash()}}; };
 		if (!Purchasable(id))
 			return fail("unknown");
-		const int c = ml::game::CharacterIndex();
+		const int c = ml::game::PlayerCharacterIndex();
 		if (c < 0)
 			return fail("character");
 		if (Owned(c).contains(id))

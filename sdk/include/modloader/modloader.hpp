@@ -464,7 +464,8 @@ namespace ml
 	//   ml::save::Set("owned", owned, character);        ml::Json owned = ml::save::Get("owned", character);
 	namespace save
 	{
-		inline constexpr int32_t Shared = ML_SAVE_SHARED; // one value for all characters; or 0 Michael, 1 Franklin, 2 Trevor
+		inline constexpr int32_t Shared = ML_SAVE_SHARED; // one value for all characters; or 0 Michael, 1 Franklin, 2 Trevor,
+		                                                  // 3 the fourth character
 
 		inline bool Available() { return detail::Has(&MLApi::SaveDataSet); }
 
@@ -498,6 +499,8 @@ namespace ml
 	namespace char4
 	{
 		inline bool Available() { return detail::Has(&MLApi::Char4Ready) && Api().Char4Ready() != 0; }
+		// The fourth character is the player now.
+		inline bool IsPlayer() { return detail::Has(&MLApi::Char4IsPlayer) && Api().Char4IsPlayer() != 0; }
 		// The character's ped (0 = none). Call again whenever the ped is replaced.
 		inline void SetPed(int32_t ped)
 		{

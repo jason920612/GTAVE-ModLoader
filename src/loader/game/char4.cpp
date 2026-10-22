@@ -34,6 +34,10 @@ namespace loader::game::char4
 
 		constexpr uint64_t kHideHudComponentThisFrame = 0x6806C51AD12B83B8ULL;
 		constexpr uint64_t kQueueMissionRepeatSave = 0x44A0BDC559B35F6EULL, kQueueBenchmarkSave = 0xEB2104E905C6F2E9ULL;
+		constexpr uint64_t kStartNewScriptWithArgs = 0xB8BA7F44DF1575E1ULL;
+		// Shops the officer does not use the game's way: clothes, hair and tattoos are for the protagonists' models
+		// (the officer's looks are the police mod's own, research/char4-design.md M6).
+		constexpr const char* kProtagonistShops[] = {"clothes_shop_sp", "hairdo_shop_sp", "tattoo_shop"};
 
 		// Character sheet G2349 (29 slots per entry; its saved copy G143050): field 17 is the bank account (0-2 the
 		// protagonists', 4 none); fields 13-16 say whether the contact is in the phone of owner 0-3 (25-28 another flag
@@ -378,6 +382,20 @@ namespace loader::game::char4
 						scripts::CallOriginal(*id, context);
 				});
 			}
+		// shop_controller starts the shop scripts as the player walks in; for the officer only Ammu-Nation and LS Customs.
+		if (auto* original = reinterpret_cast<void*>(natives::FindHandler(kStartNewScriptWithArgs)))
+		{
+			auto id = std::make_shared<int32_t>(0);
+			*id = scripts::AddNativeOverride(convert::Joaat("shop_controller"), original, [id](void* context, void*) {
+				auto* call = static_cast<natives::CallContext*>(context);
+				const auto* name = call->argCount >= 1 ? reinterpret_cast<const char*>(call->args[0]) : nullptr;
+				if (g_player && name &&
+				    std::any_of(std::begin(kProtagonistShops), std::end(kProtagonistShops), [name](const char* s) { return _stricmp(name, s) == 0; }))
+					call->returnValue[0] = 0;
+				else
+					scripts::CallOriginal(*id, context);
+			});
+		}
 		arrayfault::ServeFourth(g_programs);
 		g_installed = true;
 		log::Info("fourth character: ready");

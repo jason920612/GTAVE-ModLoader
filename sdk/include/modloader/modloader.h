@@ -256,7 +256,8 @@ typedef struct MLApi
 	int32_t (*OnGameEvent)(int32_t event, MLCallback fn, void* user);
 
 	/* ---- data that follows the game's save ----
-	 * Values (JSON text) kept per mod, per story character (`slot` 0 Michael, 1 Franklin, 2 Trevor) or shared
+	 * Values (JSON text) kept per mod, per story character (`slot` 0 Michael, 1 Franklin, 2 Trevor, 3 the fourth
+	 * character) or shared
 	 * (ML_SAVE_SHARED). Changes are written when the game saves, one file per game save (<modDir>\data\saves\<number>.json;
 	 * data\save.json keeps the newest), and a load brings back the values of the save loaded, so they stay in step with
 	 * the game's own progress in every slot. Any thread. */
@@ -306,6 +307,8 @@ typedef struct MLApi
 	void (*Char4SetPed)(int32_t ped);
 	/* 1 when the fourth character works in this game (the loader's rewritten game scripts are in place). Any thread. */
 	int32_t (*Char4Ready)(void);
+	/* 1 while the fourth character is the player (as of this frame). Any thread. */
+	int32_t (*Char4IsPlayer)(void);
 } MLApi;
 
 /* States of the local text model (AiState). */

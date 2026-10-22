@@ -21,7 +21,8 @@
 //     place, so the function is re-emitted at the end of the code with the new cases and its old body forwards to it.
 //   - Accounts: the payment wrappers refuse account 3 (originally "no account"; the officer's account is 3): only 4
 //     is refused now.
-//   - Script rules: gunclub_shop never offers the officer heavy weapons, explosives or incendiaries (§0.0 Q9, kForbiddenWeapons).
+//   - Script rules: gunclub_shop never offers the officer heavy weapons, explosives or incendiaries (§0.0 Q9, kForbiddenWeapons);
+//     taxilauncher's phone booking uses the dispatcher's lines only for the officer (§3.4, no protagonist voice).
 namespace loader::char4
 {
 	// The native the rewritten scripts call for "the officer is the player": GET_BENCHMARK_PASS (game hash; its handler

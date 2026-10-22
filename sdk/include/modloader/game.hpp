@@ -116,9 +116,10 @@ namespace ml
 	// ---- the story game ------------------------------------------------------------------------
 	namespace game
 	{
-		enum class Character : int32_t { None = -1, Michael = 0, Franklin = 1, Trevor = 2 };
+		// Fourth: a mod's own character as a fourth protagonist (ml::char4), with money of its own.
+		enum class Character : int32_t { None = -1, Michael = 0, Franklin = 1, Trevor = 2, Fourth = 3 };
 
-		// The story character the player is (by the player's model).
+		// The protagonist the player is (by the player's model); None for anyone else, the fourth character included.
 		inline Character CurrentCharacter()
 		{
 			const Hash model = ENTITY::GET_ENTITY_MODEL(PLAYER::PLAYER_PED_ID());
@@ -131,8 +132,14 @@ namespace ml
 		// 0 Michael, 1 Franklin, 2 Trevor, -1 none: handy as a save slot (ml::save).
 		inline int32_t CharacterIndex() { return static_cast<int32_t>(CurrentCharacter()); }
 
-		// Money of a character (default: the current one); 0 when there is none.
-		inline int32_t Cash(Character who = CurrentCharacter())
+		// The story character the player is, the fourth character included (Fourth while ml::char4 says it is the
+		// player). Code that keeps something per character needs room for four.
+		inline Character PlayerCharacter() { return char4::IsPlayer() ? Character::Fourth : CurrentCharacter(); }
+		// 0-3, -1 none: a save slot (ml::save) too.
+		inline int32_t PlayerCharacterIndex() { return static_cast<int32_t>(PlayerCharacter()); }
+
+		// Money of a character (default: the player's, the fourth character's included); 0 when there is none.
+		inline int32_t Cash(Character who = PlayerCharacter())
 		{
 			if (who == Character::None)
 				return 0;
@@ -141,7 +148,7 @@ namespace ml
 			return value;
 		}
 		// Adds (or with a negative amount takes) money; false when there is not enough or no character.
-		inline bool AddCash(int32_t amount, Character who = CurrentCharacter())
+		inline bool AddCash(int32_t amount, Character who = PlayerCharacter())
 		{
 			if (who == Character::None)
 				return false;
@@ -162,7 +169,7 @@ namespace ml
 		// in the character's bank history and counts in the spending stats. Without that function (game update?) it
 		// falls back to AddCash, which leaves no history. False when there is not enough money or no character.
 		// MLMain, a callback or a task (it waits for the game's script).
-		inline bool Pay(int32_t amount, int32_t payee, Character who = CurrentCharacter())
+		inline bool Pay(int32_t amount, int32_t payee, Character who = PlayerCharacter())
 		{
 			if (who == Character::None || amount < 0 || Cash(who) < amount)
 				return false;

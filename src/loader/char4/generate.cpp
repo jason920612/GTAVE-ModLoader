@@ -16,9 +16,9 @@ namespace loader::char4
 {
 	const std::vector<std::string> kAwareScripts = {
 	    // shops, money and the player's state
-	    "shop_controller", "gunclub_shop", "blip_controller", "atm_trigger", "respawn_controller",
-	    // services
-	    "taxilauncher", "taxiservice", "launcher_carwash", "carwash1", "carwash2", "vehicle_gen_controller",
+	    "shop_controller", "gunclub_shop", "carmod_shop", "blip_controller", "atm_trigger", "respawn_controller",
+	    // services (appinternet: its bank function is how mods pay, ml::game::Pay)
+	    "appinternet", "taxilauncher", "taxiservice", "launcher_carwash", "carwash1", "carwash2", "vehicle_gen_controller",
 	    // world purchases
 	    "ob_vend1", "ob_vend2", "ob_telescope", "act_cinema", "cablecar", "fairgroundhub", "rollercoaster", "stripclub",
 	    "stripclub_drinking", "ob_drinking_shots", "pb_prostitute",
@@ -30,7 +30,7 @@ namespace loader::char4
 	namespace
 	{
 		// Bumped whenever the rules change, so the files are made again.
-		constexpr int kVersion = 7;
+		constexpr int kVersion = 9;
 
 		std::string FileStamp(const std::filesystem::path& file)
 		{

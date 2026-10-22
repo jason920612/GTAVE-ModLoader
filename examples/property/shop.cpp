@@ -705,7 +705,7 @@ namespace property::shop
 
 		ml::Json List(const std::string& site)
 		{
-			const int c = ml::game::CharacterIndex();
+			const int c = ml::game::PlayerCharacterIndex();
 			ml::Json items = ml::Json::Array(), garages = ml::Json::Array();
 			const auto add = [&](const Item& i) {
 				if (const Info& info = g_info[i.item]; info.site == site)
@@ -738,7 +738,7 @@ namespace property::shop
 		{
 			const auto fail = [](const char* error) { return ml::Json{{"ok", false}, {"error", error}, {"cash", ml::game::Cash()}}; };
 			const Item* i = Find(item);
-			const int c = ml::game::CharacterIndex();
+			const int c = ml::game::PlayerCharacterIndex();
 			if (!i)
 				return fail("unknown");
 			if (c < 0)
@@ -771,7 +771,7 @@ namespace property::shop
 		ml::web::Function("shop.list", [](std::string site) { return List(site); });
 		ml::web::Function("shop.buy", [](int item, int garage) { return Buy(item, garage); });
 		ml::StartTask([] {
-			ml::WaitUntil([] { return ml::game::CharacterIndex() >= 0; }, UINT32_MAX, 500);
+			ml::WaitUntil([] { return ml::game::PlayerCharacterIndex() >= 0; }, UINT32_MAX, 500);
 			LoadAddons();
 			Scan();
 		});

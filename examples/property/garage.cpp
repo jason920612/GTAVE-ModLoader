@@ -226,8 +226,8 @@ namespace property::garage
 		// ---- storage per character: property -> slot -> vehicle ----------------------------------
 
 		using Garage = std::map<int, Stored>;
-		std::map<int, Garage> g_stored[3];
-		bool g_read[3] = {};
+		std::map<int, Garage> g_stored[4]; // by character (the fourth character too)
+		bool g_read[4] = {};
 
 		void Save(int c);
 
@@ -301,7 +301,7 @@ namespace property::garage
 		// Into the garage; `drive` = the vehicle the player drives in with (stored first), or 0.
 		void Enter(int id, Vehicle drive)
 		{
-			const int c = ml::game::CharacterIndex();
+			const int c = ml::game::PlayerCharacterIndex();
 			Garage& garage = Stores(c)[id];
 			const Layout& layout = LayoutFor(GarageSize(id));
 			int freeSlot = -1;
@@ -352,7 +352,7 @@ namespace property::garage
 			const Place out = OutsideOnFoot(id);
 			if (vehicle)
 			{
-				const int c = ml::game::CharacterIndex();
+				const int c = ml::game::PlayerCharacterIndex();
 				Stores(c)[id].erase(drive);
 				Save(c);
 				MISC::CLEAR_AREA_OF_VEHICLES(door.x, door.y, door.z, 6.0f, false, false, false, false, false, false, 0);
@@ -410,7 +410,7 @@ namespace property::garage
 
 	int FreeSlots(int id)
 	{
-		const int c = ml::game::CharacterIndex();
+		const int c = ml::game::PlayerCharacterIndex();
 		if (c < 0)
 			return 0;
 		return GarageSize(id) - static_cast<int>(Stores(c)[id].size());
@@ -418,7 +418,7 @@ namespace property::garage
 
 	bool Deliver(int id, Hash model)
 	{
-		const int c = ml::game::CharacterIndex();
+		const int c = ml::game::PlayerCharacterIndex();
 		if (c < 0)
 			return false;
 		Garage& garage = Stores(c)[id];
@@ -465,7 +465,7 @@ namespace property::garage
 
 	void Tick()
 	{
-		const int c = ml::game::CharacterIndex();
+		const int c = ml::game::PlayerCharacterIndex();
 		if (c != g_character || g_refresh)
 		{
 			if (c != g_character && g_inside)
