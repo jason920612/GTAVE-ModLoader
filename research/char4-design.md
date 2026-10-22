@@ -800,6 +800,12 @@ One recorded policy, applied by S2 to every site:
 - no Trevor helmet rules (0x165a480).
 - Known leftovers under the alias: Michael's lens flare, pilot-helmet prop 27 (the mod re-applies its own helmet), the BUDDY_SEES_MICHAEL_DEATH line, Michael's AI ped not recognised as a protagonist by the engine while the alias is active, the pause Skills page highlighting column 0 while showing Michael's real SP0 numbers, the 0xB5F970 routine, and freemode NPCs treated as Michael by the engine.
 - Alternative (M0 decides): alias MP slot 4 instead and write 0x481DC38 := 4 after the switch. No protagonist leftovers and no ability, but possible MP-specific behaviour keyed on index ≥ 3 (unknown).
+- **M0 result (2026-10-22): slot 4 is chosen.**
+  - Applied: prefix[4] := "SP3", dword 4 of the stat objects := SP3 hashes, 0x481DC38 := 4. HUD cash and the pause header cash followed SP3_TOTAL_CASH. The protagonists were untouched. A switch to a protagonist set the index back by itself, and removal restored everything.
+  - The only index ≥ 3 branch outside the setter (0xb6156) is gated by 0x29CB19B, which is 0 in story mode. The setter's "index ≥ 3" flag 0x2941D40 is not written.
+  - There are 207 objects, not 187; 145 have names. 5 unnamed SP0 hashes exist in story mode and still need names; the other 57 do not exist and get 0.
+  - Still open: the pause header name (still the last protagonist's), the cash-change animation at each switch, the ability with slot 4, and the 17 unpaired direct stores in the builder.
+  - Details in research/phase0.md §55.6. The steps above for k = 0 (model static, unlock byte, U29 side effects) do not apply to slot 4.
 
 **SP3 stats:**
 - An extra stats definition file of data-file type 0x23 in our generated DLC pack, mounted together with ml_char4_reg whenever the loader runs, police mod on or off (§3.6, revision 4). The mounter vtable 0x27186a8 → 0x1eab1d0 → 0x1ea7d40 registers SP stats at DLC mount.
