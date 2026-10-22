@@ -29,6 +29,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 		police::offduty::Loading();
 		police::callouts::Forget();
 		police::services::Forget();
+		police::wanted::Forget();
 	});
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
@@ -48,6 +49,7 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	police::guard::Init();
 	police::wheel::Init();
 	police::shift::Build();
+	police::wanted::Build();
 	police::look::BuildMenu();
 	{
 		// Development: suspects to try the AI on.
@@ -104,6 +106,7 @@ extern "C" __declspec(dllexport) void MLMain()
 		police::discipline::Tick();
 		police::offduty::Tick();
 		police::services::Tick();
+		police::wanted::Tick();
 		police::search::Tick();
 		police::mdt::Tick();
 		if (const int t = g_testSpawn.exchange(-1); t >= 0)

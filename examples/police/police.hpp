@@ -373,6 +373,16 @@ namespace police::offduty
 	void Tick();
 }
 
+namespace police::wanted
+{
+	// The setting and the surrender key (MLOnLoad).
+	void Build();
+	// The world was reset.
+	void Forget();
+	// Every frame, whoever is played: the game's police when the player is wanted.
+	void Tick();
+}
+
 namespace police::units
 {
 	// Backup: a colleague on duty (`colleague` = that one, -1 = whoever answers).
