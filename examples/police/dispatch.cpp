@@ -150,16 +150,33 @@ namespace police::dispatch
 			NextDropOff();
 		}
 
-		// A stolen car somewhere on the roads 500-900 m away.
+		// A stolen car somewhere on the roads 500-900 m away, in the officer's beat when it can be (shift.cpp). Out of
+		// their beat, half the calls go to the units there. It may be the stolen car of the shift's BOLO, and the thief
+		// the wanted person of the BOLO.
 		void Offer()
 		{
 			const Vector3 me = ENTITY::GET_ENTITY_COORDS(PLAYER::PLAYER_PED_ID(), true);
-			const float a = ai::Random() * 6.283f, r = 500.0f + ai::Random() * 400.0f;
+			if (!shift::InBeat(me) && ai::Random() < 0.5f)
+			{
+				g_nextCall = ml::TickMs() + 60000 + static_cast<uint64_t>(ai::Random() * 120000.0f);
+				ml::Log("dispatch: the officer is out of their beat: this call went to another unit");
+				return;
+			}
+			Vector3 around{};
+			for (int i = 0; i < 8; ++i)
+			{
+				const float a = ai::Random() * 6.283f, r = 500.0f + ai::Random() * 400.0f;
+				around = {me.x + std::cos(a) * r, me.y + std::sin(a) * r, me.z};
+				if (shift::InBeat(around))
+					break;
+			}
 			ai::Profile p = suspect::RandomProfile(ai::Random() < 0.3f ? ai::Skill::Veteran : ai::Random() < 0.5f ? ai::Skill::Novice : ai::Skill::Average);
 			p.guilt = std::max(p.guilt, 0.7f + ai::Random() * 0.3f); // in a stolen car
 			if (std::exchange(g_easy, false))
 				p.nerve = 0.05f, p.hostility = 0.05f, p.guilt = 0.72f, p.armed = 2, p.substanceGrade = 2, p.impairment = ai::Impairment::Substance;
-			const int id = suspect::SpawnDriver({me.x + std::cos(a) * r, me.y + std::sin(a) * r, me.z}, p);
+			std::string boloModel, boloPlate;
+			const bool bolo = shift::TakeBoloCar(boloModel, boloPlate);
+			const int id = suspect::SpawnDriver(around, p, bolo ? MISC::GET_HASH_KEY(boloModel.c_str()) : 0);
 			if (!id)
 			{
 				g_nextCall = ml::TickMs() + 20000;
@@ -167,6 +184,16 @@ namespace police::dispatch
 			}
 			const suspect::Status st = suspect::StatusOf(id);
 			const Vehicle car = PED::GET_VEHICLE_PED_IS_IN(st.ped, false);
+			if (bolo)
+				VEHICLE::SET_VEHICLE_NUMBER_PLATE_TEXT(car, boloPlate.c_str());
+			if (std::string name, crime; p.guilt > 0.8f && shift::TakeBoloPerson(name, crime))
+			{
+				records::Person& who = records::PersonOf(st.ped);
+				who.name = name;
+				who.warrant = true;
+				who.warrantFor = crime;
+				ml::Log("dispatch: the thief is the BOLO's wanted person {}", name);
+			}
 			g_carName = Text(VEHICLE::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(ENTITY::GET_ENTITY_MODEL(car)));
 			if (g_carName.empty())
 				g_carName = "轎車";
@@ -178,8 +205,12 @@ namespace police::dispatch
 			const Vector3 at = ENTITY::GET_ENTITY_COORDS(st.ped, true);
 			g_dropOff = {at, {}, 0, 0, false};
 			NextDropOff();
-			ml::Notify("調度：{}有一台失竊的{}，車主剛報案。按 F9「派遣」接受或忽略。", Zone(at), g_carName);
-			ml::Log("dispatch: offered a stolen car ({}) at ({:.0f}, {:.0f})", g_carName, at.x, at.y);
+			if (bolo)
+				ml::Notify("調度：{}，勤前教育協尋的{}（車牌 {}）有民眾在{}看到。按 F9「派遣」接受或忽略。", shift::Callsign(), g_carName, boloPlate, Zone(at));
+			else
+				ml::Notify("調度：{}，{}有一台失竊的{}，車主剛報案。按 F9「派遣」接受或忽略。", shift::Callsign(), Zone(at), g_carName);
+			ml::Log("dispatch: offered a stolen car ({}{}) at ({:.0f}, {:.0f}), {} the beat", g_carName, bolo ? ", the BOLO" : "", at.x, at.y,
+			    shift::InBeat(at) ? "in" : "out of");
 		}
 
 		// Where the car was last reported: an area around it, not the car itself, until the officer has found it.

@@ -1206,7 +1206,7 @@ namespace police::suspect
 		return s.id;
 	}
 
-	int SpawnDriver(const Vector3& around, const ai::Profile& profile)
+	int SpawnDriver(const Vector3& around, const ai::Profile& profile, Hash model)
 	{
 		Vector3 node{};
 		float heading = 0;
@@ -1214,7 +1214,7 @@ namespace police::suspect
 		if (!PATH::GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING(around.x, around.y, around.z, 1, &node, &heading, &lanes, 0, 3.0f, 0.0f))
 			return 0;
 		const char* const cars[] = {"sultan", "buffalo", "fugitive", "tailgater", "oracle", "felon", "baller", "dominator"};
-		const Hash carModel = MISC::GET_HASH_KEY(cars[MISC::GET_RANDOM_INT_IN_RANGE(0, static_cast<int>(std::size(cars)))]);
+		const Hash carModel = model ? model : MISC::GET_HASH_KEY(cars[MISC::GET_RANDOM_INT_IN_RANGE(0, static_cast<int>(std::size(cars)))]);
 		const Hash pedModel = MISC::GET_HASH_KEY("a_m_y_downtown_01");
 		const auto c = ml::LoadModel(carModel);
 		const auto m = ml::LoadModel(pedModel);

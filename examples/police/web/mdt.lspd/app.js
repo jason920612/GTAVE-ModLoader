@@ -9,7 +9,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click
 function show(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === tab));
-  ({ cars: loadCars, search: loadSearch, people: loadPeople, cases: loadCases })[tab]();
+  ({ cars: loadCars, search: loadSearch, people: loadPeople, cases: loadCases, duty: loadDuty })[tab]();
 }
 $('close').addEventListener('click', () => game.close());
 
@@ -129,6 +129,36 @@ function showReport(r) {
     const res = await call('mdt.submit', r.id, picked, $('narrative').value);
     if (res.ok) { await loadCases(); const again = (await call('mdt.reports')).find(x => x.id === r.id); showReport(again); }
   });
+}
+
+// ---- duty: the shift, the roster, payslips and attendance (shift.cpp)
+const hours = h => h >= 1 ? `${h.toFixed(1)} 小時` : h > 0 ? `${Math.round(h * 60)} 分鐘` : '—';
+async function loadDuty() {
+  const d = await call('mdt.shift');
+  if (!d.ready) { $('dutyNow').innerHTML = '<p class="hint">還沒有資料。</p>'; return; }
+  const n = d.next;
+  $('dutyNow').innerHTML = `<h2>${n.underway ? '本班勤務' : '下一班'}</h2>
+    <dl><dt>日期</dt><dd>${esc(n.date)} ${esc(n.kind)} ${esc(n.hours)}</dd>
+    <dt>勤務區</dt><dd>${esc(n.beat)}</dd><dt>呼號</dt><dd><b>${esc(n.callsign)}</b></dd>
+    <dt>協尋車輛</dt><dd>${esc(n.boloCar)}</dd><dt>通緝</dt><dd>${esc(n.boloName)}（${esc(n.boloCrime)}）</dd>
+    <dt>今日重點</dt><dd>${esc(n.focus)}</dd></dl>
+    ${d.session ? `<p>已上班：${esc(d.session.since)} 起，${d.session.hours} 小時${d.session.overtime ? `（加班 ${d.session.overtime} 小時）` : ''}</p>` : '<p class="hint">目前沒有上班。</p>'}
+    <p class="hint">遊戲時間 ${esc(d.now)}</p>`;
+  $('dutyMe').innerHTML = `<h2>${esc(d.name || '員警資料')}</h2>
+    <dl><dt>職級</dt><dd>${esc(d.rank)}（時薪 $${d.rate}）</dd><dt>到職</dt><dd>${esc(d.hired)}</dd>
+    <dt>年資</dt><dd>${d.shifts} 班${d.probation ? `（試用期還有 ${d.probation} 班）` : ''}</dd>
+    <dt>班別</dt><dd>${esc(d.kind)}${d.request ? `，已申請改 ${esc(d.request)}` : ''}</dd>
+    <dt>出勤紀錄</dt><dd>遲到 ${d.late}、早退 ${d.early}、缺勤 ${d.absent}、報告逾期 ${d.overdue}</dd></dl>`;
+  $('dutyWeek').innerHTML = `<h2>本週班表</h2><table class="table"><tbody>${d.week.map(w =>
+    `<tr class="${w.work ? '' : 'off'}"><td>${esc(w.date)}</td><td>${esc(w.kind)}</td><td>${esc(w.hours)}</td></tr>`).join('')}</tbody></table>`;
+  const pays = [...d.payslips].reverse();
+  $('dutyPay').innerHTML = `<h2>薪資單</h2>${pays.length ? `<table class="table"><thead><tr><th>日期</th><th>時間</th><th>職級</th><th>正常</th><th>加班</th><th>夜間</th><th>實領</th></tr></thead><tbody>${pays.map(p =>
+    `<tr><td>${esc(p.date)}</td><td>${esc(p.from)}–${esc(p.to)}</td><td>${esc(p.rank)}</td><td>${hours(p.regular)}${p.alone ? `<span class="hint">（自己上班 ${p.alone}）</span>` : ''}</td>
+     <td>${hours(p.overtime)}</td><td>${hours(p.night)}</td><td><b>$${p.pay.toLocaleString()}</b></td></tr>`).join('')}</tbody></table>` : '<p class="hint">還沒有薪資單。</p>'}`;
+  const days = [...d.attendance].reverse();
+  $('dutyAttend').innerHTML = `<h2>出勤</h2>${days.length ? `<table class="table"><tbody>${days.map(a =>
+    `<tr><td>${esc(a.date)}</td><td>${esc(a.kind)}</td><td>${/遲到|缺勤/.test(a.status) ? `<span class="warn">${esc(a.status)}</span>` : esc(a.status)}</td>
+     <td>${a.notes.map(x => `<span class="tag warn">${esc(x)}</span>`).join(' ')}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">還沒有紀錄。</p>'}`;
 }
 
 // ---- start

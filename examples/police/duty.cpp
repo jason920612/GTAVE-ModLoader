@@ -144,6 +144,7 @@ namespace police::duty
 			return PAD::IS_CONTROL_JUST_PRESSED(0, control);
 		}
 		constexpr int kContext = 51;   // INPUT_CONTEXT (E)
+		constexpr int kDetonate = 47;  // INPUT_DETONATE (G)
 		constexpr int kLeft = 174;     // INPUT_CELLPHONE_LEFT (←)
 		constexpr int kRight = 175;    // INPUT_CELLPHONE_RIGHT (→)
 		constexpr int kCancel = 177;   // INPUT_CELLPHONE_CANCEL (Backspace)
@@ -417,12 +418,28 @@ namespace police::duty
 			if (Distance(at, station.locker) < 1.2f)
 			{
 				const bool on = OnDuty();
-				if (station.door)
-					Help(on ? "按 ~INPUT_CONTEXT~ 進去換回便服下班" : "按 ~INPUT_CONTEXT~ 進去換上制服、領裝備上班");
+				static std::string warning;
+				static uint64_t warningUntil = 0;
+				if (ml::TickMs() < warningUntil)
+					Help(warning);
+				else if (station.door)
+					Help(on ? "按 ~INPUT_CONTEXT~ 進去換回便服下班" : "按 ~INPUT_CONTEXT~ 進去換上制服、領裝備上班~n~按 ~INPUT_DETONATE~ 申請換班");
 				else
-					Help(on ? "按 ~INPUT_CONTEXT~ 換回便服下班" : "按 ~INPUT_CONTEXT~ 換上制服、領裝備上班");
-				if (Pressed(kContext))
+					Help(on ? "按 ~INPUT_CONTEXT~ 換回便服下班" : "按 ~INPUT_CONTEXT~ 換上制服、領裝備上班~n~按 ~INPUT_DETONATE~ 申請換班");
+				if (!on && Pressed(kDetonate) && !menu::IsOpen())
+					shift::RequestShift();
+				bool go = Pressed(kContext);
+				if (go && on)
+					if (const std::string w = shift::BeforeClockOut(); !w.empty())
+					{
+						// Reports not submitted: said once, the next press goes.
+						warning = w;
+						warningUntil = ml::TickMs() + 8000;
+						go = false;
+					}
+				if (go)
 				{
+					warningUntil = 0;
 					Fade(true);
 					officer::Dress(!on);
 					if (station.door)
@@ -436,9 +453,15 @@ namespace police::duty
 					ml::Wait(300);
 					Fade(false);
 					if (on)
+					{
 						ml::Notify("已下班");
+						shift::ClockOut();
+					}
 					else
+					{
 						ml::Notify("已上班：{}。到停車場選巡邏車", station.name);
+						shift::ClockIn();
+					}
 					ml::Log("duty: {}", on ? "off" : "on");
 				}
 			}

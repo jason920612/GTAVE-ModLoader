@@ -15,6 +15,7 @@
     <button data-tab="search">查詢</button>
     <button data-tab="people">盤查紀錄</button>
     <button data-tab="cases">案件與報告</button>
+    <button data-tab="duty">勤務與薪資</button>
   </nav>
   <div class="end"><button class="theme-toggle" data-theme-toggle></button><button id="close" title="關閉">✕</button></div>
 </header>
@@ -45,6 +46,15 @@
     <div class="split">
       <div class="list" id="caseList"></div>
       <div class="detail" id="caseDetail"><p class="hint">案件結束後會產生報告草稿。</p></div>
+    </div>
+  </section>
+  <section id="duty" class="tab">
+    <div class="grid">
+      <div class="card" id="dutyNow"></div>
+      <div class="card" id="dutyMe"></div>
+      <div class="card" id="dutyWeek"></div>
+      <div class="card wide" id="dutyPay"></div>
+      <div class="card wide" id="dutyAttend"></div>
     </div>
   </section>
 </main>

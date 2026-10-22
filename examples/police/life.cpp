@@ -1,5 +1,6 @@
-// The officer's day while nobody plays them (user's choice: on duty 8-17, out 17-23, home 23-8 by the game clock).
-// Switching to the officer finds them where the hour puts them, busy with something, the way the game's protagonist
+// The officer's day while nobody plays them: at work during their shift, home in the hours they sleep on that shift,
+// out otherwise (shift.cpp). Switching to the officer finds them where the hour puts them, busy with something, the way
+// the game's protagonist
 // switch scenes do: at the station in uniform, out in town in their own clothes, or at home. Home is a GTA Online
 // low-end apartment (property 20, Little Seoul; all low-end apartments share the interior under the map, research
 // §53): its door outside and inside, and the bed, where the officer sleeps and saves.
@@ -102,12 +103,7 @@ namespace police::life
 
 	Scene Now()
 	{
-		const int hour = CLOCK::GET_CLOCK_HOURS();
-		if (hour >= 8 && hour < 17)
-			return Scene::OnDuty;
-		if (hour >= 17 && hour < 23)
-			return Scene::Out;
-		return Scene::Home;
+		return shift::Scene();
 	}
 
 	Place Pick(Scene scene, const char*& scenario)

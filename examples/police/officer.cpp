@@ -357,9 +357,9 @@ namespace police::officer
 
 	void Dress(bool uniform)
 	{
+		g_uniform = uniform; // (also for an officer out of the world: how they come back)
 		if (!Exists(g_officer))
 			return;
-		g_uniform = uniform;
 		look::Apply(g_officer, uniform);
 		duty::Equip(g_officer, uniform);
 		RefreshHeadshot();

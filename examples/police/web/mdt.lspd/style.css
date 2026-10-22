@@ -50,3 +50,10 @@ button.primary, form button { background: var(--accent); color: #fff; border: 0;
 .charges .sug { color: var(--accent); font-size: 12px; }
 ul.log { margin: 4px 0; padding-left: 18px; color: var(--ink); }
 .score { font-size: 28px; font-weight: 700; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.card.wide { grid-column: 1 / -1; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.table th { color: var(--muted); font-weight: 600; font-size: 13px; }
+.table tr.off td { color: var(--muted); }

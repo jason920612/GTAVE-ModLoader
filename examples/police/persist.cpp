@@ -29,6 +29,11 @@ namespace police::persist
 		constexpr int64_t kClockSlack = 30;
 	}
 
+	bool Settled()
+	{
+		return !g_loading;
+	}
+
 	bool Where(Vector3& at, float& heading)
 	{
 		const ml::Json s = State();

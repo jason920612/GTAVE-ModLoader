@@ -115,8 +115,10 @@ namespace
 		return name.empty() ? (*p->fallback ? p->fallback : p->label) : name;
 	}
 
-	const char* Category(int id)
+	const char* Category(int id, int64_t amount)
 	{
+		if (id >= 118 && id <= 124 && amount > 0)
+			return "jobs"; // a police station paying: the fourth character's salary (police mod)
 		const Payee* p = id >= 0 ? FindPayee(id) : nullptr;
 		return p ? p->category : "other";
 	}
@@ -306,7 +308,7 @@ namespace
 		const Account& a = g_accounts[c];
 		ml::Json entries = ml::Json::Array();
 		for (auto it = a.entries.rbegin(); it != a.entries.rend(); ++it)
-			entries.Push({{"t", it->t}, {"payee", it->payee}, {"name", PayeeName(it->payee, it->amount)}, {"category", Category(it->payee)},
+			entries.Push({{"t", it->t}, {"payee", it->payee}, {"name", PayeeName(it->payee, it->amount)}, {"category", Category(it->payee, it->amount)},
 			    {"amount", it->amount}, {"balance", it->balance}});
 		out["balance"] = ml::game::Cash();
 		out["entries"] = entries;

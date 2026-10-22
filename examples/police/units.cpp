@@ -950,6 +950,7 @@ namespace police::units
 	menu::List Menu()
 	{
 		menu::List m{"警察", {}};
+		m.items.push_back(shift::MenuItem());
 		m.items.push_back(dispatch::MenuItem());
 		m.items.push_back(custody::MenuItem());
 		menu::Item computer{"車上電腦", "F10", "附近車輛、查車牌、查人、案件報告（要在警車上）"};

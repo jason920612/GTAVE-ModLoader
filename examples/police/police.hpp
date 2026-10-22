@@ -97,6 +97,8 @@ namespace police::money
 
 namespace police::persist
 {
+	// The load (or the game's start) is over and the officer, if they were the player, is back in control.
+	bool Settled();
 	// Where the officer was last (false when the save has no officer yet).
 	bool Where(Vector3& at, float& heading);
 	// Records the officer's place now; `active` = the officer is the player.
@@ -118,7 +120,8 @@ namespace police::wheel
 
 namespace police::life
 {
-	// Where the hour puts the officer when nobody plays them (game clock: 8-17 on duty, 17-23 out, 23-8 home).
+	// Where the hour puts the officer when nobody plays them (their roster: at work during their shift, home in the hours
+	// they sleep on that shift, out otherwise; shift.cpp).
 	enum class Scene
 	{
 		OnDuty,
@@ -183,6 +186,41 @@ namespace police::menu
 	const List* Current(size_t& cursor);
 	// Every frame: draws the open menu and takes its keys.
 	void Tick();
+}
+
+namespace police::shift
+{
+	// The duty clock's setting (MLOnLoad).
+	void Build();
+	// A save is loading.
+	void Loading();
+	// Every frame: the roster, the shift under way, the clock while on duty, pay.
+	void Tick();
+	// At the locker (duty.cpp), after the uniform went on: clocking in (roll call when on time).
+	void ClockIn();
+	// Before clocking out: a warning to show instead (reports not submitted; the second press goes through), "" = go.
+	std::string BeforeClockOut();
+	// At the locker, after the uniform came off: clocking out (the payslip).
+	void ClockOut();
+	// At the locker off duty: asking for another shift (after probation).
+	void RequestShift();
+	// The roster has the officer at work now.
+	bool OnShift();
+	// Where the hour puts the officer when nobody plays them.
+	life::Scene Scene();
+	// The beat of the shift (dispatch prefers calls in it).
+	bool InBeat(const Vector3& at);
+	std::string BeatName();
+	std::string Callsign();
+	std::string RankTitle();
+	// The shift's BOLOs, for a call (each at most once a shift, by chance): a stolen car's model and plate, a wanted
+	// person's name and crime.
+	bool TakeBoloCar(std::string& model, std::string& plate);
+	bool TakeBoloPerson(std::string& name, std::string& crime);
+	// The police menu's item (today's duty).
+	menu::Item MenuItem();
+	// The computer's duty page: roster, payslips, attendance.
+	ml::Json Json();
 }
 
 namespace police::units
@@ -294,8 +332,9 @@ namespace police::suspect
 	ai::Profile RandomProfile(ai::Skill skill);
 	// A suspect at a place (unaware until the officer comes up to them); returns its id.
 	int Spawn(const Vector3& at, float heading, const ai::Profile& profile);
-	// A suspect driving a car on the road nearest to `around` (unaware until a police car with its lights on is behind).
-	int SpawnDriver(const Vector3& around, const ai::Profile& profile);
+	// A suspect driving a car (of `model`, 0 = a random one) on the road nearest to `around` (unaware until a police car
+	// with its lights on is behind).
+	int SpawnDriver(const Vector3& around, const ai::Profile& profile, Hash model = 0);
 	// That driver, still unaware, takes the car to a place, leaves it at the roadside and waits nearby a while.
 	void HeadFor(int id, const Vector3& at);
 	size_t Count();
@@ -435,6 +474,8 @@ namespace police::records
 	// Ends it: a report is drafted; its id.
 	int EndCase(const std::string& outcome);
 	ml::Json Reports();
+	// Reports drafted and not submitted yet.
+	int Drafts();
 	ml::Json CurrentCase();
 	ml::Json Submit(int id, const std::vector<std::string>& charges, const std::string& narrative);
 	// After a save loaded: the reports from it.

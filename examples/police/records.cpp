@@ -411,6 +411,12 @@ namespace police::records
 		return out;
 	}
 
+	int Drafts()
+	{
+		Load();
+		return static_cast<int>(std::count_if(g_reports.begin(), g_reports.end(), [](const Report& r) { return !r.submitted; }));
+	}
+
 	Json CurrentCase()
 	{
 		if (!g_open)
