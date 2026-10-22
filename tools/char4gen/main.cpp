@@ -88,6 +88,12 @@ int main(int argc, char** argv)
 				std::printf("%s: %s\n", argv[i], error.c_str());
 				continue;
 			}
+			if (std::string(argv[i]) == "gunclub_shop")
+			{
+				const auto masks = loader::char4::ForbiddenUnlockBits(p);
+				for (size_t k = 0; k < masks.size(); ++k)
+					std::printf("forbidden unlock bits WEAP_UNLOCK_%zu: %08X\n", k, masks[k]);
+			}
 			const size_t before = p.code.size();
 			loader::char4::Report r;
 			Bytes out;

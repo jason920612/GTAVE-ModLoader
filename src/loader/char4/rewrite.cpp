@@ -487,6 +487,84 @@ namespace loader::char4
 					return false;
 			return std::find(h.isPlayable.begin(), h.isPlayable.end(), U24(code, f + 8)) != h.isPlayable.end();
 		}
+
+		// The always-unlocked check (weapon): a SWITCH on the weapon (the hammer is one of its cases), then every DLC
+		// weapon whose content is not locked. It knows no character: the officer native decides.
+		bool IsAlwaysUnlocked(const Bytes& code, uint32_t f)
+		{
+			if (f + 9 > code.size() || code[f] != op::Enter || code[f + 1] != 1 || code[f + 4] != 0 || code[f + 5] != op::LocalU8Load ||
+			    code[f + 6] != 0 || code[f + 7] != op::Switch)
+				return false;
+			// Four weapons, all answered "unlocked" (PUSH 1; LEAVE 1 1) at once.
+			const auto cases = SwitchCases(code, f + 7);
+			const uint32_t yes = cases.empty() ? 0 : cases[0].target;
+			return cases.size() == 4 && yes + 4 <= code.size() && code[yes] == op::Push0 + 1 && code[yes + 1] == op::Leave && code[yes + 2] == 1 &&
+			       code[yes + 3] == 1 && std::all_of(cases.begin(), cases.end(), [yes](const SwitchCase& c) { return c.target == yes; }) &&
+			       std::any_of(cases.begin(), cases.end(), [](const SwitchCase& c) { return static_cast<uint32_t>(c.value) == convert::Joaat("WEAPON_HAMMER"); });
+		}
+
+		// The shop's "is this weapon on sale" (weapon): a DLC weapon whose content is locked is not; otherwise any valid
+		// weapon is (IS_WEAPON_VALID at the end). No character: the officer native decides.
+		bool IsOnSale(const Bytes& code, uint32_t f, uint32_t end)
+		{
+			// The DLC data's weapon against the parameter, and LOCAL_U8_LOAD 0; NATIVE (1 argument, 1 result); LEAVE 1 1 last.
+			static constexpr int kDlcCompare[] = {44, 9, -1, -1, 86, -1, -1, 55, -1, 65, 1, 56, 0, 87};
+			if (code[f + 1] != 1 || end < f + 20)
+				return false;
+			uint32_t last = end;
+			while (last > f && code[last - 1] == op::Nop)
+				--last;
+			if (last < f + 9 || code[last - 9] != op::LocalU8Load || code[last - 8] != 0 || code[last - 7] != op::Native || code[last - 6] != (1 << 2 | 1) ||
+			    code[last - 3] != op::Leave || code[last - 2] != 1 || code[last - 1] != 1)
+				return false;
+			for (uint32_t at = f; at + std::size(kDlcCompare) <= last; ++at)
+			{
+				bool match = true;
+				for (size_t i = 0; i < std::size(kDlcCompare) && match; ++i)
+					match = kDlcCompare[i] < 0 || code[at + i] == kDlcCompare[i];
+				if (match)
+					return true;
+			}
+			return false;
+		}
+	}
+
+	std::vector<uint32_t> ForbiddenUnlockBits(const Program& p)
+	{
+		// The table: ENTER 1; LOCAL_U8_LOAD 0; SWITCH on the weapon, each case "push its index; LEAVE 1 1" (the pistol is 1).
+		const Bytes& code = p.code;
+		const auto ins = Decode(code);
+		for (const uint32_t f : Functions(ins, static_cast<uint32_t>(code.size())).starts)
+		{
+			if (f + 9 > code.size() || code[f + 1] != 1 || code[f + 4] != 0 || code[f + 5] != op::LocalU8Load || code[f + 6] != 0 || code[f + 7] != op::Switch)
+				continue;
+			const auto cases = SwitchCases(code, f + 7);
+			if (cases.size() < 60)
+				continue;
+			std::unordered_map<uint32_t, int32_t> index;
+			bool table = true;
+			for (const SwitchCase& c : cases)
+			{
+				const Instruction push{c.target, code[c.target], InstructionSize(code, c.target)};
+				int32_t v = 0;
+				const uint32_t leave = c.target + push.size;
+				table = table && PushedConstant(code, push, v) && v >= 0 && v < 128 && leave + 3 <= code.size() && code[leave] == op::Leave &&
+				        code[leave + 1] == 1 && code[leave + 2] == 1;
+				index[static_cast<uint32_t>(c.value)] = v;
+			}
+			// Every weapon its own index (other tables answer the same value for all).
+			std::unordered_set<int32_t> distinct;
+			for (const auto& [weapon, i] : index)
+				distinct.insert(i);
+			if (!table || distinct.size() < cases.size() * 3 / 4 || index[convert::Joaat("WEAPON_PISTOL")] != 1)
+				continue;
+			std::vector<uint32_t> masks(4, 0);
+			for (const char* w : kForbiddenWeapons)
+				if (const auto it = index.find(convert::Joaat(w)); it != index.end())
+					masks[it->second / 32] |= 1u << (it->second % 32);
+			return masks;
+		}
+		return {};
 	}
 
 	void CharacterStats::Parse(std::string_view xml)
@@ -628,11 +706,34 @@ namespace loader::char4
 				accountGetters.insert(f);
 		}
 		const std::vector<uint32_t> accountChecks = AccountChecks(code, ins, accountGetters);
-		std::vector<uint32_t> unlockChecks;
+		// gunclub_shop: the checks that refuse the forbidden weapons; the weapon parameter, and the character's (or -1:
+		// the officer native).
+		struct Refusal
+		{
+			uint8_t weapon;
+			int character;
+			uint32_t forbidden = 0; // the forbidden-weapon function, once appended
+		};
+		std::map<uint32_t, Refusal> refusals;
 		if (p.name == "gunclub_shop")
 			for (const uint32_t f : fns.starts)
 				if (IsUnlockCheck(code, f, h))
-					unlockChecks.push_back(f);
+					refusals[f] = {1, 0};
+				else if (IsAlwaysUnlocked(code, f) || IsOnSale(code, f, fns.End(f)))
+					refusals[f] = {0, -1};
+		// The shop's "is this item unlocked" (weapon, ...): DLC weapons are, before it asks the unlock check for the
+		// current character (CALL get_cur; LOCAL_U8_LOAD 0; CALL the unlock check).
+		if (p.name == "gunclub_shop")
+			for (const Instruction& i : ins)
+			{
+				if (i.op != op::Call || i.at + 10 > code.size() || std::find(h.getCur.begin(), h.getCur.end(), U24(code, i.at + 1)) == h.getCur.end() ||
+				    code[i.at + 4] != op::LocalU8Load || code[i.at + 5] != 0 || code[i.at + 6] != op::Call)
+					continue;
+				const auto unlock = refusals.find(U24(code, i.at + 7));
+				const uint32_t f = fns.Owner(i.at);
+				if (unlock != refusals.end() && unlock->second.character >= 0 && !refusals.contains(f) && code[f + 1] >= 1)
+					refusals[f] = {0, -1};
+			}
 
 		// Appended helpers.
 		std::vector<uint32_t> getCur4(h.getCur.size());
@@ -683,12 +784,11 @@ namespace loader::char4
 			report.chains++;
 		}
 
-		// gunclub_shop: the unlock check refuses the forbidden weapons to character 3 first.
-		std::map<uint32_t, uint32_t> forbidCheck; // function -> the forbidden-weapon function
+		// gunclub_shop: the checks refuse the forbidden weapons to character 3 first.
 		if (p.name == "gunclub_shop")
 		{
 			uint32_t forbidden = 0;
-			for (const uint32_t f : unlockChecks)
+			for (auto& [f, refusal] : refusals)
 				{
 					if (!forbidden)
 					{
@@ -712,17 +812,19 @@ namespace loader::char4
 						if (!Append(p, a, forbidden, error))
 							return false;
 					}
-					forbidCheck[f] = forbidden;
+					refusal.forbidden = forbidden;
 				}
-			if (forbidCheck.empty())
-				report.notes.push_back("gunclub_shop: weapon unlock check not found; the officer is offered every weapon");
+			if (std::count_if(refusals.begin(), refusals.end(), [](const auto& r) { return r.second.character >= 0; }) != 1 ||
+			    std::count_if(refusals.begin(), refusals.end(), [](const auto& r) { return r.second.character < 0; }) != 3)
+				report.notes.push_back(std::format("gunclub_shop: {} weapon check(s) found instead of 4; the officer may be offered forbidden weapons",
+				    refusals.size()));
 		}
 
 		// Re-emit the functions that change size (in address order), each forwarding from its old place.
 		std::set<uint32_t> functions;
 		for (const auto& [f, _] : extend)
 			functions.insert(f);
-		for (const auto& [f, _] : forbidCheck)
+		for (const auto& [f, _] : refusals)
 			functions.insert(f);
 		for (const uint32_t f : functions)
 		{
@@ -730,20 +832,27 @@ namespace loader::char4
 			std::vector<Piece> pieces = Pieces(code, f, end);
 			Asm extra;
 			extra.next = kNewLabels;
-			if (const auto it = forbidCheck.find(f); it != forbidCheck.end())
+			if (const auto it = refusals.find(f); it != refusals.end())
 			{
-				// After ENTER: if (c == 3 && forbidden(w)) return 0;
+				// After ENTER: if ((c == 3, or the officer is the player) && forbidden(w)) return 0;
 				Asm a;
-				a.next = kNewLabels + 0x1000000;
 				const uint32_t skip = pieces[1].label;
-				a.Local(0);
-				a.Push(3);
-				a.Jump(op::IeqJz, skip);
-				a.Local(1);
-				a.Call(it->second);
+				if (it->second.character >= 0)
+				{
+					a.Local(static_cast<uint8_t>(it->second.character));
+					a.Push(3);
+					a.Jump(op::IeqJz, skip);
+				}
+				else
+				{
+					a.Native(officer, 0, 1);
+					a.Jump(op::Jz, skip);
+				}
+				a.Local(it->second.weapon);
+				a.Call(it->second.forbidden);
 				a.Jump(op::Jz, skip);
 				a.Push(0);
-				a.Leave(2, 1);
+				a.Leave(code[f + 1], 1);
 				pieces.insert(pieces.begin() + 1, a.pieces.begin(), a.pieces.end());
 			}
 			if (const auto it = extend.find(f); it != extend.end())

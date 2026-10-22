@@ -30,7 +30,7 @@ namespace loader::char4
 	namespace
 	{
 		// Bumped whenever the rules change, so the files are made again.
-		constexpr int kVersion = 1;
+		constexpr int kVersion = 6;
 
 		std::string FileStamp(const std::filesystem::path& file)
 		{
@@ -231,6 +231,21 @@ namespace loader::char4
 					if (a.ReadFile(i, data, readError))
 						vanilla[name] = std::move(data);
 				});
+		}
+		// The unlock bits of the weapons the officer is never offered (cleared at runtime, game/char4).
+		{
+			std::string masks;
+			Program gunclub;
+			std::string why;
+			if (const auto it = vanilla.find("gunclub_shop"); it != vanilla.end() && gunclub.Read(it->second, why))
+			{
+				const auto bits = ForbiddenUnlockBits(gunclub);
+				for (size_t k = 0; k < bits.size(); ++k)
+					masks += std::format("WEAP_UNLOCK_{} {}\n", k, bits[k]);
+			}
+			if (masks.empty())
+				result.warnings.push_back("gunclub_shop: the weapon unlock table was not found; the officer's unlocks are not limited");
+			WriteIfChanged(outDir / L"unlockmasks.txt", masks.data(), masks.size());
 		}
 		std::string list;
 		for (const std::string& name : kAwareScripts)

@@ -9,13 +9,11 @@
 #include <format>
 #include <fstream>
 #include <iterator>
-#include <memory>
 #include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
 #include "../char4/generate.hpp"
-#include "../char4/rewrite.hpp"
 #include "../config.hpp"
 #include "../convert/resource.hpp"
 #include "../log.hpp"
@@ -31,8 +29,7 @@ namespace loader::game::char4
 	{
 		constexpr uint64_t kOfficerNative = 0x1B2366C3F2A5C8DFULL; // GET_BENCHMARK_PASS (public hash; char4::kOfficerNative)
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6ULL;
-		constexpr uint64_t kStatGetInt = 0x767FBC2AC802EF3DULL;
-		constexpr uint64_t kGetDlcWeaponData = 0x79923CD21BECE14EULL, kGetDlcWeaponDataSp = 0x310836EE7129BA33ULL;
+		constexpr uint64_t kStatGetInt = 0x767FBC2AC802EF3DULL, kStatSetInt = 0xB3271D7AB655B441ULL;
 
 		// Character sheet G2349 (29 slots per entry; its saved copy G143050): field 17 is the bank account (0-2 the
 		// protagonists', 4 none). The scripts' account cash cache G62254 has one slot per account.
@@ -263,6 +260,24 @@ namespace loader::game::char4
 				cache[0] = cash;
 		}
 
+		// The officer's unlock stats never hold the forbidden weapons' bits (core\char4\unlockmasks.txt).
+		void LimitUnlocks()
+		{
+			std::ifstream in(Dir() / L"unlockmasks.txt");
+			std::string stat;
+			uint32_t mask = 0;
+			while (in >> stat >> mask)
+			{
+				const uint32_t hash = convert::Joaat("SP3_" + stat);
+				int32_t value = 0;
+				if (mask && natives::Invoke<int32_t>(kStatGetInt, hash, &value, -1) && (static_cast<uint32_t>(value) & mask))
+				{
+					natives::Invoke<int32_t>(kStatSetInt, hash, static_cast<int32_t>(static_cast<uint32_t>(value) & ~mask), 1);
+					log::Info("fourth character: forbidden weapons taken out of SP3_{}", stat);
+				}
+			}
+		}
+
 		void Release()
 		{
 			if (g_accountChanged)
@@ -331,24 +346,6 @@ namespace loader::game::char4
 				log::Warn("fourth character: off, no native override slots left");
 				return;
 			}
-		// Ammu-Nation: DLC weapons the officer may not buy are not there for them (§0.0 Q9).
-		static std::vector<uint32_t> forbidden;
-		for (const char* w : loader::char4::kForbiddenWeapons)
-			forbidden.push_back(convert::Joaat(w));
-		for (const uint64_t native : {kGetDlcWeaponData, kGetDlcWeaponDataSp})
-			if (auto* original = reinterpret_cast<void*>(natives::FindHandler(native)))
-			{
-				auto id = std::make_shared<int32_t>(0);
-				*id = scripts::AddNativeOverride(convert::Joaat("gunclub_shop"), original, [id](void* context, void*) {
-					auto* call = static_cast<natives::CallContext*>(context);
-					scripts::CallOriginal(*id, context);
-					// The data's second field is the weapon.
-					if (g_player && call->returnValue[0] && call->argCount >= 2)
-						if (const auto* data = reinterpret_cast<const int64_t*>(call->args[1]);
-						    data && std::find(forbidden.begin(), forbidden.end(), static_cast<uint32_t>(data[1])) != forbidden.end())
-							call->returnValue[0] = 0;
-				});
-			}
 		arrayfault::ServeFourth(g_programs);
 		g_installed = true;
 		log::Info("fourth character: ready");
@@ -367,6 +364,17 @@ namespace loader::game::char4
 			log::Info("fourth character: {} the player", player ? "is" : "is no longer");
 			if (!player)
 				Release();
+		}
+		// A moment after the officer becomes the player (the mod sets up a new officer's unlocks then).
+		static uint64_t limitAt = 0;
+		if (!player)
+			limitAt = 0;
+		else if (!limitAt)
+			limitAt = GetTickCount64() + 1000;
+		else if (limitAt != UINT64_MAX && GetTickCount64() >= limitAt)
+		{
+			limitAt = UINT64_MAX;
+			LimitUnlocks();
 		}
 		if (player)
 			Hold();

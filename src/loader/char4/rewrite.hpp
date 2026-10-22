@@ -21,7 +21,7 @@
 //     place, so the function is re-emitted at the end of the code with the new cases and its old body forwards to it.
 //   - Accounts: the payment wrappers refuse account 3 (originally "no account"; the officer's account is 3): only 4
 //     is refused now.
-//   - Script rules: gunclub_shop never offers the officer heavy weapons, explosives or incendiaries (§0.0 Q9).
+//   - Script rules: gunclub_shop never offers the officer heavy weapons, explosives or incendiaries (§0.0 Q9, kForbiddenWeapons).
 namespace loader::char4
 {
 	// The native the rewritten scripts call for "the officer is the player": GET_BENCHMARK_PASS (game hash; its handler
@@ -29,8 +29,8 @@ namespace loader::char4
 	constexpr uint64_t kOfficerNative = 0x7007C113A8466ADEULL;
 
 	// Weapons Ammu-Nation never offers the fourth character (the police mod's rule, §0.0 Q9): heavy weapons,
-	// explosives and incendiaries, ammunition included. Base weapons through the shop's unlock check (rewritten), DLC
-	// weapons through their data (game/char4).
+	// explosives and incendiaries, ammunition included. The shop's unlock check (character, weapon) and its
+	// always-unlocked check (weapon; DLC weapons whose content is not locked) refuse them first.
 	inline constexpr const char* kForbiddenWeapons[] = {
 	    // heavy weapons
 	    "WEAPON_RPG", "WEAPON_GRENADELAUNCHER", "WEAPON_GRENADELAUNCHER_SMOKE", "WEAPON_MINIGUN", "WEAPON_FIREWORK", "WEAPON_RAILGUN",
@@ -63,4 +63,8 @@ namespace loader::char4
 	// Rewrites the program. False (with `error`) when the identity helpers are not found or a change cannot be laid out:
 	// the script must then stay vanilla.
 	bool Rewrite(Program& p, const CharacterStats& stats, Report& report, std::string& error);
+
+	// gunclub_shop's weapon unlock bits (weapon -> index; stat WEAP_UNLOCK_<index / 32>, bit index % 32): the bits of the
+	// forbidden weapons in WEAP_UNLOCK_0..3. Empty when the table is not found.
+	std::vector<uint32_t> ForbiddenUnlockBits(const Program& vanillaGunclub);
 }

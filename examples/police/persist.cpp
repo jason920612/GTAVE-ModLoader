@@ -82,11 +82,31 @@ namespace police::persist
 			ml::Log("loaded: officer record active {}, {} game minutes before this save", s["active"].Bool(), gap);
 			if (s["active"].Bool() && gap >= -kClockSlack && gap <= kClockSlack && Where(at, heading))
 			{
+				// For a few seconds after a load the game puts the saved protagonist back as the player (a new ped; the
+				// officer, as the old player, is deleted). The screen stays dark until the player has been the same ped
+				// for a while; the officer is checked again after the take-over, and put back once more if replaced.
 				CAMERA::DO_SCREEN_FADE_OUT(0);
-				officer::Restore(at, heading);
-				if (s["uniform"].IsBool() && s["uniform"].Bool() != officer::InUniform())
-					officer::Dress(s["uniform"].Bool());
-				ml::Wait(1500);
+				for (int attempt = 0; attempt < 2; ++attempt)
+				{
+					const uint64_t start = ml::TickMs();
+					uint64_t stableSince = start;
+					for (::Ped last = PLAYER::PLAYER_PED_ID(); ml::TickMs() < start + 15000;)
+					{
+						ml::Wait(0);
+						if (const ::Ped now = PLAYER::PLAYER_PED_ID(); now != last)
+							last = now, stableSince = ml::TickMs();
+						if (ml::TickMs() >= start + 4000 && ml::TickMs() >= stableSince + 2000)
+							break;
+					}
+					officer::Restore(at, heading);
+					if (s["uniform"].IsBool() && s["uniform"].Bool() != officer::InUniform())
+						officer::Dress(s["uniform"].Bool());
+					for (const uint64_t end = ml::TickMs() + 3000; ml::TickMs() < end && officer::IsPlayer();)
+						ml::Wait(0);
+					if (officer::IsPlayer())
+						break;
+					ml::LogError("the game replaced the officer right after the load; putting them back again");
+				}
 				CAMERA::DO_SCREEN_FADE_IN(800);
 			}
 			return;
