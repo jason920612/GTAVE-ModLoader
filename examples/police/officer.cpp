@@ -309,6 +309,7 @@ namespace police::officer
 			return;
 		if (Exists(g_protagonist) && CharacterOfModel(ENTITY::GET_ENTITY_MODEL(g_protagonist)) == character)
 			LetGoOfProtagonist();
+		guard::Restore();
 		SetGlobal(kSwitchRequest + 45, character);
 		SetGlobal(kSwitchRequest + 46, 0);
 		SetGlobal(kSwitchRequest + 44, 1);
@@ -392,6 +393,7 @@ namespace police::officer
 		for (const uint64_t end = ml::TickMs() + 5000; ml::TickMs() < end && !(GetGlobal(kCurrentCharacter) >= 0 && GetGlobal(kCurrentCharacter) < 3);)
 			ml::Wait(0);
 		const int64_t character = GetGlobal(kCurrentCharacter);
+		guard::Restore();
 		const bool saved = SaveScreen();
 		// Back to the officer.
 		Hold(g_officer, false);

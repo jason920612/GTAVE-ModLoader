@@ -63,6 +63,17 @@ namespace police::officer
 	void NoteSaved();
 }
 
+namespace police::guard
+{
+	// Takes Director Mode's availability over from main, and the arrest time from respawn_controller (MLOnLoad).
+	void Init();
+	// Every frame: while the officer is the player, protagonist-only game systems leave Michael's account alone, Director
+	// Mode is not offered and an arrest takes the officer's weapons; vanilla again otherwise.
+	void Tick();
+	// Vanilla values now (before the game saves or switches away from the officer).
+	void Restore();
+}
+
 namespace police::persist
 {
 	// Where the officer was last (false when the save has no officer yet).
