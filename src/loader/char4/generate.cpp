@@ -30,7 +30,7 @@ namespace loader::char4
 	namespace
 	{
 		// Bumped whenever the rules change, so the files are made again.
-		constexpr int kVersion = 6;
+		constexpr int kVersion = 7;
 
 		std::string FileStamp(const std::filesystem::path& file)
 		{

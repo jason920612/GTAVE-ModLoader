@@ -9,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <unordered_map>
 
 #include <nlohmann/json.hpp>
@@ -31,11 +32,32 @@ namespace loader::game::char4
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6ULL;
 		constexpr uint64_t kStatGetInt = 0x767FBC2AC802EF3DULL, kStatSetInt = 0xB3271D7AB655B441ULL;
 
+		constexpr uint64_t kHideHudComponentThisFrame = 0x6806C51AD12B83B8ULL;
+		constexpr uint64_t kQueueMissionRepeatSave = 0x44A0BDC559B35F6EULL, kQueueBenchmarkSave = 0xEB2104E905C6F2E9ULL;
+
 		// Character sheet G2349 (29 slots per entry; its saved copy G143050): field 17 is the bank account (0-2 the
-		// protagonists', 4 none). The scripts' account cash cache G62254 has one slot per account.
-		constexpr uint32_t kAccount3 = 2349 + 1 + 3 * 29 + 17;
-		constexpr uint32_t kSavedAccount3 = 143050 + 1 + 3 * 29 + 17;
+		// protagonists', 4 none); fields 13-16 say whether the contact is in the phone of owner 0-3 (25-28 another flag
+		// per owner the protagonists have for it). The scripts' account cash cache G62254 has one slot per account.
+		constexpr uint32_t kSheet = 2349, kSavedSheet = 143050, kSheetEntry = 29;
 		constexpr uint32_t kCashCache = 62254;
+		constexpr uint32_t kTaxiContact = 131; // Downtown Cab Co.: a taxi called from the officer's phone
+
+		// Values the officer needs while they are the player, each put back afterwards: character 3's account (3), and
+		// the taxi company in owner 3's phone (research/char4-design.md §3.10, M2 service contacts).
+		struct Held
+		{
+			uint32_t global;
+			int64_t value;
+			int64_t vanilla = 0;
+			bool changed = false;
+		};
+		Held g_held[] = {
+		    {kSheet + 1 + 3 * kSheetEntry + 17, 3},
+		    {kSavedSheet + 1 + 3 * kSheetEntry + 17, 3},
+		    {kSheet + 1 + kTaxiContact * kSheetEntry + 16, 1},
+		    {kSheet + 1 + kTaxiContact * kSheetEntry + 28, 1}, // (the protagonists have it too: the name is shown)
+		};
+		uint64_t g_hideCashUntil = 0; // the HUD cash and its change are hidden after the stats slot changes
 
 		std::filesystem::path Dir()
 		{
@@ -46,8 +68,6 @@ namespace loader::game::char4
 		bool g_installed = false;
 		std::atomic<int32_t> g_ped = 0;
 		std::atomic<bool> g_player = false;
-		int64_t g_vanillaAccount[2] = {};
-		bool g_accountChanged = false;
 		uint32_t g_cashStat = 0; // SP3_TOTAL_CASH
 
 		// ---- the engine's stats slot (research/phase0.md §55.6, "統計槽別名") ----
@@ -228,22 +248,16 @@ namespace loader::game::char4
 				*g = value;
 		}
 
-		// The officer is the player: account 3, the stats slot, the cash cache.
+		// The officer is the player: account 3, the taxi contact, the stats slot, the cash cache.
 		void Hold()
 		{
-			int64_t* account = scripts::Global(kAccount3);
-			int64_t* saved = scripts::Global(kSavedAccount3);
-			if (account && saved)
-			{
-				if (!g_accountChanged)
+			for (Held& h : g_held)
+				if (int64_t* g = scripts::Global(h.global))
 				{
-					g_vanillaAccount[0] = *account;
-					g_vanillaAccount[1] = *saved;
-					g_accountChanged = true;
+					if (!h.changed)
+						h.vanilla = *g, h.changed = true;
+					SetGlobal(h.global, h.value);
 				}
-				SetGlobal(kAccount3, 3);
-				SetGlobal(kSavedAccount3, 3);
-			}
 			PatchAlias();
 			if (g_alias.patched && *g_alias.index != 4)
 			{
@@ -251,6 +265,7 @@ namespace loader::game::char4
 					g_alias.protagonist = *g_alias.index;
 				const uint32_t four = 4;
 				Write(g_alias.index, &four, 4);
+				g_hideCashUntil = GetTickCount64() + 3000;
 			}
 			auto& cache = arrayfault::Shadows()[kCashCache];
 			if (cache.size() < 1)
@@ -280,14 +295,15 @@ namespace loader::game::char4
 
 		void Release()
 		{
-			if (g_accountChanged)
-			{
-				SetGlobal(kAccount3, g_vanillaAccount[0]);
-				SetGlobal(kSavedAccount3, g_vanillaAccount[1]);
-				g_accountChanged = false;
-			}
+			for (Held& h : g_held)
+				if (h.changed)
+				{
+					SetGlobal(h.global, h.vanilla);
+					h.changed = false;
+				}
 			if (g_alias.patched && *g_alias.index == 4)
 				Write(g_alias.index, &g_alias.protagonist, 4);
+			g_hideCashUntil = GetTickCount64() + 3000;
 		}
 
 		std::filesystem::path SaveFile(int32_t nonce)
@@ -346,6 +362,22 @@ namespace loader::game::char4
 				log::Warn("fourth character: off, no native override slots left");
 				return;
 			}
+		// Repeat-mission and benchmark saves are never made with the officer as the player (the save would carry no
+		// protagonist; research/phase0.md §55.6 U25).
+		for (const auto& [script, native] : {std::pair{"mission_repeat_controller", kQueueMissionRepeatSave}, std::pair{"benchmark", kQueueBenchmarkSave}})
+			if (auto* original = reinterpret_cast<void*>(natives::FindHandler(native)))
+			{
+				auto id = std::make_shared<int32_t>(0);
+				*id = scripts::AddNativeOverride(convert::Joaat(script), original, [id, script](void* context, void*) {
+					if (g_player)
+					{
+						static_cast<natives::CallContext*>(context)->returnValue[0] = 0;
+						log::Info("fourth character: {} may not save while the officer is the player", script);
+					}
+					else
+						scripts::CallOriginal(*id, context);
+				});
+			}
 		arrayfault::ServeFourth(g_programs);
 		g_installed = true;
 		log::Info("fourth character: ready");
@@ -357,6 +389,12 @@ namespace loader::game::char4
 			return;
 		const int32_t ped = g_ped;
 		const bool player = ped && natives::Invoke<int32_t>(kPlayerPedId) == ped;
+		if (GetTickCount64() < g_hideCashUntil)
+		{
+			// The HUD would show the jump between two characters' cash as a change.
+			natives::Invoke<void>(kHideHudComponentThisFrame, 3);
+			natives::Invoke<void>(kHideHudComponentThisFrame, 13);
+		}
 		if (player != g_player)
 		{
 			g_player = player;
@@ -415,7 +453,8 @@ namespace loader::game::char4
 	{
 		arrayfault::ForgetAddresses();
 		// The global blocks are made again from the save: what was changed is gone.
-		g_accountChanged = false;
+		for (Held& h : g_held)
+			h.changed = false;
 		g_player = false;
 		arrayfault::SetFourthActive(false);
 	}

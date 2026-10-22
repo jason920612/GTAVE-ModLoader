@@ -14,10 +14,11 @@
 // sets the availability when its own reasons change, so its last wish is kept and given back afterwards.
 // An arrest: respawn_controller clears the arrested character's stored weapons (PP_INFO WEAPONS[c], @20681-@20800), and
 // with character 145 the index is out of bounds: the thread dies with the screen faded out, and the game never comes
-// back (tested). While the officer is the player it is told there was no arrest (GET_TIME_SINCE_LAST_ARREST = -1, read
-// only by @48025 and @49927), so that part is skipped; the officer loses their weapons as a protagonist would, and pays
-// no fee (they have no account yet). That part also holds the walk out of the police station that fades the screen in
-// (@28282), so once respawn_controller is done the mod fades in and gives control back.
+// back (tested). Without the loader's fourth character (where respawn_controller sees the officer as character 3) it is
+// told there was no arrest while the officer is the player (GET_TIME_SINCE_LAST_ARREST = -1, read only by @48025 and
+// @49927), so that part is skipped; the officer loses their weapons as a protagonist would, and pays no fee. That part
+// also holds the walk out of the police station that fades the screen in (@28282), so once respawn_controller is done
+// the mod fades in and gives control back.
 // A death goes the same way: respawn_controller takes the officer to a hospital and ends (TERMINATE_THIS_THREAD @474054)
 // without the hospital walk-out that fades a protagonist back in, so the same release follows (tested: black screen
 // with a spinner before).
@@ -68,8 +69,10 @@ namespace police::guard
 			else
 				call.CallOriginal();
 		});
+		// With the loader's fourth character respawn_controller knows the officer (character 3, own account, own stored
+		// weapons): the game's own arrest runs, fee included.
 		ml::scripts::OverrideNative("respawn_controller", kGetTimeSinceLastArrest, [](ml::scripts::NativeCall& call) {
-			if (officer::IsPlayer())
+			if (officer::IsPlayer() && !ml::char4::Available())
 				call.Return<int32_t>(-1);
 			else
 				call.CallOriginal();

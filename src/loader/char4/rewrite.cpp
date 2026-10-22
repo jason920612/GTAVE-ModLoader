@@ -1,6 +1,7 @@
 #include "rewrite.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <format>
 #include <map>
@@ -527,6 +528,77 @@ namespace loader::char4
 			}
 			return false;
 		}
+
+		// ---- player-speaker sites (research/char4-design.md §3.4, U39) ----
+
+		// Offset of `text` in the string table (a whole string), or -1.
+		int32_t StringOffset(const Bytes& strings, std::string_view text)
+		{
+			for (size_t at = 0; at + text.size() < strings.size(); ++at)
+				if ((at == 0 || strings[at - 1] == 0) && strings[at + text.size()] == 0 &&
+				    std::equal(text.begin(), text.end(), strings.begin() + at))
+					return static_cast<int32_t>(at);
+			return -1;
+		}
+
+		// taxilauncher: the phone booking registers the player as a speaker with the protagonist's voice and lines
+		// (MICHAEL / TX_1M / TX_3M for 0, ...), none for 3, and the call then never connects. The officer gets the
+		// dispatcher only: voice TaxiDispatch and the dispatcher's lines TX_2 (never a protagonist voice).
+		struct TaxiVoice
+		{
+			uint32_t function = 0, leave = 0; // the voice function and its final LEAVE
+			uint8_t character = 0;            // the local holding the current character
+			uint16_t voice = 0;               // the static of the voice (the two line statics follow it)
+			int16_t dispatcher = 0, line = 0; // string offsets
+		};
+		std::optional<TaxiVoice> FindTaxiVoice(const Program& p, const std::vector<Instruction>& ins, const Functions& fns, const Helpers& h)
+		{
+			const Bytes& code = p.code;
+			const int32_t michael = StringOffset(p.strings, "MICHAEL"), dispatcher = StringOffset(p.strings, "TaxiDispatch"),
+			              line = StringOffset(p.strings, "TX_2");
+			if (michael < 0 || dispatcher < 0 || line < 0 || michael > INT16_MAX || dispatcher > INT16_MAX || line > INT16_MAX)
+				return std::nullopt;
+			for (size_t k = 0; k + 2 < ins.size(); ++k)
+			{
+				// PUSH_S16 "MICHAEL"; STRING; STATIC_U16_STORE voice
+				if (ins[k].op != op::PushS16 || S16(code, ins[k].at + 1) != michael || ins[k + 1].op != 102 || ins[k + 2].op != 81)
+					continue;
+				TaxiVoice v;
+				v.function = fns.Owner(ins[k].at);
+				v.voice = static_cast<uint16_t>(code[ins[k + 2].at + 1] | code[ins[k + 2].at + 2] << 8);
+				v.dispatcher = static_cast<int16_t>(dispatcher);
+				v.line = static_cast<int16_t>(line);
+				// ENTER; CALL get_cur; LOCAL_U8_STORE c
+				const uint32_t f = v.function, body = f + 5 + code[f + 4];
+				if (code[f + 1] != 0 || code[body] != op::Call || std::find(h.getCur.begin(), h.getCur.end(), U24(code, body + 1)) == h.getCur.end() ||
+				    code[body + 4] != op::LocalU8Store)
+					return std::nullopt;
+				v.character = code[body + 5];
+				for (const Instruction& i : Decode(code, f, fns.End(f)))
+					if (i.op == op::Leave)
+						v.leave = i.at;
+				return v;
+			}
+			return std::nullopt;
+		}
+
+		// taxilauncher: the taxi is sent once the call ends if the conversation reached its second line (STATIC_U8_LOAD s;
+		// INOT; JZ; NATIVE GET_CURRENT_SCRIPTED_CONVERSATION_LINE; PUSH 1; IEQ_JZ; PUSH 1; STATIC_U8_STORE s). The
+		// officer's call has no player lines, so for them it counts as reached.
+		std::vector<uint32_t> FindLineChecks(const Bytes& code)
+		{
+			static constexpr int kShape[] = {59, -1, 6, 86, -1, -1, 44, 1, -1, -1, 114, 87, -1, -1, 114, 60};
+			std::vector<uint32_t> out;
+			for (uint32_t at = 0; at + std::size(kShape) + 1 < code.size(); ++at)
+			{
+				bool match = true;
+				for (size_t i = 0; i < std::size(kShape) && match; ++i)
+					match = kShape[i] < 0 || code[at + i] == kShape[i];
+				if (match && code[at + 1] == code[at + 16])
+					out.push_back(at + 6);
+			}
+			return out;
+		}
 	}
 
 	std::vector<uint32_t> ForbiddenUnlockBits(const Program& p)
@@ -614,6 +686,8 @@ namespace loader::char4
 			return false;
 		}
 		const uint16_t officer = p.NativeIndex(kOfficerNative);
+		std::string name = p.name; // as the script calls itself (e.g. "taxiLauncher")
+		std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
 		// Character switches and the functions to re-emit (before anything is appended).
 		std::map<uint32_t, std::map<uint32_t, NewCase>> extend; // function -> SWITCH -> its case 3
@@ -706,6 +780,15 @@ namespace loader::char4
 				accountGetters.insert(f);
 		}
 		const std::vector<uint32_t> accountChecks = AccountChecks(code, ins, accountGetters);
+		std::optional<TaxiVoice> taxiVoice;
+		std::vector<uint32_t> lineChecks;
+		if (name == "taxilauncher")
+		{
+			taxiVoice = FindTaxiVoice(p, ins, fns, h);
+			lineChecks = FindLineChecks(code);
+			if (!taxiVoice || lineChecks.size() != 1)
+				report.notes.push_back("taxilauncher: the phone booking's speaker or line check not found; the officer's taxi calls do not connect");
+		}
 		// gunclub_shop: the checks that refuse the forbidden weapons; the weapon parameter, and the character's (or -1:
 		// the officer native).
 		struct Refusal
@@ -715,7 +798,7 @@ namespace loader::char4
 			uint32_t forbidden = 0; // the forbidden-weapon function, once appended
 		};
 		std::map<uint32_t, Refusal> refusals;
-		if (p.name == "gunclub_shop")
+		if (name == "gunclub_shop")
 			for (const uint32_t f : fns.starts)
 				if (IsUnlockCheck(code, f, h))
 					refusals[f] = {1, 0};
@@ -723,7 +806,7 @@ namespace loader::char4
 					refusals[f] = {0, -1};
 		// The shop's "is this item unlocked" (weapon, ...): DLC weapons are, before it asks the unlock check for the
 		// current character (CALL get_cur; LOCAL_U8_LOAD 0; CALL the unlock check).
-		if (p.name == "gunclub_shop")
+		if (name == "gunclub_shop")
 			for (const Instruction& i : ins)
 			{
 				if (i.op != op::Call || i.at + 10 > code.size() || std::find(h.getCur.begin(), h.getCur.end(), U24(code, i.at + 1)) == h.getCur.end() ||
@@ -784,8 +867,28 @@ namespace loader::char4
 			report.chains++;
 		}
 
+		// taxilauncher: the conversation line check answers 1 for the officer.
+		for (const uint32_t at : lineChecks)
+		{
+			Asm a;
+			const uint32_t original = a.NewLabel();
+			a.Enter(0, 2);
+			a.Native(officer, 0, 1);
+			a.Jump(op::Jz, original);
+			a.Push(1);
+			a.Leave(0, 1);
+			a.Mark(original);
+			a.pieces.push_back({kNoLabel, Bytes(code.begin() + at, code.begin() + at + 4)});
+			a.Leave(0, 1);
+			uint32_t helper = 0;
+			if (!Append(p, a, helper, error))
+				return false;
+			const uint8_t call[] = {op::Call, uint8_t(helper), uint8_t(helper >> 8), uint8_t(helper >> 16)};
+			std::copy(std::begin(call), std::end(call), code.begin() + at);
+		}
+
 		// gunclub_shop: the checks refuse the forbidden weapons to character 3 first.
-		if (p.name == "gunclub_shop")
+		if (name == "gunclub_shop")
 		{
 			uint32_t forbidden = 0;
 			for (auto& [f, refusal] : refusals)
@@ -826,6 +929,8 @@ namespace loader::char4
 			functions.insert(f);
 		for (const auto& [f, _] : refusals)
 			functions.insert(f);
+		if (taxiVoice && lineChecks.size() == 1)
+			functions.insert(taxiVoice->function);
 		for (const uint32_t f : functions)
 		{
 			const uint32_t end = fns.End(f);
@@ -854,6 +959,23 @@ namespace loader::char4
 				a.Push(0);
 				a.Leave(code[f + 1], 1);
 				pieces.insert(pieces.begin() + 1, a.pieces.begin(), a.pieces.end());
+			}
+			if (taxiVoice && taxiVoice->function == f)
+			{
+				// Before the final LEAVE: if (c == 3) { voice = "TaxiDispatch"; line1 = line3 = "TX_2"; }
+				Asm a;
+				const auto leave = std::find_if(pieces.begin(), pieces.end(), [&](const Piece& x) { return x.label == taxiVoice->leave; });
+				const uint32_t skip = leave->label;
+				a.Local(taxiVoice->character);
+				a.Push(3);
+				a.Jump(op::IeqJz, skip);
+				const auto store = [&](int16_t text, uint16_t slot) {
+					a.Raw({op::PushS16, uint8_t(text), uint8_t(uint16_t(text) >> 8), 102, 81, uint8_t(slot), uint8_t(slot >> 8)});
+				};
+				store(taxiVoice->dispatcher, taxiVoice->voice);
+				store(taxiVoice->line, static_cast<uint16_t>(taxiVoice->voice + 1));
+				store(taxiVoice->line, static_cast<uint16_t>(taxiVoice->voice + 2));
+				pieces.insert(leave, a.pieces.begin(), a.pieces.end());
 			}
 			if (const auto it = extend.find(f); it != extend.end())
 				for (auto& [at, nc] : it->second)

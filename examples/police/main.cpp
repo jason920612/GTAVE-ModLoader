@@ -23,6 +23,19 @@ extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext*
 	});
 	// The menu's callback shares a fiber with the game events the save waits for: the main loop does the saving.
 	ml::Root().Action("存檔", [] { g_saveRequested = true; });
+	// The phone's quick save (save_anywhere) and a safehouse bed (savegame_bed) open the game's save screen; with the
+	// officer as the player that save would carry no protagonist, so the officer's own save (through the protagonist
+	// left behind) takes its place.
+	for (const char* script : {"save_anywhere", "savegame_bed"})
+		ml::scripts::OverrideNative(script, 0xC9BF75D28165FF77ULL /* SET_SAVE_MENU_ACTIVE */, [](ml::scripts::NativeCall& call) {
+			if (police::officer::IsPlayer())
+			{
+				g_saveRequested = true;
+				ml::Log("the game's quick save was asked for while the officer is the player: the officer's save instead");
+			}
+			else
+				call.CallOriginal();
+		});
 	police::guard::Init();
 	police::wheel::Init();
 	police::look::BuildMenu();
