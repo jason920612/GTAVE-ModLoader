@@ -257,8 +257,9 @@ typedef struct MLApi
 
 	/* ---- data that follows the game's save ----
 	 * Values (JSON text) kept per mod, per story character (`slot` 0 Michael, 1 Franklin, 2 Trevor) or shared
-	 * (ML_SAVE_SHARED). Changes are written to <modDir>\data\save.json when the game saves, and dropped when a save is
-	 * loaded, so they stay in step with the game's own progress. Any thread. */
+	 * (ML_SAVE_SHARED). Changes are written when the game saves, one file per game save (<modDir>\data\saves\<number>.json;
+	 * data\save.json keeps the newest), and a load brings back the values of the save loaded, so they stay in step with
+	 * the game's own progress in every slot. Any thread. */
 	/* Copies the value of `key` into `buffer` (NUL-terminated when it fits); returns its length, or -1 when unset. */
 	int32_t (*SaveDataGet)(int32_t slot, const char* key, char* buffer, int32_t size);
 	/* Sets `key` to `json` (valid JSON text); NULL removes it. Returns 0 when `json` is not valid JSON. */

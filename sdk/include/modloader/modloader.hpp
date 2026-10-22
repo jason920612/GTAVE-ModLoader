@@ -458,8 +458,9 @@ namespace ml
 	}
 
 	// ---- data that follows the game's save -----------------------------------------------------
-	// Values written to data\save.json when the game saves and dropped when a save is loaded, so a mod's progress stays in
-	// step with the game's (e.g. a bought property disappears again when the player reloads an older save).
+	// Values written when the game saves (a file per game save, data\saves\<number>.json) and brought back with the save a
+	// load picks, so a mod's progress stays in step with the game's in every slot (e.g. a bought property disappears again
+	// when the player reloads an older save).
 	//   ml::save::Set("owned", owned, character);        ml::Json owned = ml::save::Get("owned", character);
 	namespace save
 	{

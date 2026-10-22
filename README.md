@@ -18,7 +18,7 @@ GTA V Enhanced（故事模式）的單一 DLL 模組載入器。
 - **高階 API**（`modloader.hpp`、`game.hpp`、`json.hpp`）：
   - `ml::StartTask`：額外的腳本執行緒，可以呼叫原生函式與 `Wait`，不會卡住 MLMain；另有 `WaitUntil`。
   - 會自動釋放的串流資源：`ml::LoadModel`、`LoadTextureDict`、`LoadAnimDict`、`LoadPtfxAsset`。
-  - `ml::save`：跟著遊戲存檔走的模組資料，每個角色一份或共用；遊戲存檔時寫入 `data\save.json`，讀檔時丟棄未存的變更。
+  - `ml::save`：跟著遊戲存檔走的模組資料，每個角色一份或共用；遊戲每次存檔各寫一份（`data\saves\<編號>.json`，`data\save.json` 保留最新一份），讀檔時換成那個存檔的資料，所以每個存檔格各自獨立。
   - `ml::game`：目前角色、金錢（`Cash` / `AddCash`，以及 `Pay`：走遊戲自己的扣款，會出現在銀行交易紀錄）、自動存檔請求、讀取畫面，以及事件（角色切換、遊戲存檔、讀檔）。
   - `ml::Global`：以欄位偏移與陣列存取腳本全域變數。
   - `ml::ai::Generate`：本機文字模型（llama.cpp 在 CPU 上執行；玩家在設定頁開啟並下載約 2.8 GB 的 Qwen3.5 4B），一次一個請求、每個數秒。
