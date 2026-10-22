@@ -9,8 +9,11 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -18,6 +21,7 @@
 #include "../config.hpp"
 #include "../game/natives.hpp"
 #include "../log.hpp"
+#include "../paths.hpp"
 #include "../state.hpp"
 #include "../ui/overlay.hpp"
 
@@ -268,31 +272,90 @@ namespace loader::debug::remote
 			return "err window offscreen|restore";
 		}
 
-		// The game's own audio session (the volume mixer's entry), so a test running beside the person is silent.
+		// Windows keeps an app's mute in the volume mixer for its next starts too, so the output devices a test muted
+		// are noted (ModLoader\remote_muted, device ids) until it is undone - when the game next starts without test
+		// control if the test never got to it (the game killed or crashed).
+		std::filesystem::path MutedFile()
+		{
+			return paths::Get().root / L"remote_muted";
+		}
+		std::set<std::wstring> ReadMuted()
+		{
+			std::set<std::wstring> ids;
+			std::ifstream in(MutedFile());
+			for (std::string line; std::getline(in, line);)
+				if (!line.empty())
+				{
+					std::wstring id;
+					for (const char c : line)
+						id += static_cast<wchar_t>(static_cast<unsigned char>(c));
+					ids.insert(id);
+				}
+			return ids;
+		}
+		void WriteMuted(const std::set<std::wstring>& ids)
+		{
+			std::error_code ec;
+			if (ids.empty())
+			{
+				std::filesystem::remove(MutedFile(), ec);
+				return;
+			}
+			std::ofstream out(MutedFile(), std::ios::trunc);
+			for (const auto& id : ids)
+			{
+				for (const wchar_t c : id) // device ids are ASCII
+					out << static_cast<char>(c);
+				out << '\n';
+			}
+		}
+
+		// The game's own audio session (the volume mixer's entry) on every output device, so a test running beside the
+		// person is silent. Off undoes only what a test did: the person may have muted the game on a device themselves.
 		std::string Mute(bool on)
 		{
 			const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-			std::string result = "err no audio session";
+			std::set<std::wstring> muted = ReadMuted();
+			bool any = false;
 			IMMDeviceEnumerator* devices = nullptr;
-			IMMDevice* device = nullptr;
-			IAudioSessionManager* sessions = nullptr;
-			ISimpleAudioVolume* volume = nullptr;
+			IMMDeviceCollection* all = nullptr;
+			UINT count = 0;
 			if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&devices))) &&
-			    SUCCEEDED(devices->GetDefaultAudioEndpoint(eRender, eConsole, &device)) &&
-			    SUCCEEDED(device->Activate(__uuidof(IAudioSessionManager), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&sessions))) &&
-			    SUCCEEDED(sessions->GetSimpleAudioVolume(nullptr, FALSE, &volume)) && SUCCEEDED(volume->SetMute(on, nullptr)))
-				result = "ok";
-			if (volume)
-				volume->Release();
-			if (sessions)
-				sessions->Release();
-			if (device)
-				device->Release();
+			    SUCCEEDED(devices->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &all)))
+				all->GetCount(&count);
+			for (UINT i = 0; i < count; ++i)
+			{
+				IMMDevice* device = nullptr;
+				LPWSTR id = nullptr;
+				IAudioSessionManager* sessions = nullptr;
+				ISimpleAudioVolume* volume = nullptr;
+				BOOL was = FALSE;
+				if (SUCCEEDED(all->Item(i, &device)) && SUCCEEDED(device->GetId(&id)) &&
+				    SUCCEEDED(device->Activate(__uuidof(IAudioSessionManager), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&sessions))) &&
+				    SUCCEEDED(sessions->GetSimpleAudioVolume(nullptr, FALSE, &volume)) && SUCCEEDED(volume->GetMute(&was)))
+				{
+					any = true;
+					if (on && !was && SUCCEEDED(volume->SetMute(TRUE, nullptr)))
+						muted.insert(id);
+					else if (!on && muted.count(id) && SUCCEEDED(volume->SetMute(FALSE, nullptr)))
+						muted.erase(id);
+				}
+				if (volume)
+					volume->Release();
+				if (sessions)
+					sessions->Release();
+				CoTaskMemFree(id);
+				if (device)
+					device->Release();
+			}
+			WriteMuted(muted);
+			if (all)
+				all->Release();
 			if (devices)
 				devices->Release();
 			if (SUCCEEDED(co))
 				CoUninitialize();
-			return result;
+			return any ? "ok" : "err no audio session";
 		}
 
 		std::string Run(const std::string& line)
@@ -449,7 +512,17 @@ namespace loader::debug::remote
 	void Start()
 	{
 		if (!config::Get().debugRemote)
+		{
+			// A test's mute left behind: the sound back on.
+			if (!ReadMuted().empty())
+				std::thread([] {
+					while (!GameWindow())
+						Sleep(250);
+					if (Mute(false) == "ok")
+						log::Info("remote: the game's sound is back on (a test had muted it)");
+				}).detach();
 			return;
+		}
 		std::thread(Serve).detach();
 		// Where the game's keyboard input goes, and its view of being in front (for gamekey); the person's cursor.
 		HookApi("RegisterRawInputDevices", reinterpret_cast<void*>(&HookRegisterRawInputDevices), g_registerRawInputDevices);

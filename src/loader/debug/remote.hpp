@@ -13,7 +13,8 @@
 //   release                   lets go of every held control
 //   shot <path>               the next frame as a PNG
 //   window offscreen|restore  moves the game window out of view (or back), the keyboard back to the person's window
-//   mute on|off               the game's sound (its entry in the volume mixer)
+//   mute on|off               the game's sound (its entry in the volume mixer); Windows keeps it for the next start,
+//                             so a test's mute is undone at the next start without test control too
 namespace loader::debug::remote
 {
 	// Starts the pipe server when enabled.

@@ -126,6 +126,11 @@ def launch():
 
 
 def quit_game():
+    # Windows keeps the game's mute for its next start: undone first (else the loader undoes it at the next start).
+    try:
+        Pipe().send("mute off")
+    except OSError:
+        pass
     subprocess.run(["taskkill", "/F", "/IM", "GTA5_Enhanced.exe"], capture_output=True)
     time.sleep(3)
     test_settings(False)
