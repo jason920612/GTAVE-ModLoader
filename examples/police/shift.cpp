@@ -3,7 +3,7 @@
 //
 // The roster: day shift 07-15, evening shift 15-23, night shift 23-07 (a night shift belongs to the day it starts on),
 // five days on and two off, counted from the day the officer was hired. New officers work nights while on probation
-// (their first 20 shifts); after that the officer asks for a shift at the locker and works it from their next week.
+// (their first 10 shifts); after that the officer asks for a shift at the station and works it from their next week.
 //
 // A shift: the officer clocks in at the locker (the uniform, duty.cpp). On time (up to 15 minutes after the start) the
 // sergeant holds roll call: the beat, the callsign, the BOLOs (a stolen car and a wanted person, who may turn up in the
@@ -13,7 +13,7 @@
 // While the user plays a protagonist the officer works their shifts by themselves: base pay, no score, seniority counts.
 // Switched to during one, they are at the station on duty and the shift goes on, played.
 //
-// Pay (GTA-scaled, by rank): hourly; past 8 hours on duty, or on duty outside the roster (a day off, after a shift),
+// Pay (GTA-scaled, by rank, career.cpp): hourly; past 8 hours on duty, or on duty outside the roster (a day off, after a shift),
 // time and a half; the hour before a shift is the officer's own; 10% more for hours between 23:00 and 07:00 (played
 // hours: a shift worked by themselves is base pay). The payslip comes at clock-out, or at the end of a shift worked by
 // themselves, into the officer's own account from their department (the game's bank: ml::game::Receive).
@@ -97,24 +97,8 @@ namespace police::shift
 		};
 		constexpr Kind kKinds[] = {{"日班", 7, 22, 6}, {"小夜班", 15, 1, 9}, {"大夜班", 23, 8, 15}};
 		constexpr int kNight = 2;
-		constexpr int kProbation = 20; // shifts on nights before the officer may ask for another
+		constexpr int kProbation = 10; // shifts on nights before the officer may ask for another
 		constexpr int kGrace = 15;     // minutes late / early before it counts
-
-		// Ranks (pay per hour, GTA-scaled) and their titles in each department (look::Department(): LSPD, BCSO, SAHP,
-		// NOOSE).
-		struct Rank
-		{
-			const char* title[4];
-			int rate;
-		};
-		constexpr Rank kRanks[] = {
-		    {{"警員一級", "副警長一級", "公路警員一級", "特勤隊員一級"}, 200},
-		    {{"警員二級", "副警長二級", "公路警員二級", "特勤隊員二級"}, 225},
-		    {{"警員三級", "副警長三級", "公路警員三級", "特勤隊員三級"}, 250},
-		    {{"巡佐一級", "巡佐一級", "巡佐一級", "小隊長一級"}, 300},
-		    {{"巡佐二級", "巡佐二級", "巡佐二級", "小隊長二級"}, 330},
-		    {{"警督", "警督", "警督", "中隊長"}, 400},
-		};
 
 		// Beats: an area of the map each (a circle), by department.
 		struct Beat
@@ -180,8 +164,7 @@ namespace police::shift
 		struct Career
 		{
 			int64_t hired = 0; // day
-			int rank = 0;
-			int shifts = 0; // worked (seniority)
+			int shifts = 0;    // worked (seniority)
 			int kind = kNight;
 			int request = -1;
 			int64_t requestFrom = 0; // day
@@ -259,7 +242,7 @@ namespace police::shift
 		void Store()
 		{
 			ml::save::Set("officer_career",
-			    ml::Json{{"hired", g.hired}, {"rank", g.rank}, {"shifts", g.shifts}, {"kind", g.kind}, {"request", g.request},
+			    ml::Json{{"hired", g.hired}, {"shifts", g.shifts}, {"kind", g.kind}, {"request", g.request},
 			        {"requestFrom", g.requestFrom}, {"late", g.late}, {"early", g.early}, {"absent", g.absent}, {"overdue", g.overdue},
 			        {"unit", g.unit}, {"sergeant", g.sergeant}, {"session", ToJson(g.session)}, {"planned", ToJson(g.planned)},
 			        {"payslips", g.payslips}, {"attendance", g.attendance}});
@@ -287,7 +270,6 @@ namespace police::shift
 				return;
 			}
 			g.hired = j["hired"].Int64();
-			g.rank = std::clamp(j["rank"].Int(), 0, static_cast<int>(std::size(kRanks)) - 1);
 			g.shifts = j["shifts"].Int();
 			g.kind = std::clamp(j["kind"].Int(kNight), 0, 2);
 			g.request = j["request"].Int(-1);
@@ -417,7 +399,7 @@ namespace police::shift
 
 		int Rate()
 		{
-			return kRanks[g.rank].rate;
+			return career::Rate();
 		}
 
 		// Counts the session up to `now`, a game minute at a time (time jumps, sleeping, are worked through).
@@ -479,7 +461,7 @@ namespace police::shift
 			const int64_t day = DayOf(s.start);
 			g.payslips.push_back(ml::Json{{"date", Date(day)}, {"from", Clock(s.start)}, {"to", Clock(s.last)}, {"regular", std::round(regular * 100) / 100},
 			    {"overtime", std::round(overtime * 100) / 100}, {"night", std::round(night * 100) / 100}, {"alone", std::round(s.alone / 0.6) / 100},
-			    {"rate", Rate()}, {"rank", kRanks[g.rank].title[Department()]}, {"pay", pay}});
+			    {"rate", Rate()}, {"rank", career::Title()}, {"pay", pay}});
 			if (g.payslips.size() > 30)
 				g.payslips.erase(g.payslips.begin());
 			const bool received = ml::game::Receive(pay, kPayee[Department()], ml::game::Character::Fourth);
@@ -929,9 +911,14 @@ namespace police::shift
 		return true;
 	}
 
-	std::string RankTitle()
+	Counts Totals()
 	{
-		return kRanks[g.rank].title[Department()];
+		return {g.shifts, g.late, g.early, g.absent, g.overdue};
+	}
+
+	std::string Today()
+	{
+		return Date(DayOf(Now()));
 	}
 
 	menu::Item MenuItem()
@@ -961,7 +948,7 @@ namespace police::shift
 		}
 		const Planned& p = g.planned;
 		const Session& s = g.session;
-		return ml::Json{{"ready", true}, {"name", look::Name()}, {"rank", RankTitle()}, {"rate", Rate()}, {"shifts", g.shifts},
+		return ml::Json{{"ready", true}, {"name", look::Name()}, {"rank", career::Title()}, {"rate", Rate()}, {"shifts", g.shifts},
 		    {"probation", std::max(0, kProbation - g.shifts)}, {"hired", Date(g.hired)}, {"kind", kKinds[g.kind].name},
 		    {"request", g.request >= 0 ? std::string(kKinds[g.request].name) + "（" + Date(g.requestFrom) + " 起）" : ""},
 		    {"late", g.late}, {"early", g.early}, {"absent", g.absent}, {"overdue", g.overdue},

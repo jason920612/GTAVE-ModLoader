@@ -411,6 +411,22 @@ namespace police::records
 		return out;
 	}
 
+	std::vector<int> Scores(int afterId)
+	{
+		Load();
+		std::vector<int> out;
+		for (const Report& r : g_reports)
+			if (r.submitted && r.id > afterId)
+				out.push_back(r.score);
+		return out;
+	}
+
+	int LastId()
+	{
+		Load();
+		return g_reports.empty() ? 0 : g_reports.back().id;
+	}
+
 	int Drafts()
 	{
 		Load();

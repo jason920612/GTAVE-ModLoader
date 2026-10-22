@@ -30,6 +30,7 @@ namespace police::duty
 		{
 			const char* model;
 			const char* livery; // the mod-48 livery's label, nullptr = the car's own
+			int rank = 0;       // the rank that may take it (career.cpp)
 		};
 		struct Station
 		{
@@ -57,9 +58,9 @@ namespace police::duty
 		        {438.4f, -995.6f, 30.69f, 180.0f},
 		        {446.0f, -1015.5f, 28.49f, 180.0f},
 		        {443.0f, -1019.0f, 28.5f, 270.0f},
-		        {{"police", nullptr}, {"police2", nullptr}, {"police3", nullptr}, {"police4", nullptr}, {"policeb", nullptr},
-		            {"polbuffalo", "POLSHARED_LIV1"}, {"polgreenwood", "POLSHARED_LIV1"}, {"polcaracara", "POLSHARED_LIV1"},
-		            {"polimpaler5", "POLSHARED_LIV1"}},
+		        {{"police", nullptr}, {"police2", nullptr}, {"police3", nullptr, 1}, {"police4", nullptr, 2}, {"policeb", nullptr, 1},
+		            {"polbuffalo", "POLSHARED_LIV1", 1}, {"polgreenwood", "POLSHARED_LIV1", 2}, {"polcaracara", "POLSHARED_LIV1", 2},
+		            {"polimpaler5", "POLSHARED_LIV1", 3}},
 		        {445.5f, -996.0f, 30.69f, 0.0f},    // before the GARAGE door, arriving facing up the corridor
 		        {450.0f, -1012.6f, 28.49f, 180.0f}, // before the parking ramp's shutters, arriving facing the lot
 		        // A row along the room's south wall (x 435.9-442.8, y -996.8 to -989.7), the officer's in front of the marker.
@@ -76,8 +77,8 @@ namespace police::duty
 		        {1855.6f, 3682.0f, 34.3f, 210.0f}, // the porch before the front door; out again facing the yard
 		        {1850.0f, 3672.0f, 33.7f, 300.0f},
 		        {1855.8f, 3671.9f, 33.5f, 120.0f},
-		        {{"sheriff", nullptr}, {"sheriff2", nullptr}, {"polbuffalo", "POLSHARED_LIV5"}, {"polgreenwood", "POLSHARED_LIV5"},
-		            {"polcaracara", "POLSHARED_LIV5"}, {"polimpaler5", "POLSHARED_LIV5"}, {"policeb2", "POLSHARED_LIV5"}},
+		        {{"sheriff", nullptr}, {"sheriff2", nullptr}, {"polbuffalo", "POLSHARED_LIV5", 1}, {"polgreenwood", "POLSHARED_LIV5", 2},
+		            {"polcaracara", "POLSHARED_LIV5", 2}, {"polimpaler5", "POLSHARED_LIV5", 3}, {"policeb2", "POLSHARED_LIV5", 1}},
 		    },
 		    {
 		        "拉梅薩警局（公路巡警）",
@@ -87,9 +88,9 @@ namespace police::duty
 		        {823.6f, -1290.0f, 29.3f, 90.0f}, // the landing before the doors at the top of the steps
 		        {826.0f, -1274.5f, 26.3f, 0.0f},
 		        {832.0f, -1270.5f, 26.3f, 90.0f},
-		        {{"policeb2", "POLSHARED_LIV4"}, {"polbuffalo", "POLSHARED_LIV4"}, {"polgauntlet", "POLSHARED_LIV4"},
-		            {"polgreenwood", "POLSHARED_LIV4"}, {"polcoquette4", "POLSHARED_LIV4"}, {"poldominator10", "POLSHARED_LIV4"},
-		            {"polimpaler6", "POLIMP6_LIV6"}},
+		        {{"policeb2", "POLSHARED_LIV4"}, {"polbuffalo", "POLSHARED_LIV4"}, {"polgauntlet", "POLSHARED_LIV4", 1},
+		            {"polgreenwood", "POLSHARED_LIV4", 1}, {"polcoquette4", "POLSHARED_LIV4", 2}, {"poldominator10", "POLSHARED_LIV4", 2},
+		            {"polimpaler6", "POLIMP6_LIV6", 3}},
 		    },
 		    {
 		        "NOOSE 總部",
@@ -108,8 +109,10 @@ namespace police::duty
 			return kStations[std::clamp(look::Department(), 0, static_cast<int>(std::size(kStations)) - 1)];
 		}
 
-		// The equipment (user's list): a pistol, the taser, the baton and a flashlight.
+		// The equipment (user's list): a pistol, the taser, the baton and a flashlight; long guns by rank (career.cpp).
 		const char* const kEquipment[] = {"WEAPON_COMBATPISTOL", "WEAPON_STUNGUN", "WEAPON_NIGHTSTICK", "WEAPON_FLASHLIGHT"};
+		const char* const kShotgun = "WEAPON_PUMPSHOTGUN";
+		const char* const kCarbine = "WEAPON_CARBINERIFLE";
 
 		std::vector<Object> g_props; // the station's lockers while the officer is near
 		const Station* g_propsOf = nullptr;
@@ -267,8 +270,13 @@ namespace police::duty
 				g_choice = (g_choice + (Pressed(kRight) ? 1 : cars.size() - 1)) % cars.size();
 				ShowPreview();
 			}
-			Help("~INPUT_CELLPHONE_LEFT~~INPUT_CELLPHONE_RIGHT~ " + CarName(cars[g_choice]) + "~n~~INPUT_CONTEXT~ 確定 ~INPUT_CELLPHONE_CANCEL~ 取消");
-			if (Pressed(kContext) && Exists(g_preview))
+			const bool locked = cars[g_choice].rank > career::Rank();
+			if (locked)
+				Help("~INPUT_CELLPHONE_LEFT~~INPUT_CELLPHONE_RIGHT~ " + CarName(cars[g_choice]) + "（" + career::Title(cars[g_choice].rank) +
+				     "解鎖）~n~~INPUT_CELLPHONE_CANCEL~ 取消");
+			else
+				Help("~INPUT_CELLPHONE_LEFT~~INPUT_CELLPHONE_RIGHT~ " + CarName(cars[g_choice]) + "~n~~INPUT_CONTEXT~ 確定 ~INPUT_CELLPHONE_CANCEL~ 取消");
+			if (Pressed(kContext) && Exists(g_preview) && !locked)
 				StopPicking(true);
 			else if (Pressed(kCancel))
 				StopPicking(false);
@@ -305,6 +313,27 @@ namespace police::duty
 				}
 		}
 
+		// The station's own business (G at the locker): the station computer (promotion, the exam, duty and pay on the
+		// in-car computer's pages), asking for another shift, today's duty.
+		void StationMenu()
+		{
+			menu::List m{Current().name, {}};
+			menu::Item computer{"警局電腦", "", "升遷與考試、勤務、薪資、案件報告"};
+			computer.action = [] {
+				if (!ml::web::Available())
+					ml::Notify("沒有遊戲內瀏覽器，無法使用警局電腦");
+				else
+					ml::web::Open("https://mdt.lspd/#career");
+			};
+			m.items.push_back(computer);
+			menu::Item request{"申請換班", "", "試用期滿後可以申請日班、小夜班或大夜班，從下週起生效"};
+			request.action = [] { shift::RequestShift(); };
+			request.keepOpen = true;
+			m.items.push_back(request);
+			m.items.push_back(shift::MenuItem());
+			menu::Open(m);
+		}
+
 		void CarBlip(bool show)
 		{
 			if (show == (g_carBlip != 0) && (!show || HUD::DOES_BLIP_EXIST(g_carBlip)))
@@ -326,14 +355,41 @@ namespace police::duty
 
 	void Equip(::Ped ped, bool on)
 	{
-		for (const char* weapon : kEquipment)
+		// What the department issued goes back off duty, not the officer's own guns (kept in the save: "officer_issued").
+		ml::Json issued = ml::save::Get("officer_issued");
+		const auto wasIssued = [&](const std::string& w) {
+			for (const ml::Json& i : issued.Items())
+				if (i.Str() == w)
+					return true;
+			return false;
+		};
+		if (on)
 		{
-			const Hash hash = MISC::GET_HASH_KEY(weapon);
-			if (on)
+			std::vector<const char*> weapons(std::begin(kEquipment), std::end(kEquipment));
+			if (career::May(career::Unlock::Shotgun))
+				weapons.push_back(kShotgun);
+			if (career::May(career::Unlock::Carbine))
+				weapons.push_back(kCarbine);
+			for (const char* weapon : weapons)
+			{
+				const Hash hash = MISC::GET_HASH_KEY(weapon);
+				if (!WEAPON::HAS_PED_GOT_WEAPON(ped, hash, false) && !wasIssued(weapon))
+					issued.Push(weapon);
 				WEAPON::GIVE_WEAPON_TO_PED(ped, hash, 120, true, false);
-			else
-				WEAPON::REMOVE_WEAPON_FROM_PED(ped, hash);
+			}
 		}
+		else
+		{
+			for (const ml::Json& w : issued.Items())
+				WEAPON::REMOVE_WEAPON_FROM_PED(ped, MISC::GET_HASH_KEY(w.Str().c_str()));
+			issued = ml::Json::Array();
+		}
+		ml::save::Set("officer_issued", issued.IsArray() ? issued : ml::Json::Array());
+	}
+
+	bool AtStation(const Vector3& at)
+	{
+		return Distance(at, Current().locker) < 60.0f || Distance(at, Current().lot) < 40.0f;
 	}
 
 	const char* CopModel()
@@ -420,15 +476,16 @@ namespace police::duty
 				const bool on = OnDuty();
 				static std::string warning;
 				static uint64_t warningUntil = 0;
-				if (ml::TickMs() < warningUntil)
+				const bool menuOpen = menu::IsOpen(); // (the station's menu: its keys are its own)
+				if (!menuOpen && ml::TickMs() < warningUntil)
 					Help(warning);
-				else if (station.door)
-					Help(on ? "按 ~INPUT_CONTEXT~ 進去換回便服下班" : "按 ~INPUT_CONTEXT~ 進去換上制服、領裝備上班~n~按 ~INPUT_DETONATE~ 申請換班");
-				else
-					Help(on ? "按 ~INPUT_CONTEXT~ 換回便服下班" : "按 ~INPUT_CONTEXT~ 換上制服、領裝備上班~n~按 ~INPUT_DETONATE~ 申請換班");
-				if (!on && Pressed(kDetonate) && !menu::IsOpen())
-					shift::RequestShift();
-				bool go = Pressed(kContext);
+				else if (!menuOpen && station.door)
+					Help(on ? "按 ~INPUT_CONTEXT~ 進去換回便服下班~n~按 ~INPUT_DETONATE~ 警局事務" : "按 ~INPUT_CONTEXT~ 進去換上制服、領裝備上班~n~按 ~INPUT_DETONATE~ 警局事務");
+				else if (!menuOpen)
+					Help(on ? "按 ~INPUT_CONTEXT~ 換回便服下班~n~按 ~INPUT_DETONATE~ 警局事務" : "按 ~INPUT_CONTEXT~ 換上制服、領裝備上班~n~按 ~INPUT_DETONATE~ 警局事務");
+				if (Pressed(kDetonate) && !menuOpen)
+					StationMenu();
+				bool go = Pressed(kContext) && !menuOpen;
 				if (go && on)
 					if (const std::string w = shift::BeforeClockOut(); !w.empty())
 					{

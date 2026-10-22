@@ -9,7 +9,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click
 function show(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === tab));
-  ({ cars: loadCars, search: loadSearch, people: loadPeople, cases: loadCases, duty: loadDuty })[tab]();
+  ({ cars: loadCars, search: loadSearch, people: loadPeople, cases: loadCases, duty: loadDuty, career: loadCareer })[tab]();
 }
 $('close').addEventListener('click', () => game.close());
 
@@ -161,6 +161,64 @@ async function loadDuty() {
      <td>${a.notes.map(x => `<span class="tag warn">${esc(x)}</span>`).join(' ')}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">還沒有紀錄。</p>'}`;
 }
 
+// ---- career: the promotion's requirements and the exam (career.cpp)
+const bar = ([have, need]) => `<div class="bar"><span style="width:${Math.min(100, need ? have / need * 100 : 100)}%"></span></div><small>${have} / ${need}</small>`;
+async function loadCareer() {
+  $('examView').hidden = true;
+  $('careerView').hidden = false;
+  const c = await call('mdt.career');
+  const n = c.next;
+  $('careerNow').innerHTML = `<h2>${esc(c.title)}</h2><p>時薪 $${c.rate}</p>
+    ${n ? `<h3>升任 ${esc(n.title)}（時薪 $${n.rate}）</h3>
+      <dl><dt>年資</dt><dd>${bar(n.shifts)}</dd><dt>考評</dt><dd>${bar(n.eval)}</dd><dt>報告</dt><dd>${bar(n.reports)}</dd></dl>
+      ${n.why ? `<p class="hint">${esc(n.why)}</p>` : n.atStation ? `<p class="ok">可以參加升等考試：${c.questions} 題，答對 ${c.pass} 題及格。</p>
+        <p><button class="primary" id="examStart">開始考試</button></p>` : '<p class="warn">條件都到了：回到自己的警局，用警局電腦考試（置物櫃按 G）。</p>'}`
+    : '<p class="ok">已經是最高職級。</p>'}`;
+  if ($('examStart')) $('examStart').addEventListener('click', startExam);
+  const e = c.eval;
+  $('careerEval').innerHTML = `<h2>考評 <span class="score">${e.score}</span></h2>
+    <dl><dt>報告平均</dt><dd>${e.reportsAvg} 分（${e.reports} 份）</dd>
+    <dt>扣分</dt><dd>${e.penalty ? `−${e.penalty}` : '0'}<span class="hint">（遲到 ${e.late}、早退 ${e.early}、缺勤 ${e.absent}、報告逾期 ${e.overdue}）</span></dd></dl>
+    <p class="hint">升遷後重新計算。遲到 −3、早退 −4、缺勤 −10、報告逾期 −5；沒有報告時以 60 分計。</p>`;
+  $('careerUnlocks').innerHTML = `<h2>職級與解鎖</h2><table class="table"><tbody>${c.unlocks.map(u =>
+    `<tr class="${u.have ? '' : 'off'}"><td>${u.have ? '✔' : ''}</td><td><b>${esc(u.title)}</b><br><small>$${u.rate}/小時</small></td><td>${esc(u.items)}</td></tr>`).join('')}</tbody></table>`;
+  const rows = [...c.history.map(h => ({ date: h.date, text: `升任 ${h.to}`, ok: true })),
+    ...c.exams.map(x => ({ date: x.date, text: `${x.title}考試：${x.correct}/${x.total} ${x.pass ? '及格' : '不及格'}`, ok: x.pass }))];
+  $('careerHistory').innerHTML = `<h2>紀錄</h2>${rows.length ? `<table class="table"><tbody>${rows.map(r =>
+    `<tr><td>${esc(r.date)}</td><td class="${r.ok ? 'ok' : 'warn'}">${esc(r.text)}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">還沒有紀錄。</p>'}`;
+}
+
+async function startExam() {
+  const x = await call('mdt.examStart');
+  if (!x.ok) { $('careerNow').insertAdjacentHTML('beforeend', `<p class="bad">${esc(x.error)}</p>`); return; }
+  $('careerView').hidden = true;
+  const v = $('examView');
+  v.hidden = false;
+  v.innerHTML = `<h2>${esc(x.title)}升等考試</h2><p class="hint">共 ${x.questions.length} 題，答對 ${x.pass} 題及格。</p>
+    <ol class="questions">${x.questions.map((q, i) => `<li><p>${esc(q.text)}</p>${q.options.map((o, k) =>
+      `<label><input type="radio" name="q${i}" value="${k}"> ${esc(o)}</label>`).join('')}</li>`).join('')}</ol>
+    <p><button class="primary" id="examSubmit">交卷</button> <span class="hint" id="examLeft"></span></p>`;
+  const left = () => x.questions.filter((_, i) => !v.querySelector(`input[name=q${i}]:checked`)).length;
+  v.addEventListener('change', () => { const n = left(); $('examLeft').textContent = n ? `還有 ${n} 題沒答` : ''; });
+  let warned = false;
+  $('examSubmit').addEventListener('click', async () => {
+    if (left() && !warned) { warned = true; $('examLeft').textContent = `還有 ${left()} 題沒答：再按一次交卷`; return; }
+    const answers = x.questions.map((_, i) => { const c = v.querySelector(`input[name=q${i}]:checked`); return c ? +c.value : -1; });
+    const r = await call('mdt.examSubmit', answers);
+    if (!r.ok) { $('examLeft').textContent = r.error; return; }
+    v.querySelectorAll('.questions > li').forEach((li, i) => {
+      li.classList.add(r.results[i].right ? 'right' : 'wrong');
+      if (!r.results[i].right) li.insertAdjacentHTML('beforeend', `<p class="ok">正確答案：${esc(r.results[i].answer)}</p>`);
+    });
+    v.querySelectorAll('input').forEach(i => i.disabled = true);
+    $('examSubmit').remove();
+    v.insertAdjacentHTML('afterbegin', `<div class="result ${r.pass ? 'pass' : 'fail'}"><b>${r.correct} / ${r.total}</b> ${r.pass ? `及格！升任 ${esc(r.title)}` : '不及格，再上 3 班可以重考'}
+      <button id="examBack">回升遷頁</button></div>`);
+    $('examBack').addEventListener('click', loadCareer);
+    v.scrollIntoView();
+  });
+}
+
 // ---- start
 call('mdt.state').then(s => { $('who').textContent = s.officer ? `員警 ${s.officer}` : ''; });
-loadCars();
+show(['cars', 'search', 'people', 'cases', 'duty', 'career'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'cars');

@@ -165,9 +165,9 @@ namespace police::look
 			g.beard = g_beard.Int() - 1;
 			g.beardColor = g_beardColor.Int();
 			g.eyes = g_eyes.Int();
-			if (g_department.Int() == 3)
+			if (g_department.Int() == 3 && g.department != 3 && !career::May(career::Unlock::Noose))
 			{
-				ml::Notify("特勤要升到高階才能加入");
+				ml::Notify("特勤要升到{}才能加入", career::Title(4));
 				g_syncing = true;
 				g_department.Set(static_cast<float>(g.department));
 				g_syncing = false;

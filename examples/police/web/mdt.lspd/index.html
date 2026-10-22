@@ -16,6 +16,7 @@
     <button data-tab="people">盤查紀錄</button>
     <button data-tab="cases">案件與報告</button>
     <button data-tab="duty">勤務與薪資</button>
+    <button data-tab="career">升遷與考試</button>
   </nav>
   <div class="end"><button class="theme-toggle" data-theme-toggle></button><button id="close" title="關閉">✕</button></div>
 </header>
@@ -56,6 +57,15 @@
       <div class="card wide" id="dutyPay"></div>
       <div class="card wide" id="dutyAttend"></div>
     </div>
+  </section>
+  <section id="career" class="tab">
+    <div id="careerView" class="grid">
+      <div class="card" id="careerNow"></div>
+      <div class="card" id="careerEval"></div>
+      <div class="card" id="careerUnlocks"></div>
+      <div class="card wide" id="careerHistory"></div>
+    </div>
+    <div id="examView" class="card exam" hidden></div>
   </section>
 </main>
 <script src="app.js"></script>

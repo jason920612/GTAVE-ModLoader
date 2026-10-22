@@ -96,6 +96,8 @@ namespace police::units
 				n = 3, why = "嫌犯反抗";
 			if (charged("以武器攻擊警察"))
 				n = 4, why = "嫌犯開槍攻擊員警";
+			if (career::May(career::Unlock::Supervise))
+				++n; // a sergeant may call one unit more
 			return n;
 		}
 

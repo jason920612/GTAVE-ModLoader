@@ -2,7 +2,8 @@
 // with its picture, instead of typing plates): a page of the in-game browser (mods\police\web\mdt.lspd) with the
 // vehicles around, a plate or name search (the plate reader's last read filled in), the people whose ID was checked,
 // and the case under way and its reports (complete and submit the drafts), and the officer's duty (shift.cpp: the shift,
-// the week's roster, payslips, attendance). Away from the car the radio asks dispatch
+// the week's roster, payslips, attendance) and career (career.cpp: the promotion's requirements and the exam, taken at
+// the station). Away from the car the radio asks dispatch
 // the same questions; the answer comes back after a few seconds and goes into the computer too.
 //
 // The plate reader: in a police car, the plate of the vehicle ahead (within 30 m, straight ahead) is read and shown by
@@ -269,6 +270,9 @@ namespace police::mdt
 		ml::web::Function("mdt.reports", [] { return records::Reports(); });
 		ml::web::Function("mdt.charges", [] { return Charges(); });
 		ml::web::Function("mdt.shift", [] { return shift::Json(); });
+		ml::web::Function("mdt.career", [] { return career::Json(); });
+		ml::web::Function("mdt.examStart", [] { return career::StartExam(); });
+		ml::web::Function("mdt.examSubmit", [](std::vector<int> answers) { return career::SubmitExam(answers); });
 		ml::web::Function("mdt.submit", [](int id, std::vector<std::string> charges, std::string narrative) { return records::Submit(id, charges, narrative); });
 	}
 

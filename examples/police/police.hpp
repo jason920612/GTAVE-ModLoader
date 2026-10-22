@@ -150,6 +150,8 @@ namespace police::duty
 	Vehicle UnitCar(const Place& at);
 	// The patrol car the officer picked in the lot (0 = none).
 	Vehicle PatrolCar();
+	// Within the officer's department's station (its grounds).
+	bool AtStation(const Vector3& at);
 	// The duty equipment (pistol, taser, baton, flashlight) given or taken.
 	void Equip(::Ped ped, bool on);
 	// The world was reset: the patrol car is gone.
@@ -202,8 +204,16 @@ namespace police::shift
 	std::string BeforeClockOut();
 	// At the locker, after the uniform came off: clocking out (the payslip).
 	void ClockOut();
-	// At the locker off duty: asking for another shift (after probation).
+	// Asking for another shift (after probation): a menu.
 	void RequestShift();
+	// The career's counters so far (career.cpp keeps them at each promotion).
+	struct Counts
+	{
+		int shifts = 0, late = 0, early = 0, absent = 0, overdue = 0;
+	};
+	Counts Totals();
+	// The game's date, as the roster writes it ("6/11（四）").
+	std::string Today();
 	// The roster has the officer at work now.
 	bool OnShift();
 	// Where the hour puts the officer when nobody plays them.
@@ -212,7 +222,6 @@ namespace police::shift
 	bool InBeat(const Vector3& at);
 	std::string BeatName();
 	std::string Callsign();
-	std::string RankTitle();
 	// The shift's BOLOs, for a call (each at most once a shift, by chance): a stolen car's model and plate, a wanted
 	// person's name and crime.
 	bool TakeBoloCar(std::string& model, std::string& plate);
@@ -221,6 +230,33 @@ namespace police::shift
 	menu::Item MenuItem();
 	// The computer's duty page: roster, payslips, attendance.
 	ml::Json Json();
+}
+
+namespace police::career
+{
+	// The officer's rank (0 Officer I .. 5 Lieutenant), its pay per hour and title (in the department's words; -1 = the
+	// officer's own rank).
+	int Rank();
+	int Rate();
+	std::string Title(int rank = -1);
+	// What a rank unlocks.
+	enum class Unlock
+	{
+		Shotgun,
+		Carbine,
+		FieldTraining,
+		Supervise,
+		Noose,
+	};
+	bool May(Unlock what);
+	// The officer is at their department's station (the exam is taken there).
+	bool AtStation();
+	// A save is loading.
+	void Loading();
+	// The computer's promotion page, and the exam (started at the station; the answers by the options' shown order).
+	ml::Json Json();
+	ml::Json StartExam();
+	ml::Json SubmitExam(const std::vector<int>& answers);
 }
 
 namespace police::units
@@ -476,6 +512,9 @@ namespace police::records
 	ml::Json Reports();
 	// Reports drafted and not submitted yet.
 	int Drafts();
+	// The scores of the reports submitted with an id above `afterId`, and the last id given.
+	std::vector<int> Scores(int afterId);
+	int LastId();
 	ml::Json CurrentCase();
 	ml::Json Submit(int id, const std::vector<std::string>& charges, const std::string& narrative);
 	// After a save loaded: the reports from it.
