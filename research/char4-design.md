@@ -1432,7 +1432,15 @@ Every scenario runs on **≥ 3–4 launches**, with success rates reported (memo
 - U40 (part 1): a corrupt (truncated) ml_char4_reg that the loader requests while startup runs crashes the game when startup terminates (access violation at 0x58e00ed, startup saved ip 769, the TERMINATE_THIS_THREAD at the end of its main). Reproduced twice. The same file present but never requested is harmless.
   - The loader must therefore check the generated ml_char4_reg (size and hash of what it wrote) before requesting it. On a mismatch it does not request it and the officer slot degrades with a warning.
   - Declaring label-type SP3 stats in the pack gave the same crash, and ml_char4_reg had not started in that run either (§55.6).
-- Still open: U5 (watches on entry 3), U9 (services map), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
+- U9 (desk part): every paid script carries the same money library.
+  - cash_of(c) is a SWITCH 0/1/2 on SPn_TOTAL_CASH and gives 0 for anyone else. debit_char(c) takes account G2349[c].17 and refuses accounts 3 and 4.
+  - All callers ignore the debit's result; the gate is the earlier cash check. Some scripts use an "identity switch" on G62254 instead (cablecar @154645, fairgroundhub @4716, launcher_carwash @4505).
+  - So today (145, account 4) the officer is refused by every paid activity. None becomes free, nothing is charged to a protagonist, and the ATM handles account 4 as "no account".
+  - The minigame launchers share one can-launch routine (get_cur, then is_playable). Taxi has a street path (@35116) and a phone path (contact 131, an inline c==0||1||2 chain, then G2349[131].12[c]).
+  - Additions to §3.4: the MONEY_TOTAL_SPENT loose triple is in every copy of the money library, so the triple tool must handle it (template: the case-2 body). Identity switches get CASE3 with PUSH 3. The per-character packed index switch in the debit routine (95/97/96) is DEFAULT.
+  - Open for the user: launcher_racing @44421 lets only Franklin start race types other than 3.
+  - Lists and tools in research/phase0.md §55.6 and `D:\Projects\gtav-research\char4\u9`.
+- Still open: U5 (watches on entry 3), U9 in-game check (with M2), U22 (broker swap cost, needs the broker), U23 round trip, U40 part 2 (boot sentinel, needs the sentinel).
 
 ---
 
