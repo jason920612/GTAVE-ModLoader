@@ -24,6 +24,7 @@ namespace police::officer
 		bool g_busy = false; // the player (the officer) is still busy with the switch scene's activity
 		::Ped g_protagonist = 0; // the protagonist left behind while the officer is played
 		int g_headshot = 0;
+		bool g_wasPlayer = false; // the officer was the player at the last tick (or after the mod's own change)
 		constexpr uint32_t kSwitchRequest = 99964;
 		constexpr uint32_t kCurrentCharacter = 122220; // 0..2 a protagonist, 145 none
 
@@ -185,6 +186,51 @@ namespace police::officer
 		return Exists(g_officer) && PLAYER::PLAYER_PED_ID() == g_officer;
 	}
 
+	const char* WhyNoSwitch(bool toOfficer)
+	{
+		// The selector's own refusals (selector@24093–@24869, research/char4-design.md §3.10 "may switch now"), so the
+		// mod's switches (its own wheel, F8) are refused where the game's wheel would be.
+		const ::Ped ped = PLAYER::PLAYER_PED_ID();
+		const auto global = [](uint32_t index) {
+			const int64_t* g = ml::scripts::Global(index);
+			return g ? static_cast<int32_t>(*g) : 0;
+		};
+		constexpr uint32_t kSelector = 24447;
+		if (STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
+			return "switch in progress";
+		if (PED::IS_PED_INJURED(ped) || PLAYER::IS_PLAYER_BEING_ARRESTED(PLAYER::PLAYER_ID(), true) || PED::IS_PED_RAGDOLL(ped))
+			return "injured, arrested or ragdoll";
+		if (PED::IS_PED_IN_ANY_VEHICLE(ped, true) && !PED::IS_PED_SITTING_IN_ANY_VEHICLE(ped))
+			return "getting in or out of a vehicle";
+		if (PED::GET_PED_PARACHUTE_STATE(ped) >= 0)
+			return "parachuting";
+		if (!STREAMING::IS_SAFE_TO_START_PLAYER_SWITCH())
+			return "not safe to start a switch";
+		if (CUTSCENE::IS_CUTSCENE_PLAYING() || HUD::IS_PAUSE_MENU_ACTIVE() || PLAYER::IS_SYSTEM_UI_BEING_DISPLAYED() || MISC::IS_STUNT_JUMP_IN_PROGRESS() ||
+		    DLC::GET_IS_LOADING_SCREEN_ACTIVE())
+			return "cutscene, menu, stunt jump or loading screen";
+		// Activities that close the wheel (range, cinema, ...) set these or disable the wheel key.
+		for (const uint32_t flag : {5u, 6u, 11u, 12u, 17u})
+			if (global(kSelector + flag))
+				return "an activity holds the wheel";
+		// (The wheel key is disabled for the officer anyway: the mod's wheel reads it disabled, so only the protagonist's
+		// side can tell an activity's DISABLE_CONTROL_ACTION(0, 19) apart.)
+		if ((toOfficer && !PAD::IS_CONTROL_ENABLED(0, 19)) || global(114037) || global(77414) || global(65071) || global(80617) == 4 || global(80617) == 5)
+			return "an activity holds the wheel";
+		if (PLAYER::GET_PLAYER_WANTED_LEVEL(PLAYER::PLAYER_ID()) > 0)
+			return "wanted";
+		if (toOfficer && MISC::GET_MISSION_FLAG())
+			return "on a mission";
+		return nullptr;
+	}
+
+	bool Available(int character)
+	{
+		// AVAILABLE[c] (global 120247, one per protagonist): the story can take a protagonist away for a while.
+		const int64_t* g = ml::scripts::Global(120248 + character);
+		return character >= 0 && character < 3 && (!g || *g != 0);
+	}
+
 	const char* Headshot()
 	{
 		return g_headshot && PED::IS_PEDHEADSHOT_READY(g_headshot) && PED::IS_PEDHEADSHOT_VALID(g_headshot) ? PED::GET_PEDHEADSHOT_TXD_STRING(g_headshot) : nullptr;
@@ -281,12 +327,20 @@ namespace police::officer
 		g_officer = 0;
 		g_protagonist = 0;
 		g_headshot = 0;
+		g_wasPlayer = false;
 	}
 
 	void SwitchTo()
 	{
+		if (IsPlayer())
+			return;
+		if (const char* why = WhyNoSwitch(true))
+		{
+			ml::Log("no switch to the officer: {}", why);
+			return;
+		}
 		Ensure();
-		if (!Exists(g_officer) || IsPlayer())
+		if (!Exists(g_officer))
 			return;
 		const ::Ped from = PLAYER::PLAYER_PED_ID();
 		// The scene's place loads first, so it is there when the camera comes down.
@@ -307,6 +361,17 @@ namespace police::officer
 		const int character = CharacterOf(slot);
 		if (character < 0 || !IsPlayer())
 			return;
+		if (const char* why = WhyNoSwitch(false))
+		{
+			ml::Log("no switch to character {}: {}", character, why);
+			return;
+		}
+		if (!Available(character))
+		{
+			ml::Notify("這個角色現在不能用");
+			ml::Log("no switch to character {}: not available", character);
+			return;
+		}
 		if (Exists(g_protagonist) && CharacterOfModel(ENTITY::GET_ENTITY_MODEL(g_protagonist)) == character)
 			LetGoOfProtagonist();
 		guard::Restore();
@@ -324,6 +389,7 @@ namespace police::officer
 		}
 		for (const uint64_t end = ml::TickMs() + 60000; ml::TickMs() < end && STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS();)
 			ml::Wait(0);
+		g_wasPlayer = false;
 		Drop();
 		// A protagonist other than the one switched to stays the mod's no longer: the game looks after them now.
 		if (Exists(g_protagonist))
@@ -353,6 +419,24 @@ namespace police::officer
 
 	void Tick()
 	{
+		// A game script changed the player's model (SET_PLAYER_MODEL makes a new ped and deletes the old one; the
+		// Editor's clean-up, the benchmark, peyote): the officer is whoever the player is now, dressed again.
+		const ::Ped player = PLAYER::PLAYER_PED_ID();
+		if (g_wasPlayer && player != g_officer && !Exists(g_officer) && !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
+		{
+			const Hash model = ENTITY::GET_ENTITY_MODEL(player);
+			if (model == look::Model())
+			{
+				g_officer = player;
+				look::Apply(player, g_uniform);
+				duty::Equip(player, g_uniform);
+				RefreshHeadshot();
+				ml::Log("the game replaced the officer's ped ({}); the officer is the new one", player);
+			}
+			else
+				ml::LogError("the game made the player a {:08X} while the officer was played", model);
+		}
+		g_wasPlayer = IsPlayer();
 		// The scene's activity lasts until the player moves (as after the game's own switches).
 		if (g_busy && IsPlayer() && (std::abs(PAD::GET_CONTROL_NORMAL(0, 30)) > 0.2f || std::abs(PAD::GET_CONTROL_NORMAL(0, 31)) > 0.2f))
 		{

@@ -102,7 +102,12 @@ namespace police::wheel
 			else if (g_wasOpen && g_lastHover == kSlotOfficer)
 				officer::SwitchTo();
 			else if (PAD::IS_CONTROL_JUST_RELEASED(0, 169) && !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
-				officer::SwitchTo(); // F8, the bottom slot's key (hidden from the selector, see Init)
+			{
+				// F8, the bottom slot's key (hidden from the selector, see Init).
+				if (officer::WhyNoSwitch(true))
+					ml::Notify("現在不能切換到警察");
+				officer::SwitchTo();
+			}
 			else if (g_wasOpen)
 				officer::Drop(); // the wheel closed on someone else: the officer is not needed here
 			g_wasOpen = open;
@@ -143,7 +148,7 @@ namespace police::wheel
 			const bool held = PAD::IS_DISABLED_CONTROL_PRESSED(0, kWheelControl) || PAD::IS_CONTROL_PRESSED(0, kWheelControl);
 			if (!g_movie)
 				g_movie = GRAPHICS::REQUEST_SCALEFORM_MOVIE_INSTANCE("PLAYER_SWITCH");
-			if (held && !g_open && GRAPHICS::HAS_SCALEFORM_MOVIE_LOADED(g_movie) && !STREAMING::IS_PLAYER_SWITCH_IN_PROGRESS())
+			if (held && !g_open && GRAPHICS::HAS_SCALEFORM_MOVIE_LOADED(g_movie) && !officer::WhyNoSwitch(false))
 			{
 				g_open = true;
 				g_hover = kSlotOfficer;

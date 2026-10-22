@@ -33,6 +33,11 @@ namespace police::officer
 	// The officer's ped (exists while the mod has placed them in the world), 0 = none.
 	Ped Ped();
 	bool IsPlayer();
+	// Why a switch (to the officer, or from them) may not start now, as the game's wheel would refuse it; nullptr when
+	// it may.
+	const char* WhyNoSwitch(bool toOfficer);
+	// The story has not taken protagonist `character` (0..2) away.
+	bool Available(int character);
 	// Headshot texture dictionary of the officer, or nullptr while it is not ready.
 	const char* Headshot();
 	// Places the officer in the world where the hour puts them, if needed, and prepares the headshot.

@@ -3,9 +3,9 @@ in front: the person at the computer keeps using it.
 
 usage:
   gtactl.py launch                 test settings on (windowed, no pause on focus loss, debugRemote), start the game,
-                                   continue story mode; the window stays out of view and silent. When the Rockstar
-                                   launcher fails to sign in, it is restarted in offline mode (as its own "offline mode"
-                                   button does)
+                                   continue story mode; the window stays out of view and silent. The Rockstar launcher
+                                   runs in offline mode (-scOfflineOnly, passed on by Steam): story mode needs no
+                                   sign-in, and Rockstar's sign-in has been failing
   gtactl.py restore                the person's settings back (after the game closed)
   gtactl.py quit                   closes the game, then restore
   gtactl.py <step> [<step> ...]    steps run in order:
@@ -28,7 +28,6 @@ LOADER_JSON = os.path.join(GAME, "ModLoader", "loader.json")
 SETTINGS = os.path.expanduser(r"~\Documents\Rockstar Games\GTAV Enhanced\settings.xml")
 BACKUP = SETTINGS + ".gtactl-backup"
 MOD_LOG = os.path.join(GAME, "ModLoader", "mods", "police", "log.txt")
-LAUNCHER = r"C:\Program Files\Rockstar Games\Launcher\Launcher.exe"
 LAUNCHER_LOG = os.path.expanduser(r"~\Documents\Rockstar Games\Launcher\launcher.log")
 
 
@@ -95,24 +94,14 @@ def sign_in_failed(since):
         return False
 
 
-def launcher_offline():
-    """What the launcher's "offline mode" button does: the launcher restarts itself with -scOfflineOnly."""
-    subprocess.run(["taskkill", "/F", "/IM", "Launcher.exe"], capture_output=True)
-    for _ in range(20):
-        if "Launcher.exe" not in subprocess.run(["tasklist", "/FI", "IMAGENAME eq Launcher.exe"], capture_output=True, text=True).stdout:
-            break
-        time.sleep(0.5)
-    subprocess.Popen([LAUNCHER, "-skipPatcherCheck", "-steamAppId=3240220", "-steamLocation", GAME, "-nobattleye", "@args.txt",
-                      "-user_restart", "-scOfflineOnly"], cwd=os.path.dirname(LAUNCHER))
-
-
 def launch():
     if game_running():
         sys.exit("the game is already running")
     test_settings(True)
     started = time.time()
-    subprocess.Popen([r"C:\Program Files (x86)\Steam\steam.exe", "-applaunch", "3240220", "-nobattleye"])
-    offline = False
+    # Steam passes extra arguments on to the Rockstar launcher. (Killing a launcher stuck on its sign-in error and
+    # starting another one makes PlayGTAV, Steam's process, show "unable to start the game" on the desktop.)
+    subprocess.Popen([r"C:\Program Files (x86)\Steam\steam.exe", "-applaunch", "3240220", "-nobattleye", "-scOfflineOnly"])
     end = time.time() + 300
     while True:
         try:
@@ -120,11 +109,7 @@ def launch():
             break
         except OSError:
             if time.time() >= end:
-                raise
-        if not offline and sign_in_failed(started):
-            print("launcher: sign-in failed, restarting it in offline mode")
-            launcher_offline()
-            offline = True
+                sys.exit("the game did not start" + (" (the launcher could not sign in)" if sign_in_failed(started) else ""))
         time.sleep(1)
     print("pipe up:", p.send("ping"))
     end = time.time() + 300
