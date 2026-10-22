@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -53,8 +54,9 @@ namespace loader::game::arrayfault
 		// Serving (experiment U7, development only): ModLoader\debug_arrayfault.txt lines "serve <script>" name scripts
 		// whose access to the element just past the end (index == count: the fourth character's element of a
 		// three-element array) gets a shadow element instead of the thread being killed. A shadow starts as a copy of
-		// element 0 and lives for the session.
+		// element 0, or with the values of a "shadow <global index> <value> ..." line, and lives for the session.
 		std::vector<uint32_t> g_serve;                                  // program hashes
+		std::vector<std::pair<uint32_t, std::vector<int64_t>>> g_shadowInit; // global index of an array -> first values
 		std::unordered_map<uintptr_t, std::vector<int64_t>> g_shadows; // array (its count slot) -> shadow element
 		std::array<uintptr_t, 76> g_continuation{};                     // by opcode: the handler after its bounds check
 		uintptr_t* g_jumpTo = nullptr;                                  // the thunk's target for a served access
@@ -121,7 +123,12 @@ namespace loader::game::arrayfault
 			{
 				auto& shadow = g_shadows[f.base];
 				if (shadow.empty())
+				{
 					shadow.assign(base + 1, base + 1 + f.elementSize);
+					for (const auto& [global, values] : g_shadowInit)
+						if (scripts::Global(global) == base)
+							std::copy_n(values.begin(), std::min<size_t>(values.size(), shadow.size()), shadow.begin());
+				}
 				*g_jumpTo = g_continuation[f.op];
 				served = reinterpret_cast<uintptr_t>(shadow.data()) - (uintptr_t{index} * f.elementSize + 1) * 8;
 				f.served = true;
@@ -214,6 +221,16 @@ namespace loader::game::arrayfault
 		for (std::string line; std::getline(in, line);)
 			if (line.starts_with("serve "))
 				g_serve.push_back(script::Joaat(line.substr(6).c_str()));
+			else if (line.starts_with("shadow "))
+			{
+				std::istringstream words(line.substr(7));
+				uint32_t global = 0;
+				words >> global;
+				std::vector<int64_t> values;
+				for (int64_t v; words >> v;)
+					values.push_back(v);
+				g_shadowInit.emplace_back(global, std::move(values));
+			}
 		if (!g_pointers.TlsIndex)
 		{
 			log::Warn("array faults: TLS index not resolved, not watching");
