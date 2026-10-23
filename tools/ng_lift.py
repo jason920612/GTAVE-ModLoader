@@ -1,0 +1,130 @@
+"""Lift the game's NG block function into the exporter's program table (research/phase0.md §58).
+
+The block function (reached from the archive decryption: NG routine -> per-buffer loop -> block function) is
+straight-line code over a local array of 272 words: each word is a key word or an earlier word, XORed with a table
+lookup indexed by an input byte or by a byte of an earlier word. This turns `relocate func <image> <block rva>` output
+into one entry per word, in order: {key word or earlier word, input byte or earlier word, shift}. The tables and keys
+themselves are the game's data and are never written here: ue5export reads them from the running game.
+
+usage: ng_lift.py <block.asm> <out.inc>
+"""
+import re
+import sys
+
+code = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    m = re.match(r"\s+0x([0-9a-f]+)\s+(\S+)\s*(.*)", line)
+    if m:
+        code.append((int(m.group(1), 16), m.group(2), m.group(3)))
+
+R = {}
+stack = {0x470: ("ptr", "key"), 0x478: ("ptr", "in"), 0x480: ("ptr", "out")}
+words = {}  # local array index -> ("w", index) once written
+ops = []    # (dst, base, byte source)
+outs = {}
+
+
+def full(name):
+    return {"eax": "rax", "ecx": "rcx", "edx": "rdx"}.get(name, name)
+
+
+def inner(op):
+    return re.search(r"\[(.*)\]", op).group(1)
+
+
+def read(op):
+    op = op.strip()
+    if re.fullmatch(r"0x[0-9A-Fa-f]+", op):
+        return ("c", int(op, 16))
+    if op in ("eax", "ecx", "edx", "rax", "rcx", "rdx"):
+        return R[full(op)]
+    a = inner(op.replace("byte ptr ", "").replace("dword ptr ", ""))
+    if a == "rsp":
+        return stack[0]
+    if m := re.fullmatch(r"rsp\+0x([0-9A-F]+)", a):
+        return stack[int(m.group(1), 16)]
+    if m := re.fullmatch(r"rsp\+(r[a-z]x)\*1\+0x10", a):
+        return words.get(R[m.group(1)][1] // 4, ("old",))  # (an unwritten word is only read to be cleared: & 0)
+    if m := re.fullmatch(r"(r[a-z]x)\+(r[a-z]x)\*1", a):
+        p, off = R[m.group(1)], R[m.group(2)][1]
+        return {"keyw": ("key", off // 4), "in": ("in", off), "out": ("old",)}[p[1]]
+    if m := re.fullmatch(r"(r[a-z]x)\+(r[a-z]x)\*4", a):
+        return ("tab", R[m.group(2)])
+    raise ValueError(op)
+
+
+def write(op, v):
+    a = inner(op)
+    if a == "rsp":
+        stack[0] = v
+    elif m := re.fullmatch(r"rsp\+0x([0-9A-F]+)", a):
+        stack[int(m.group(1), 16)] = v
+    elif m := re.fullmatch(r"rsp\+(r[a-z]x)\*1\+0x10", a):
+        i = R[m.group(1)][1] // 4
+        assert v[0] == "xor" and v[2][0] == "tab", v
+        base, index = v[1], v[2][1]
+        if index[0] == "in":
+            src = ("in", index[1], 0)
+        else:  # (word >> shift) & 0xFF
+            shift = 0
+            if index[0] == "and":
+                index = index[1]
+            if index[0] == "shr":
+                shift, index = index[2], index[1]
+            src = ("w", index[1], shift)
+        assert i == len(ops), "words are written in order"
+        ops.append((base, src))
+        words[i] = ("w", i)
+    elif m := re.fullmatch(r"(r[a-z]x)\+(r[a-z]x)\*1", a):
+        outs[R[m.group(2)][1] // 4] = v
+    else:
+        raise ValueError(op)
+
+
+for at, mn, operands in code:
+    args = [o.strip() for o in re.split(r",(?![^\[]*\])", operands)] if operands else []
+    if mn in ("sub", "add") and args[0] == "rsp" or mn in ("div", "test", "jz", "jmp", "call", "ret"):
+        continue
+    if mn == "mov" and args[1] in ("r8", "rdx", "rcx", "r9"):
+        continue  # spilled arguments (the stack slots are preset)
+    if mn == "mov":
+        if args[1].startswith("[0x"):
+            R[full(args[0])] = ("cookie",)
+            continue
+        if args[0].startswith("[") or "ptr" in args[0]:
+            write(args[0], read(args[1]))
+        elif args[0] != args[1]:
+            R[full(args[0])] = read(args[1])
+    elif mn == "movzx":
+        R[full(args[0])] = read(args[1])
+    elif mn == "lea":
+        R[full(args[0])] = ("table",)
+    elif mn == "add":
+        assert args[1] == "0x10" and R[full(args[0])] == ("ptr", "key")
+        R[full(args[0])] = ("ptr", "keyw")
+    elif mn == "imul":
+        R[full(args[0])] = ("c", R[full(args[1])][1] * int(args[2], 16))
+    elif mn == "xor":
+        if args[0] == args[1]:
+            R[full(args[0])] = ("c", 0)
+        elif args[1] != "rsp":
+            R[full(args[0])] = ("xor", R[full(args[0])], read(args[1]))
+    elif mn == "and":
+        n = int(args[1], 16)
+        R[full(args[0])] = ("zero",) if n == 0 else ("and", R[full(args[0])], n)
+    elif mn == "or":
+        assert R[full(args[0])] == ("zero",)
+        R[full(args[0])] = read(args[1])
+    elif mn == "shr":
+        R[full(args[0])] = ("shr", R[full(args[0])], int(args[1], 16))
+    else:
+        raise ValueError(f"{mn} {operands} at {at:#x}")
+
+assert len(ops) == 272 and sorted(outs) == [0, 1, 2, 3], (len(ops), outs)
+with open(sys.argv[2], "w", encoding="utf-8") as f:
+    f.write("// Generated by tools/ng_lift.py from the game's NG block function (research/phase0.md §58). One entry per word:\n")
+    f.write("// {key word (1) or earlier word (0), its index, input byte (1) or earlier word (0), its index, shift}.\n")
+    for base, src in ops:
+        f.write(f"{{{int(base[0] == 'key')}, {base[1]}, {int(src[0] == 'in')}, {src[1]}, {src[2]}}},\n")
+    f.write("// out: " + ", ".join(str(outs[k][1]) for k in range(4)) + "\n")
+print(f"{len(ops)} words, out = {[outs[k][1] for k in range(4)]}")

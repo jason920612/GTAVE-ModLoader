@@ -199,6 +199,16 @@ target_link_libraries(relocate PRIVATE Zydis)
 target_compile_features(relocate PRIVATE cxx_std_20)
 target_compile_options(relocate PRIVATE /utf-8 /O2)
 
+# Graphics mod: exports the game's world for Unreal Engine 5 (tools/ue5export), from the player's own game files.
+add_executable(ue5export
+    tools/ue5export/main.cpp
+    tools/ue5export/ng.cpp
+    src/loader/convert/archive.cpp
+    src/loader/convert/resource.cpp)
+target_include_directories(ue5export PRIVATE src/loader)
+target_compile_definitions(ue5export PRIVATE NOMINMAX)
+target_compile_options(ue5export PRIVATE /W4 /utf-8 /O2 /permissive-)
+
 # In-game web browser (src/browser): CEF (Chromium Embedded Framework, BSD) renders the game's own web pages off-screen;
 # ModLoader.dll loads ModLoader\browser\mlbrowser.dll the first time the browser is opened.
 option(ML_BROWSER "Build the in-game web browser (downloads CEF, about 170 MB)" ON)

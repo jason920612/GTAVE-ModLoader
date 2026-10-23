@@ -102,11 +102,6 @@ namespace loader::convert
 			{
 				n.flags[0] = a;
 				n.flags[1] = b;
-				if (n.stored == 0xFFFFFF)
-				{
-					error = std::format("{}: resource larger than 16 MB (not supported yet)", n.name);
-					return false;
-				}
 			}
 			else
 			{
@@ -115,6 +110,19 @@ namespace loader::convert
 				n.encrypted = b != 0 && (encrypted_ || decrypt_);
 			}
 		}
+		// A resource of 16 MB or more (the entry's 24 bits say 0xFFFFFF): the game's own archives keep its size in four
+		// bytes of the 16-byte header in front of the data (research/phase0.md §58; checked against the layout).
+		for (Node& n : nodes_)
+			if (n.resource && n.stored == 0xFFFFFF)
+			{
+				uint8_t h[16] = {};
+				if (!ReadAt(*in_, offset_ + n.offset, h, sizeof(h)) || Get<uint32_t>(Bytes(h, h + 4), 0) == kRscMagic)
+				{
+					error = std::format("{}: resource of 16 MB or more without its size", n.name);
+					return false;
+				}
+				n.stored = static_cast<uint32_t>(h[2]) << 24 | static_cast<uint32_t>(h[5]) << 16 | static_cast<uint32_t>(h[14]) << 8 | h[7];
+			}
 		return true;
 	}
 
