@@ -22,6 +22,7 @@
 #include "../state.hpp"
 #include "../ui/dx12_hook.hpp"
 #include "GTAVBridgeProtocol.h"
+#include "composite.hpp"
 #include "streamline.hpp"
 
 namespace loader::graphics::bridge
@@ -228,6 +229,9 @@ namespace loader::graphics::bridge
 			g_warnedSize = false;
 			// (the game's queue runs this list later: the wait goes in first)
 			queue->Wait(g_fence, g_shared->frameValue);
+			// (the game's peds and vehicles kept; a plain copy when that cannot be done)
+			if (composite::Record(frame, g_texture))
+				return;
 			auto* list = static_cast<ID3D12GraphicsCommandList*>(commandList);
 			D3D12_RESOURCE_BARRIER barrier{};
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -421,6 +425,12 @@ namespace loader::graphics::bridge
 			std::lock_guard lock(g_renderMutex);
 			if (g_fence)
 				g_fence->Signal(~0ull >> 1);
+			// (a new renderer counts its textures from 1 again: these must not pass for its own)
+			Retire(g_texture);
+			Retire(g_fence);
+			g_texture = nullptr;
+			g_fence = nullptr;
+			g_openedSequence = 0;
 			return;
 		}
 		if (!g_process)

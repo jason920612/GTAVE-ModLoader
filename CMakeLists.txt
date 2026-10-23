@@ -61,6 +61,7 @@ add_library(loader SHARED
     src/loader/game/dlss.cpp
     src/loader/graphics/streamline.cpp
     src/loader/graphics/bridge.cpp
+    src/loader/graphics/composite.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/menu.cpp
