@@ -52,6 +52,7 @@ namespace loader::config
 			c.ue5Key = j.value("ue5Key", c.ue5Key);
 			c.ue5Preset = j.value("ue5Preset", c.ue5Preset);
 			c.ue5ExposureMatch = j.value("ue5ExposureMatch", c.ue5ExposureMatch);
+			c.ue5GameResolution = j.value("ue5GameResolution", c.ue5GameResolution);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -84,6 +85,7 @@ namespace loader::config
 				{"ue5Key", c.ue5Key},
 				{"ue5Preset", c.ue5Preset},
 				{"ue5ExposureMatch", c.ue5ExposureMatch},
+				{"ue5GameResolution", c.ue5GameResolution},
 			};
 		}
 	}

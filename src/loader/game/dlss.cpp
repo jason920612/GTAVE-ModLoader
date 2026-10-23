@@ -632,6 +632,38 @@ namespace loader::game::dlss
 			    Letters(sent), Version::Unpack(g_sr.loaded.load()).Text());
 		}
 
+		// The DLSS mode the game renders for while UE5 draws the world (config ue5GameResolution), or 0: the game's.
+		uint32_t RendererMode()
+		{
+			const auto& c = config::Get();
+			if (!c.ue5Renderer)
+				return 0;
+			const std::string& r = c.ue5GameResolution;
+			return r == "performance" ? 1 : r == "balanced" ? 2 : r == "quality" ? 3 : r == "ultra" ? 4 : 0;
+		}
+
+		// slDLSSGetOptimalSettings(const sl::DLSSOptions&, sl::DLSSOptimalSettings&): the render size for a mode; asked
+		// with the renderer's mode, the game renders at that size.
+		using DlssGetOptimalSettingsFn = int (*)(const void* options, void* settings);
+		DlssGetOptimalSettingsFn g_dlssGetOptimalSettings = nullptr;
+
+		int DlssGetOptimalSettings(const void* options, void* settings)
+		{
+			const uint32_t mode = RendererMode();
+			uint64_t version = 0;
+			std::memcpy(&version, static_cast<const uint8_t*>(options) + kVersionOffset, sizeof(version));
+			if (!mode || version != kOptionsVersion)
+				return g_dlssGetOptimalSettings(options, settings);
+			alignas(8) uint8_t copy[kOptionsSize];
+			std::memcpy(copy, options, kOptionsSize);
+			std::memcpy(copy + kModeOffset, &mode, sizeof(mode));
+			const int result = g_dlssGetOptimalSettings(copy, settings);
+			uint32_t size[2] = {};
+			std::memcpy(size, static_cast<const uint8_t*>(settings) + 32, sizeof(size));
+			log::Info("dlss: render size for the UE5 renderer's mode {}: {}x{}", mode, size[0], size[1]);
+			return result;
+		}
+
 		int DlssSetOptions(const void* viewport, const void* options)
 		{
 			const auto* o = static_cast<const uint8_t*>(options);
@@ -647,14 +679,17 @@ namespace loader::game::dlss
 			Presets game{};
 			std::memcpy(&mode, o + kModeOffset, sizeof(mode));
 			std::memcpy(game.data(), o + kPresetsOffset, sizeof(game));
+			const uint32_t rendererMode = mode ? RendererMode() : 0; // (DLSS off stays off)
 			const Presets sent = Choose(game);
-			Report(mode, game, sent);
-			if (sent == game)
+			Report(rendererMode ? rendererMode : mode, game, sent);
+			if (sent == game && !rendererMode)
 				return g_dlssSetOptions(viewport, options);
 			// Streamline copies the options; the game's own stay untouched.
 			alignas(8) uint8_t copy[kOptionsSize];
 			std::memcpy(copy, options, kOptionsSize);
 			std::memcpy(copy + kPresetsOffset, sent.data(), sizeof(sent));
+			if (rendererMode)
+				std::memcpy(copy + kModeOffset, &rendererMode, sizeof(rendererMode));
 			return g_dlssSetOptions(viewport, copy);
 		}
 
@@ -705,6 +740,11 @@ namespace loader::game::dlss
 			{
 				g_dlssSetOptions = reinterpret_cast<DlssSetOptionsFn>(function);
 				function = reinterpret_cast<void*>(&DlssSetOptions);
+			}
+			else if (std::strcmp(name, "slDLSSGetOptimalSettings") == 0)
+			{
+				g_dlssGetOptimalSettings = reinterpret_cast<DlssGetOptimalSettingsFn>(function);
+				function = reinterpret_cast<void*>(&DlssGetOptimalSettings);
 			}
 			else if (g_trace && std::strcmp(name, "slDLSSGSetOptions") == 0)
 			{

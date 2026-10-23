@@ -882,6 +882,14 @@ namespace ue5export
 		// The models, by worker threads.
 		const std::vector<uint32_t> work = ModelsToConvert(map, options.area);
 		const unsigned workers = options.workers ? options.workers : std::max(1u, std::thread::hardware_concurrency() - 2);
+		// (every dictionary's texture names, for textures off their model's chain: built once, then texindex.tsv)
+		{
+			const auto indexStart = std::chrono::steady_clock::now();
+			auto index = Resolver::BuildIndex(files, options.gameDir, *options.decrypt, workers, options.dir.parent_path() / "texindex.tsv");
+			std::printf("  texture index: %zu names in %.0f s\n", index->size(),
+			    std::chrono::duration<double>(std::chrono::steady_clock::now() - indexStart).count());
+			Resolver::SetIndex(std::move(index));
+		}
 		std::atomic<size_t> next = 0, done = 0;
 		std::atomic<unsigned> active = workers;
 		std::vector<std::thread> threads;

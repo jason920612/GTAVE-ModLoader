@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <filesystem>
 #include <list>
 #include <map>
 #include <memory>
@@ -52,7 +53,16 @@ namespace ue5export
 		// A texture of a dictionary by their names.
 		bool Find(const std::string& dictionary, const std::string& texture, Texture& out) { return In(Joaat(dictionary), Lower(texture), out); }
 
+		// Every texture dictionary's texture names (lower name -> the dictionary's name hash): where a texture that no
+		// dictionary of its model's chain has is found after all (the game finds them too). Shared by all resolvers.
+		using Index = std::map<std::string, uint32_t>;
+		static void SetIndex(std::shared_ptr<const Index> index);
+		// Builds the index from every .ytd (workers threads), or loads it from `cache` (written after building).
+		static std::shared_ptr<const Index> BuildIndex(const GameFiles& files, const std::filesystem::path& gameDir,
+		    const loader::convert::Decryptor& decrypt, unsigned workers, const std::filesystem::path& cache);
+
 	private:
+		static std::shared_ptr<const Index> s_index;
 		const GameFiles& files_;
 		std::map<std::string, std::map<uint32_t, std::string>> byHash_; // extension -> name hash -> file
 		std::map<uint32_t, uint32_t> parents_;                          // dictionary -> parent dictionary

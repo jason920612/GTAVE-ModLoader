@@ -88,9 +88,9 @@ namespace ue5export::drawable
 
 	// The drawable at `at` (a pointer into the resource): every level of detail it has (allLods) or the highest.
 	bool Read(const View& view, uint64_t at, Model& out, std::string& error, bool allLods = false);
-	// The light attributes of an atArray at `field`: a drawable's (+0xB0) or a fragment's (+0x110). Only lights on the
-	// root bone (the others need the skeleton's pose).
-	std::vector<Light> Lights(const View& view, uint64_t field);
+	// The light attributes of an atArray at `field`: a drawable's (+0xB0) or a fragment's (+0x110), placed in the model
+	// by the bones they hang on (the skeleton of the drawable at `drawable`, in its rest pose).
+	std::vector<Light> Lights(const View& view, uint64_t field, uint64_t drawable);
 	// Drawables of a resource by kind: ydr -> one (hash 0), ydd -> name hash -> drawable, yft -> its main drawable.
 	std::map<uint32_t, uint64_t> Drawables(const View& view, const std::string& extension);
 	// The textures of a dictionary (ytd root, or a drawable's shader group dictionary).

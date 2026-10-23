@@ -139,9 +139,73 @@ namespace ue5export::drawable
 		return out;
 	}
 
-	std::vector<Light> Lights(const View& view, uint64_t field)
+	namespace
+	{
+		using Quat = std::array<float, 4>; // x, y, z, w
+		using Vec = std::array<float, 3>;
+
+		Vec Rotate(const Quat& q, const Vec& v)
+		{
+			// v + 2 w (q x v) + 2 q x (q x v)
+			const Vec u{q[0], q[1], q[2]};
+			const auto cross = [](const Vec& a, const Vec& b) { return Vec{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
+			const Vec t = cross(u, v);
+			const Vec tt = cross(u, t);
+			return {v[0] + 2 * (q[3] * t[0] + tt[0]), v[1] + 2 * (q[3] * t[1] + tt[1]), v[2] + 2 * (q[3] * t[2] + tt[2])};
+		}
+
+		Quat Multiply(const Quat& a, const Quat& b)
+		{
+			return {a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+			    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+		}
+
+		struct Pose
+		{
+			Quat rotation{0, 0, 0, 1};
+			Vec translation{};
+		};
+
+		// The rest pose of a drawable's bones in the model, by bone tag. The skeleton (drawable +0x18): +0x20 the bones,
+		// +0x5E their count; a bone (0x50 bytes): +0x00 rotation, +0x10 translation (both from its parent), +0x32
+		// parent index, +0x44 tag.
+		std::map<uint16_t, Pose> Bones(const View& view, uint64_t drawable)
+		{
+			std::map<uint16_t, Pose> out;
+			const uint64_t skeleton = view.Get<uint64_t>(drawable + 0x18);
+			if (!skeleton || !view.At(skeleton, 0x60))
+				return out;
+			const uint64_t bones = view.Get<uint64_t>(skeleton + 0x20);
+			const uint16_t count = view.Get<uint16_t>(skeleton + 0x5E);
+			std::vector<Pose> model;
+			for (uint16_t i = 0; i < count && bones && view.At(bones + 0x50u * i, 0x50); ++i)
+			{
+				const uint64_t b = bones + 0x50u * i;
+				Pose local;
+				for (int k = 0; k < 4; ++k)
+					local.rotation[k] = view.Get<float>(b + 4 * k);
+				for (int k = 0; k < 3; ++k)
+					local.translation[k] = view.Get<float>(b + 0x10 + 4 * k);
+				const uint16_t parent = view.Get<uint16_t>(b + 0x32);
+				Pose p = local;
+				if (parent < i)
+				{
+					const Pose& up = model[parent];
+					p.rotation = Multiply(up.rotation, local.rotation);
+					const Vec moved = Rotate(up.rotation, local.translation);
+					p.translation = {up.translation[0] + moved[0], up.translation[1] + moved[1], up.translation[2] + moved[2]};
+				}
+				model.push_back(p);
+				out[view.Get<uint16_t>(b + 0x44)] = p;
+			}
+			return out;
+		}
+	}
+
+	std::vector<Light> Lights(const View& view, uint64_t field, uint64_t drawable)
 	{
 		std::vector<Light> out;
+		const std::map<uint16_t, Pose> bones = Bones(view, drawable);
 		const uint64_t list = view.Get<uint64_t>(field);
 		const uint16_t count = view.Get<uint16_t>(field + 8);
 		constexpr uint32_t kStride = 0xA8;
@@ -169,8 +233,18 @@ namespace ue5export::drawable
 			l.coneInner = view.Get<float>(at + 0x8C);
 			l.coneOuter = view.Get<float>(at + 0x90);
 			const bool sane = (l.type == 1 || l.type == 2 || l.type == 4) && l.falloff > 0 && l.falloff < 500 && l.intensity >= 0 && l.intensity < 10000;
-			if (sane && l.bone == 0)
-				out.push_back(l);
+			if (!sane)
+				continue;
+			if (l.bone != 0)
+			{
+				const auto pose = bones.find(l.bone);
+				if (pose == bones.end())
+					continue; // (a bone the skeleton does not have)
+				const Vec at = Rotate(pose->second.rotation, l.position);
+				l.position = {pose->second.translation[0] + at[0], pose->second.translation[1] + at[1], pose->second.translation[2] + at[2]};
+				l.direction = Rotate(pose->second.rotation, l.direction);
+			}
+			out.push_back(l);
 		}
 		return out;
 	}

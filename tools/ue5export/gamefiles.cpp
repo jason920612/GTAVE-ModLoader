@@ -289,7 +289,7 @@ namespace ue5export
 					{
 						File file{m.archive, c, m.source + "/" + n.name};
 						const std::string name = Lower(n.name);
-						if (name.ends_with(".meta") || name.ends_with(".ymf") || name.ends_with(".xml")) // (data files, and every archive's manifest)
+						if (name.ends_with(".meta") || name.ends_with(".ymf") || name.ends_with(".xml") || name.ends_with("gtxd.ymt")) // (data files, every archive's manifest, the texture parents)
 							all_[name].push_back(file);
 						byName_[name] = std::move(file);
 					}
@@ -300,7 +300,7 @@ namespace ue5export
 		for (const auto& [path, file] : loose_)
 		{
 			const std::string name = path.substr(path.rfind('/') + 1);
-			if (name.ends_with(".meta") || name.ends_with(".ymf") || name.ends_with(".xml")) // (data files, and every archive's manifest)
+			if (name.ends_with(".meta") || name.ends_with(".ymf") || name.ends_with(".xml") || name.ends_with("gtxd.ymt")) // (data files, every archive's manifest, the texture parents)
 				all_[name].push_back(file);
 			byName_[name] = file;
 		}

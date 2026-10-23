@@ -18,6 +18,7 @@
 #include <format>
 #include <fstream>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -363,6 +364,53 @@ namespace
 		return 0;
 	}
 
+	// Where textures are: --names <file> (one name a line); every texture dictionary is searched, the dictionaries that
+	// have any of them printed with the names found.
+	int TextureFind(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		std::set<std::string> wanted;
+		std::ifstream in(g_options["names"]);
+		for (std::string line; std::getline(in, line);)
+		{
+			while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+				line.pop_back();
+			if (!line.empty())
+				wanted.insert(line);
+		}
+		std::set<std::string> found;
+		size_t scanned = 0;
+		for (const auto& [name, file] : files.Files())
+		{
+			if (!name.ends_with(".ytd"))
+				continue;
+			loader::convert::Bytes data;
+			loader::convert::Resource resource;
+			if (!files.Read(file, data, error) || !loader::convert::Read(data, resource, error))
+				continue;
+			++scanned;
+			const ue5export::drawable::View view(resource);
+			std::string hits;
+			for (const auto& t : ue5export::drawable::Textures(view, ue5export::drawable::View::kRoot))
+			{
+				std::string lower = t.name;
+				std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (wanted.contains(lower))
+				{
+					hits += " " + lower;
+					found.insert(lower);
+				}
+			}
+			if (!hits.empty())
+				std::printf("%s:%s\n", file.path.c_str(), hits.c_str());
+		}
+		std::printf("%zu dictionaries; %zu of %zu names found\n", scanned, found.size(), wanted.size());
+		return 0;
+	}
+
 	// The renderer's pack files: --pack <name> (default "pack"), --area x0,y0,x1,y1 for a test area.
 	int Pack(const loader::convert::Decryptor& decrypt)
 	{
@@ -495,6 +543,8 @@ int main(int argc, char** argv)
 		return g_options.contains("file") ? MetaDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")
 		return TextureStats(decrypt);
+	if (command == "texfind")
+		return g_options.contains("names") ? TextureFind(decrypt) : Fail("--names <file> is needed");
 	if (command == "extract")
 		return g_options.contains("file") ? Extract(decrypt) : Fail("--file <path> is needed");
 	return Fail("unknown command " + command);

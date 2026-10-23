@@ -28,6 +28,7 @@
 #include "Materials/MaterialExpressionObjectPositionWS.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionPixelDepth.h"
+#include "Materials/MaterialExpressionOneMinus.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionTime.h"
 #include "Materials/MaterialExpressionSceneDepth.h"
@@ -164,11 +165,37 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		Sum->A.Connect(0, Ripples(bSea ? 900.0f : 200.0f, 0.012f, 0.007f, -200));
 		Sum->B.Connect(0, Ripples(bSea ? 2300.0f : 450.0f, -0.006f, 0.010f, 100));
 		Add(Sum);
-		auto* Flatter = NewObject<UMaterialExpressionMultiply>(M); // (xy halved, z kept: gentler waves)
-		Flatter->A.Connect(0, Sum);
-		auto* Weights = NewObject<UMaterialExpressionConstant3Vector>(M);
-		Weights->Constant = FLinearColor(0.5f, 0.5f, 1.0f);
+		// The ripples fade out with the distance (gone at 200 m; 60 m on lakes): ripples finer than a pixel cannot be
+		// seen, their texture only aliases there (streaks towards the horizon); the roughness takes them over below.
+		auto* RippleDepth = NewObject<UMaterialExpressionPixelDepth>(M);
+		Add(RippleDepth);
+		auto* RippleFar = NewObject<UMaterialExpressionMultiply>(M);
+		RippleFar->A.Connect(0, RippleDepth);
+		RippleFar->ConstB = 1.0f / (bSea ? 20000.0f : 6000.0f);
+		Add(RippleFar);
+		auto* RippleGone = NewObject<UMaterialExpressionSaturate>(M);
+		RippleGone->Input.Connect(0, RippleFar);
+		Add(RippleGone);
+		auto* RippleNear = NewObject<UMaterialExpressionOneMinus>(M);
+		RippleNear->Input.Connect(0, RippleGone);
+		Add(RippleNear);
+		auto* RippleXY = NewObject<UMaterialExpressionMultiply>(M); // (xy halved near, z kept: gentler waves)
+		RippleXY->A.Connect(0, RippleNear);
+		RippleXY->ConstB = 0.5f;
+		Add(RippleXY);
+		auto* WeightsXY = NewObject<UMaterialExpressionAppendVector>(M);
+		WeightsXY->A.Connect(0, RippleXY);
+		WeightsXY->B.Connect(0, RippleXY);
+		Add(WeightsXY);
+		auto* One = NewObject<UMaterialExpressionConstant>(M);
+		One->R = 1.0f;
+		Add(One);
+		auto* Weights = NewObject<UMaterialExpressionAppendVector>(M);
+		Weights->A.Connect(0, WeightsXY);
+		Weights->B.Connect(0, One);
 		Add(Weights);
+		auto* Flatter = NewObject<UMaterialExpressionMultiply>(M);
+		Flatter->A.Connect(0, Sum);
 		Flatter->B.Connect(0, Weights);
 		Add(Flatter);
 		// The sea's swell over the ripples: the slopes of a wind sea (Pierson-Moskowitz spectrum, deep water dispersion)
@@ -249,8 +276,10 @@ return normalize(float3(R.xy - float2(sx, sy), R.z));
 		Specular->R = 1.0f;
 		Add(Specular);
 		Inputs->Specular.Connect(0, Specular);
-		auto* Rough = NewObject<UMaterialExpressionConstant>(M);
-		Rough->R = 0.04f;
+		auto* Rough = NewObject<UMaterialExpressionLinearInterpolate>(M); // (the ripples' slopes as roughness far off)
+		Rough->ConstA = 0.04f;
+		Rough->ConstB = 0.12f;
+		Rough->Alpha.Connect(0, RippleGone);
 		Add(Rough);
 		Inputs->Roughness.Connect(0, Rough);
 		if (Kind == kOceanFar)

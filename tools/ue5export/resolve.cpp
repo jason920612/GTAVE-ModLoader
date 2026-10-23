@@ -1,6 +1,11 @@
 #include "resolve.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <thread>
 #include <format>
 
 namespace ue5export
@@ -54,6 +59,69 @@ namespace ue5export
 		const auto& names = ParameterNames();
 		const auto it = names.find(hash);
 		return it != names.end() ? it->second : std::format("{:08x}", hash);
+	}
+
+	std::shared_ptr<const Resolver::Index> Resolver::s_index;
+
+	void Resolver::SetIndex(std::shared_ptr<const Index> index)
+	{
+		std::atomic_store(&s_index, std::move(index));
+	}
+
+	std::shared_ptr<const Resolver::Index> Resolver::BuildIndex(const GameFiles& files, const std::filesystem::path& gameDir,
+	    const loader::convert::Decryptor& decrypt, unsigned workers, const std::filesystem::path& cache)
+	{
+		auto index = std::make_shared<Index>();
+		{
+			std::ifstream in(cache);
+			for (std::string line; std::getline(in, line);)
+				if (const size_t tab = line.find('\t'); tab != std::string::npos)
+					(*index)[line.substr(0, tab)] = static_cast<uint32_t>(std::stoul(line.substr(tab + 1), nullptr, 16));
+		}
+		if (!index->empty())
+			return index;
+		std::vector<std::string> names;
+		for (const auto& [name, file] : files.Files())
+			if (name.ends_with(".ytd"))
+				names.push_back(name);
+		std::atomic<size_t> next = 0;
+		std::mutex mutex;
+		std::vector<std::thread> threads;
+		for (unsigned w = 0; w < std::max(1u, workers); ++w)
+			threads.emplace_back([&] {
+				GameFiles own;
+				std::string error;
+				if (!own.Open(gameDir, decrypt, error))
+					return;
+				for (size_t i; (i = next++) < names.size();)
+				{
+					const GameFiles::File* f = own.Find(names[i]);
+					Bytes data;
+					loader::convert::Resource resource;
+					if (!f || !own.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
+						continue;
+					const drawable::View view(resource);
+					const uint32_t dictionary = Joaat(names[i].substr(0, names[i].size() - 4));
+					const bool hi = names[i].find('+') != std::string::npos;
+					std::lock_guard lock(mutex);
+					for (const auto& t : drawable::Textures(view, drawable::View::kRoot))
+					{
+						// (the plain dictionary rather than its +hi / +hidr twin: the lookup tries +hi itself)
+						auto [it, added] = index->try_emplace(Lower(t.name), dictionary);
+						if (!added && !hi && names[i].find('+') == std::string::npos)
+							continue;
+						if (!added && hi)
+							continue;
+						it->second = dictionary;
+					}
+				}
+			});
+		for (auto& t : threads)
+			t.join();
+		std::ofstream out(cache);
+		for (const auto& [name, dictionary] : *index)
+			out << name << '\t' << std::hex << dictionary << std::dec << '\n';
+		return index;
 	}
 
 	Resolver::Resolver(const GameFiles& files, size_t cacheBytes) : files_(files), cacheBytes_(cacheBytes)
@@ -160,8 +228,16 @@ namespace ue5export
 		};
 		Bytes data;
 		std::string error;
-		if (const GameFiles::File* f = files_.Find("gtxd.ymt"); f && files_.Read(*f, data, error))
+		// (every version of every *gtxd.ymt: the base game's, the DLCs' (mph4_gtxd.ymt), not just the one Find gives)
+		std::vector<GameFiles::File> ymts;
+		for (const auto& [name, file] : files_.Files())
+			if (name.ends_with("gtxd.ymt"))
+				for (const GameFiles::File& v : files_.AllOf(name))
+					ymts.push_back(v);
+		for (const GameFiles::File& f : ymts)
 		{
+			if (!files_.Read(f, data, error))
+				continue;
 			std::vector<std::string> values;
 			for (size_t i = 0; i + 6 < data.size(); ++i)
 				if (data[i] == 0xFD && data[i + 1] == 0xFF)
@@ -224,7 +300,7 @@ namespace ue5export
 		const auto d = drawables.find(inDictionary);
 		if (d == drawables.end() || !drawable::Read(view, d->second, out.model, error))
 			return error = std::format("{} has no drawable {:08x} {}", it->second, inDictionary, error), false;
-		out.model.lights = drawable::Lights(view, ext == "yft" ? drawable::View::kRoot + 0x110 : d->second + 0xB0);
+		out.model.lights = drawable::Lights(view, ext == "yft" ? drawable::View::kRoot + 0x110 : d->second + 0xB0, d->second);
 		out.file = f->path;
 
 		const std::string name = Stem(a.name);
@@ -245,7 +321,12 @@ namespace ue5export
 				else if (const auto e = embedded.find(key); e != embedded.end())
 					t = {nullptr, e->second, name, key}; // (the model holds it)
 				else if (!Chain(a.textureDictionary, key, t) && !In(Joaat("mapdetail"), key, t)) // (env_*: the map's shared detail)
-					found = false;
+				{
+					// (in a dictionary off the chain: the index of all of them)
+					const auto index = std::atomic_load(&s_index);
+					const auto at = index ? index->find(key) : Index::const_iterator{};
+					found = index && at != index->end() && In(at->second, key, t);
+				}
 				if (found)
 					textures[param] = std::move(t);
 				else
