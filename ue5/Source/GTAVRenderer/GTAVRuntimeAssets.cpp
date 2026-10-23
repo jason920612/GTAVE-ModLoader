@@ -713,7 +713,31 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	}
 	if (M.kind == GTAVPack::kWater)
 	{
-		if (M.color[0] > 0 || M.color[1] > 0 || M.color[2] > 0)
+		// How murky the water is, by the game's water shader: rivers carry silt (attenuation some 2.5 per metre, the
+		// water itself a greenish brown: a hand's depth hides the bed), pools and fountains are clear (0.15, blue),
+		// the rest (ponds) between.
+		static const uint32 Rivers[] = {GTAVHash(TEXTVIEW("water_river")), GTAVHash(TEXTVIEW("water_rivershallow")),
+			GTAVHash(TEXTVIEW("water_riverlod")), GTAVHash(TEXTVIEW("water_riverocean")), GTAVHash(TEXTVIEW("water_riverfoam"))};
+		static const uint32 Pools[] = {GTAVHash(TEXTVIEW("water_fountain")), GTAVHash(TEXTVIEW("water_poolenv"))};
+		bool bRiver = false, bPool = false;
+		for (const uint32 H : Rivers)
+		{
+			bRiver |= M.effect == H;
+		}
+		for (const uint32 H : Pools)
+		{
+			bPool |= M.effect == H;
+		}
+		if (bRiver)
+		{
+			MI->SetScalarParameterValue(TEXT("Sigma"), 2.5f);
+			MI->SetVectorParameterValue(TEXT("WaterColor"), FLinearColor(0.35f, 0.38f, 0.26f));
+		}
+		else if (bPool)
+		{
+			MI->SetScalarParameterValue(TEXT("Sigma"), 0.15f);
+		}
+		if (!bRiver && (M.color[0] > 0 || M.color[1] > 0 || M.color[2] > 0))
 		{
 			MI->SetVectorParameterValue(TEXT("WaterColor"), FLinearColor(M.color[0], M.color[1], M.color[2]));
 		}

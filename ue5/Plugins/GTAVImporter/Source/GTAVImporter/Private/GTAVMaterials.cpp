@@ -285,13 +285,33 @@ return normalize(float3(R.xy - float2(sx, sy), R.z));
 		Dark->ConstB = 0.12f;
 		Add(Dark);
 		Inputs->BaseColor.Connect(0, Dark);
+		// Water reflects 2% straight on (F0 0.02: the engine's Specular 0.25).
 		auto* Specular = NewObject<UMaterialExpressionConstant>(M);
-		Specular->R = 1.0f;
+		Specular->R = 0.25f;
 		Add(Specular);
 		Inputs->Specular.Connect(0, Specular);
-		auto* Rough = NewObject<UMaterialExpressionLinearInterpolate>(M); // (the ripples' slopes as roughness far off)
+		// The ripples too fine to see become roughness (Cox and Munk's sea surface slopes: mean square slope
+		// 0.003 + 0.00512 U for a wind of U m/s; GGX alpha about that slope, the engine's roughness its square root),
+		// pools and rivers sheltered (half the wind). Flat, the water mirrored the white haze at the horizon.
+		auto* Wind = NewObject<UMaterialExpressionCollectionParameter>(M);
+		Wind->Collection = Collection();
+		Wind->ParameterName = TEXT("WindSpeed");
+		Wind->ParameterId = Wind->Collection->GetParameterId(TEXT("WindSpeed"));
+		Add(Wind);
+		auto* FarRough = NewObject<UMaterialExpressionCustom>(M);
+		FarRough->Description = TEXT("Cox-Munk roughness");
+		FarRough->OutputType = CMOT_Float1;
+		FarRough->Code = bSea ? TEXT("return sqrt(sqrt(0.003 + 0.00512 * max(Wind, 0)));") : TEXT("return sqrt(sqrt(0.003 + 0.00512 * 0.5 * max(Wind, 0)));");
+		FarRough->Inputs.Reset();
+		{
+			FCustomInput& In = FarRough->Inputs.AddDefaulted_GetRef();
+			In.InputName = TEXT("Wind");
+			In.Input.Connect(0, Wind);
+		}
+		Add(FarRough);
+		auto* Rough = NewObject<UMaterialExpressionLinearInterpolate>(M);
 		Rough->ConstA = 0.04f;
-		Rough->ConstB = 0.12f;
+		Rough->B.Connect(0, FarRough);
 		Rough->Alpha.Connect(0, RippleGone);
 		Add(Rough);
 		Inputs->Roughness.Connect(0, Rough);
@@ -313,8 +333,9 @@ return normalize(float3(R.xy - float2(sx, sy), R.z));
 		Add(Scene);
 		auto* Here = NewObject<UMaterialExpressionPixelDepth>(M);
 		Add(Here);
-		auto* Sigma = NewObject<UMaterialExpressionConstant>(M);
-		Sigma->R = bSea ? 0.35f : 0.6f;
+		auto* Sigma = NewObject<UMaterialExpressionScalarParameter>(M); // (per metre; the renderer's per water shader)
+		Sigma->ParameterName = TEXT("Sigma");
+		Sigma->DefaultValue = bSea ? 0.35f : 0.6f;
 		Add(Sigma);
 		auto* AtLeast = NewObject<UMaterialExpressionCustom>(M);
 		AtLeast->OutputType = CMOT_Float1;
