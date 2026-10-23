@@ -15,19 +15,21 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 6;
+	constexpr uint32_t kVersion = 7;
 	constexpr uint32_t kMaxGroups = 1024;
 	constexpr uint32_t kMaxProxies = 64;
 	constexpr uint32_t kTextures = 3; // the renderer's frame for game frame s is in texture s % kTextures
 	constexpr uint32_t kViews = 8;
 
-	// A ped or vehicle near the player: the game's picture shows it, the renderer casts its shadow on its own ground.
+	// A ped or vehicle near the player: the game's picture shows it, the renderer casts its shadow on its own ground
+	// (and a vehicle's lamps light it).
 	struct Proxy
 	{
 		float position[3];                // the game's space (metres)
 		float forward[3], up[3];          // unit
 		float boundsMin[3], boundsMax[3]; // the model's (local: x right, y forward, z up)
 		uint32_t kind;                    // 1 ped, 2 vehicle
+		uint32_t lights;                  // a vehicle's: 1 headlights on, 2 full beam (GET_VEHICLE_LIGHTS_STATE)
 	};
 
 	// The camera a game frame was rendered with (Streamline's constants).

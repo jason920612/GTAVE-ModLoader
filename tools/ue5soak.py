@@ -5,7 +5,7 @@ and then is somewhere else on the map (a long drive in a moment); the clock runs
 minutes some seconds are recorded as video; all along, the frame rate and the slowest frames, GPU memory and the
 renderer's own timings are logged.
 
-usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>]
+usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>] [--hour <h>]
        (the game running with test control: gtactl.py launch)
 Writes <out>/soak.csv (every 15 s), <out>/events.txt, <out>/v###_<what>.mp4, and prints a summary.
 """
@@ -209,6 +209,7 @@ def main(args):
     minutes = float(args[1]) if len(args) > 1 and not args[1].startswith("--") else 30
     video_every = float(args[args.index("--video-every") + 1]) if "--video-every" in args else 3
     random.seed(int(args[args.index("--seed") + 1]) if "--seed" in args else 1)
+    hour = int(args[args.index("--hour") + 1]) if "--hour" in args else 7
     os.makedirs(out_dir, exist_ok=True)
     events = open(os.path.join(out_dir, "events.txt"), "a", encoding="utf-8")
     g = Game(events)
@@ -216,7 +217,7 @@ def main(args):
     state = {}
     threading.Thread(target=monitor, args=(out_dir, stop, state), daemon=True).start()
     calm(g)
-    g.send("time 7 0 run")
+    g.send(f"time {hour} 0 run")
     g.send(f"weather {random.choice(WEATHERS[:3])}")
     start = time.time()
     next_video = start + 60

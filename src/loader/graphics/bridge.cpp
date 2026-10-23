@@ -43,7 +43,8 @@ namespace loader::graphics::bridge
 		                   kIsPedInAnyVehicle = 0x997ABD671D25CA0B, kDoesEntityExist = 0x7239B21A38F536BA,
 		                   kIsEntityVisible = 0x47D6F43D77935C75, kGetEntityMatrix = 0xECB2FC7235A7D137,
 		                   kGetEntityModel = 0x9F47B058362C84B5, kGetModelDimensions = 0x03E8D3D5F549087A,
-		                   kGetInteriorFromPrimaryView = 0xE7D267EC6CA966C3, kGetRoomKeyForGameViewport = 0xA6575914D2A0B450;
+		                   kGetInteriorFromPrimaryView = 0xE7D267EC6CA966C3, kGetRoomKeyForGameViewport = 0xA6575914D2A0B450,
+		                   kGetVehicleLightsState = 0xB91B4C20085BD12F;
 
 		// Game thread.
 		HANDLE g_mapping = nullptr;
@@ -549,6 +550,13 @@ namespace loader::graphics::bridge
 				p.boundsMin[0] = it->second.first.x, p.boundsMin[1] = it->second.first.y, p.boundsMin[2] = it->second.first.z;
 				p.boundsMax[0] = it->second.second.x, p.boundsMax[1] = it->second.second.y, p.boundsMax[2] = it->second.second.z;
 				p.kind = kind;
+				p.lights = 0;
+				if (kind == 2)
+				{
+					int64_t on = 0, full = 0; // (script BOOLs: 8-byte slots)
+					natives::Invoke<int32_t>(kGetVehicleLightsState, entity, &on, &full);
+					p.lights = (on & 1 ? 1u : 0u) | (full & 1 ? 2u : 0u);
+				}
 			};
 			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
 			if (const int32_t vehicle = natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0))

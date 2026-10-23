@@ -89,7 +89,26 @@ bool FGTAVWorldData::Load(const FGTAVPackFile& World, FString& OutError)
 			Bounds[I] = FBox3f(P, P);
 			continue;
 		}
-		const FBox3f Local(FVector3f(A->boundsMin[0], A->boundsMin[1], A->boundsMin[2]), FVector3f(A->boundsMax[0], A->boundsMax[1], A->boundsMax[2]));
+		FBox3f Local(FVector3f(A->boundsMin[0], A->boundsMin[1], A->boundsMin[2]), FVector3f(A->boundsMax[0], A->boundsMax[1], A->boundsMax[2]));
+		// (an interior's archetype has no box of its own: its rooms' (room 0 is the limbo outside). Else its distance is
+		// to its origin, and a long one - a tunnel - is not there yet when the camera is at its mouth)
+		if (E.interiorPlacement != GTAVPack::kNone && E.interiorPlacement < uint32(InteriorPlacements.Num()))
+		{
+			const uint32 In = InteriorPlacements[E.interiorPlacement].interior;
+			if (In < uint32(Interiors.Num()))
+			{
+				FBox3f RoomBox(ForceInit);
+				for (uint32 R = 1; R < Interiors[In].roomCount && Interiors[In].firstRoom + R < uint32(Rooms.Num()); ++R)
+				{
+					const GTAVPack::Room& Room = Rooms[Interiors[In].firstRoom + R];
+					RoomBox += FBox3f(FVector3f(Room.boundsMin[0], Room.boundsMin[1], Room.boundsMin[2]), FVector3f(Room.boundsMax[0], Room.boundsMax[1], Room.boundsMax[2]));
+				}
+				if (RoomBox.IsValid)
+				{
+					Local = RoomBox;
+				}
+			}
+		}
 		const FTransform3f T(FQuat4f(E.rotation[0], E.rotation[1], E.rotation[2], E.rotation[3]), P, FVector3f(E.scaleXY, E.scaleXY, E.scaleZ));
 		Bounds[I] = Local.TransformBy(T);
 	}

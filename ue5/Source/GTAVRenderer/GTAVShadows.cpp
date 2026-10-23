@@ -1,6 +1,8 @@
 #include "GTAVShadows.h"
 
+#include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -14,7 +16,20 @@ namespace
 		TWeakObjectPtr<UWorld> World;
 		TWeakObjectPtr<AActor> Owner;
 		TArray<TWeakObjectPtr<UStaticMeshComponent>> Cylinders, Boxes;
+		TArray<TWeakObjectPtr<USpotLightComponent>> Heads;
+		TArray<TWeakObjectPtr<UPointLightComponent>> Tails;
 	};
+
+	// The vehicles whose lamps are real lights (the nearest: the player's own first); only the first one's headlamps cast
+	// shadows (a moving light's shadow map is drawn anew every frame: with two dozen of them the shadow pass was the biggest
+	// part of a night frame).
+	constexpr int32 kLitVehicles = 12;
+	// A headlamp: a low beam's hot spot is narrow, a degree or two below the horizon (some 10,000-20,000 cd at its
+	// brightest, on the road 30 m ahead about 15 lux), and falls off fast below it (the road a few metres ahead gets a
+	// few thousand cd); full beam some 40,000 cd, straight ahead. A spot light is round, so the hot spot is kept small
+	// and the cone short, else the road right in front of the car is lit as by a floodlight. Warm white (4,300 K). A
+	// tail lamp: a few candela of red, the brake lamp's glow not known.
+	constexpr float kLowBeam = 8000.0f, kFullBeam = 40000.0f, kTail = 5.0f;
 
 	// A shape that is not drawn but casts shadows (and occludes the light bounced around: Lumen sees it).
 	UStaticMeshComponent* Make(AActor* Owner, UStaticMesh* Mesh)
@@ -68,7 +83,50 @@ void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32
 		return;
 	}
 	AActor* Owner = Pool.Owner.Get();
-	int32 UsedCylinders = 0, UsedBoxes = 0;
+	int32 UsedCylinders = 0, UsedBoxes = 0, UsedHeads = 0, UsedTails = 0, LitVehicles = 0;
+	const auto Head = [&](const FVector& Where, const FRotator& Facing, bool bFull, bool bShadows) {
+		if (UsedHeads == Pool.Heads.Num())
+		{
+			USpotLightComponent* L = NewObject<USpotLightComponent>(Owner);
+			L->SetMobility(EComponentMobility::Movable);
+			L->IntensityUnits = ELightUnits::Candelas;
+			L->SetUseTemperature(true);
+			L->SetTemperature(4300.0f);
+			L->SetupAttachment(Owner->GetRootComponent());
+			L->RegisterComponent();
+			Pool.Heads.Add(L);
+		}
+		if (USpotLightComponent* L = Pool.Heads[UsedHeads++].Get())
+		{
+			L->SetWorldLocationAndRotation(Where, Facing);
+			L->SetIntensity(bFull ? kFullBeam : kLowBeam);
+			L->SetAttenuationRadius(bFull ? 12000.0f : 5000.0f);
+			L->SetInnerConeAngle(bFull ? 3.0f : 2.0f);
+			L->SetOuterConeAngle(bFull ? 15.0f : 20.0f);
+			L->SetCastShadows(bShadows);
+			L->SetVisibility(true);
+		}
+	};
+	const auto Tail = [&](const FVector& Where) {
+		if (UsedTails == Pool.Tails.Num())
+		{
+			UPointLightComponent* L = NewObject<UPointLightComponent>(Owner);
+			L->SetMobility(EComponentMobility::Movable);
+			L->IntensityUnits = ELightUnits::Candelas;
+			L->SetLightColor(FLinearColor(1.0f, 0.02f, 0.01f));
+			L->SetIntensity(kTail);
+			L->SetAttenuationRadius(400.0f);
+			L->SetCastShadows(false);
+			L->SetupAttachment(Owner->GetRootComponent());
+			L->RegisterComponent();
+			Pool.Tails.Add(L);
+		}
+		if (UPointLightComponent* L = Pool.Tails[UsedTails++].Get())
+		{
+			L->SetWorldLocation(Where);
+			L->SetVisibility(true);
+		}
+	};
 	// (the engine's cylinder and cube: 100 cm across and high, centred)
 	const auto Place = [&](TArray<TWeakObjectPtr<UStaticMeshComponent>>& Shapes, int32& Used, UStaticMesh* Mesh, const FVector& Centre,
 						   const FRotator& Rotation, const FVector& Size) {
@@ -120,6 +178,19 @@ void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32
 			Place(Pool.Boxes, UsedBoxes, Cube, At(Body), Rotation, FVector(Extent.X, Extent.Y, Waist - Clear));
 			const FVector Cabin((Min.X + Max.X) * 0.5 - Extent.X * 0.05, (Min.Y + Max.Y) * 0.5, Min.Z + (Waist + Extent.Z) * 0.5);
 			Place(Pool.Boxes, UsedBoxes, Cube, At(Cabin), Rotation, FVector(Extent.X * 0.55, Extent.Y * 0.85, Extent.Z - Waist));
+			// Its lamps (just outside its bounds: the body's shape would shade them).
+			if ((P.lights & 1) && LitVehicles < kLitVehicles)
+			{
+				++LitVehicles;
+				const bool bFull = (P.lights & 2) != 0;
+				const double Side = Extent.Y * 0.36, Height = Min.Z + Extent.Z * 0.3;
+				const FRotator Beam = FRotationMatrix::MakeFromXZ(Axes.TransformVector(FRotator(bFull ? 0.0f : -1.5f, 0.0f, 0.0f).Vector()), Up).Rotator();
+				for (const double S : {-Side, Side})
+				{
+					Head(At(FVector(Max.X + 15.0, (Min.Y + Max.Y) * 0.5 + S, Height)), Beam, bFull, LitVehicles == 1);
+					Tail(At(FVector(Min.X - 15.0, (Min.Y + Max.Y) * 0.5 + S * 1.05, Min.Z + Extent.Z * 0.4)));
+				}
+			}
 		}
 	}
 	for (int32 I = UsedCylinders; I < Pool.Cylinders.Num(); ++I)
@@ -134,6 +205,20 @@ void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32
 		if (UStaticMeshComponent* C = Pool.Boxes[I].Get())
 		{
 			C->SetVisibility(false);
+		}
+	}
+	for (int32 I = UsedHeads; I < Pool.Heads.Num(); ++I)
+	{
+		if (USpotLightComponent* L = Pool.Heads[I].Get())
+		{
+			L->SetVisibility(false);
+		}
+	}
+	for (int32 I = UsedTails; I < Pool.Tails.Num(); ++I)
+	{
+		if (UPointLightComponent* L = Pool.Tails[I].Get())
+		{
+			L->SetVisibility(false);
 		}
 	}
 }

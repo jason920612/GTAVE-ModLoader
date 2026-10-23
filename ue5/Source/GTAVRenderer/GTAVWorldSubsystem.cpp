@@ -576,7 +576,13 @@ void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 	const auto Add = [&](uint32 Index) {
 		const GTAVPack::InteriorEntity& X = Data.InteriorEntities[Index];
 		const float Range = (X.lodDist > 0 ? X.lodDist : 100.0f) * 100.0f * DistanceScale;
-		const float D = FVector::Dist(Center, Placement.TransformPosition(Position(X.position)));
+		// (to its box: a tunnel's pieces are long)
+		const FTransform Local(Rotation(X.rotation), Position(X.position), FVector(X.scaleXY, X.scaleXY, X.scaleZ));
+		const GTAVPack::Archetype* A = Data.Archetype(X.archetype);
+		const FBox Box = A && A->boundsMax[0] > A->boundsMin[0]
+			? FBox(Position(A->boundsMin), Position(A->boundsMax)).TransformBy(Local * Placement)
+			: FBox(Placement.TransformPosition(Position(X.position)), Placement.TransformPosition(Position(X.position)));
+		const float D = FMath::Sqrt(float(Box.ComputeSquaredDistanceToPoint(Center)));
 		if (D < Range)
 		{
 			Want(kInteriorKey | uint64(E.interiorPlacement) << 32 | Index, X.archetype, D);
