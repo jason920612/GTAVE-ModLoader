@@ -8,7 +8,7 @@
 
 namespace GTAVPack
 {
-	constexpr uint32_t kVersion = 3;
+	constexpr uint32_t kVersion = 4;
 
 	enum Kind : uint32_t
 	{
@@ -119,6 +119,7 @@ namespace GTAVPack
 		kLayerBump3,
 		kHeight,
 		kDirt,
+		kLookup, // terrain: lookupTexture (layer weights where the vertex alpha lets them; the second UV set)
 		kSlotCount,
 	};
 

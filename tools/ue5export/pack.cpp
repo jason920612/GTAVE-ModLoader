@@ -182,6 +182,7 @@ namespace ue5export
 				std::map<uint32_t, uint8_t> m;
 				const std::pair<const char*, GTAVPack::Slot> names[] = {{"DiffuseTex", GTAVPack::kDiffuse}, {"BumpTex", GTAVPack::kBump},
 				    {"SpecularTex", GTAVPack::kSpecular}, {"DetailTex", GTAVPack::kDetail}, {"TintPaletteTex", GTAVPack::kTintPalette},
+				    {"LookupTexture", GTAVPack::kLookup},
 				    {"DiffuseTexture_layer0", GTAVPack::kLayerDiffuse0}, {"DiffuseTexture_layer1", GTAVPack::kLayerDiffuse1},
 				    {"DiffuseTexture_layer2", GTAVPack::kLayerDiffuse2}, {"DiffuseTexture_layer3", GTAVPack::kLayerDiffuse3},
 				    {"BumpTexture_layer0", GTAVPack::kLayerBump0}, {"BumpTexture_layer1", GTAVPack::kLayerBump1},

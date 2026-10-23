@@ -37,6 +37,7 @@
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionViewProperty.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
@@ -357,10 +358,48 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	}
 	if (Kind == kTerrain)
 	{
-		// Four layers blended by the vertex colour (the mesh carries the game's second colour set there):
-		// green between layers 0 / 1 and 2 / 3, blue between those two.
-		auto* Weights = NewObject<UMaterialExpressionVertexColor>(M);
-		M->GetExpressionCollection().AddExpression(Weights);
+		// Four layers blended as the game's terrain_cb shaders do (their pixel shaders, sga_win32_60_final.awc; the
+		// mesh carries the game's second colour set as the vertex colour): weights W = the vertex colour's rgb, or
+		// where the material has a lookup texture (sampled with the second UV set) lerp(lookup.rgb, rgb, alpha);
+		// green picks the pair (0 / 1 or 2 / 3), blue the layer in it, red darkens all: layer 0 (1-r)(1-g)(1-b),
+		// 1 (1-r)(1-g)b, 2 (1-r)g(1-b), 3 (1-r)gb.
+		auto* Vertex = NewObject<UMaterialExpressionVertexColor>(M);
+		M->GetExpressionCollection().AddExpression(Vertex);
+		auto* LookupUv = NewObject<UMaterialExpressionTextureCoordinate>(M);
+		LookupUv->CoordinateIndex = 1;
+		M->GetExpressionCollection().AddExpression(LookupUv);
+		auto* Lookup = Sample(TEXT("LookupTex"), BlackMask(), SAMPLERTYPE_Masks, -1200, -600);
+		Lookup->Coordinates.Connect(0, LookupUv);
+		auto* UseLookup = NewObject<UMaterialExpressionScalarParameter>(M);
+		UseLookup->ParameterName = TEXT("UseLookup");
+		UseLookup->DefaultValue = 0.0f;
+		M->GetExpressionCollection().AddExpression(UseLookup);
+		auto* Weighed = NewObject<UMaterialExpressionCustom>(M);
+		Weighed->Description = TEXT("Terrain weights");
+		Weighed->OutputType = CMOT_Float3;
+		Weighed->Code = TEXT("float3 W = lerp(Rgb, lerp(Lookup.rgb, Rgb, Alpha), UseLookup);\nreturn saturate(W);");
+		Weighed->Inputs.Reset();
+		for (const TTuple<const TCHAR*, UMaterialExpression*, int32>& I : {MakeTuple(TEXT("Rgb"), (UMaterialExpression*)Vertex, 0),
+				 MakeTuple(TEXT("Alpha"), (UMaterialExpression*)Vertex, 4), MakeTuple(TEXT("Lookup"), (UMaterialExpression*)Lookup, 0),
+				 MakeTuple(TEXT("UseLookup"), (UMaterialExpression*)UseLookup, 0)})
+		{
+			FCustomInput& In = Weighed->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Get<0>();
+			In.Input.Connect(I.Get<2>(), I.Get<1>());
+		}
+		M->GetExpressionCollection().AddExpression(Weighed);
+		auto* WR = NewObject<UMaterialExpressionComponentMask>(M);
+		WR->Input.Connect(0, Weighed);
+		WR->R = true;
+		M->GetExpressionCollection().AddExpression(WR);
+		auto* WG = NewObject<UMaterialExpressionComponentMask>(M);
+		WG->Input.Connect(0, Weighed);
+		WG->G = true;
+		M->GetExpressionCollection().AddExpression(WG);
+		auto* WB = NewObject<UMaterialExpressionComponentMask>(M);
+		WB->Input.Connect(0, Weighed);
+		WB->B = true;
+		M->GetExpressionCollection().AddExpression(WB);
 		const auto Blend = [&](const TCHAR* Prefix, UTexture2D* Default, EMaterialSamplerType Type, int32 Y) {
 			UMaterialExpressionTextureSampleParameter2D* L[4];
 			for (int32 I = 0; I < 4; ++I)
@@ -373,17 +412,24 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 				Pair[I] = NewObject<UMaterialExpressionLinearInterpolate>(M);
 				Pair[I]->A.Connect(0, L[2 * I]);
 				Pair[I]->B.Connect(0, L[2 * I + 1]);
-				Pair[I]->Alpha.Connect(2, Weights);
+				Pair[I]->Alpha.Connect(0, WB);
 				M->GetExpressionCollection().AddExpression(Pair[I]);
 			}
 			auto* Out = NewObject<UMaterialExpressionLinearInterpolate>(M);
 			Out->A.Connect(0, Pair[0]);
 			Out->B.Connect(0, Pair[1]);
-			Out->Alpha.Connect(3, Weights);
+			Out->Alpha.Connect(0, WG);
 			M->GetExpressionCollection().AddExpression(Out);
 			return Out;
 		};
-		Inputs->BaseColor.Connect(0, Blend(TEXT("DiffuseTexture_layer"), White, SAMPLERTYPE_Color, -1200));
+		auto* Dark = NewObject<UMaterialExpressionOneMinus>(M);
+		Dark->Input.Connect(0, WR);
+		M->GetExpressionCollection().AddExpression(Dark);
+		auto* Colour = NewObject<UMaterialExpressionMultiply>(M);
+		Colour->A.Connect(0, Blend(TEXT("DiffuseTexture_layer"), White, SAMPLERTYPE_Color, -1200));
+		Colour->B.Connect(0, Dark);
+		M->GetExpressionCollection().AddExpression(Colour);
+		Inputs->BaseColor.Connect(0, Colour);
 		Inputs->Normal.Connect(0, Blend(TEXT("BumpTexture_layer"), FlatNormal, SAMPLERTYPE_Normal, 0));
 		auto* Rough = NewObject<UMaterialExpressionConstant>(M);
 		Rough->R = 0.85f;

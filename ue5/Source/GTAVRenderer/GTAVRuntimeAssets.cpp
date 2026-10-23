@@ -101,6 +101,7 @@ namespace
 		case GTAVPack::kLayerBump1: return TEXT("BumpTexture_layer1");
 		case GTAVPack::kLayerBump2: return TEXT("BumpTexture_layer2");
 		case GTAVPack::kLayerBump3: return TEXT("BumpTexture_layer3");
+		case GTAVPack::kLookup: return TEXT("LookupTex");
 		default: return nullptr; // (not used by the masters yet)
 		}
 	}
@@ -318,10 +319,11 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			Out.TangentX = Tangent;
 			Out.TangentY = FVector3f::CrossProduct(Normal, Tangent).GetSafeNormal() * Sign;
 			Out.TangentZ = Normal;
-			// (the game's bytes as they are; terrain: the blend weights are the second colour set's green and blue)
+			// (the game's bytes as they are; terrain: the second colour set, its rgba the layers' weights as the game's
+			// terrain shaders take them)
 			if (bTerrain)
 			{
-				Out.Color = FColor(C0 ? C0[4 * X] : 255, C1[4 * X + 1], C1[4 * X + 2], 255);
+				Out.Color = FColor(C1[4 * X], C1[4 * X + 1], C1[4 * X + 2], C1[4 * X + 3]);
 			}
 			else
 			{
@@ -678,7 +680,10 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 			continue;
 		}
 		const bool bNormal = Slot == GTAVPack::kBump || (Slot >= GTAVPack::kLayerBump0 && Slot <= GTAVPack::kLayerBump3);
-		const EUsage Usage = Slot == GTAVPack::kTintPalette ? EUsage::Palette : bNormal ? EUsage::Normal : Slot == GTAVPack::kSpecular ? EUsage::Linear : EUsage::Color;
+		const EUsage Usage = Slot == GTAVPack::kTintPalette ? EUsage::Palette
+			: bNormal										 ? EUsage::Normal
+			: Slot == GTAVPack::kSpecular || Slot == GTAVPack::kLookup ? EUsage::Linear
+															 : EUsage::Color;
 		int32 Width = 0, Height = 0;
 		if (UTexture2D* T = Texture(M.textures[Slot], Usage, &Width, &Height))
 		{
@@ -689,6 +694,10 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 				Use.Textures.Add(CacheKey);
 			}
 			MI->SetTextureParameterValue(Parameter, T);
+			if (Slot == GTAVPack::kLookup)
+			{
+				MI->SetScalarParameterValue(TEXT("UseLookup"), 1.0f);
+			}
 			if (Usage == EUsage::Palette)
 			{
 				MI->SetScalarParameterValue(TEXT("UseTint"), 1.0f);
