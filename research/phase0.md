@@ -2604,5 +2604,12 @@
   整條河是白的。改為：依 shader 分混濁度（water_river* 2.5/m、黃綠棕；water_fountain／poolenv 0.15/m；其他 0.6），看不見的漣漪
   斜率換成粗糙度（Cox–Munk：均方斜率 0.003 + 0.00512U，GGX α ≈ 斜率，引擎粗糙度 √α；河湖風速減半），水的 F0 0.02（Specular 0.25，
   原本 1.0 = 0.08）。
+- **沙灘**（Del Perro 碼頭邊，`cam -1480 -1150 40 110 -8 60`）：terrain_cb_w_4lyr_cm_pxm_tnt 的網格只有第一組頂點色；遊戲這類 shader
+  也要第二組，缺的串流給 0（沙灘是亮的；若是 1，(1−r) 會全黑），權重全由 lookupTexture（cm：colour map，rsn_os_beachmask）決定。
+  之前拿第一組（R≈0.8 的環境遮蔽）當權重，沙灘近黑。tnt 的染色：層色 = lerp(D, tinted, tintBlendLayer_i)，tinted =
+  desaturateTint ? lerp(灰(T), T, blend)·D : T·平均(D)，T 是調色盤（頂點 shader 算的 TEXCOORD7）；材質不覆寫這些常數（用 shader
+  的預設值，在 SGD2 目錄的二進位區塊，尚未解出）；vb_35 的調色盤是灰階（濕／乾沙的明暗），尚未做。
+- **岸邊泡沫**：water_terrainfoam（vb_35_foam1，bucket 2）沒有貼圖，UE 用預設白貼圖成一條刺白的帶。改為 M_GTAV_Foam：遊戲的
+  waterfoam（密度在綠色通道）當遮罩、世界座標 8 m 平鋪緩慢漂移、× 頂點 alpha，白色（泡沫反照率約 0.6）、粗糙。
 - 對照時相機別放進建築的包圍範圍：`cam 262 -1010 50` 在 dt1_18_build3（x 248–283、y −1029～−988、z 28–65）裡面，眼前那面牆
   背面剔除，看起來「牆不見了」，遊戲畫面也一樣。

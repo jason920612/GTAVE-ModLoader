@@ -960,6 +960,73 @@ return Star / t * E / 1.05e-6;                  // over the texel's solid angle 
 	return Masters.Add(kStars, M);
 }
 
+// Foam on the shore (M_GTAV_Foam): white water (foam reflects some 0.6 of the light, diffusely) where the game's foam
+// map (waterfoam: its density in green) has it, over the world (8 m across, drifting), faded by the mesh's vertex
+// alpha as the game fades it towards the sand.
+UMaterial* FGTAVMaterials::Foam()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Foam");
+	if (UMaterial** Found = Masters.Find(kFoam))
+	{
+		return *Found;
+	}
+	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
+	{
+		return Masters.Add(kFoam, Existing);
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterial* M = NewObject<UMaterial>(Package, TEXT("M_GTAV_Foam"), RF_Public | RF_Standalone);
+	M->BlendMode = BLEND_Translucent;
+	M->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
+	M->bUsedWithNanite = true;
+	M->bUseTranslucencyVertexFog = true;
+	M->bComputeFogPerPixel = true;
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	auto* World = Add(NewObject<UMaterialExpressionWorldPosition>(M));
+	auto* XY = NewObject<UMaterialExpressionComponentMask>(M);
+	XY->Input.Connect(0, World);
+	XY->R = XY->G = true;
+	Add(XY);
+	auto* Scale = NewObject<UMaterialExpressionDivide>(M);
+	Scale->A.Connect(0, XY);
+	Scale->ConstB = 800.0f;
+	Add(Scale);
+	auto* Drift = NewObject<UMaterialExpressionPanner>(M);
+	Drift->Coordinate.Connect(0, Scale);
+	Drift->SpeedX = 0.004f;
+	Drift->SpeedY = 0.007f;
+	Add(Drift);
+	auto* Map = NewObject<UMaterialExpressionTextureSampleParameter2D>(M);
+	Map->ParameterName = TEXT("FoamTex");
+	Map->Texture = BlackMask();
+	Map->SamplerType = SAMPLERTYPE_Masks;
+	Map->Coordinates.Connect(0, Drift);
+	Add(Map);
+	auto* Vertex = Add(NewObject<UMaterialExpressionVertexColor>(M));
+	auto* Density = NewObject<UMaterialExpressionMultiply>(M);
+	Density->A.Connect(2, Map); // (green)
+	Density->B.Connect(4, Vertex); // (alpha)
+	Add(Density);
+	Inputs->Opacity.Connect(0, Density);
+	auto* White = NewObject<UMaterialExpressionConstant3Vector>(M);
+	White->Constant = FLinearColor(0.6f, 0.6f, 0.6f);
+	Add(White);
+	Inputs->BaseColor.Connect(0, White);
+	auto* Rough = NewObject<UMaterialExpressionConstant>(M);
+	Rough->R = 0.8f;
+	Add(Rough);
+	Inputs->Roughness.Connect(0, Rough);
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return Masters.Add(kFoam, M);
+}
+
 // Falling rain (M_GTAV_Rain): streaks on cylinders around the camera, lit by the scene's lights (rain shows under a
 // street light), the layer's Radius (m) per instance.
 UMaterial* FGTAVMaterials::Rain()

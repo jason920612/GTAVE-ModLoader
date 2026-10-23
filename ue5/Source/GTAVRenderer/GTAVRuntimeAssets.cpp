@@ -19,6 +19,8 @@ namespace
 	// Glowing gas (M_GTAV_Glow): the game's shaders that only add light (neon tubes, as flat cards seen from both
 	// sides).
 	constexpr int32 kGlowKind = 11;
+	// Foam on the shore (M_GTAV_Foam): the game's water_terrainfoam, which has no textures of its own.
+	constexpr int32 kFoamKind = 14;
 
 	bool IsGlow(uint32 Effect)
 	{
@@ -294,7 +296,7 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			Slot = &SlotOf.Add(SH.material, P->SlotMaterials.Add(SH.material));
 			P->bTranslucent |= Mat.kind == GTAVPack::kTranslucent || Mat.kind == GTAVPack::kDecal || Mat.kind == GTAVPack::kWater;
 		}
-		const bool bTerrain = Mat.kind == GTAVPack::kTerrain && C1;
+		const bool bTerrain = Mat.kind == GTAVPack::kTerrain;
 		const uint32 Base = Vertices.Num();
 		Vertices.AddUninitialized(V);
 		for (int64 X = 0; X < V; ++X)
@@ -321,9 +323,11 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			Out.TangentZ = Normal;
 			// (the game's bytes as they are; terrain: the second colour set, its rgba the layers' weights as the game's
 			// terrain shaders take them)
+			// (a terrain mesh with no second set gets zeros, as the game's shaders do: its lookup texture alone, a colour
+			// map, weighs the layers)
 			if (bTerrain)
 			{
-				Out.Color = FColor(C1[4 * X], C1[4 * X + 1], C1[4 * X + 2], C1[4 * X + 3]);
+				Out.Color = C1 ? FColor(C1[4 * X], C1[4 * X + 1], C1[4 * X + 2], C1[4 * X + 3]) : FColor(0, 0, 0, 0);
 			}
 			else
 			{
@@ -638,6 +642,7 @@ UMaterial* FGTAVRuntimeAssets::Master(int32 Kind)
 		return *Found;
 	}
 	const TCHAR* Name = Kind == kGlowKind ? TEXT("M_GTAV_Glow")
+		: Kind == kFoamKind ? TEXT("M_GTAV_Foam")
 		: Kind == 9 ? TEXT("M_GTAV_OceanFar")
 		: Kind == 7 ? TEXT("M_GTAV_Ocean")
 		: Kind == GTAVPack::kWater ? TEXT("M_GTAV_Water")
@@ -660,7 +665,9 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	{
 		return *Found;
 	}
-	UMaterial* Parent = Master(IsGlow(M.effect) ? kGlowKind : M.kind);
+	static const uint32 Foam = GTAVHash(TEXTVIEW("water_terrainfoam"));
+	const bool bFoam = M.effect == Foam;
+	UMaterial* Parent = Master(bFoam ? kFoamKind : IsGlow(M.effect) ? kGlowKind : M.kind);
 	if (!Parent)
 	{
 		return Materials.Add(Key, Fallback);
@@ -711,6 +718,13 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	{
 		MI->SetScalarParameterValue(TEXT("EmissiveMultiplier"), M.emissive);
 	}
+	if (bFoam)
+	{
+		if (UTexture2D* T = GlobalTexture(TEXT("waterfoam"), false, true))
+		{
+			MI->SetTextureParameterValue(TEXT("FoamTex"), T);
+		}
+	}
 	if (M.kind == GTAVPack::kWater)
 	{
 		// How murky the water is, by the game's water shader: rivers carry silt (attenuation some 2.5 per metre, the
@@ -750,16 +764,17 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	return Materials.Add(Key, MI);
 }
 
-UTexture2D* FGTAVRuntimeAssets::GlobalTexture(const TCHAR* Name, bool bNormal)
+UTexture2D* FGTAVRuntimeAssets::GlobalTexture(const TCHAR* Name, bool bNormal, bool bLinear)
 {
 	const uint32 Hash = GTAVHash(Name);
-	const uint64 CacheKey = (0xFFFFFFFF00000000ull | Hash) * 4 + uint64(bNormal ? EUsage::Normal : EUsage::Color);
+	const EUsage Usage = bNormal ? EUsage::Normal : bLinear ? EUsage::Linear : EUsage::Color;
+	const uint64 CacheKey = (0xFFFFFFFF00000000ull | Hash) * 4 + uint64(Usage);
 	if (const TObjectPtr<UTexture2D>* Found = Textures.Find(CacheKey))
 	{
 		return *Found;
 	}
 	TArray<uint8> Data;
-	UTexture2D* T = Pack.bGlobals && Pack.Globals.Read(Hash, Data) ? MakeTexture(Data, bNormal ? EUsage::Normal : EUsage::Color) : nullptr;
+	UTexture2D* T = Pack.bGlobals && Pack.Globals.Read(Hash, Data) ? MakeTexture(Data, Usage) : nullptr;
 	if (T)
 	{
 		T->AddressX = T->AddressY = TA_Wrap;

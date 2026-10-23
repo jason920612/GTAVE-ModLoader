@@ -43,7 +43,7 @@ public:
 	int32 Loading() const;
 
 	// One of the renderer's own textures (globals.gpk) by name, as a normal map or a colour.
-	UTexture2D* GlobalTexture(const TCHAR* Name, bool bNormal);
+	UTexture2D* GlobalTexture(const TCHAR* Name, bool bNormal, bool bLinear = false);
 	// A material of a master (kind: GTAVPack::MaterialKind, 7 the sea) with the water's bump map set.
 	UMaterialInterface* WaterMaterial(int32 Kind);
 	// A static mesh from vertices and triangles (game thread), with one material.
