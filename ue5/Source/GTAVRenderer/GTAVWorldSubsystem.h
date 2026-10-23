@@ -58,7 +58,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<AActor> Root;
 	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> Water;
+	TArray<TObjectPtr<UStaticMeshComponent>> Water; // the water quads, the open sea
 
 	// What is drawn: map entities by index; interior entities by (1 << 63 | placement << 32 | index into InteriorEntities).
 	TMap<uint64, TObjectPtr<UStaticMeshComponent>> Drawn;

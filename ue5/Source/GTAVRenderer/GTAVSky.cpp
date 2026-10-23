@@ -14,10 +14,16 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 
+#include "HAL/IConsoleManager.h"
+
 #include "GTAVPack.h"
 
 namespace
 {
+	// Tuning (and the presets): a cloud cover in place of the weather's (-1: the weather's), the haze scaled.
+	TAutoConsoleVariable<float> CVarCloudCoverage(TEXT("gtav.CloudCoverage"), -1.0f, TEXT("Cloud cover 0..1 (-1: by the weather)."));
+	TAutoConsoleVariable<float> CVarHaze(TEXT("gtav.Haze"), 1.0f, TEXT("The air's aerosols, scaled (1: by the weather and the place)."));
+
 	// What a weather type looks like: the sun's and the sky's light (1 = clear), cloud cover, the air's haze (aerosols,
 	// 1 = an ordinary day in the city), ground fog density, wet ground.
 	struct FLook
@@ -135,7 +141,10 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	if (UMaterialInstanceDynamic* Clouds = A.CloudMaterial.Get())
 	{
-		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), L.Clouds);
+		// (the engine's cloud material: Cloud_GlobalCoverage 0 is its most clouded sky, 0.5 and up a clear one)
+		const float Override = CVarCloudCoverage.GetValueOnGameThread();
+		const float Cover = Override >= 0 ? Override : L.Clouds;
+		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), 0.5f * (1.0f - FMath::Clamp(Cover, 0.0f, 1.0f)));
 	}
 	// The air: aerosols (Mie scattering) that blur and tint the distance, thickest in the Los Santos basin (a city's
 	// haze under an inversion about a kilometre up: the hills rise out of it), thinner over the countryside north of
@@ -144,8 +153,8 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	const float City = 1.0f - FMath::SmoothStep(1500.0f, 3500.0f, GameY);
 	if (USkyAtmosphereComponent* Air = A.Atmosphere.Get())
 	{
-		// (per km at the ground: a city day 0.1, visibility about 35 km; smog 0.3; the open country a third of the city)
-		const float Scattering = 0.06f * L.Haze * FMath::Lerp(0.6f, 1.8f, City);
+		// (per km at the ground: a city day 0.09, visibility about 40 km; smog 0.27; the open country a third of the city)
+		const float Scattering = 0.05f * L.Haze * FMath::Lerp(0.6f, 1.8f, City) * FMath::Max(CVarHaze.GetValueOnGameThread(), 0.0f);
 		Air->SetMieScatteringScale(Scattering);
 		Air->SetMieAbsorptionScale(Scattering * FMath::Lerp(0.12f, 0.3f, City));
 		// (city aerosols absorb blue more than red: brownish)

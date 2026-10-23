@@ -601,7 +601,8 @@ UMaterial* FGTAVRuntimeAssets::Master(int32 Kind)
 	{
 		return *Found;
 	}
-	const TCHAR* Name = Kind == 7 ? TEXT("M_GTAV_Ocean")
+	const TCHAR* Name = Kind == 9 ? TEXT("M_GTAV_OceanFar")
+		: Kind == 7 ? TEXT("M_GTAV_Ocean")
 		: Kind == GTAVPack::kWater ? TEXT("M_GTAV_Water")
 		: Kind == GTAVPack::kTerrain ? TEXT("M_GTAV_Terrain4")
 		: Kind == GTAVPack::kCutout ? TEXT("M_GTAV_Cutout")

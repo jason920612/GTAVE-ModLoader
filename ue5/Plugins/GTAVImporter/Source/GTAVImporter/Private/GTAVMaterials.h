@@ -24,7 +24,8 @@ public:
 	int32 TexturesImported = 0;
 	int32 TexturesMissing = 0;
 
-	// The master material of a kind (0 opaque, 1 translucent, 3 cutout, 4 terrain, 6 water, 7 the sea); the renderer makes its
+	// The master material of a kind (0 opaque, 1 translucent, 3 cutout, 4 terrain, 6 water, 7 the sea, 9 the open sea
+	// out to the horizon: opaque, so that the air's haze covers it as it does the land); the renderer makes its
 	// instances at run time.
 	UMaterial* Master(int32 Kind);
 	// The distant lights' material (the renderer's LOD lights).
@@ -37,7 +38,7 @@ private:
 	TMap<FString, UMaterialInterface*> Instances;
 	TMap<FString, UTexture2D*> Textures;
 
-	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8;
+	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9;
 	UTexture2D* BlackMask();
 	UMaterialParameterCollection* Collection();
 	void Wetten(UMaterial* M);

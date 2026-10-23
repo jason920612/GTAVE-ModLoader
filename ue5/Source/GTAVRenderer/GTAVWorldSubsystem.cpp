@@ -195,16 +195,17 @@ void UGTAVWorldSubsystem::BuildWater()
 		V.UVs[0] = FVector2f(X, Y) * 0.01f;
 		return uint32(Vertices.Add(V));
 	};
-	// (clockwise seen from above in the game's space: what its own models do, and what shows here)
+	// (the winding the game's models have here, mirrored: seen from above, counter-clockwise in the game's space;
+	// the other way round the sea is a back face from above and nothing shows)
 	const auto Quad = [&](float X0, float Y0, float X1, float Y1, float Z, int32 Type) {
 		const uint32 C0 = Vertex(X0, Y0, Z), C1 = Vertex(X1, Y0, Z), C2 = Vertex(X1, Y1, Z), C3 = Vertex(X0, Y1, Z);
 		switch (Type)
 		{
-		case 1: Indices.Append({C0, C3, C1}); break;
-		case 2: Indices.Append({C0, C3, C2}); break;
-		case 3: Indices.Append({C1, C3, C2}); break;
-		case 4: Indices.Append({C0, C2, C1}); break;
-		default: Indices.Append({C0, C2, C1, C0, C3, C2}); break;
+		case 1: Indices.Append({C0, C1, C3}); break;
+		case 2: Indices.Append({C0, C2, C3}); break;
+		case 3: Indices.Append({C1, C2, C3}); break;
+		case 4: Indices.Append({C0, C1, C2}); break;
+		default: Indices.Append({C0, C1, C2, C0, C2, C3}); break;
 		}
 	};
 	FBox2f Covered(ForceInit);
@@ -218,23 +219,34 @@ void UGTAVWorldSubsystem::BuildWater()
 		Covered += FVector2f(Q.minX, Q.minY);
 		Covered += FVector2f(Q.maxX, Q.maxY);
 	}
-	constexpr float Far = 60000.0f;
+	// (out past any horizon: from high up the horizon is 60 km and more away, and the sea there has to be the sea,
+	// reflecting the bright sky at that grazing angle, not the atmosphere's dark ground)
+	constexpr float Far = 400000.0f;
+	const auto Add = [&](int32 Kind) {
+		UMaterialInterface* Material = Assets->WaterMaterial(Kind);
+		UE_LOG(LogGTAVWorld, Display, TEXT("water (kind %d): %d vertices, %d indices, material %s"), Kind, Vertices.Num(), Indices.Num(), *GetNameSafe(Material));
+		UStaticMesh* Mesh = Assets->BuildMesh(Vertices, Indices, Material);
+		Vertices.Reset();
+		Indices.Reset();
+		if (!Mesh)
+		{
+			return;
+		}
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Root);
+		C->SetMobility(EComponentMobility::Static);
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetCastShadow(false);
+		C->SetStaticMesh(Mesh);
+		C->RegisterComponent();
+		Water.Add(C);
+	};
+	Add(7);
+	// The open sea around (opaque: the haze then covers it as it does the land).
 	Quad(-Far, -Far, Far, Covered.Min.Y, 0, 0);
 	Quad(-Far, Covered.Max.Y, Far, Far, 0, 0);
 	Quad(-Far, Covered.Min.Y, Covered.Min.X, Covered.Max.Y, 0, 0);
 	Quad(Covered.Max.X, Covered.Min.Y, Far, Covered.Max.Y, 0, 0);
-	UStaticMesh* Mesh = Assets->BuildMesh(Vertices, Indices, Assets->WaterMaterial(7));
-	if (!Mesh)
-	{
-		return;
-	}
-	UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Root);
-	C->SetMobility(EComponentMobility::Static);
-	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	C->SetCastShadow(false);
-	C->SetStaticMesh(Mesh);
-	C->RegisterComponent();
-	Water = C;
+	Add(9);
 }
 
 void UGTAVWorldSubsystem::SetGroup(uint32 Name, bool bOn)
@@ -336,9 +348,12 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		LastUpdate = Now;
 	}
 	Apply();
-	if (Water && Water->IsVisible() != (CVarWater.GetValueOnGameThread() != 0))
+	for (UStaticMeshComponent* W : Water)
 	{
-		Water->SetVisibility(CVarWater.GetValueOnGameThread() != 0);
+		if (W && W->IsVisible() != (CVarWater.GetValueOnGameThread() != 0))
+		{
+			W->SetVisibility(CVarWater.GetValueOnGameThread() != 0);
+		}
 	}
 	if (Now - LastEvict > 2.0)
 	{

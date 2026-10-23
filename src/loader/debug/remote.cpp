@@ -653,19 +653,6 @@ namespace loader::debug::remote
 			game::natives::Invoke<void>(kSetEntityCoords, game::natives::Invoke<int32_t>(kPlayerPedId), g_teleportTo[0], g_teleportTo[1], g_teleportTo[2], 0, 0, 0, 1);
 			log::Info("remote: player to {:.1f} {:.1f} {:.1f}", g_teleportTo[0], g_teleportTo[1], g_teleportTo[2]);
 		}
-		if (g_hour >= 0)
-		{
-			game::natives::Invoke<void>(kSetClockTime, g_hour, g_minute, 0);
-			game::natives::Invoke<void>(kPauseClock, 1);
-			log::Info("remote: clock at {:02}:{:02}", g_hour, g_minute);
-			g_hour = -1;
-		}
-		if (!g_weather.empty())
-		{
-			game::natives::Invoke<void>(kSetWeatherTypeNowPersist, g_weather.c_str());
-			log::Info("remote: weather {}", g_weather);
-			g_weather.clear();
-		}
 		if (g_cam.pending)
 		{
 			namespace natives = game::natives;
@@ -695,6 +682,20 @@ namespace loader::debug::remote
 				natives::Invoke<void>(kClearWeatherTypePersist);
 				g_camHandle = 0;
 			}
+		}
+		// (after the camera, which sets noon and a clear sky)
+		if (g_hour >= 0)
+		{
+			game::natives::Invoke<void>(kSetClockTime, g_hour, g_minute, 0);
+			game::natives::Invoke<void>(kPauseClock, 1);
+			log::Info("remote: clock at {:02}:{:02}", g_hour, g_minute);
+			g_hour = -1;
+		}
+		if (!g_weather.empty())
+		{
+			game::natives::Invoke<void>(kSetWeatherTypeNowPersist, g_weather.c_str());
+			log::Info("remote: weather {}", g_weather);
+			g_weather.clear();
 		}
 	}
 }

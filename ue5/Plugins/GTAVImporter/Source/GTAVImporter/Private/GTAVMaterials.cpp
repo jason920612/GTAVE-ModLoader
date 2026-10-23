@@ -27,6 +27,7 @@
 #include "Materials/MaterialExpressionDistance.h"
 #include "Materials/MaterialExpressionObjectPositionWS.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
@@ -92,7 +93,7 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		return *Found;
 	}
 	static const TCHAR* Names[] = {TEXT("M_GTAV_Opaque"), TEXT("M_GTAV_Translucent"), nullptr, TEXT("M_GTAV_Cutout"), TEXT("M_GTAV_Terrain4"), nullptr,
-		TEXT("M_GTAV_Water"), TEXT("M_GTAV_Ocean")};
+		TEXT("M_GTAV_Water"), TEXT("M_GTAV_Ocean"), nullptr, TEXT("M_GTAV_OceanFar")};
 	const FString PackageName = FString(TEXT("/Game/GTAV/Materials/")) + Names[Kind];
 	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
 	{
@@ -109,7 +110,7 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	{
 		M->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
 		// (fog and the air's haze per pixel: the sea's triangles are kilometres long)
-		M->bUseTranslucencyVertexFog = false;
+		M->bUseTranslucencyVertexFog = true; // ("Apply Fogging")
 		M->bComputeFogPerPixel = true;
 	}
 	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
@@ -125,8 +126,9 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	};
 	UTexture2D* White = EngineTexture(TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
 	UTexture2D* FlatNormal = EngineTexture(TEXT("/Engine/EngineMaterials/DefaultNormal.DefaultNormal"));
-	if (Kind == kWater || Kind == kOcean)
+	if (Kind == kWater || Kind == kOcean || Kind == kOceanFar)
 	{
+		const bool bSea = Kind != kWater;
 		// Water (draw bucket 6: pools, fountains) and the sea (water.xml): ripples from the game's water bump map moving
 		// two ways across the world, dark, smooth and reflective (Lumen's front layer), clear where it is shallow.
 		M->bAllowFrontLayerTranslucency = true;
@@ -156,8 +158,8 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 			return S;
 		};
 		auto* Sum = NewObject<UMaterialExpressionAdd>(M);
-		Sum->A.Connect(0, Ripples(Kind == kOcean ? 900.0f : 200.0f, 0.012f, 0.007f, -200));
-		Sum->B.Connect(0, Ripples(Kind == kOcean ? 2300.0f : 450.0f, -0.006f, 0.010f, 100));
+		Sum->A.Connect(0, Ripples(bSea ? 900.0f : 200.0f, 0.012f, 0.007f, -200));
+		Sum->B.Connect(0, Ripples(bSea ? 2300.0f : 450.0f, -0.006f, 0.010f, 100));
 		Add(Sum);
 		auto* Flatter = NewObject<UMaterialExpressionMultiply>(M); // (xy halved, z kept: gentler waves)
 		Flatter->A.Connect(0, Sum);
@@ -172,7 +174,7 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		Inputs->Normal.Connect(0, Normal);
 		auto* Color = NewObject<UMaterialExpressionVectorParameter>(M);
 		Color->ParameterName = TEXT("WaterColor");
-		Color->DefaultValue = Kind == kOcean ? FLinearColor(0.10f, 0.30f, 0.33f) : FLinearColor(0.65f, 0.76f, 0.78f);
+		Color->DefaultValue = bSea ? FLinearColor(0.10f, 0.30f, 0.33f) : FLinearColor(0.65f, 0.76f, 0.78f);
 		Add(Color);
 		// (the game's water is mostly what it reflects: its colour is the depth fog, kept dark here)
 		auto* Dark = NewObject<UMaterialExpressionMultiply>(M);
@@ -188,6 +190,14 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		Rough->R = 0.04f;
 		Add(Rough);
 		Inputs->Roughness.Connect(0, Rough);
+		if (Kind == kOceanFar)
+		{
+			M->PreEditChange(nullptr);
+			M->PostEditChange();
+			Package->MarkPackageDirty();
+			Dirty.Add(Package);
+			return Masters.Add(Kind, M);
+		}
 		// Opacity: clear in the shallows (the depth behind it), more opaque at grazing angles.
 		auto* Fresnel = NewObject<UMaterialExpressionFresnel>(M);
 		Fresnel->Exponent = 5.0f;
@@ -206,7 +216,22 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		AtLeast->A.Connect(0, Fade);
 		AtLeast->ConstB = Kind == kOcean ? 0.45f : 0.2f;
 		Add(AtLeast);
-		Inputs->Opacity.Connect(0, AtLeast);
+		// Opaque in the distance (water far off shows no bottom, and the air's haze then covers it fully instead of
+		// the empty sky behind showing through): fully from 200 m (the sea) or 60 m (lakes, rivers).
+		auto* Depth = NewObject<UMaterialExpressionPixelDepth>(M);
+		Add(Depth);
+		auto* Distant = NewObject<UMaterialExpressionMultiply>(M);
+		Distant->A.Connect(0, Depth);
+		Distant->ConstB = 1.0f / (Kind == kOcean ? 20000.0f : 6000.0f);
+		Add(Distant);
+		auto* DistantClamped = NewObject<UMaterialExpressionSaturate>(M);
+		DistantClamped->Input.Connect(0, Distant);
+		Add(DistantClamped);
+		auto* Opacity = NewObject<UMaterialExpressionMax>(M);
+		Opacity->A.Connect(0, AtLeast);
+		Opacity->B.Connect(0, DistantClamped);
+		Add(Opacity);
+		Inputs->Opacity.Connect(0, Opacity);
 		M->PreEditChange(nullptr);
 		M->PostEditChange();
 		Package->MarkPackageDirty();
