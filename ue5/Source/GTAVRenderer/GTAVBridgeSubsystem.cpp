@@ -28,6 +28,7 @@
 
 #include "GTAVBridgeProtocol.h"
 #include "GTAVPack.h"
+#include "GTAVShadows.h"
 #include "GTAVSky.h"
 #include "GTAVWorldSubsystem.h"
 
@@ -321,6 +322,17 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 		UE_LOG(LogGTAVBridge, Display, TEXT("game camera %.2f %.2f %.2f forward %.3f %.3f %.3f fov %.1f; hours %.2f; weather %08x -> %08x %.2f; view %s %s"),
 			Shared->position[0], Shared->position[1], Shared->position[2], Shared->forward[0], Shared->forward[1], Shared->forward[2], Shared->fov, Shared->hours,
 			Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend, *Camera->GetActorLocation().ToString(), *Camera->GetActorRotation().ToString());
+		{
+			FString Vehicles;
+			for (uint32 I = 0; I < FMath::Min(Shared->proxyCount, GTAVBridge::kMaxProxies); ++I)
+			{
+				if (Shared->proxies[I].kind == 2 && Vehicles.Len() < 200)
+				{
+					Vehicles += FString::Printf(TEXT(" (%.0f %.0f %.0f)"), Shared->proxies[I].position[0], Shared->proxies[I].position[1], Shared->proxies[I].position[2]);
+				}
+			}
+			UE_LOG(LogGTAVBridge, Display, TEXT("shadow proxies: %u; vehicles%s"), Shared->proxyCount, *Vehicles);
+		}
 		if (const APlayerController* PC = GetWorld()->GetFirstPlayerController(); PC && PC->PlayerCameraManager)
 		{
 			UE_LOG(LogGTAVBridge, Display, TEXT("view fov %.2f (camera component %.2f), viewport %s"), PC->PlayerCameraManager->GetFOVAngle(),
@@ -338,6 +350,7 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 		GTAVSky::SetDate(int32(Shared->year), int32(Shared->month), int32(Shared->day));
 	}
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
+	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount);
 
 	// The world: the hour (timed archetypes, groups by the hour) and the map data groups the game has on.
 	if (UGTAVWorldSubsystem* World = GetWorld()->GetSubsystem<UGTAVWorldSubsystem>())

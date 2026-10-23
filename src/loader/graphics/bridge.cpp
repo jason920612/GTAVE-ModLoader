@@ -4,6 +4,7 @@
 #include <d3d12.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -35,7 +36,12 @@ namespace loader::graphics::bridge
 		                   kGetClockMinutes = 0x13D2B8ADD79640F2, kGetClockSeconds = 0x494E97C2EF27C470,
 		                   kGetCurrWeatherState = 0xF3BBE884A14BB413, kIsIplActive = 0x88A741E44A2B3495,
 		                   kGetWindSpeed = 0xA8CF1CC0AFCD3F12, kGetWindDirection = 0x1F400FEF721170DA,
-		                   kGetClockYear = 0x961777E64BDAF717, kGetClockMonth = 0xBBC72712E80257A1, kGetClockDayOfMonth = 0x3D10BC92A4DB1D35;
+		                   kGetClockYear = 0x961777E64BDAF717, kGetClockMonth = 0xBBC72712E80257A1, kGetClockDayOfMonth = 0x3D10BC92A4DB1D35,
+		                   kPlayerPedId = 0xD80958FC74E988A6, kGetPedNearbyPeds = 0x23F8F5FC7E8C4A6B,
+		                   kGetPedNearbyVehicles = 0xCFF869CBFA210D82, kGetVehiclePedIsIn = 0x9A9112A0FE9A4713,
+		                   kIsPedInAnyVehicle = 0x997ABD671D25CA0B, kDoesEntityExist = 0x7239B21A38F536BA,
+		                   kIsEntityVisible = 0x47D6F43D77935C75, kGetEntityMatrix = 0xECB2FC7235A7D137,
+		                   kGetEntityModel = 0x9F47B058362C84B5, kGetModelDimensions = 0x03E8D3D5F549087A;
 
 		// Game thread.
 		HANDLE g_mapping = nullptr;
@@ -484,6 +490,53 @@ namespace loader::graphics::bridge
 			return out;
 		}
 
+		// The peds and vehicles near the player (the game's lists of them around the player's ped; a ped in a vehicle is
+		// the vehicle's), their place, axes and model bounds: the renderer casts their shadows.
+		void WriteProxies(GTAVBridge::Shared& s)
+		{
+			static std::unordered_map<uint32_t, std::pair<natives::ScrVector, natives::ScrVector>> bounds;
+			uint32_t n = 0;
+			int32_t entities[GTAVBridge::kMaxProxies];
+			const auto add = [&](int32_t entity, uint32_t kind) {
+				if (n >= GTAVBridge::kMaxProxies || !entity || std::find(entities, entities + n, entity) != entities + n ||
+				    !natives::Invoke<int32_t>(kDoesEntityExist, entity) || !natives::Invoke<int32_t>(kIsEntityVisible, entity))
+					return;
+				const uint32_t model = natives::Invoke<uint32_t>(kGetEntityModel, entity);
+				auto it = bounds.find(model);
+				if (it == bounds.end())
+				{
+					natives::ScrVector mn{}, mx{};
+					natives::Invoke<void>(kGetModelDimensions, model, &mn, &mx);
+					it = bounds.emplace(model, std::make_pair(mn, mx)).first;
+				}
+				natives::ScrVector forward{}, right{}, up{}, position{};
+				natives::Invoke<void>(kGetEntityMatrix, entity, &forward, &right, &up, &position);
+				entities[n] = entity;
+				GTAVBridge::Proxy& p = s.proxies[n++];
+				p.position[0] = position.x, p.position[1] = position.y, p.position[2] = position.z;
+				p.forward[0] = forward.x, p.forward[1] = forward.y, p.forward[2] = forward.z;
+				p.up[0] = up.x, p.up[1] = up.y, p.up[2] = up.z;
+				p.boundsMin[0] = it->second.first.x, p.boundsMin[1] = it->second.first.y, p.boundsMin[2] = it->second.first.z;
+				p.boundsMax[0] = it->second.second.x, p.boundsMax[1] = it->second.second.y, p.boundsMax[2] = it->second.second.z;
+				p.kind = kind;
+			};
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			if (const int32_t vehicle = natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0))
+				add(vehicle, 2);
+			else
+				add(player, 1);
+			int64_t vehicles[1 + 32] = {32};
+			const int nv = std::min(natives::Invoke<int32_t>(kGetPedNearbyVehicles, player, vehicles), 32);
+			for (int i = 0; i < nv; ++i)
+				add(static_cast<int32_t>(vehicles[1 + i]), 2);
+			int64_t peds[1 + 32] = {32};
+			const int np = std::min(natives::Invoke<int32_t>(kGetPedNearbyPeds, player, peds, -1), 32);
+			for (int i = 0; i < np; ++i)
+				if (!natives::Invoke<int32_t>(kIsPedInAnyVehicle, static_cast<int32_t>(peds[1 + i]), 0))
+					add(static_cast<int32_t>(peds[1 + i]), 1);
+			s.proxyCount = n;
+		}
+
 		// The view and the world's state, from the game.
 		void Write()
 		{
@@ -500,6 +553,7 @@ namespace loader::graphics::bridge
 			s.year = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockYear));
 			s.month = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockMonth) + 1); // (the game's from 0)
 			s.day = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockDayOfMonth));
+			WriteProxies(s);
 			s.width = g_width, s.height = g_height;
 			// Pace, every 10 s: the renderer's new frames against the game's.
 			static ULONGLONG lastPace = 0;

@@ -13,8 +13,18 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 4;
+	constexpr uint32_t kVersion = 5;
 	constexpr uint32_t kMaxGroups = 1024;
+	constexpr uint32_t kMaxProxies = 64;
+
+	// A ped or vehicle near the player: the game's picture shows it, the renderer casts its shadow on its own ground.
+	struct Proxy
+	{
+		float position[3];                // the game's space (metres)
+		float forward[3], up[3];          // unit
+		float boundsMin[3], boundsMax[3]; // the model's (local: x right, y forward, z up)
+		uint32_t kind;                    // 1 ped, 2 vehicle
+	};
 
 	// Names: shared memory, and the renderer's texture and fence (NT handles by name; <pid> is the game's process id).
 	inline constexpr wchar_t kMemoryName[] = L"Local\\GTAVUE5Bridge-";
@@ -62,5 +72,8 @@ namespace GTAVBridge
 		// The game's date (GET_CLOCK_YEAR, _MONTH + 1, _DAY_OF_MONTH; 0: an older loader): the moon's phase.
 		uint32_t year, month, day;
 		uint32_t reserved;
+		// The peds and vehicles near the player (their shadow casters), each frame.
+		uint32_t proxyCount;
+		Proxy proxies[kMaxProxies];
 	};
 }
