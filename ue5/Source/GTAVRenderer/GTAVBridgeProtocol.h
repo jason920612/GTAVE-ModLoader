@@ -54,6 +54,9 @@ namespace GTAVBridge
 		// Console commands for the renderer (the loader's ModLoader/ue5console.txt, one per line), bumped when new.
 		volatile uint32_t consoleSequence;
 		char console[1024];
-		uint32_t reserved[8];
+		// The game's wind (GET_WIND_DIRECTION, GET_WIND_SPEED): the way it blows (the game's space), m/s.
+		float wind[3];
+		float windSpeed;
+		uint32_t reserved[4];
 	};
 }

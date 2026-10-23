@@ -314,7 +314,11 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 		}
 	}
 
-	// The sun by the hour, the weather.
+	// The sun by the hour, the weather, the wind.
+	if (Shared->windSpeed > 0)
+	{
+		GTAVSky::SetWind(FVector2f(Shared->wind[0], -Shared->wind[1]), Shared->windSpeed);
+	}
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
 
 	// The world: the hour (timed archetypes, groups by the hour) and the map data groups the game has on.

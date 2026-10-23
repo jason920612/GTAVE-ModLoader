@@ -33,7 +33,8 @@ namespace loader::graphics::bridge
 
 		constexpr uint64_t kGetClockHours = 0x25223CA6B4D20B7F,
 		                   kGetClockMinutes = 0x13D2B8ADD79640F2, kGetClockSeconds = 0x494E97C2EF27C470,
-		                   kGetCurrWeatherState = 0xF3BBE884A14BB413, kIsIplActive = 0x88A741E44A2B3495;
+		                   kGetCurrWeatherState = 0xF3BBE884A14BB413, kIsIplActive = 0x88A741E44A2B3495,
+		                   kGetWindSpeed = 0xA8CF1CC0AFCD3F12, kGetWindDirection = 0x1F400FEF721170DA;
 
 		// Game thread.
 		HANDLE g_mapping = nullptr;
@@ -320,6 +321,9 @@ namespace loader::graphics::bridge
 			float blend = 0;
 			natives::Invoke<void>(kGetCurrWeatherState, &from, &to, &blend);
 			s.weatherFrom = from, s.weatherTo = to, s.weatherBlend = blend;
+			const auto wind = natives::Invoke<natives::ScrVector>(kGetWindDirection);
+			s.wind[0] = wind.x, s.wind[1] = wind.y, s.wind[2] = wind.z;
+			s.windSpeed = natives::Invoke<float>(kGetWindSpeed);
 			s.width = g_width, s.height = g_height;
 			// Console commands for the renderer (tuning while it runs): ModLoader/ue5console.txt when it changes.
 			if (g_tick % 60 == 0)

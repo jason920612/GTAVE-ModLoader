@@ -28,6 +28,9 @@
 #include "Materials/MaterialExpressionObjectPositionWS.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionPixelDepth.h"
+#include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionTime.h"
+#include "Materials/MaterialExpressionSceneDepth.h"
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
@@ -168,9 +171,69 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		Add(Weights);
 		Flatter->B.Connect(0, Weights);
 		Add(Flatter);
-		auto* Normal = NewObject<UMaterialExpressionNormalize>(M);
-		Normal->VectorInput.Connect(0, Flatter);
-		Add(Normal);
+		// The sea's swell over the ripples: the slopes of a wind sea (Pierson-Moskowitz spectrum, deep water dispersion)
+		// for the wind in MPC_GTAV (lakes and pools keep the ripples).
+		UMaterialExpression* Normal = nullptr;
+		if (bSea)
+		{
+			UMaterialParameterCollection* C = Collection();
+			const auto Global = [&](const TCHAR* Name) {
+				auto* E = NewObject<UMaterialExpressionCollectionParameter>(M);
+				E->Collection = C;
+				E->ParameterName = Name;
+				E->ParameterId = C->GetParameterId(Name);
+				return Add(E);
+			};
+			auto* Time = NewObject<UMaterialExpressionTime>(M);
+			Add(Time);
+			auto* Waves = NewObject<UMaterialExpressionCustom>(M);
+			Waves->OutputType = CMOT_Float3;
+			Waves->Description = TEXT("Wind sea");
+			Waves->Code = TEXT(R"HLSL(// A wind sea (Pierson-Moskowitz): deep water, w^2 = g k; the peak at wp = 0.877 g / U, Hs = 0.21 U^2 / g.
+const float g = 9.81;
+float U = max(WindSpeed, 0.5);
+float2 D = normalize(float2(WindX, WindY) + float2(1e-4, 0));
+float wp = 0.877 * g / U;
+float2 P = Pos.xy * 0.01;
+float Footprint = max(length(ddx(P)), length(ddy(P)));
+float sx = 0, sy = 0;
+[unroll] for (int i = 0; i < 12; i++)
+{
+    float w = wp * (0.75 + i * 0.22);
+    float k = w * w / g;
+    float spread = (frac(sin(i * 12.9898) * 43758.5453) - 0.5) * 2.0;
+    float2 d = float2(D.x * cos(spread) - D.y * sin(spread), D.x * sin(spread) + D.y * cos(spread));
+    float S = 0.0081 * g * g / pow(w, 5) * exp(-1.25 * pow(wp / w, 4));
+    float a = sqrt(2 * S * 0.22 * wp);
+    // (a wave shorter than about two pixels cannot be seen, only aliased: it fades out with the pixel's footprint)
+    a *= saturate(1.0 - k * Footprint * 0.5);
+    float c = cos(k * dot(d, P) - w * Time + i * 1.7);
+    sx += a * k * d.x * c;
+    sy += a * k * d.y * c;
+}
+float3 R = normalize(Ripple);
+return normalize(float3(R.xy - float2(sx, sy), R.z));
+)HLSL");
+			Waves->Inputs.Reset();
+			const auto Input = [&](const TCHAR* Name, UMaterialExpression* E) {
+				FCustomInput& I = Waves->Inputs.AddDefaulted_GetRef();
+				I.InputName = Name;
+				I.Input.Connect(0, E);
+			};
+			Input(TEXT("Pos"), World);
+			Input(TEXT("Time"), Time);
+			Input(TEXT("Ripple"), Flatter);
+			Input(TEXT("WindX"), Global(TEXT("WindX")));
+			Input(TEXT("WindY"), Global(TEXT("WindY")));
+			Input(TEXT("WindSpeed"), Global(TEXT("WindSpeed")));
+			Normal = Add(Waves);
+		}
+		else
+		{
+			auto* N = NewObject<UMaterialExpressionNormalize>(M);
+			N->VectorInput.Connect(0, Flatter);
+			Normal = Add(N);
+		}
 		Inputs->Normal.Connect(0, Normal);
 		auto* Color = NewObject<UMaterialExpressionVectorParameter>(M);
 		Color->ParameterName = TEXT("WaterColor");
@@ -198,23 +261,36 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 			Dirty.Add(Package);
 			return Masters.Add(Kind, M);
 		}
-		// Opacity: clear in the shallows (the depth behind it), more opaque at grazing angles.
+		// Opacity: how much of what lies behind does not come through (Fresnel at the surface, Beer-Lambert in the
+		// water; coastal sea water about 0.35 per metre, lakes and rivers murkier).
 		auto* Fresnel = NewObject<UMaterialExpressionFresnel>(M);
 		Fresnel->Exponent = 5.0f;
 		Fresnel->BaseReflectFraction = 0.0f;
 		Add(Fresnel);
-		auto* Body = NewObject<UMaterialExpressionLinearInterpolate>(M);
-		Body->ConstA = Kind == kOcean ? 0.75f : 0.35f;
-		Body->ConstB = 0.98f;
-		Body->Alpha.Connect(0, Fresnel);
-		Add(Body);
-		auto* Fade = NewObject<UMaterialExpressionDepthFade>(M);
-		Fade->InOpacity.Connect(0, Body);
-		Fade->FadeDistanceDefault = Kind == kOcean ? 150.0f : 30.0f;
-		Add(Fade);
-		auto* AtLeast = NewObject<UMaterialExpressionMax>(M); // (still water where it is shallow)
-		AtLeast->A.Connect(0, Fade);
-		AtLeast->ConstB = Kind == kOcean ? 0.45f : 0.2f;
+		auto* Scene = NewObject<UMaterialExpressionSceneDepth>(M);
+		Add(Scene);
+		auto* Here = NewObject<UMaterialExpressionPixelDepth>(M);
+		Add(Here);
+		auto* Sigma = NewObject<UMaterialExpressionConstant>(M);
+		Sigma->R = bSea ? 0.35f : 0.6f;
+		Add(Sigma);
+		auto* AtLeast = NewObject<UMaterialExpressionCustom>(M);
+		AtLeast->OutputType = CMOT_Float1;
+		AtLeast->Description = TEXT("Water absorption");
+		AtLeast->Code = TEXT(R"HLSL(// What is seen through water: the light that crosses the surface (1 - Fresnel) and the water itself
+// (Beer-Lambert: exp(-sigma d), d the water's thickness in metres).
+float d = max(Scene - Pixel, 0) * 0.01;
+float F = 0.02 + 0.98 * Fresnel;
+return saturate(1 - (1 - F) * exp(-Sigma * d));
+)HLSL");
+		AtLeast->Inputs.Reset();
+		for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("Fresnel"), Fresnel),
+				 {TEXT("Scene"), Scene}, {TEXT("Pixel"), Here}, {TEXT("Sigma"), Sigma}})
+		{
+			FCustomInput& In = AtLeast->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Key;
+			In.Input.Connect(0, I.Value);
+		}
 		Add(AtLeast);
 		// Opaque in the distance (water far off shows no bottom, and the air's haze then covers it fully instead of
 		// the empty sky behind showing through): fully from 200 m (the sea) or 60 m (lakes, rivers).
@@ -471,7 +547,8 @@ UMaterial* FGTAVMaterials::Corona()
 	return Masters.Add(kCorona, M);
 }
 
-// The renderer's global values for every material: Wetness (0..1, the weather's).
+// The renderer's global values for every material: Wetness (0..1, the weather's), the wind (WindX, WindY: the way it
+// blows in Unreal's space; WindSpeed m/s).
 UMaterialParameterCollection* FGTAVMaterials::Collection()
 {
 	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/MPC_GTAV");
@@ -485,10 +562,14 @@ UMaterialParameterCollection* FGTAVMaterials::Collection()
 	}
 	UPackage* Package = CreatePackage(PackageName);
 	UMaterialParameterCollection* C = NewObject<UMaterialParameterCollection>(Package, TEXT("MPC_GTAV"), RF_Public | RF_Standalone);
-	FCollectionScalarParameter Wetness;
-	Wetness.ParameterName = TEXT("Wetness");
-	Wetness.DefaultValue = 0.0f;
-	C->ScalarParameters.Add(Wetness);
+	for (const TPair<const TCHAR*, float>& P : {TPair<const TCHAR*, float>(TEXT("Wetness"), 0.0f), {TEXT("WindX"), 1.0f}, {TEXT("WindY"), 0.0f},
+			 {TEXT("WindSpeed"), 4.0f}})
+	{
+		FCollectionScalarParameter Parameter;
+		Parameter.ParameterName = P.Key;
+		Parameter.DefaultValue = P.Value;
+		C->ScalarParameters.Add(Parameter);
+	}
 	C->PostEditChange();
 	Package->MarkPackageDirty();
 	Dirty.Add(Package);

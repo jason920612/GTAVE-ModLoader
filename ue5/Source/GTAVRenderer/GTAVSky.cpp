@@ -28,38 +28,44 @@ namespace
 	// 1 = an ordinary day in the city), ground fog density, wet ground.
 	struct FLook
 	{
-		float Sun = 1, Sky = 1, Clouds = 0.35f, Haze = 1, Fog = 0.002f, Wet = 0;
+		float Sun = 1, Sky = 1, Clouds = 0.35f, Haze = 1, Fog = 0.002f, Wet = 0, Wind = 4;
 	};
 
 	FLook Lerp(const FLook& A, const FLook& B, float T)
 	{
 		return {FMath::Lerp(A.Sun, B.Sun, T), FMath::Lerp(A.Sky, B.Sky, T), FMath::Lerp(A.Clouds, B.Clouds, T), FMath::Lerp(A.Haze, B.Haze, T),
-			FMath::Lerp(A.Fog, B.Fog, T), FMath::Lerp(A.Wet, B.Wet, T)};
+			FMath::Lerp(A.Fog, B.Fog, T), FMath::Lerp(A.Wet, B.Wet, T), FMath::Lerp(A.Wind, B.Wind, T)};
 	}
+
+	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
+	FVector2f GameWind = FVector2f::ZeroVector;
+	float GameWindSpeed = 0;
+	double GameWindTime = -1e9;
 
 	const FLook& Look(uint32 Weather)
 	{
 		static const TMap<uint32, FLook> Looks = [] {
 			TMap<uint32, FLook> Out;
-			const auto Add = [&](const TCHAR* Name, float Sun, float Sky, float Clouds, float Haze, float Fog, float Wet) {
-				Out.Add(GTAVHash(Name), {Sun, Sky, Clouds, Haze, Fog, Wet});
+			const auto Add = [&](const TCHAR* Name, float Sun, float Sky, float Clouds, float Haze, float Fog, float Wet, float Wind) {
+				Out.Add(GTAVHash(Name), {Sun, Sky, Clouds, Haze, Fog, Wet, Wind});
 			};
-			// (rain washes the air: clearing and rain are the clearest, smog the worst)
-			Add(TEXT("EXTRASUNNY"), 1.0f, 1.0f, 0.15f, 0.8f, 0.001f, 0.0f);
-			Add(TEXT("CLEAR"), 1.0f, 1.0f, 0.35f, 1.0f, 0.002f, 0.0f);
-			Add(TEXT("NEUTRAL"), 0.9f, 1.0f, 0.4f, 1.0f, 0.002f, 0.0f);
-			Add(TEXT("CLOUDS"), 0.75f, 0.9f, 0.65f, 1.0f, 0.003f, 0.0f);
-			Add(TEXT("SMOG"), 0.7f, 0.9f, 0.35f, 3.0f, 0.004f, 0.0f);
-			Add(TEXT("FOGGY"), 0.35f, 0.8f, 0.6f, 1.5f, 0.06f, 0.15f);
-			Add(TEXT("OVERCAST"), 0.3f, 0.75f, 0.95f, 1.2f, 0.006f, 0.1f);
-			Add(TEXT("CLEARING"), 0.55f, 0.8f, 0.6f, 0.45f, 0.004f, 0.7f);
-			Add(TEXT("RAIN"), 0.12f, 0.6f, 1.0f, 0.5f, 0.012f, 1.0f);
-			Add(TEXT("THUNDER"), 0.08f, 0.5f, 1.0f, 0.5f, 0.016f, 1.0f);
-			Add(TEXT("SNOW"), 0.3f, 0.8f, 0.9f, 0.7f, 0.02f, 0.2f);
-			Add(TEXT("BLIZZARD"), 0.1f, 0.6f, 1.0f, 1.0f, 0.06f, 0.2f);
-			Add(TEXT("SNOWLIGHT"), 0.5f, 0.9f, 0.7f, 0.7f, 0.008f, 0.1f);
-			Add(TEXT("XMAS"), 0.4f, 0.9f, 0.8f, 0.7f, 0.01f, 0.1f);
-			Add(TEXT("HALLOWEEN"), 0.1f, 0.5f, 1.0f, 2.0f, 0.03f, 0.5f);
+			// (rain washes the air: clearing and rain are the clearest, smog the worst; wind in m/s when the game
+			// gives none)
+			Add(TEXT("EXTRASUNNY"), 1.0f, 1.0f, 0.15f, 0.8f, 0.001f, 0.0f, 3.0f);
+			Add(TEXT("CLEAR"), 1.0f, 1.0f, 0.35f, 1.0f, 0.002f, 0.0f, 4.0f);
+			Add(TEXT("NEUTRAL"), 0.9f, 1.0f, 0.4f, 1.0f, 0.002f, 0.0f, 4.0f);
+			Add(TEXT("CLOUDS"), 0.75f, 0.9f, 0.65f, 1.0f, 0.003f, 0.0f, 6.0f);
+			Add(TEXT("SMOG"), 0.7f, 0.9f, 0.35f, 3.0f, 0.004f, 0.0f, 2.0f);
+			Add(TEXT("FOGGY"), 0.35f, 0.8f, 0.6f, 1.5f, 0.06f, 0.15f, 2.0f);
+			Add(TEXT("OVERCAST"), 0.3f, 0.75f, 0.95f, 1.2f, 0.006f, 0.1f, 7.0f);
+			Add(TEXT("CLEARING"), 0.55f, 0.8f, 0.6f, 0.45f, 0.004f, 0.7f, 6.0f);
+			Add(TEXT("RAIN"), 0.12f, 0.6f, 1.0f, 0.5f, 0.012f, 1.0f, 9.0f);
+			Add(TEXT("THUNDER"), 0.08f, 0.5f, 1.0f, 0.5f, 0.016f, 1.0f, 14.0f);
+			Add(TEXT("SNOW"), 0.3f, 0.8f, 0.9f, 0.7f, 0.02f, 0.2f, 6.0f);
+			Add(TEXT("BLIZZARD"), 0.1f, 0.6f, 1.0f, 1.0f, 0.06f, 0.2f, 16.0f);
+			Add(TEXT("SNOWLIGHT"), 0.5f, 0.9f, 0.7f, 0.7f, 0.008f, 0.1f, 4.0f);
+			Add(TEXT("XMAS"), 0.4f, 0.9f, 0.8f, 0.7f, 0.01f, 0.1f, 5.0f);
+			Add(TEXT("HALLOWEEN"), 0.1f, 0.5f, 1.0f, 2.0f, 0.03f, 0.5f, 10.0f);
 			return Out;
 		}();
 		static const FLook Clear;
@@ -113,6 +119,13 @@ namespace
 		}
 		A.Collection = LoadObject<UMaterialParameterCollection>(nullptr, TEXT("/Game/GTAV/Materials/MPC_GTAV.MPC_GTAV"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	}
+}
+
+void GTAVSky::SetWind(const FVector2f& Way, float Speed)
+{
+	GameWind = Way;
+	GameWindSpeed = Speed;
+	GameWindTime = FPlatformTime::Seconds();
 }
 
 void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 WeatherFrom, uint32 WeatherTo, float Blend)
@@ -172,6 +185,12 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		if (UMaterialParameterCollectionInstance* Instance = World->GetParameterCollectionInstance(Collection))
 		{
 			Instance->SetScalarParameterValue(TEXT("Wetness"), L.Wet);
+			// The wind: the game's while the bridge sends it, else the weather's from the west (the sea breeze).
+			const bool bGame = FPlatformTime::Seconds() - GameWindTime < 2.0;
+			const FVector2f Way = bGame && !GameWind.IsNearlyZero() ? GameWind.GetSafeNormal() : FVector2f(1, 0);
+			Instance->SetScalarParameterValue(TEXT("WindX"), Way.X);
+			Instance->SetScalarParameterValue(TEXT("WindY"), Way.Y);
+			Instance->SetScalarParameterValue(TEXT("WindSpeed"), bGame ? GameWindSpeed : L.Wind);
 		}
 	}
 }
