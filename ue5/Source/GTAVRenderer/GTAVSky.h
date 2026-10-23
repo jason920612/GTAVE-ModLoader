@@ -14,7 +14,9 @@ namespace GTAVSky
 	// The game's wind (the way it blows in Unreal's space, m/s), each frame the bridge has it.
 	void SetWind(const FVector2f& Way, float Speed);
 	// The camera is inside a building's rooms: no sunlit haze or ground fog in the air there.
-	void SetIndoors(bool bIndoors);
+	// The camera indoors: by the game (the interior its camera is in, while the bridge says so), else by the rooms'
+	// boxes (bFromGame false: checking without the game).
+	void SetIndoors(bool bIndoors, bool bFromGame);
 	// The game's date (month 1-12): the moon's phase and the stars' turn.
 	void SetDate(int32 Year, int32 Month, int32 Day);
 	// The game's moon and starfield textures (globals.gpk), once the pack is open.

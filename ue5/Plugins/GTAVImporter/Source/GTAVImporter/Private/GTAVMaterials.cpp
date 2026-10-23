@@ -51,6 +51,32 @@ DEFINE_LOG_CATEGORY_STATIC(LogGTAVMaterials, Log, All);
 
 namespace
 {
+	// The palette row a tinted model is drawn with: the entity's (the map's tintValue, which the renderer gives each
+	// component as its custom primitive data 0: the same model in another colour, a house's walls, a room's paint) where
+	// it has one, else the material's own.
+	UMaterialExpression* EntityRow(UMaterial* M, UMaterialExpression* MaterialRow)
+	{
+		auto* Entity = NewObject<UMaterialExpressionScalarParameter>(M);
+		Entity->ParameterName = TEXT("EntityTint");
+		Entity->bUseCustomPrimitiveData = true;
+		Entity->PrimitiveDataIndex = 0;
+		Entity->DefaultValue = 0.0f;
+		M->GetExpressionCollection().AddExpression(Entity);
+		auto* Row = NewObject<UMaterialExpressionCustom>(M);
+		Row->Description = TEXT("Tint row");
+		Row->OutputType = CMOT_Float1;
+		Row->Code = TEXT("return Entity > 0.5 ? Entity : Material;");
+		Row->Inputs.Reset();
+		FCustomInput& A = Row->Inputs.AddDefaulted_GetRef();
+		A.InputName = TEXT("Entity");
+		A.Input.Connect(0, Entity);
+		FCustomInput& B = Row->Inputs.AddDefaulted_GetRef();
+		B.InputName = TEXT("Material");
+		B.Input.Connect(0, MaterialRow);
+		M->GetExpressionCollection().AddExpression(Row);
+		return Row;
+	}
+
 	template <typename T>
 	T* LoadExisting(const FString& PackageName)
 	{
@@ -110,6 +136,9 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	UMaterial* M = NewObject<UMaterial>(Package, Names[Kind], RF_Public | RF_Standalone);
 	M->BlendMode = Kind == 1 || Kind == kWater || Kind == kOcean ? BLEND_Translucent : Kind == 3 ? BLEND_Masked : BLEND_Opaque;
 	M->TwoSided = Kind == 3; // (foliage, fences)
+	// (cut out where the texture is half see-through, as the game's alpha test: lower, the edges keep texels the filtering
+	// mixed with the colour the transparent ones hold - leaves and bushes then wear a red rim)
+	M->OpacityMaskClipValue = 0.5f;
 	// (usage flags cannot be added in the game: the material would fall back to the default one)
 	M->bUsedWithNanite = true;
 	M->bUsedWithInstancedStaticMeshes = true;
@@ -471,7 +500,7 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		PaletteUv->Inputs.Reset();
 		for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("Column"), TintUv),
 				 {TEXT("Width"), TerrainScalar(TEXT("TintPaletteWidth"), 256.0f)}, {TEXT("Height"), TerrainScalar(TEXT("TintPaletteHeight"), 4.0f)},
-				 {TEXT("Row"), TerrainScalar(TEXT("TintRow"), 0.0f)}})
+				 {TEXT("Row"), EntityRow(M, TerrainScalar(TEXT("TintRow"), 0.0f))}})
 		{
 			FCustomInput& In = PaletteUv->Inputs.AddDefaulted_GetRef();
 			In.InputName = I.Key;
@@ -533,12 +562,12 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	auto* Vertex = NewObject<UMaterialExpressionVertexColor>(M);
 	Add(Vertex);
 	Inputs->AmbientOcclusion.Connect(1, Vertex);
-	// Tint (the game's *_tnt shaders): a grey diffuse times the palette's colour, column = vertex blue, row =
-	// TintRow (the material's tintPaletteSelector).
+	// Tint (the game's *_tnt shaders): a grey diffuse times the palette's colour, column = vertex blue, row = the
+	// entity's tint (see EntityRow), else TintRow (the material's tintPaletteSelector).
 	auto* Palette = Sample(TEXT("TintPaletteTex"), White, SAMPLERTYPE_Color, -900, -500);
 	auto* Width = Scalar(TEXT("TintPaletteWidth"), 256.0f);
 	auto* Height = Scalar(TEXT("TintPaletteHeight"), 4.0f);
-	auto* Row = Scalar(TEXT("TintRow"), 0.0f);
+	auto* Row = EntityRow(M, Scalar(TEXT("TintRow"), 0.0f));
 	auto* Column = NewObject<UMaterialExpressionMultiply>(M); // blue * 255 + 0.5, over the width
 	Column->A.Connect(3, Vertex);
 	Column->ConstB = 255.0f;

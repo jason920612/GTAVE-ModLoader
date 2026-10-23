@@ -139,6 +139,7 @@ void FGTAVLights::AddEntity(uint64 Key, const FTransform& Transform, const TArra
 	for (const GTAVPack::ModelLight& M : Model)
 	{
 		FEntityLight& E = Out.AddDefaulted_GetRef();
+		E.bInterior = (Key >> 63) != 0; // (UGTAVWorldSubsystem's keys of an interior's entities)
 		E.Length = M.type == 4 ? M.length * float(Transform.GetScale3D().X) : 0.0f;
 		E.Axis = FVector3f(Transform.TransformVectorNoScale(FVector(M.tangent[0], M.tangent[1], M.tangent[2])).GetSafeNormal());
 		GTAVPack::LodLight& L = E.Light;
@@ -376,7 +377,7 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 		C->SetLightColor(ColorOf(L));
 		C->SetIntensity(bSpot ? IlluminanceOf(L) : CandelaOf(L, Length));
 		C->SetAttenuationRadius(FMath::Max(L.falloff, 100.0f));
-		C->SetCastShadows(bShadows);
+		C->SetCastShadows(bShadows || (N.Value < 0 && Extra[N.Value].bInterior));
 		C->SetVisibility(true);
 		Active.Add(N.Value, C);
 	}
@@ -397,7 +398,8 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 		{
 			if (ULocalLightComponent* C = A.Value.Get())
 			{
-				C->SetCastShadows(bShadows);
+				const FEntityLight* E = A.Key < 0 ? Extra.Find(A.Key) : nullptr;
+				C->SetCastShadows(bShadows || (E && E->bInterior));
 			}
 		}
 	}

@@ -72,6 +72,9 @@ private:
 	FVector LastCenter = FVector(1e30);
 	double LastUpdate = 0;
 	double LastEvict = 0;
+	double TickSeconds = 0, TickMax = 0; // (checking: this subsystem's own time per frame, since the last report)
+	int64 AssetBudget = 0;
+	int32 Ticks = 0;
 	int64 BudgetBytes = 0; // textures and meshes (-gtavbudget=<MB>)
 	int32 WantedMissing = 0; // wanted things whose models are still loading
 
@@ -86,4 +89,5 @@ private:
 	void WantInterior(uint32 Entity, const FVector& Center);
 	void Apply();
 	FTransform EntityTransform(uint64 Key) const;
+	uint32 EntityTint(uint64 Key) const;
 };

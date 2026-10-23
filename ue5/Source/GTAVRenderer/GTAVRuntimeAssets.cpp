@@ -123,6 +123,7 @@ struct FGTAVRuntimeAssets::FPrepared
 	TArray<TPair<uint64, TArray<uint8>>> NewTextures;
 	bool bTexturesMoved = false;
 	TArray<GTAVPack::ModelLight> Lights;
+	TArray<float> Density; // per slot: centimetres a UV unit spans on the surface (0: unknown)
 };
 
 FGTAVRuntimeAssets::FGTAVRuntimeAssets(const FGTAVPack& InPack)
@@ -174,6 +175,8 @@ int32 FGTAVRuntimeAssets::Loading() const
 
 FGTAVRuntimeAssets::EState FGTAVRuntimeAssets::Request(uint64 Key, float Priority)
 {
+	float& Nearest = Near.FindOrAdd(Key, TNumericLimits<float>::Max());
+	Nearest = FMath::Min(Nearest, Priority);
 	EState& S = States.FindOrAdd(Key, EState::None);
 	if (S != EState::None)
 	{
@@ -240,6 +243,7 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 	TArray<uint32> Indices;
 	FStaticMeshSectionArray Sections;
 	TMap<uint16, int32> SlotOf;
+	TArray<double> AreaWorld, AreaUv; // per slot (cm^2, UV units^2)
 	int32 UvChannels = 1;
 	FBox3f Box(ForceInit);
 	bool bStopped = false;
@@ -285,7 +289,11 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			}
 			return Out;
 		}();
-		if (SkipEffects.Contains(Mat.effect))
+		// (the game's decals that add no colour of their own - a normal map's wear on an edge, a darker corner, a shadow,
+		// a shine - drawn as colour come out as the textures themselves: blue-purple strips along door frames)
+		static const TSet<uint32> NoColour = {GTAVHash(TEXTVIEW("decal_normal_only")), GTAVHash(TEXTVIEW("decal_shadow_only")),
+			GTAVHash(TEXTVIEW("decal_amb_only")), GTAVHash(TEXTVIEW("decal_spec_only"))};
+		if (SkipEffects.Contains(Mat.effect) || NoColour.Contains(Mat.effect))
 		{
 			continue;
 		}
@@ -295,6 +303,8 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		{
 			Slot = &SlotOf.Add(SH.material, P->SlotMaterials.Add(SH.material));
 			P->bTranslucent |= Mat.kind == GTAVPack::kTranslucent || Mat.kind == GTAVPack::kDecal || Mat.kind == GTAVPack::kWater;
+			AreaWorld.Add(0);
+			AreaUv.Add(0);
 		}
 		const bool bTerrain = Mat.kind == GTAVPack::kTerrain;
 		if (bTerrain)
@@ -375,6 +385,10 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			// (the game's order as it is: mirroring flips the winding, and the engine's front faces wind the other way)
 			Indices.Append({Base + A, Base + B, Base + C});
 			++Section.NumTriangles;
+			const FStaticMeshBuildVertex &VA = Vertices[Base + A], &VB = Vertices[Base + B], &VC = Vertices[Base + C];
+			AreaWorld[*Slot] += 0.5 * FVector3d::CrossProduct(FVector3d(VB.Position - VA.Position), FVector3d(VC.Position - VA.Position)).Size();
+			const FVector2d U1 = FVector2d(VB.UVs[0] - VA.UVs[0]), U2 = FVector2d(VC.UVs[0] - VA.UVs[0]);
+			AreaUv[*Slot] += 0.5 * FMath::Abs(U1.X * U2.Y - U1.Y * U2.X);
 		}
 		if (Section.NumTriangles == 0)
 		{
@@ -393,6 +407,11 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 	if (!R.bOk || Indices.IsEmpty())
 	{
 		return P;
+	}
+	P->Density.SetNumZeroed(P->SlotMaterials.Num());
+	for (int32 S = 0; S < P->SlotMaterials.Num(); ++S)
+	{
+		P->Density[S] = AreaUv[S] > 1e-9 ? float(FMath::Min(FMath::Sqrt(AreaWorld[S] / AreaUv[S]), 1.0e6)) : 0.0f;
 	}
 	P->RenderData = MakeUnique<FStaticMeshRenderData>();
 	P->RenderData->AllocateLODResources(1);
@@ -454,6 +473,7 @@ void FGTAVRuntimeAssets::Tick(double Budget)
 		}
 		Waiting.Last()->NewTextures.Empty();
 	}
+	RetuneTextures(Budget * 0.25);
 	// Finish what has its textures (some may come with another model still on its way).
 	for (int32 I = 0; I < Waiting.Num() && FPlatformTime::Seconds() - Start < Budget;)
 	{
@@ -503,18 +523,26 @@ bool FGTAVRuntimeAssets::Finish(FPrepared& P)
 	UStaticMesh* Mesh = NewObject<UStaticMesh>(GetTransientPackage(), NAME_None, RF_Transient);
 	Mesh->NeverStream = true;
 	FMeshUse Use;
+	// (its textures made for the distance it was asked for at)
+	const float* Asked = Near.Find(P.Key);
+	const float* AskedBefore = LastNear.Find(P.Key);
+	const float Distance = FMath::Max(FMath::Min(Asked ? *Asked : TNumericLimits<float>::Max(), AskedBefore ? *AskedBefore : TNumericLimits<float>::Max()), 50.0f);
 	for (int32 Slot = 0; Slot < P.SlotMaterials.Num(); ++Slot)
 	{
 		const FName Name(*FString::Printf(TEXT("m%u"), P.SlotMaterials[Slot]));
 		const GTAVPack::Material& M = P.Materials[P.SlotMaterials[Slot]];
+		const float Density = P.Density.IsValidIndex(Slot) && P.Density[Slot] > 0 ? P.Density[Slot] : 1.0e6f;
+		PendingTexels = Distance < TNumericLimits<float>::Max() ? Density * PixelsPerRadian / Distance : 1.0e6f;
 		Mesh->GetStaticMaterials().Add(FStaticMaterial(Material(M), Name, Name));
 		const uint32 MaterialKey = FCrc::MemCrc32(&M, sizeof(M));
 		if (FMaterialUse* MU = MaterialUse.Find(MaterialKey))
 		{
 			++MU->Refs;
 			Use.Materials.Add(MaterialKey);
+			Use.Density.Add(Density);
 		}
 	}
+	PendingTexels = -1.0f;
 	const FStaticMeshLODResources& L = P.RenderData->LODResources[0];
 	Use.Bytes = int64(L.VertexBuffers.PositionVertexBuffer.GetNumVertices()) * (12 + 8 + 4 + 4 * L.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords()) +
 		int64(L.IndexBuffer.GetNumIndices()) * (L.IndexBuffer.Is32Bit() ? 4 : 2);
@@ -556,7 +584,31 @@ bool FGTAVRuntimeAssets::Finish(FPrepared& P)
 	return true;
 }
 
-UTexture2D* FGTAVRuntimeAssets::MakeTexture(const TArray<uint8>& Data, EUsage Usage)
+int32 FGTAVRuntimeAssets::BiasFor(int32 Width, int32 Mips, float Texels)
+{
+	if (Texels < 0 || Mips <= 1)
+	{
+		return 0;
+	}
+	const int32 Most = FMath::Clamp(FMath::FloorLog2(uint32(FMath::Max(Width, 1))) - 6, 0, Mips - 1);
+	const float Wanted = FMath::Max(Texels * 2.0f, 1.0f);
+	return FMath::Clamp(int32(FMath::FloorToFloat(FMath::Log2(float(Width) / Wanted))), 0, Most);
+}
+
+int64 FGTAVRuntimeAssets::ResidentBytes(const UTexture2D* T, int32 Bias)
+{
+	int64 Bytes = 0;
+	if (const FTexturePlatformData* Platform = T ? T->GetPlatformData() : nullptr)
+	{
+		for (int32 Mip = FMath::Max(Bias, 0); Mip < Platform->Mips.Num(); ++Mip)
+		{
+			Bytes += Platform->Mips[Mip].BulkData.GetBulkDataSize();
+		}
+	}
+	return Bytes;
+}
+
+UTexture2D* FGTAVRuntimeAssets::MakeTexture(const TArray<uint8>& Data, EUsage Usage, float Texels)
 {
 	FReader R{Data};
 	const GTAVPack::TextureHeader H = R.Get<GTAVPack::TextureHeader>();
@@ -584,7 +636,6 @@ UTexture2D* FGTAVRuntimeAssets::MakeTexture(const TArray<uint8>& Data, EUsage Us
 		M->BulkData.Lock(LOCK_READ_WRITE);
 		FMemory::Memcpy(M->BulkData.Realloc(Size), Bytes, Size);
 		M->BulkData.Unlock();
-		TextureBytes += Size;
 	}
 	if (Platform->Mips.IsEmpty())
 	{
@@ -602,11 +653,13 @@ UTexture2D* FGTAVRuntimeAssets::MakeTexture(const TArray<uint8>& Data, EUsage Us
 		// (a lookup table: exact texels)
 		T->Filter = TF_Nearest;
 	}
+	T->LODBias = BiasFor(H.width, Platform->Mips.Num(), Usage == EUsage::Palette ? -1.0f : Texels);
+	TextureBytes += ResidentBytes(T, T->LODBias);
 	T->UpdateResource();
 	return T;
 }
 
-UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, int32* OutWidth, int32* OutHeight)
+UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, float Texels, int32* OutWidth, int32* OutHeight)
 {
 	const uint64 CacheKey = Key * 4 + uint64(Usage);
 	UTexture2D* T = nullptr;
@@ -629,12 +682,17 @@ UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, int32* OutWidt
 		{
 			Pack.Textures.Read(Key, Data);
 		}
-		T = Data.Num() ? MakeTexture(Data, Usage) : nullptr;
+		T = Data.Num() ? MakeTexture(Data, Usage, Texels) : nullptr;
 		++(T ? TexturesMade : TexturesFailed);
 		Textures.Add(CacheKey, T);
 		if (T)
 		{
-			TextureUse.Add(CacheKey, {Key, TextureBytes - Before, 0});
+			FTextureUse& TU = TextureUse.Add(CacheKey, {Key, TextureBytes - Before, 0});
+			TU.Width = T->GetSizeX();
+			TU.Mips = T->GetPlatformData()->Mips.Num();
+			TU.Bias = T->LODBias;
+			TU.bFixed = Texels < 0 || Usage == EUsage::Palette;
+			TU.Need = FMath::Max(Texels, 0.0f);
 		}
 	}
 	if (T && OutWidth)
@@ -702,7 +760,8 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 			: Slot == GTAVPack::kSpecular || Slot == GTAVPack::kLookup ? EUsage::Linear
 															 : EUsage::Color;
 		int32 Width = 0, Height = 0;
-		if (UTexture2D* T = Texture(M.textures[Slot], Usage, &Width, &Height))
+		// (the lookup texture is on the second UV set: whole, as palettes)
+		if (UTexture2D* T = Texture(M.textures[Slot], Usage, Slot == GTAVPack::kLookup ? -1.0f : PendingTexels, &Width, &Height))
 		{
 			const uint64 CacheKey = M.textures[Slot] * 4 + uint64(Usage);
 			if (FTextureUse* TU = TextureUse.Find(CacheKey))
@@ -784,7 +843,7 @@ UTexture2D* FGTAVRuntimeAssets::GlobalTexture(const TCHAR* Name, bool bNormal, b
 		return *Found;
 	}
 	TArray<uint8> Data;
-	UTexture2D* T = Pack.bGlobals && Pack.Globals.Read(Hash, Data) ? MakeTexture(Data, Usage) : nullptr;
+	UTexture2D* T = Pack.bGlobals && Pack.Globals.Read(Hash, Data) ? MakeTexture(Data, Usage, -1.0f) : nullptr;
 	if (T)
 	{
 		T->AddressX = T->AddressY = TA_Wrap;
@@ -863,12 +922,113 @@ UStaticMesh* FGTAVRuntimeAssets::BuildMesh(TArray<FStaticMeshBuildVertex>& Verti
 	return Mesh;
 }
 
-void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
+void FGTAVRuntimeAssets::EndRound()
 {
-	if (TextureBytes + MeshBytes <= BudgetBytes)
+	if (Clock - LastRound < 0.5)
 	{
 		return;
 	}
+	LastRound = Clock;
+	LastNear = MoveTemp(Near);
+	Near.Reset();
+	// Each material's need: the most of any model of it asked for in the round; each texture's: the most of its materials'.
+	TMap<uint32, float> MaterialNeed;
+	for (const TPair<uint64, FMeshUse>& M : MeshUse)
+	{
+		const float* Distance = LastNear.Find(M.Key);
+		if (!Distance)
+		{
+			continue;
+		}
+		for (int32 I = 0; I < M.Value.Materials.Num() && I < M.Value.Density.Num(); ++I)
+		{
+			float& Need = MaterialNeed.FindOrAdd(M.Value.Materials[I], 0.0f);
+			Need = FMath::Max(Need, M.Value.Density[I] * PixelsPerRadian / FMath::Max(*Distance, 50.0f));
+		}
+	}
+	for (TPair<uint64, FTextureUse>& T : TextureUse)
+	{
+		T.Value.Need = 0;
+	}
+	for (const TPair<uint32, float>& M : MaterialNeed)
+	{
+		if (const FMaterialUse* MU = MaterialUse.Find(M.Key))
+		{
+			for (const uint64 Texture : MU->Textures)
+			{
+				if (FTextureUse* TU = TextureUse.Find(Texture))
+				{
+					TU->Need = FMath::Max(TU->Need, M.Value);
+				}
+			}
+		}
+	}
+	// (more detail at once; less once it is two mips less, so that a texture does not go back and forth)
+	TArray<TPair<int32, uint64>> Changes;
+	for (const TPair<uint64, FTextureUse>& T : TextureUse)
+	{
+		if (T.Value.bFixed)
+		{
+			continue;
+		}
+		const int32 Want = BiasFor(T.Value.Width, T.Value.Mips, T.Value.Need);
+		if (Want < T.Value.Bias || Want >= T.Value.Bias + 2)
+		{
+			Changes.Emplace(Want - T.Value.Bias, T.Key);
+		}
+	}
+	Changes.Sort([](const TPair<int32, uint64>& A, const TPair<int32, uint64>& B) { return A.Key < B.Key; });
+	Retune.Reset(Changes.Num());
+	for (const TPair<int32, uint64>& C : Changes)
+	{
+		Retune.Add(C.Value);
+	}
+}
+
+void FGTAVRuntimeAssets::RetuneTextures(double Budget)
+{
+	const double Start = FPlatformTime::Seconds();
+	int32 Taken = 0;
+	for (; Taken < Retune.Num() && Taken < 32 && FPlatformTime::Seconds() - Start < Budget; ++Taken)
+	{
+		FTextureUse* TU = TextureUse.Find(Retune[Taken]);
+		const TObjectPtr<UTexture2D>* T = Textures.Find(Retune[Taken]);
+		if (!TU || !T || !*T)
+		{
+			continue;
+		}
+		const int32 Want = BiasFor(TU->Width, TU->Mips, TU->Need);
+		if (Want == TU->Bias)
+		{
+			continue;
+		}
+		(*T)->LODBias = Want;
+		(*T)->UpdateResource();
+		const int64 Bytes = ResidentBytes(*T, Want);
+		TextureBytes += Bytes - TU->Bytes;
+		TU->Bytes = Bytes;
+		TU->Bias = Want;
+		++TexturesRetuned;
+	}
+	Retune.RemoveAt(0, Taken, EAllowShrinking::No);
+}
+
+void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
+{
+	const auto Collect = [this] {
+		if (EvictedSinceCollection >= (int64(128) << 20) || (EvictedSinceCollection > 0 && Clock - LastCollection > 20.0))
+		{
+			EvictedSinceCollection = 0;
+			LastCollection = Clock;
+			GEngine->ForceGarbageCollection(false);
+		}
+	};
+	if (TextureBytes + MeshBytes <= BudgetBytes)
+	{
+		Collect();
+		return;
+	}
+	const int64 Goal = BudgetBytes / 100 * 85;
 	TArray<TPair<double, uint64>> Old;
 	for (const TPair<uint64, FMeshUse>& M : MeshUse)
 	{
@@ -879,9 +1039,10 @@ void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
 	}
 	Old.Sort([](const TPair<double, uint64>& A, const TPair<double, uint64>& B) { return A.Key < B.Key; });
 	int32 Evicted = 0;
+	const int64 Before = TextureBytes + MeshBytes;
 	for (const TPair<double, uint64>& O : Old)
 	{
-		if (TextureBytes + MeshBytes <= BudgetBytes)
+		if (TextureBytes + MeshBytes <= Goal)
 		{
 			break;
 		}
@@ -919,9 +1080,7 @@ void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
 		States.Remove(O.Value);
 		++Evicted;
 	}
-	if (Evicted)
-	{
-		MeshesEvicted += Evicted;
-		GEngine->ForceGarbageCollection(true);
-	}
+	MeshesEvicted += Evicted;
+	EvictedSinceCollection += Before - (TextureBytes + MeshBytes);
+	Collect();
 }

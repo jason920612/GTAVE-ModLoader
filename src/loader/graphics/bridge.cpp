@@ -22,6 +22,7 @@
 #include "../paths.hpp"
 #include "../state.hpp"
 #include "../ui/dx12_hook.hpp"
+#include "../ui/recorder.hpp"
 #include "GTAVBridgeProtocol.h"
 #include "composite.hpp"
 #include "streamline.hpp"
@@ -41,7 +42,8 @@ namespace loader::graphics::bridge
 		                   kGetPedNearbyVehicles = 0xCFF869CBFA210D82, kGetVehiclePedIsIn = 0x9A9112A0FE9A4713,
 		                   kIsPedInAnyVehicle = 0x997ABD671D25CA0B, kDoesEntityExist = 0x7239B21A38F536BA,
 		                   kIsEntityVisible = 0x47D6F43D77935C75, kGetEntityMatrix = 0xECB2FC7235A7D137,
-		                   kGetEntityModel = 0x9F47B058362C84B5, kGetModelDimensions = 0x03E8D3D5F549087A;
+		                   kGetEntityModel = 0x9F47B058362C84B5, kGetModelDimensions = 0x03E8D3D5F549087A,
+		                   kGetInteriorFromPrimaryView = 0xE7D267EC6CA966C3, kGetRoomKeyForGameViewport = 0xA6575914D2A0B450;
 
 		// Game thread.
 		HANDLE g_mapping = nullptr;
@@ -59,8 +61,11 @@ namespace loader::graphics::bridge
 		std::atomic_bool g_restart = false; // the hotkey while the renderer is not running
 		std::atomic<uint32_t> g_width = 0, g_height = 0;
 		std::mutex g_renderMutex;
-		ID3D12Resource* g_texture[2] = {}; // (the renderer's frame with fence value v is in g_texture[v % 2])
+		ID3D12Resource* g_texture[GTAVBridge::kTextures] = {}; // (the renderer's frame for game frame s is in g_texture[s % kTextures])
 		ID3D12Fence* g_fence = nullptr;
+		ID3D12Fence* g_consumed = nullptr; // (signalled with a game frame once it was presented: its texture is free again)
+		std::vector<uint64_t> g_composed;  // the frames composed and not yet presented, oldest first
+		uint64_t g_consumedValue = 0;
 		uint32_t g_openedSequence = 0;
 		std::vector<std::pair<std::chrono::steady_clock::time_point, IUnknown*>> g_retired; // released a while later
 		bool g_warnedSize = false;
@@ -216,24 +221,31 @@ namespace loader::graphics::bridge
 		bool Open(ID3D12Device* device)
 		{
 			const uint32_t sequence = g_shared->textureSequence;
-			if (sequence == g_openedSequence && g_texture[0] && g_texture[1] && g_fence)
+			if (sequence == g_openedSequence && g_texture[GTAVBridge::kTextures - 1] && g_fence && g_consumed)
 				return true;
 			for (ID3D12Resource*& t : g_texture)
 				Retire(t), t = nullptr;
 			Retire(g_fence);
-			g_fence = nullptr;
+			Retire(g_consumed);
+			g_fence = g_consumed = nullptr;
+			g_composed.clear();
+			g_consumedValue = 0;
 			g_openedSequence = sequence;
 			if (!sequence)
 				return false;
 			ID3D12Device1* device1 = nullptr;
 			if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device1))))
 				return false;
-			HANDLE fence = nullptr;
-			bool ok = SUCCEEDED(device1->OpenSharedHandleByName(Named(GTAVBridge::kFenceName).c_str(), GENERIC_ALL, &fence)) &&
-			          SUCCEEDED(device->OpenSharedHandle(fence, IID_PPV_ARGS(&g_fence)));
-			if (fence)
-				CloseHandle(fence);
-			for (int i = 0; i < 2 && ok; ++i)
+			bool ok = true;
+			for (const auto& [name, out] : {std::pair{GTAVBridge::kFenceName, &g_fence}, std::pair{GTAVBridge::kConsumedName, &g_consumed}})
+			{
+				HANDLE fence = nullptr;
+				ok = ok && SUCCEEDED(device1->OpenSharedHandleByName(Named(name).c_str(), GENERIC_ALL, &fence)) &&
+				     SUCCEEDED(device->OpenSharedHandle(fence, IID_PPV_ARGS(out)));
+				if (fence)
+					CloseHandle(fence);
+			}
+			for (uint32_t i = 0; i < GTAVBridge::kTextures && ok; ++i)
 			{
 				HANDLE texture = nullptr;
 				ok = SUCCEEDED(device1->OpenSharedHandleByName((Named(GTAVBridge::kTextureName) + L"-" + std::to_wstring(i)).c_str(), GENERIC_ALL, &texture)) &&
@@ -323,14 +335,17 @@ namespace loader::graphics::bridge
 			}).detach();
 		}
 
-		// The game's frame this render thread records (its camera's sequence number): the renderer's frame to wait for.
+		// The game's frame this render thread records (its camera's sequence number): the renderer's frame to wait for;
+		// and its camera (the depth's projection).
 		thread_local uint32_t t_sequence = 0;
+		thread_local streamline::Camera t_camera;
 		uint64_t g_lastValue = 0;      // the renderer's newest frame seen, and when it last moved on
 		ULONGLONG g_lastProgress = 0;
 
 		// Right after the game's DLSS pass: the renderer's frame of this camera over DLSS's output, once the game's
 		// queue has waited for it (frame for frame, so that the game's peds and vehicles sit on the renderer's
-		// picture exactly; while the renderer stalls, its newest frame instead).
+		// picture exactly; while the renderer stalls, its newest frame instead). The frame's texture is the renderer's
+		// again once the frame was presented (OnPresent).
 		void AfterDlss(const streamline::DlssFrame& frame)
 		{
 			DumpDepth(frame);
@@ -376,12 +391,26 @@ namespace loader::graphics::bridge
 			if (newest != g_lastValue)
 				g_lastValue = newest, g_lastProgress = tick;
 			const bool stalled = tick - g_lastProgress > 500;
-			const uint64_t value = !stalled && t_sequence > newest ? t_sequence : newest;
+			const uint64_t value = stalled || !t_sequence ? newest : t_sequence;
 			queue->Wait(g_fence, value);
-			ID3D12Resource* picture = g_texture[value % 2];
-			// (the game's peds and vehicles kept; a plain copy when that cannot be done)
-			if (composite::Record(frame, picture, std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f),
-			                      std::clamp(config::Get().ue5GradeMatch, 0.0f, 1.0f)))
+			ID3D12Resource* picture = g_texture[value % GTAVBridge::kTextures];
+			ui::recorder::SetFrameInfo(t_sequence, static_cast<uint32_t>(value), static_cast<uint32_t>(newest), stalled ? 1 : 0);
+			g_composed.push_back(value);
+			if (g_composed.size() > 8)
+				g_composed.erase(g_composed.begin());
+			// (the game's peds and vehicles kept, where the renderer's world is not in front of them; a plain copy when
+			// that cannot be done)
+			composite::Settings settings;
+			settings.match = std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f);
+			settings.grade = std::clamp(config::Get().ue5GradeMatch, 0.0f, 1.0f);
+			// (the game's depth to metres: its viewToClip for row vectors gives depth = (z m10 + m14) / (z m11), so
+			// z = m14 / (depth m11 - m10); for column vectors m11 and m14 trade places: w comes from z by the -1)
+			const float* m = t_camera.viewToClip;
+			const bool rows = std::abs(m[11]) > std::abs(m[14]);
+			settings.depthNumerator = rows ? m[14] : m[11];
+			settings.depthScale = rows ? m[11] : m[14];
+			settings.depthOffset = m[10];
+			if (composite::Record(frame, picture, settings))
 				return;
 			auto* list = static_cast<ID3D12GraphicsCommandList*>(commandList);
 			D3D12_RESOURCE_BARRIER barrier{};
@@ -554,6 +583,13 @@ namespace loader::graphics::bridge
 			s.year = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockYear));
 			s.month = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockMonth) + 1); // (the game's from 0)
 			s.day = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockDayOfMonth));
+			s.interior = natives::Invoke<int32_t>(kGetInteriorFromPrimaryView);
+			s.room = s.interior ? natives::Invoke<uint32_t>(kGetRoomKeyForGameViewport) : 0;
+			if (static int32_t told = -1; s.interior != told)
+			{
+				told = s.interior;
+				log::Info("ue5 bridge: the camera is {} (room {:#x})", s.interior ? std::format("in interior {}", s.interior) : std::string("outside"), s.room);
+			}
 			WriteProxies(s);
 			s.width = g_width, s.height = g_height;
 			// Pace, every 10 s: the renderer's new frames against the game's.
@@ -627,17 +663,29 @@ namespace loader::graphics::bridge
 			GTAVBridge::Shared* s = g_shared;
 			if (!s || !camera.valid)
 				return;
-			std::memcpy(s->position, camera.position, sizeof(s->position));
+			const uint32_t sequence = s->gameSequence + 1;
+			GTAVBridge::View& v = s->views[sequence % GTAVBridge::kViews];
+			v.sequence = sequence;
+			std::memcpy(v.position, camera.position, sizeof(v.position));
 			// (the game gives Streamline the camera's back vector as cameraFwd: it looks down its -z)
 			for (int i = 0; i < 3; ++i)
-				s->forward[i] = -camera.forward[i];
-			std::memcpy(s->up, camera.up, sizeof(s->up));
-			s->fov = camera.fov * 57.29578f;
-			s->aspect = camera.aspect;
-			s->nearClip = camera.nearZ;
-			s->farClip = camera.farZ;
+				v.forward[i] = -camera.forward[i];
+			std::memcpy(v.up, camera.up, sizeof(v.up));
+			v.fov = camera.fov * 57.29578f;
+			v.aspect = camera.aspect;
+			v.nearClip = camera.nearZ;
+			v.farClip = camera.farZ;
 			MemoryBarrier();
-			t_sequence = ++s->gameSequence;
+			s->gameSequence = sequence;
+			t_sequence = sequence;
+			t_camera = camera;
+			if (static bool told = false; !told)
+			{
+				told = true;
+				const float* m = camera.viewToClip;
+				log::Info("ue5 bridge: the game's projection, third and fourth rows {:.5f} {:.5f} {:.5f} {:.5f} / {:.5f} {:.5f} {:.5f} {:.5f}", m[8], m[9], m[10],
+				    m[11], m[12], m[13], m[14], m[15]);
+			}
 		}
 	}
 
@@ -688,7 +736,9 @@ namespace loader::graphics::bridge
 			for (ID3D12Resource*& t : g_texture)
 				Retire(t), t = nullptr;
 			Retire(g_fence);
-			g_fence = nullptr;
+			Retire(g_consumed);
+			g_fence = g_consumed = nullptr;
+			g_composed.clear();
 			g_openedSequence = 0;
 			return;
 		}
@@ -732,6 +782,21 @@ namespace loader::graphics::bridge
 		if (g_job)
 			CloseHandle(g_job);
 		g_job = nullptr;
+	}
+
+	void OnPresent(ID3D12CommandQueue* queue)
+	{
+		// (the oldest frame composed: its lists are all on the queue before the present)
+		std::lock_guard lock(g_renderMutex);
+		if (g_composed.empty() || !g_consumed)
+			return;
+		const uint64_t value = g_composed.front();
+		g_composed.erase(g_composed.begin());
+		if (value > g_consumedValue)
+		{
+			g_consumedValue = value;
+			queue->Signal(g_consumed, value);
+		}
 	}
 
 	bool Showing()

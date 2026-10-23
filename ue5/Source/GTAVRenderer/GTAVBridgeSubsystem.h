@@ -28,7 +28,7 @@ private:
 	void* Mapping = nullptr;
 	GTAVBridge::Shared* Shared = nullptr;
 	uint32 GamePid = 0;
-	uint32 LastSequence = 0, LastGroups = 0, LastConsole = 0;
+	uint32 NextSequence = 0, LastSequence = 0, Skipped = 0, LastGroups = 0, LastConsole = 0;
 	TSharedPtr<FGTAVBridgeViewExtension, ESPMode::ThreadSafe> Extension;
 
 	UPROPERTY()

@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <string>
 
+struct ID3D12CommandQueue;
+
 // The graphics mod's bridge to the UE5 renderer (research/phase0.md §59.5): with loader.json "ue5Renderer" on, the
 // loader starts the renderer (ue5/, the pack files ue5export made), gives it the game's view and world state every
 // frame, and puts its picture in place of the game's 3D scene right after the game's DLSS pass, so that the game's
@@ -16,6 +18,8 @@ namespace loader::graphics::bridge
 	void OnKeyDown(uint32_t vk);
 	// The game closes: the renderer goes too.
 	void Stop();
+	// The render thread, as the game presents a frame: the renderer may draw into that frame's texture again.
+	void OnPresent(ID3D12CommandQueue* queue);
 	// The renderer's picture is the one shown.
 	bool Showing();
 	// Research: the depth and stencil of the next DLSS pass to a file (header: plane widths, rows, row pitches, offsets;

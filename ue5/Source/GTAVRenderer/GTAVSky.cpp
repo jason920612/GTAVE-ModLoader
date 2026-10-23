@@ -137,7 +137,8 @@ namespace
 	}
 
 	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
-	bool bInside = false;
+	bool bInside = false, bInsideByRooms = false;
+	double GameIndoorsTime = -1e9;
 	float Indoors = 0; // (eased)
 	FVector2f GameWind = FVector2f::ZeroVector;
 	float GameWindSpeed = 0;
@@ -227,9 +228,17 @@ namespace
 	}
 }
 
-void GTAVSky::SetIndoors(bool bIndoors)
+void GTAVSky::SetIndoors(bool bIndoors, bool bFromGame)
 {
-	bInside = bIndoors;
+	if (bFromGame)
+	{
+		bInside = bIndoors;
+		GameIndoorsTime = FPlatformTime::Seconds();
+	}
+	else
+	{
+		bInsideByRooms = bIndoors;
+	}
 }
 
 void GTAVSky::SetDate(int32 Year, int32 Month, int32 Day)
@@ -370,7 +379,8 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	// The air: aerosols (Mie scattering) that blur and tint the distance, thickest in the Los Santos basin (a city's
 	// haze under an inversion about a kilometre up: the hills rise out of it), thinner over the countryside north of
 	// it; a ground fog mostly in fog and rain.
-	Indoors = FMath::FInterpConstantTo(Indoors, bInside ? 1.0f : 0.0f, 1.0f / 30.0f, 1.0f); // (about half a second)
+	const bool bIn = FPlatformTime::Seconds() - GameIndoorsTime < 2.0 ? bInside : bInsideByRooms;
+	Indoors = FMath::FInterpConstantTo(Indoors, bIn ? 1.0f : 0.0f, 1.0f / 30.0f, 1.0f); // (about half a second)
 	const float GameY = float(-Camera.Y / 100.0);
 	const float City = 1.0f - FMath::SmoothStep(1500.0f, 3500.0f, GameY);
 	if (USkyAtmosphereComponent* Air = A.Atmosphere.Get())
@@ -385,7 +395,8 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		// (indoors the air is not lit by the sky: the haze there is the room's distance, nothing)
 		Air->SetAerialPespectiveViewDistanceScale(FMath::Lerp(1.0f, 0.001f, Indoors));
 	}
-	// Rain: three layers around the camera (3, 7 and 15 m out), while it rains.
+	// Rain: three layers around the camera (3, 7 and 15 m out), while it rains outdoors (the layers know no roof: a room
+	// has none of them).
 	if (L.Rain > 0.05f && !A.Rain.IsValid())
 	{
 		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
@@ -418,7 +429,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	if (AActor* Rain = A.Rain.Get())
 	{
 		Rain->SetActorLocation(Camera);
-		Rain->SetActorHiddenInGame(L.Rain <= 0.05f);
+		Rain->SetActorHiddenInGame(L.Rain <= 0.05f || Indoors > 0.5f);
 	}
 	if (AExponentialHeightFog* Fog = A.Fog.Get())
 	{
@@ -446,7 +457,8 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	{
 		if (UMaterialParameterCollectionInstance* Instance = World->GetParameterCollectionInstance(Collection))
 		{
-			Instance->SetScalarParameterValue(TEXT("Wetness"), L.Wet);
+			// (indoors the floors are dry: what is seen from in there is mostly in there)
+			Instance->SetScalarParameterValue(TEXT("Wetness"), L.Wet * (1.0f - Indoors));
 			// The wind: the game's while the bridge sends it, else the weather's from the west (the sea breeze).
 			const bool bGame = FPlatformTime::Seconds() - GameWindTime < 2.0;
 			const FVector2f Way = bGame && !GameWind.IsNearlyZero() ? GameWind.GetSafeNormal() : FVector2f(1, 0);

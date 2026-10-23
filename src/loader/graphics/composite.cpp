@@ -13,7 +13,17 @@ namespace loader::graphics::composite
 	{
 		// Stencil at DLSS time (the low three bits a kind): 1 peds, 2 vehicles, the 0x80 bit the player (0 buildings
 		// and roads, 3 trees, 4 grass and terrain). Each output pixel takes the renderer's picture, the game's own where
-		// those are, blended by how much of the bilinear footprint in the render-size stencil they cover.
+		// those are - but not where the renderer's world is in front of them (its depth, metres, in the picture's alpha,
+		// against the game's depth there: the game's leaner world may leave out a wall or a fence the renderer draws).
+		// Their edges: the stencil is at the render size and jittered from frame to frame (by DLSS's sub-pixel offsets),
+		// so taken as it is, a ped's outline is a staircase that crawls as the view moves - a cut-out pasted on. DLSS's
+		// output has the outline smooth and steady, but against the game's own background. So at an edge the pixel is
+		// unmixed: the mean colour of the ped's and of the background's samples about it (the game's picture before DLSS,
+		// a 4 x 4 of the render size's, weighted by distance) give how much of the pixel is the ped (where the two
+		// differ enough, and within half of what the stencil's own bilinear footprint says); the ped's own colour in the
+		// pixel is what is left of it once that much of the background is taken out, kept within the colours of the ped's
+		// samples about it (an estimate off by a little would otherwise make a colour neither has: a red rim on a dark
+		// shoe over a pink floor), and that much of it goes over the renderer's picture.
 		// The renderer's picture is scaled to the game's brightness first: Measure sums the log luminance of both
 		// pictures over a sparse grid (not the sky: depth 0, reversed; not peds and vehicles), Update moves the scale a
 		// little towards their ratio each frame, Composite applies it. A view of nothing but sky goes by the skies
@@ -27,16 +37,34 @@ namespace loader::graphics::composite
 		// picture's red to green and blue to green (log2), in 64 bins of 1/16 stop; the medians (the scenery both draw
 		// alike outweighs what only one of them has, as the renderer's grass) are the white balance the renderer's picture
 		// takes, at its own luminance. Lit samples only (−4 to +6 stops about the game's mean), not the sky.
+		// Its highlights are kept near the game's own brightest (the 99.5th percentile of the game's picture, sky and lamps
+		// included, by the same samples: 64 bins of 1/4 stop from 2 under its mean): the game's bloom and lens effects are
+		// made for what its own picture holds, and a lamp physically a few thousand nits, ten stops over a dim room, spread
+		// over the whole screen.
 		constexpr char kShader[] = R"(
 Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
 Texture2D<float> Depth : register(t2);
+Texture2D<float4> Input : register(t3); // the game's picture before DLSS (the render size)
 RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float),
                                              // 16 the game's mean log2 luminance (float); the sky's: 20 game sum,
                                              // 24 renderer sum, 28 count; 32, 36 the colour balance (log2 red / green,
-                                             // blue / green, floats); 64.. the red bins, 320.. the blue bins
-cbuffer Sizes : register(b0) { uint2 OutSize; uint2 RenderSize; float Adapt; float Match; float Grade; };
+                                             // blue / green, floats); 40 the game's brightest (log2, float); 64.. the
+                                             // red bins, 320.. the blue bins, 576.. the luminance bins
+cbuffer Sizes : register(b0)
+{
+	uint2 OutSize; uint2 RenderSize; float Adapt; float Match; float Grade;
+	float DepthNumerator; float DepthScale; float DepthOffset; // the game's depth d to metres: n / (d s - o)
+	uint Matte; // 1: Input can be read (edges unmixed), 0: blended by the stencil's footprint alone
+};
+
+// Metres along the view at a depth of the game's (0, the sky: very far).
+float GameMetres(float d)
+{
+	float w = d * DepthScale - DepthOffset;
+	return d > 0 && abs(w) > 1e-12 ? abs(DepthNumerator / w) : 1e9;
+}
 
 bool Dynamic(uint s)
 {
@@ -57,13 +85,14 @@ int2 RenderPixel(uint2 p)
 groupshared int g_game[64];
 groupshared int g_renderer[64];
 groupshared int g_count[64];
-groupshared uint g_bins[128];
+groupshared uint g_bins[192];
 
 [numthreads(8, 8, 1)]
 void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 {
 	g_bins[index] = 0;
 	g_bins[index + 64] = 0;
+	g_bins[index + 128] = 0;
 	GroupMemoryBarrierWithGroupSync();
 	uint2 p = id * 8 + 4;
 	int game = 0, renderer = 0, count = 0, sky = 0;
@@ -80,6 +109,11 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 			sky = Depth.Load(int3(q, 0)) > 0 ? 0 : 1;
 			float key = asfloat(Exposure.Load(16)), scale = asfloat(Exposure.Load(12));
 			rl += scale > 0 ? log2(scale) : 0;
+			if (abs(key) < 20.0)
+			{
+				uint ignored;
+				InterlockedAdd(g_bins[128 + uint(clamp(floor((gl - key + 2.0) * 4.0), 0.0, 63.0))], 1, ignored);
+			}
 			if (!sky && abs(key) < 20.0 && gl > key - 4.0 && gl < key + 6.0 && rl > key - 4.0 && rl < key + 6.0)
 			{
 				float3 lg = log2(g), lr = log2(r);
@@ -123,6 +157,8 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 		Exposure.InterlockedAdd(64 + index * 4, g_bins[index], ignored);
 	if (g_bins[index + 64] > 0)
 		Exposure.InterlockedAdd(320 + index * 4, g_bins[index + 64], ignored);
+	if (g_bins[index + 128] > 0)
+		Exposure.InterlockedAdd(576 + index * 4, g_bins[index + 128], ignored);
 }
 
 // The median of 64 bins at 64 + base * 4 (log2, from -2 in 1/16 stops), and how many; the bins emptied.
@@ -167,8 +203,33 @@ void Update()
 		scale = exp2(lerp(current, target, Adapt));
 		key = lerp(key, float(game) / (64.0 * count), Adapt);
 	}
+	// (the game's brightest: the 99.5th percentile of its picture, eased like the rest; before any, 7 stops over the mean)
+	uint lit = 0;
+	[loop] for (uint i = 0; i < 64; ++i)
+		lit += Exposure.Load(576 + i * 4);
+	float top = asfloat(Exposure.Load(40));
+	if (!(abs(top) < 40.0))
+		top = key + 7.0;
+	if (lit > 64)
+	{
+		uint above = 0;
+		float found = 61.0;
+		[loop] for (int j = 63; j >= 0; --j)
+		{
+			above += Exposure.Load(576 + uint(j) * 4);
+			if (above * 200 >= lit)
+			{
+				found = float(j);
+				break;
+			}
+		}
+		top = lerp(top, key + (found + 1.0) / 4.0 - 2.0, Adapt);
+	}
+	[loop] for (uint k = 0; k < 64; ++k)
+		Exposure.Store(576 + k * 4, 0);
 	Exposure.Store4(0, uint4(0, 0, 0, asuint(scale > 0 ? scale : 1.0)));
 	Exposure.Store4(16, uint4(asuint(key), 0, 0, 0));
+	Exposure.Store(40, asuint(top));
 	float2 balance = float2(asfloat(Exposure.Load(32)), asfloat(Exposure.Load(36)));
 	if (!all(abs(balance) < 4.0))
 		balance = 0;
@@ -187,15 +248,39 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	float2 p = (float2(id) + 0.5) * float2(RenderSize) / float2(OutSize) - 0.5;
 	int2 b = int2(floor(p));
 	float2 f = p - float2(b);
-	float covered = 0;
-	[unroll] for (int k = 0; k < 4; ++k)
+	float4 picture = Picture.Load(int3(id, 0));
+	// (the renderer's depth here, metres; a ped or vehicle of the game's farther than that, by more than the two worlds'
+	// grounds and shapes may differ, is behind the renderer's world)
+	float near = picture.a;
+	float covered = 0, foreWeight = 0, backWeight = 0;
+	float3 fore = 0, back = 0, foreLow = 1e9, foreHigh = 0;
+	[unroll] for (int y = -1; y <= 2; ++y)
 	{
-		int2 q = clamp(b + int2(k & 1, k >> 1), int2(0, 0), int2(RenderSize) - 1);
-		float w = ((k & 1) ? f.x : 1 - f.x) * ((k >> 1) ? f.y : 1 - f.y);
-		covered += Dynamic(Stencil.Load(int3(q, 0)).y) ? w : 0;
+		[unroll] for (int x = -1; x <= 2; ++x)
+		{
+			int2 q = clamp(b + int2(x, y), int2(0, 0), int2(RenderSize) - 1);
+			bool shown = false;
+			if (Dynamic(Stencil.Load(int3(q, 0)).y))
+			{
+				float far = GameMetres(Depth.Load(int3(q, 0)));
+				shown = near > far - (0.3 + 0.02 * far);
+			}
+			if (x >= 0 && x <= 1 && y >= 0 && y <= 1)
+				covered += shown ? (x ? f.x : 1 - f.x) * (y ? f.y : 1 - f.y) : 0;
+			float2 d = abs(float2(x, y) - f);
+			float w = max(2.0 - d.x, 0) * max(2.0 - d.y, 0);
+			float3 c = Matte ? max(Input.Load(int3(q, 0)).rgb, 0) : 0;
+			if (shown)
+			{
+				fore += c * w, foreWeight += w;
+				foreLow = min(foreLow, c), foreHigh = max(foreHigh, c);
+			}
+			else
+				back += c * w, backWeight += w;
+		}
 	}
 	float scale = asfloat(Exposure.Load(12));
-	float4 picture = Picture.Load(int3(id, 0)) * float4(scale.xxx, 1);
+	picture = float4(picture.rgb * scale, Output[id].a);
 	if (any(isnan(picture.rgb)) || any(isinf(picture.rgb)))
 		picture.rgb = 0;
 	float2 balance = float2(asfloat(Exposure.Load(32)), asfloat(Exposure.Load(36)));
@@ -206,20 +291,40 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		float after = Luminance(picture.rgb);
 		picture.rgb *= after > 0 ? before / after : 0;
 	}
-	float key = asfloat(Exposure.Load(16));
-	float knee = exp2(key + 7.0), top = exp2(key + 10.0), l = Luminance(picture.rgb);
+	float key = asfloat(Exposure.Load(16)), brightest = asfloat(Exposure.Load(40));
+	brightest = abs(brightest) < 40.0 ? brightest : key + 7.0;
+	float knee = exp2(min(key + 7.0, brightest - 0.5)), top = exp2(min(key + 10.0, brightest + 1.0)), l = Luminance(picture.rgb);
 	if (l > knee)
 	{
 		float over = l - knee;
 		picture.rgb *= (knee + over / (1.0 + over / (top - knee))) / l;
 	}
-	if (covered <= 0.001)
+	if (foreWeight <= 0)
+	{
 		Output[id] = picture;
-	else if (covered < 0.999)
-		Output[id] = lerp(picture, Output[id], covered);
+		return;
+	}
+	if (backWeight <= 0)
+		return;
+	// An edge: unmixed (see above).
+	float4 game = Output[id];
+	float3 F = fore / foreWeight, B = back / backWeight, D = F - B;
+	float contrast = dot(D, D), level = Luminance(F) + Luminance(B) + 1e-4;
+	float alpha = covered;
+	if (Matte && contrast > 0.0025 * level * level)
+		alpha = clamp(dot(game.rgb - B, D) / contrast, max(covered - 0.5, 0), min(covered + 0.5, 1));
+	if (alpha <= 0.02)
+	{
+		Output[id] = picture;
+		return;
+	}
+	if (alpha >= 0.98)
+		return;
+	float3 ped = clamp((game.rgb - (1 - alpha) * B) / max(alpha, 0.05), foreLow, foreHigh);
+	Output[id] = float4(lerp(picture.rgb, ped, alpha), game.a);
 }
 )";
-		constexpr UINT kViews = 5;  // per frame: picture, stencil, depth, output, exposure
+		constexpr UINT kViews = 6;  // per frame: picture, stencil, depth, input, output, exposure
 		constexpr UINT kSlots = 64; // frames in the ring (frames in flight are far fewer)
 		constexpr float kAdapt = 0.03f; // of the way to the measured ratio each frame (about a second)
 
@@ -259,13 +364,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		{
 			D3D12_DESCRIPTOR_RANGE ranges[2]{};
 			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-			ranges[0].NumDescriptors = 3;
+			ranges[0].NumDescriptors = 4;
 			ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 			ranges[1].NumDescriptors = 2;
-			ranges[1].OffsetInDescriptorsFromTableStart = 3;
+			ranges[1].OffsetInDescriptorsFromTableStart = 4;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 7;
+			parameters[0].Constants.Num32BitValues = 11;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -312,6 +417,30 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			return true;
 		}
 
+		// A typed view format of a colour format (a typeless one's float view), or UNKNOWN.
+		DXGI_FORMAT ColorView(DXGI_FORMAT format)
+		{
+			switch (format)
+			{
+			case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+				return DXGI_FORMAT_R16G16B16A16_FLOAT;
+			case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+				return DXGI_FORMAT_R32G32B32A32_FLOAT;
+			case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+				return DXGI_FORMAT_R8G8B8A8_UNORM;
+			case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+				return DXGI_FORMAT_R10G10B10A2_UNORM;
+			case DXGI_FORMAT_R16G16B16A16_FLOAT:
+			case DXGI_FORMAT_R32G32B32A32_FLOAT:
+			case DXGI_FORMAT_R11G11B10_FLOAT:
+			case DXGI_FORMAT_R8G8B8A8_UNORM:
+			case DXGI_FORMAT_R10G10B10A2_UNORM:
+				return format;
+			default:
+				return DXGI_FORMAT_UNKNOWN;
+			}
+		}
+
 		// The view formats of a depth format's planes (depth, stencil), or UNKNOWN.
 		bool PlaneViews(DXGI_FORMAT depth, DXGI_FORMAT& depthView, DXGI_FORMAT& stencilView)
 		{
@@ -331,16 +460,26 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		}
 	}
 
-	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, float match, float grade)
+	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, const Settings& settings)
 	{
 		auto* output = static_cast<ID3D12Resource*>(frame.output);
 		auto* depth = static_cast<ID3D12Resource*>(frame.depth);
+		auto* input = static_cast<ID3D12Resource*>(frame.input);
 		if (g_failed || !depth || !frame.renderWidth || !frame.renderHeight || !(frame.outputState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
 			return false;
 		const D3D12_RESOURCE_DESC outputDesc = output->GetDesc(), depthDesc = depth->GetDesc();
 		DXGI_FORMAT depthFormat{}, stencilFormat{};
 		if (!PlaneViews(depthDesc.Format, depthFormat, stencilFormat) || !(outputDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
 			return false;
+		// (the game's picture before DLSS, for the edges: readable by a compute shader in the state it is left in)
+		const DXGI_FORMAT inputFormat = input ? ColorView(input->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
+		const bool matte = inputFormat != DXGI_FORMAT_UNKNOWN && (frame.inputState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		if (static bool told = false; !told)
+		{
+			told = true;
+			log::Info("ue5 composite: the game's picture before DLSS {} (format {}, state {:#x})", matte ? "unmixes the edges" : "cannot be read: edges by the stencil",
+			    input ? static_cast<int>(input->GetDesc().Format) : -1, frame.inputState);
+		}
 		if (!g_device)
 		{
 			ID3D12Device* device = nullptr;
@@ -372,6 +511,10 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		view.Texture2D.PlaneSlice = 0;
 		g_device->CreateShaderResourceView(depth, &view, cpu);
 		cpu.ptr += g_increment;
+		// (a null view when it cannot be read: the shader does not touch it then)
+		view.Format = matte ? inputFormat : DXGI_FORMAT_R16G16B16A16_FLOAT;
+		g_device->CreateShaderResourceView(matte ? input : nullptr, &view, cpu);
+		cpu.ptr += g_increment;
 		D3D12_UNORDERED_ACCESS_VIEW_DESC write{};
 		write.Format = outputDesc.Format;
 		write.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -393,12 +536,11 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetDescriptorHeaps(1, &g_heap);
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
-		const float adapt = kAdapt;
-		UINT constants[7] = {width, height, frame.renderWidth, frame.renderHeight, 0, 0, 0};
-		std::memcpy(&constants[4], &adapt, 4);
-		std::memcpy(&constants[5], &match, 4);
-		std::memcpy(&constants[6], &grade, 4);
-		list->SetComputeRoot32BitConstants(0, 7, constants, 0);
+		const float floats[6] = {kAdapt, settings.match, settings.grade, settings.depthNumerator, settings.depthScale, settings.depthOffset};
+		UINT constants[11] = {width, height, frame.renderWidth, frame.renderHeight};
+		std::memcpy(&constants[4], floats, sizeof(floats));
+		constants[10] = matte ? 1 : 0;
+		list->SetComputeRoot32BitConstants(0, 11, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);

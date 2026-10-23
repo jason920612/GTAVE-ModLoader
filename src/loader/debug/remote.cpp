@@ -8,15 +8,21 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "../config.hpp"
 #include "../game/natives.hpp"
@@ -25,6 +31,7 @@
 #include "../paths.hpp"
 #include "../state.hpp"
 #include "../ui/overlay.hpp"
+#include "../ui/recorder.hpp"
 
 namespace loader::debug::remote
 {
@@ -38,6 +45,7 @@ namespace loader::debug::remote
 		                   kSetClockTime = 0x47C3B5848C3E45D8, kPauseClock = 0x4055E40BD2DBEC1D, kSetWeatherTypeNowPersist = 0xED712CA327900C8A,
 		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5, kSetClockDate = 0xB096419DF0D06CE7;
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6, kSetEntityCoords = 0x06843DA7060A026B;
+		constexpr uint64_t kGetGameplayCamRelativeHeading = 0x743607648ADD4587, kSetGameplayCamRelativeHeading = 0xB4EC2312F4E5B1F1;
 		struct CamRequest
 		{
 			bool pending = false, on = false, keep = false; // (keep: the clock and weather as they are)
@@ -59,6 +67,20 @@ namespace loader::debug::remote
 		bool g_clockRuns = false;      // only while the clock runs)
 		int g_date[3] = {};            // "date": day, month (1-12), year
 		std::string g_weather;         // "weather": that type, kept
+		float g_spinRate = 0;          // "spin": the gameplay camera turned this fast (degrees a second) until then
+		ULONGLONG g_spinUntil = 0, g_spinLast = 0;
+
+		// "native": a call the game thread makes for the tester (arguments: integers, floats with a '.', s:text).
+		struct NativeCall
+		{
+			uint64_t hash = 0;
+			std::vector<uint64_t> args;
+			std::vector<std::string> strings; // (what string arguments point into)
+			uint64_t result[3]{};
+			bool done = false, ok = false;
+		};
+		std::deque<std::shared_ptr<NativeCall>> g_calls;
+		std::condition_variable g_callDone;
 		int32_t g_camHandle = 0;
 
 		// Keys for the game itself, frontend menus included (they pause scripts, so controls cannot reach them). The
@@ -470,6 +492,99 @@ namespace loader::debug::remote
 				std::string error;
 				return ui::Capture(wpath, error) ? "ok" : "err " + error;
 			}
+			if (cmd == "record")
+			{
+				// record <seconds> <fps> <scale> <path> | record status
+				std::string first;
+				in >> first;
+				if (first == "status")
+					return ui::recorder::Busy() ? "ok recording" : "ok done";
+				double seconds = 0, fps = 30;
+				int scale = 2;
+				std::string path;
+				try
+				{
+					seconds = std::stod(first);
+				}
+				catch (...)
+				{
+					return "err record <seconds> <fps> <scale> <path>";
+				}
+				in >> fps >> scale;
+				std::getline(in >> std::ws, path);
+				if (path.empty())
+					return "err record <seconds> <fps> <scale> <path>";
+				const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+				std::wstring wpath(static_cast<size_t>(wide), L'\0');
+				MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+				wpath.resize(wcslen(wpath.c_str()));
+				std::string error;
+				return ui::recorder::Start(wpath, seconds, fps, scale, error) ? "ok" : "err " + error;
+			}
+			if (cmd == "native")
+			{
+				// native <hash> [args]: the result as an integer, as a float, and as a vector (x y z)
+				auto call = std::make_shared<NativeCall>();
+				std::string word;
+				if (!(in >> word))
+					return "err native <hash> [args]";
+				try
+				{
+					call->hash = std::stoull(word, nullptr, 0);
+				}
+				catch (...)
+				{
+					return "err hash";
+				}
+				std::vector<std::string> words;
+				while (in >> word)
+					words.push_back(word);
+				call->strings.reserve(words.size());
+				for (const std::string& w : words)
+				{
+					uint64_t slot = 0;
+					if (w.rfind("s:", 0) == 0)
+					{
+						call->strings.push_back(w.substr(2));
+						const char* text = call->strings.back().c_str();
+						std::memcpy(&slot, &text, sizeof(text));
+					}
+					else if (w.find('.') != std::string::npos)
+					{
+						const float f = std::stof(w);
+						std::memcpy(&slot, &f, sizeof(f));
+					}
+					else
+					{
+						const int64_t i = std::stoll(w, nullptr, 0);
+						std::memcpy(&slot, &i, sizeof(i));
+					}
+					call->args.push_back(slot);
+				}
+				std::unique_lock lock(g_mutex);
+				g_calls.push_back(call);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(5), [&] { return call->done; }))
+					return "err the game thread did not run it";
+				if (!call->ok)
+					return "err the call failed";
+				float f = 0, v[3];
+				std::memcpy(&f, &call->result[0], 4);
+				for (int k = 0; k < 3; ++k)
+					std::memcpy(&v[k], &call->result[k], 4);
+				return std::format("ok {} {} {} {} {}", static_cast<int64_t>(call->result[0]), f, v[0], v[1], v[2]);
+			}
+			if (cmd == "spin")
+			{
+				// spin <degrees a second> <seconds>: the gameplay camera turned round the player
+				float rate = 0, seconds = 0;
+				if (!(in >> rate >> seconds))
+					return "err spin <degrees a second> <seconds>";
+				std::lock_guard lock(g_mutex);
+				g_spinRate = rate;
+				g_spinUntil = GetTickCount64() + static_cast<ULONGLONG>(std::clamp(seconds, 0.0f, 600.0f) * 1000.0f);
+				g_spinLast = 0;
+				return "ok";
+			}
 			if (cmd == "depthdump")
 			{
 				std::string path;
@@ -666,6 +781,28 @@ namespace loader::debug::remote
 			}
 			game::natives::Invoke<int>(kSetControlValueNextFrame, 0, it->first, it->second.value);
 			++it;
+		}
+		while (!g_calls.empty())
+		{
+			const std::shared_ptr<NativeCall> call = g_calls.front();
+			g_calls.pop_front();
+			game::natives::Invocation inv;
+			inv.Begin(call->hash);
+			for (const uint64_t a : call->args)
+				inv.Push(a);
+			call->ok = game::natives::Call(inv) == game::natives::CallStatus::Ok;
+			// (a vector result is three padded floats)
+			call->result[0] = inv.result[0], call->result[1] = inv.result[1], call->result[2] = inv.result[2];
+			call->done = true;
+			g_callDone.notify_all();
+		}
+		if (now < g_spinUntil)
+		{
+			const float dt = g_spinLast ? static_cast<float>(now - g_spinLast) / 1000.0f : 0.0f;
+			float heading = game::natives::Invoke<float>(kGetGameplayCamRelativeHeading) + g_spinRate * dt;
+			heading = std::remainder(heading, 360.0f);
+			game::natives::Invoke<void>(kSetGameplayCamRelativeHeading, heading);
+			g_spinLast = now;
 		}
 		if (g_teleport)
 		{

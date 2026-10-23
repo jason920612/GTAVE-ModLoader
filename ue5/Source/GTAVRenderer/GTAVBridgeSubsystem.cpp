@@ -12,6 +12,8 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "GlobalShader.h"
+#include "GTAVBridgeShaders.h"
+#include "PixelShaderUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "ID3D12DynamicRHI.h"
 #include "Misc/CommandLine.h"
@@ -34,8 +36,10 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogGTAVBridge, Log, All);
 
-// The picture to the game: after motion blur (HDR, before bloom and tone mapping), copied into the shared texture,
-// then the shared fence signalled with the frame's value (both on UE's graphics queue, in that order).
+// The picture to the game: after motion blur (HDR, before bloom and tone mapping), drawn into the shared texture of its
+// game frame with its depth, then the shared fence signalled with the game frame (both on UE's graphics queue, in that
+// order). Each frame is drawn with its game frame's camera, set as the view point itself (whatever the camera manager
+// did that tick), and labelled on the render thread in order with its own rendering (the game thread is a frame ahead).
 class FGTAVBridgeViewExtension : public FSceneViewExtensionBase
 {
 public:
@@ -48,9 +52,35 @@ public:
 		Release();
 	}
 
+	// Game thread: the game frame drawn next and its camera (Unreal's space; horizontal field of view, degrees).
+	void SetView(uint32 InSequence, const FVector& Location, const FRotator& Rotation, float Fov, float Aspect)
+	{
+		ViewSequence = InSequence;
+		ViewLocation = Location;
+		ViewRotation = Rotation;
+		ViewFov = Fov;
+		ViewAspect = Aspect;
+	}
+
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
-	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
+	virtual void SetupViewPoint(APlayerController* Player, FMinimalViewInfo& InViewInfo) override
+	{
+		if (ViewSequence)
+		{
+			InViewInfo.Location = ViewLocation;
+			InViewInfo.Rotation = ViewRotation;
+			InViewInfo.FOV = ViewFov;
+			InViewInfo.AspectRatio = ViewAspect;
+			InViewInfo.bConstrainAspectRatio = false;
+		}
+	}
+	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override
+	{
+		// (ahead of this family's rendering on the render thread)
+		const uint32 S = ViewSequence;
+		ENQUEUE_RENDER_COMMAND(GTAVBridgeFrame)([this, S](FRHICommandListImmediate&) { RenderSequence = S; });
+	}
 
 	virtual void SubscribeToPostProcessingPass(EPostProcessingPass Pass, const FSceneView& InView, FPostProcessingPassDelegateArray& InOutPassCallbacks,
 		bool bIsPassEnabled) override
@@ -85,8 +115,10 @@ public:
 		Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 		const FString Pid = FString::FromInt(GamePid);
 		bool bOk = SUCCEEDED(Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&Fence))) &&
-				   SUCCEEDED(Device->CreateSharedHandle(Fence, nullptr, GENERIC_ALL, *(FString(GTAVBridge::kFenceName) + Pid), &FenceHandle));
-		for (int32 I = 0; I < 2 && bOk; ++I)
+				   SUCCEEDED(Device->CreateSharedHandle(Fence, nullptr, GENERIC_ALL, *(FString(GTAVBridge::kFenceName) + Pid), &FenceHandle)) &&
+				   SUCCEEDED(Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&Consumed))) &&
+				   SUCCEEDED(Device->CreateSharedHandle(Consumed, nullptr, GENERIC_ALL, *(FString(GTAVBridge::kConsumedName) + Pid), &ConsumedHandle));
+		for (int32 I = 0; I < int32(GTAVBridge::kTextures) && bOk; ++I)
 		{
 			bOk = SUCCEEDED(Device->CreateCommittedResource(&Heap, D3D12_HEAP_FLAG_SHARED, &Desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&Resource[I]))) &&
 				  SUCCEEDED(Device->CreateSharedHandle(Resource[I], nullptr, GENERIC_ALL, *FString::Printf(TEXT("%s%s-%d"), GTAVBridge::kTextureName, *Pid, I),
@@ -106,6 +138,10 @@ public:
 		Shared->textureWidth = Width;
 		Shared->textureHeight = Height;
 		Shared->frameValue = 0;
+		for (uint32 I = 0; I < GTAVBridge::kTextures; ++I)
+		{
+			Shared->frameSequences[I] = 0;
+		}
 		FPlatformMisc::MemoryBarrier();
 		++Shared->textureSequence;
 		UE_LOG(LogGTAVBridge, Display, TEXT("shared texture %ux%u"), Width, Height);
@@ -114,7 +150,7 @@ public:
 
 	void Release()
 	{
-		for (int32 I = 0; I < 2; ++I)
+		for (int32 I = 0; I < int32(GTAVBridge::kTextures); ++I)
 		{
 			Target[I].SafeRelease();
 			Texture[I].SafeRelease();
@@ -124,12 +160,15 @@ public:
 				Resource[I] = nullptr;
 			}
 		}
-		if (Fence)
+		for (ID3D12Fence** F : {&Fence, &Consumed})
 		{
-			Fence->Release();
-			Fence = nullptr;
+			if (*F)
+			{
+				(*F)->Release();
+				*F = nullptr;
+			}
 		}
-		for (HANDLE* H : {&TextureHandle[0], &TextureHandle[1], &FenceHandle})
+		for (HANDLE* H : {&TextureHandle[0], &TextureHandle[1], &TextureHandle[2], &FenceHandle, &ConsumedHandle})
 		{
 			if (*H)
 			{
@@ -139,55 +178,75 @@ public:
 		}
 	}
 
-	// The game frame being drawn (game thread, read on the render thread).
-	std::atomic<uint32> Sequence = 0;
+	// The game frames the game has presented (its texture is free again), on any thread.
+	uint64 ConsumedValue() const
+	{
+		return Consumed ? Consumed->GetCompletedValue() : ~0ull;
+	}
+
 	std::atomic<bool> bEnabled = false;
 
 private:
 	GTAVBridge::Shared* Shared;
-	ID3D12Resource* Resource[2] = {};
+	ID3D12Resource* Resource[GTAVBridge::kTextures] = {};
 	ID3D12Fence* Fence = nullptr;
-	HANDLE TextureHandle[2] = {}, FenceHandle = nullptr;
-	FTextureRHIRef Texture[2];
-	TRefCountPtr<IPooledRenderTarget> Target[2];
-	uint64 Value = 0;
+	ID3D12Fence* Consumed = nullptr;
+	HANDLE TextureHandle[GTAVBridge::kTextures] = {}, FenceHandle = nullptr, ConsumedHandle = nullptr;
+	FTextureRHIRef Texture[GTAVBridge::kTextures];
+	TRefCountPtr<IPooledRenderTarget> Target[GTAVBridge::kTextures];
+	// Game thread: the next frame's game frame and camera.
+	uint32 ViewSequence = 0;
+	FVector ViewLocation = FVector::ZeroVector;
+	FRotator ViewRotation = FRotator::ZeroRotator;
+	float ViewFov = 90.0f, ViewAspect = 16.0f / 9.0f;
+	// Render thread: the game frame of the frame being rendered, and of the last one given to the game.
+	uint32 RenderSequence = 0, LastWritten = 0;
 
 	FScreenPassTexture AfterMotionBlur(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 	{
 		const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(GraphBuilder, Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
-		if (Target[0] && Target[1] && Fence && bEnabled && SceneColor.IsValid() && SceneColor.ViewRect.Width() == int32(Shared->textureWidth) &&
-			SceneColor.ViewRect.Height() == int32(Shared->textureHeight))
+		const uint32 FrameSequence = RenderSequence;
+		// (once per game frame: a frame drawn again while no new view came is not the game's)
+		if (Target[GTAVBridge::kTextures - 1] && Fence && bEnabled && FrameSequence && FrameSequence != LastWritten && SceneColor.IsValid() &&
+			SceneColor.ViewRect.Width() == int32(Shared->textureWidth) && SceneColor.ViewRect.Height() == int32(Shared->textureHeight) &&
+			Inputs.SceneTextures.SceneTextures)
 		{
-			// (the fence counts the game's frames: the game waits for the frame of its own camera; the frame goes into the
-			// texture of its value's parity)
-			const uint32 FrameSequence = Sequence;
-			const uint64 FrameValue = FMath::Max<uint64>(FrameSequence, Value + 1);
-			Value = FrameValue;
-			FRDGTextureRef Dest = GraphBuilder.RegisterExternalTexture(Target[FrameValue % 2], TEXT("GTAVBridgeFrame"));
-			// (drawn, not copied: the scene colour's format need not be the shared texture's)
-			FRDGDrawTextureInfo Draw;
-			Draw.SourcePosition = SceneColor.ViewRect.Min;
-			Draw.Size = SceneColor.ViewRect.Size();
-			AddDrawTexturePass(GraphBuilder, GetGlobalShaderMap(View.GetFeatureLevel()), SceneColor.Texture, Dest, Draw);
+			LastWritten = FrameSequence;
+			const uint32 Slot = FrameSequence % GTAVBridge::kTextures;
+			FRDGTextureRef Dest = GraphBuilder.RegisterExternalTexture(Target[Slot], TEXT("GTAVBridgeFrame"));
+			// The colour, and in alpha the depth (metres) for the game's peds and vehicles to be hidden behind.
+			// (the depth's rectangle is the view's own, at the render resolution: the shader has it from the view)
+			FRDGTextureRef Depth = Inputs.SceneTextures.SceneTextures->GetParameters()->SceneDepthTexture;
+			FGTAVBridgePS::FParameters* P = GraphBuilder.AllocParameters<FGTAVBridgePS::FParameters>();
+			P->View = View.ViewUniformBuffer;
+			P->SceneColor = SceneColor.Texture;
+			P->SceneDepth = Depth;
+			P->ColorMin = SceneColor.ViewRect.Min;
+			P->ColorSize = SceneColor.ViewRect.Size();
+			P->RenderTargets[0] = FRenderTargetBinding(Dest, ERenderTargetLoadAction::ENoAction);
+			FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
+			TShaderMapRef<FGTAVBridgePS> Shader(ShaderMap);
+			FPixelShaderUtils::AddFullscreenPass(GraphBuilder, ShaderMap, RDG_EVENT_NAME("GTAVBridgeFrame"), Shader, P,
+				FIntRect(0, 0, SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height()));
 			static bool bLogged = false;
 			if (!bLogged)
 			{
 				bLogged = true;
-				UE_LOG(LogGTAVBridge, Display, TEXT("scene colour %s %dx%d (view %dx%d at %d,%d)"), GPixelFormats[SceneColor.Texture->Desc.Format].Name,
+				UE_LOG(LogGTAVBridge, Display, TEXT("scene colour %s %dx%d (view %dx%d at %d,%d); depth %dx%d"), GPixelFormats[SceneColor.Texture->Desc.Format].Name,
 					SceneColor.Texture->Desc.Extent.X, SceneColor.Texture->Desc.Extent.Y, SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height(),
-					SceneColor.ViewRect.Min.X, SceneColor.ViewRect.Min.Y);
+					SceneColor.ViewRect.Min.X, SceneColor.ViewRect.Min.Y, Depth->Desc.Extent.X, Depth->Desc.Extent.Y);
 			}
 			GTAVBridge::Shared* S = Shared;
 			ID3D12Fence* F = Fence;
-			// (after the graph, on the immediate list: behind the copy, on the same queue; the game waits for this value
+			// (after the graph, on the immediate list: behind the drawing, on the same queue; the game waits for this value
 			// before using the texture)
-			GraphBuilder.AddPostExecuteCallback([S, F, FrameValue, FrameSequence] {
+			GraphBuilder.AddPostExecuteCallback([S, F, FrameSequence, Slot] {
 				// (as the engine does it: while the RHI thread translates the list, where a command context is active)
-				FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([S, F, FrameValue, FrameSequence](FRHICommandList& RHICmdList) {
-					GetID3D12DynamicRHI()->RHISignalManualFence(RHICmdList, F, FrameValue);
-					S->frameSequence = FrameSequence;
+				FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([S, F, FrameSequence, Slot](FRHICommandList& RHICmdList) {
+					GetID3D12DynamicRHI()->RHISignalManualFence(RHICmdList, F, FrameSequence);
+					S->frameSequences[Slot] = FrameSequence;
 					FPlatformMisc::MemoryBarrier();
-					S->frameValue = FrameValue;
+					S->frameValue = FrameSequence;
 				});
 			});
 		}
@@ -227,6 +286,8 @@ void UGTAVBridgeSubsystem::OnWorldBeginPlay(UWorld& World)
 
 void UGTAVBridgeSubsystem::Deinitialize()
 {
+	// (render commands still to run may refer to the extension)
+	FlushRenderingCommands();
 	Extension.Reset();
 	if (Shared)
 	{
@@ -261,19 +322,35 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	{
 		return;
 	}
-	// One frame per game frame: wait (briefly) for the game's next view.
+	// One frame per game frame, each with its own camera, in order (the newest when far behind): wait (briefly) for the
+	// next one.
 	const double Until = FPlatformTime::Seconds() + 0.1;
-	while (Shared->gameSequence == LastSequence && FPlatformTime::Seconds() < Until)
+	while (int32(Shared->gameSequence - NextSequence) < 0 && FPlatformTime::Seconds() < Until)
 	{
 		FPlatformProcess::SleepNoStats(0.0005f);
 	}
-	const uint32 Sequence = Shared->gameSequence;
-	if (Sequence == LastSequence)
+	const uint32 Newest = Shared->gameSequence;
+	if (!Newest || int32(Newest - NextSequence) < 0)
 	{
 		return;
 	}
-	LastSequence = Sequence;
 	FPlatformMisc::MemoryBarrier();
+	if (!NextSequence || Newest - NextSequence >= GTAVBridge::kViews - 1)
+	{
+		NextSequence = Newest;
+	}
+	GTAVBridge::View View = Shared->views[NextSequence % GTAVBridge::kViews];
+	if (View.sequence != NextSequence)
+	{
+		NextSequence = Newest;
+		View = Shared->views[Newest % GTAVBridge::kViews];
+	}
+	const uint32 Sequence = NextSequence++;
+	if (int32(Sequence - LastSequence) > 1)
+	{
+		++Skipped;
+	}
+	LastSequence = Sequence;
 	if (Shared->width && Shared->height && (Shared->width != Shared->textureWidth || Shared->height != Shared->textureHeight || !Shared->textureSequence))
 	{
 		Resize(Shared->width, Shared->height);
@@ -293,16 +370,27 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 			}
 		}
 	}
-	Extension->Sequence = Sequence;
 	Extension->bEnabled = Shared->enabled != 0;
+	// (the texture this frame goes into is the game's until it has presented the frame that was there: briefly)
+	if (Shared->enabled && Sequence > GTAVBridge::kTextures)
+	{
+		const double Wait = FPlatformTime::Seconds() + 0.05;
+		while (Extension->ConsumedValue() + GTAVBridge::kTextures < Sequence && FPlatformTime::Seconds() < Wait)
+		{
+			FPlatformProcess::SleepNoStats(0.0002f);
+		}
+	}
 
-	// The camera the game rendered with: its position (metres), forward and up (the game's space, y mirrored here), its
-	// vertical field of view.
-	const FVector Forward(Shared->forward[0], -Shared->forward[1], Shared->forward[2]), Up(Shared->up[0], -Shared->up[1], Shared->up[2]);
+	// The camera the game rendered that frame with: its position (metres), forward and up (the game's space, y mirrored
+	// here), its vertical field of view.
+	const FVector Forward(View.forward[0], -View.forward[1], View.forward[2]), Up(View.up[0], -View.up[1], View.up[2]);
 	const FRotator Rotation = FRotationMatrix::MakeFromXZ(Forward, Up).Rotator();
-	Camera->SetActorLocationAndRotation(FVector(Shared->position[0] * 100, -Shared->position[1] * 100, Shared->position[2] * 100), Rotation);
-	const float Aspect = Shared->aspect > 0 ? Shared->aspect : Shared->height ? float(Shared->width) / Shared->height : 16.0f / 9.0f;
-	Camera->GetCameraComponent()->SetFieldOfView(FMath::RadiansToDegrees(2 * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(Shared->fov) / 2) * Aspect)));
+	const FVector Location(View.position[0] * 100, -View.position[1] * 100, View.position[2] * 100);
+	const float Aspect = View.aspect > 0 ? View.aspect : Shared->height ? float(Shared->width) / Shared->height : 16.0f / 9.0f;
+	const float Fov = FMath::RadiansToDegrees(2 * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(View.fov) / 2) * Aspect));
+	Extension->SetView(Sequence, Location, Rotation, Fov, Aspect);
+	Camera->SetActorLocationAndRotation(Location, Rotation);
+	Camera->GetCameraComponent()->SetFieldOfView(Fov);
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
 	{
 		if (PC->GetViewTarget() != Camera)
@@ -319,9 +407,9 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	if (FPlatformTime::Seconds() - Told > 5)
 	{
 		Told = FPlatformTime::Seconds();
-		UE_LOG(LogGTAVBridge, Display, TEXT("game camera %.2f %.2f %.2f forward %.3f %.3f %.3f fov %.1f; hours %.2f; weather %08x -> %08x %.2f; view %s %s"),
-			Shared->position[0], Shared->position[1], Shared->position[2], Shared->forward[0], Shared->forward[1], Shared->forward[2], Shared->fov, Shared->hours,
-			Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend, *Camera->GetActorLocation().ToString(), *Camera->GetActorRotation().ToString());
+		UE_LOG(LogGTAVBridge, Display, TEXT("game camera %.2f %.2f %.2f forward %.3f %.3f %.3f fov %.1f; hours %.2f; weather %08x -> %08x %.2f; interior %d room %08x; frame %u, %u skipped so far"),
+			View.position[0], View.position[1], View.position[2], View.forward[0], View.forward[1], View.forward[2], View.fov, Shared->hours,
+			Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend, Shared->interior, Shared->room, Sequence, Skipped);
 		{
 			FString Vehicles;
 			for (uint32 I = 0; I < FMath::Min(Shared->proxyCount, GTAVBridge::kMaxProxies); ++I)
@@ -349,6 +437,7 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	{
 		GTAVSky::SetDate(int32(Shared->year), int32(Shared->month), int32(Shared->day));
 	}
+	GTAVSky::SetIndoors(Shared->interior != 0, true);
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
 	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount);
 

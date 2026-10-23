@@ -18,6 +18,10 @@ struct FStaticMeshBuildVertex;
 // buffers straight from the converted data, materials are instances of the master materials (/Game/GTAV/Materials).
 // Models load in the background, nearest first: worker threads read the pack and build the render data, the game
 // thread makes the engine objects within a time budget.
+// A texture is on the GPU only down from the mip its nearest use needs (its LODBias; all the mips stay in memory):
+// each model's surface against its first UV set gives how many centimetres one UV unit spans, which at the model's
+// distance (the streamer's requests, each round) is so many pixels on the screen; a texture gets the mip of about
+// twice that (oblique views), and changes as the camera comes and goes (§59.12).
 class FGTAVRuntimeAssets : public FGCObject
 {
 public:
@@ -42,6 +46,13 @@ public:
 	void Tick(double Budget);
 	int32 Loading() const;
 
+	// The screen the textures' detail is chosen for: pixels per radian (the view's width over twice the tangent of half
+	// its horizontal field of view).
+	void SetPixelsPerRadian(float Value) { PixelsPerRadian = FMath::Max(Value, 1.0f); }
+	// A round of requests is over (each streamer's update, at most twice a second): each texture's detail by its
+	// nearest use since the last round.
+	void EndRound();
+
 	// One of the renderer's own textures (globals.gpk) by name, as a normal map or a colour.
 	UTexture2D* GlobalTexture(const TCHAR* Name, bool bNormal, bool bLinear = false);
 	// A material of a master (kind: GTAVPack::MaterialKind, 7 the sea) with the water's bump map set.
@@ -49,11 +60,14 @@ public:
 	// A static mesh from vertices and triangles (game thread), with one material.
 	UStaticMesh* BuildMesh(TArray<FStaticMeshBuildVertex>& Vertices, TArray<uint32>& Indices, UMaterialInterface* Material);
 
-	// While the textures and meshes take more than BudgetBytes, the models not used for Unused seconds go (oldest
-	// first), with the materials and textures nothing else uses.
+	// Once the textures and meshes take more than BudgetBytes, the models not used for Unused seconds go (oldest
+	// first), with the materials and textures nothing else uses, down to 85% of it (so that this happens now and then,
+	// a batch at a time). Their memory comes back with the next garbage collection: one is asked for once 128 MB went,
+	// or 20 s after anything went (not a full purge: the objects are destroyed a few at a time over the next frames; a
+	// full collection every few seconds made the frames that had it stutter).
 	void Evict(int64 BudgetBytes, double Unused);
 
-	int32 MeshesBuilt = 0, MeshesFailed = 0, TexturesMade = 0, TexturesFailed = 0, MaterialsMade = 0, MeshesEvicted = 0;
+	int32 MeshesBuilt = 0, MeshesFailed = 0, TexturesMade = 0, TexturesFailed = 0, MaterialsMade = 0, MeshesEvicted = 0, TexturesRetuned = 0;
 	int64 TextureBytes = 0, MeshBytes = 0;
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
@@ -72,11 +86,22 @@ private:
 	TMap<int32, TObjectPtr<UMaterial>> Masters;
 	TObjectPtr<UMaterialInterface> Fallback;
 	double Clock = 0; // (the time of this tick)
+	int64 EvictedSinceCollection = 0;
+	double LastCollection = 0;
+	// The textures' detail: the screen, the models' nearest distances (cm) in this round of requests and the last, what
+	// the texture being made is needed at (texels across a UV unit; -1: all of it, always: the renderer's own), the
+	// textures to change (a few dozen a frame at most).
+	float PixelsPerRadian = 1000.0f;
+	TMap<uint64, float> Near, LastNear;
+	double LastRound = 0;
+	float PendingTexels = -1.0f;
+	TArray<uint64> Retune;
 
 	// What uses what (for eviction).
 	struct FMeshUse
 	{
 		TArray<uint32> Materials;
+		TArray<float> Density; // each material's: centimetres a UV unit spans
 		int64 Bytes = 0;
 		double LastUsed = 0;
 	};
@@ -88,8 +113,11 @@ private:
 	struct FTextureUse
 	{
 		uint64 Key = 0; // the pack's key
-		int64 Bytes = 0;
+		int64 Bytes = 0; // (on the GPU)
 		int32 Refs = 0;
+		int32 Width = 0, Mips = 0, Bias = 0;
+		bool bFixed = false; // (palettes, lookups: always whole)
+		float Need = 0;      // texels across a UV unit its nearest use needs
 	};
 	TMap<uint64, FMeshUse> MeshUse;
 	TMap<uint32, FMaterialUse> MaterialUse;
@@ -113,8 +141,13 @@ private:
 	void Pump();
 	TUniquePtr<FPrepared> Prepare(uint64 Key);
 	bool Finish(FPrepared& P);
-	UTexture2D* Texture(uint64 Key, EUsage Usage, int32* OutWidth = nullptr, int32* OutHeight = nullptr);
-	UTexture2D* MakeTexture(const TArray<uint8>& Data, EUsage Usage);
+	UTexture2D* Texture(uint64 Key, EUsage Usage, float Texels, int32* OutWidth = nullptr, int32* OutHeight = nullptr);
+	UTexture2D* MakeTexture(const TArray<uint8>& Data, EUsage Usage, float Texels);
+	// The mips a texture of that width can leave off when Texels (across a UV unit) are needed (0: none; at least 64
+	// texels kept).
+	static int32 BiasFor(int32 Width, int32 Mips, float Texels);
+	static int64 ResidentBytes(const UTexture2D* T, int32 Bias);
+	void RetuneTextures(double Budget);
 	UMaterialInterface* Material(const GTAVPack::Material& M);
 	UMaterial* Master(int32 Kind);
 };

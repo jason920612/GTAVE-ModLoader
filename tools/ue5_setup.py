@@ -1,7 +1,7 @@
 """Set up the UE5 project of the graphics mod outside the repository (research/phase0.md §58), and build it.
 
 The project lives next to the export (its Content will hold the player's converted game assets, which never go into
-the repository); Source, Config and Plugins are copied from this repository's ue5 folder on every run (the export drive
+the repository); Source, Config, Plugins and Shaders are copied from this repository's ue5 folder on every run (the export drive
 may be exFAT: no junctions there).
 usage: ue5_setup.py <export folder> [--build] [--engine <UE folder>]
 """
@@ -18,7 +18,7 @@ project = os.path.join(out, "Project")
 os.makedirs(project, exist_ok=True)
 shutil.copyfile(os.path.join(REPO, "ue5", "GTAVRenderer.uproject"), os.path.join(project, "GTAVRenderer.uproject"))
 copied = 0
-for name in ("Source", "Config", "Plugins"):
+for name in ("Source", "Config", "Plugins", "Shaders"):
     src_root = os.path.join(REPO, "ue5", name)
     for folder, dirs, files in os.walk(src_root):
         dirs[:] = [d for d in dirs if d not in ("Binaries", "Intermediate")]

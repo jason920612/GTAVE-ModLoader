@@ -33,6 +33,7 @@
 #include "dx12_hook.hpp"
 #include "menu.hpp"
 #include "notify.hpp"
+#include "recorder.hpp"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -380,6 +381,8 @@ namespace loader::ui
 			g_lastPresent = now;
 			Render(queue);
 			TakeShot();
+			recorder::OnPresent(swapChain, queue);
+			graphics::bridge::OnPresent(queue);
 		}
 
 		// ---- screenshots (debug/remote) --------------------------------------------------------

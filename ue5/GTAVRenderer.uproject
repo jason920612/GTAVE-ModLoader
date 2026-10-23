@@ -5,6 +5,11 @@
 	"Description": "GTA V Enhanced rendered by Unreal Engine 5 (the mod loader's graphics mod). Generated content stays on the player's computer.",
 	"Modules": [
 		{
+			"Name": "GTAVRendererShaders",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
 			"Name": "GTAVRenderer",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"

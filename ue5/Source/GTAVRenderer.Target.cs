@@ -7,6 +7,6 @@ public class GTAVRendererTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
-		ExtraModuleNames.Add("GTAVRenderer");
+		ExtraModuleNames.AddRange(new string[] { "GTAVRenderer", "GTAVRendererShaders" });
 	}
 }

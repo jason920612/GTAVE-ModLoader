@@ -18,6 +18,8 @@ class FGTAVLights
 public:
 	void Load(TArray<GTAVPack::LodLight>&& InLights);
 	int32 Num() const { return Lights.Num(); }
+	// (checking: the real lights on, the components made, the drawn entities with lights)
+	FString Counts() const { return FString::Printf(TEXT("%d real lights (%d free), %d entities with lights"), Active.Num(), FreePoints.Num() + FreeSpots.Num(), EntityLights.Num()); }
 
 	// Game thread, each frame: Owner gets the components; Camera in Unreal's space; Hour 0-23.
 	void Update(AActor* Owner, const FVector& Camera, int32 Hour);
@@ -38,6 +40,7 @@ private:
 		GTAVPack::LodLight Light;
 		float Length = 0;
 		FVector3f Axis = FVector3f::ZeroVector;
+		bool bInterior = false; // (a room's: casts shadows always, else it lights the next room through the wall)
 	};
 
 	TArray<GTAVPack::LodLight> Lights;

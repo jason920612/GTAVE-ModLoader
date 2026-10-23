@@ -10,13 +10,23 @@
 #include "Components/VolumetricCloudComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ScopeExit.h"
+#include "RenderTimer.h"
 #include "StaticMeshResources.h"
+#include "UnrealClient.h"
+#include "UObject/UObjectArray.h"
+
+#include "ID3D12DynamicRHI.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <dxgi1_4.h>
+#include "Windows/HideWindowsPlatformTypes.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGTAVWorld, Log, All);
 
@@ -55,6 +65,32 @@ namespace
 				UE_LOG(LogGTAVWorld, Display, TEXT("hidden: %s (%08x)"), *A, Hash);
 			}
 		}));
+	// What Windows lets this process have of the GPU's memory (its share beside the game and everything else running) and
+	// what it uses; false when it cannot be asked.
+	bool GpuMemoryShare(int64& OutBudget, int64& OutUsage)
+	{
+		static IDXGIAdapter3* Adapter = [] {
+			IDXGIAdapter3* Found = nullptr;
+			ID3D12DynamicRHI* RHI = GetID3D12DynamicRHI();
+			ID3D12Device* Device = RHI ? RHI->RHIGetDevice(0) : nullptr;
+			IDXGIFactory4* Factory = nullptr;
+			if (Device && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&Factory))))
+			{
+				Factory->EnumAdapterByLuid(Device->GetAdapterLuid(), IID_PPV_ARGS(&Found));
+				Factory->Release();
+			}
+			return Found;
+		}();
+		DXGI_QUERY_VIDEO_MEMORY_INFO Info{};
+		if (!Adapter || FAILED(Adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &Info)))
+		{
+			return false;
+		}
+		OutBudget = int64(Info.Budget);
+		OutUsage = int64(Info.CurrentUsage);
+		return true;
+	}
+
 	FAutoConsoleCommandWithWorldAndArgs DumpCommand(TEXT("gtav.Dump"), TEXT("gtav.Dump x y z [radius]: what is drawn near a point (the game's metres)."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World) {
 			if (UGTAVWorldSubsystem* S = World ? World->GetSubsystem<UGTAVWorldSubsystem>() : nullptr; S && Args.Num() >= 3)
@@ -356,6 +392,14 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	{
 		return;
 	}
+	const double TickStart = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT
+	{
+		const double Spent = FPlatformTime::Seconds() - TickStart;
+		TickSeconds += Spent;
+		TickMax = FMath::Max(TickMax, Spent);
+		++Ticks;
+	};
 	Assets->Tick(kAssetBudget);
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	if (!PC || !PC->PlayerCameraManager)
@@ -363,12 +407,19 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	const FVector Center = PC->PlayerCameraManager->GetCameraLocation();
+	// (the screen the textures' detail is for)
+	if (GEngine->GameViewport && GEngine->GameViewport->Viewport)
+	{
+		const float Width = float(GEngine->GameViewport->Viewport->GetSizeXY().X);
+		const float Fov = FMath::Clamp(PC->PlayerCameraManager->GetFOVAngle(), 5.0f, 170.0f);
+		Assets->SetPixelsPerRadian(Width / (2.0f * FMath::Tan(FMath::DegreesToRadians(Fov) * 0.5f)));
+	}
 	if (OfflineWeather)
 	{
 		GTAVSky::Apply(GetWorld(), Center, float(CurrentHour), OfflineWeather, OfflineWeather, 0.0f);
 	}
 	Lights.Update(Root, Center, CurrentHour);
-	GTAVSky::SetIndoors(IsInside(Center));
+	GTAVSky::SetIndoors(IsInside(Center), false);
 	const double Now = FPlatformTime::Seconds();
 	if (FVector::DistSquared(Center, LastCenter) > 100.0f * 100.0f || Now - LastUpdate > 0.25)
 	{
@@ -386,8 +437,17 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	}
 	if (Now - LastEvict > 2.0)
 	{
+		// (-gtavbudget, or less: what Windows gives this process of the GPU's memory, 90% of it, less what the rest of
+		// the renderer takes; over its share Windows moves memory out to the system's, and every frame waits on that)
 		LastEvict = Now;
-		Assets->Evict(BudgetBytes, 20.0);
+		int64 Budget = BudgetBytes, Share = 0, Usage = 0;
+		if (GpuMemoryShare(Share, Usage))
+		{
+			const int64 Held = Assets->TextureBytes + Assets->MeshBytes;
+			Budget = FMath::Clamp(Share / 10 * 9 - FMath::Max<int64>(Usage - Held, 0), int64(768) << 20, BudgetBytes);
+		}
+		AssetBudget = Budget;
+		Assets->Evict(Budget, 20.0);
 	}
 	// (checking: -gtavdump=x,y,z,radius in the game's metres lists what is drawn there once everything is in)
 	static bool bDumped = false;
@@ -406,9 +466,18 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	if (Now - Told > 10)
 	{
 		Told = Now;
-		UE_LOG(LogGTAVWorld, Display, TEXT("drawn %d (%d wanted, %d waiting for models), grass %d; models %d built, %d loading, %d failed; textures %d (%.0f MB, %d failed), meshes %.0f MB, %d evicted"),
+		UE_LOG(LogGTAVWorld, Display, TEXT("drawn %d (%d wanted, %d waiting for models), grass %d; models %d built, %d loading, %d failed; textures %d (%.0f MB, %d failed, %d retuned), meshes %.0f MB, %d evicted"),
 			Drawn.Num(), Wanted.Num(), WantedMissing, DrawnGrass.Num(), Assets->MeshesBuilt, Assets->Loading(), Assets->MeshesFailed, Assets->TexturesMade,
-			Assets->TextureBytes / 1048576.0, Assets->TexturesFailed, Assets->MeshBytes / 1048576.0, Assets->MeshesEvicted);
+			Assets->TextureBytes / 1048576.0, Assets->TexturesFailed, Assets->TexturesRetuned, Assets->MeshBytes / 1048576.0, Assets->MeshesEvicted);
+		// (where a frame's time goes: this subsystem's own share of the game thread, the render thread, the GPU)
+		int64 Share = 0, Usage = 0;
+		GpuMemoryShare(Share, Usage);
+		UE_LOG(LogGTAVWorld, Display, TEXT("time: world %.2f ms a frame (slowest %.1f), render thread %.1f ms, GPU %.1f ms; %d components pooled, %d objects; %s; GPU memory %lld of %lld MB, assets' budget %lld MB"),
+			Ticks ? TickSeconds * 1000.0 / Ticks : 0.0, TickMax * 1000.0, FPlatformTime::ToMilliseconds(GRenderThreadTime),
+			FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles(0)), Pool.Num(), GUObjectArray.GetObjectArrayNumMinusAvailable(), *Lights.Counts(),
+			Usage >> 20, Share >> 20, AssetBudget >> 20);
+		TickSeconds = TickMax = 0;
+		Ticks = 0;
 	}
 }
 
@@ -561,6 +630,10 @@ void UGTAVWorldSubsystem::Update(const FVector& Center)
 	{
 		DistanceScale = Scale;
 	}
+	ON_SCOPE_EXIT
+	{
+		Assets->EndRound();
+	};
 	// Grass: batches whose box is within their distance.
 	constexpr float GrassReach = 40000.0f;
 	if (!CVarGrass.GetValueOnGameThread())
@@ -604,6 +677,15 @@ void UGTAVWorldSubsystem::Update(const FVector& Center)
 			}
 		}
 	}
+}
+
+uint32 UGTAVWorldSubsystem::EntityTint(uint64 Key) const
+{
+	if (Key & kInteriorKey)
+	{
+		return Data.InteriorEntities[uint32(Key)].tintValue;
+	}
+	return Data.Entities[uint32(Key)].tintValue;
 }
 
 FTransform UGTAVWorldSubsystem::EntityTransform(uint64 Key) const
@@ -651,6 +733,8 @@ void UGTAVWorldSubsystem::Apply()
 		C->SetStaticMesh(Mesh);
 		const FTransform Transform = EntityTransform(W.Key);
 		C->SetWorldTransform(Transform);
+		// (the entity's tint: the palette row its tinted materials take; see EntityRow in the masters)
+		C->SetCustomPrimitiveDataFloat(0, float(EntityTint(W.Key)));
 		C->RegisterComponent();
 		Drawn.Add(W.Key, C);
 		if (const TArray<GTAVPack::ModelLight>* ML = Assets->LightsOf(W.Value))
