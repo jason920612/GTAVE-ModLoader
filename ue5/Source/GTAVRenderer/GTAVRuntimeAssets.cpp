@@ -246,6 +246,25 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			continue; // (the drawable's own lower levels of detail: not used yet)
 		}
 		const GTAVPack::Material& Mat = Mats[SH.material];
+		// (checking: -gtavskipeffect=<hex>,<hex>: sections of those shaders left out)
+		static const TSet<uint32> SkipEffects = [] {
+			TSet<uint32> Out;
+			FString List;
+			if (FParse::Value(FCommandLine::Get(), TEXT("-gtavskipeffect="), List, false))
+			{
+				TArray<FString> Items;
+				List.ParseIntoArray(Items, TEXT(","));
+				for (const FString& I : Items)
+				{
+					Out.Add(FParse::HexNumber(*I));
+				}
+			}
+			return Out;
+		}();
+		if (SkipEffects.Contains(Mat.effect))
+		{
+			continue;
+		}
 		UvChannels = FMath::Clamp<int32>(FMath::Max<int32>(UvChannels, SH.uvCount), 1, MAX_STATIC_TEXCOORDS);
 		int32* Slot = SlotOf.Find(SH.material);
 		if (!Slot)

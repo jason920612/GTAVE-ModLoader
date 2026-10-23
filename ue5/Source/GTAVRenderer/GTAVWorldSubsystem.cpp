@@ -32,6 +32,28 @@ namespace
 	TAutoConsoleVariable<int32> CVarGrass(TEXT("gtav.Grass"), 1, TEXT("Grass batches drawn (0: none)."));
 	TAutoConsoleVariable<int32> CVarWater(TEXT("gtav.Water"), 1, TEXT("The sea and the water quads drawn (0: hidden)."));
 	TAutoConsoleVariable<float> CVarLodScale(TEXT("gtav.LodScale"), 0.0f, TEXT("Every distance scaled by this (0: -gtavlod, else 1: the game's)."));
+	TSet<uint32> GHidden; // archetypes hidden (checking)
+	FAutoConsoleCommandWithWorldAndArgs HideCommand(TEXT("gtav.Hide"), TEXT("gtav.Hide <archetype name or hex hash> ...: not drawn (gtav.Hide with nothing: all back)."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World) {
+			if (Args.IsEmpty())
+			{
+				GHidden.Reset();
+			}
+			for (const FString& A : Args)
+			{
+				uint32 Hash = 0;
+				if (A.StartsWith(TEXT("0x")))
+				{
+					Hash = FParse::HexNumber(*A.Mid(2));
+				}
+				else
+				{
+					Hash = GTAVHash(A);
+				}
+				GHidden.Add(Hash);
+				UE_LOG(LogGTAVWorld, Display, TEXT("hidden: %s (%08x)"), *A, Hash);
+			}
+		}));
 	FAutoConsoleCommandWithWorldAndArgs DumpCommand(TEXT("gtav.Dump"), TEXT("gtav.Dump x y z [radius]: what is drawn near a point (the game's metres)."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World) {
 			if (UGTAVWorldSubsystem* S = World ? World->GetSubsystem<UGTAVWorldSubsystem>() : nullptr; S && Args.Num() >= 3)
@@ -253,6 +275,10 @@ void UGTAVWorldSubsystem::UpdateYmaps()
 
 bool UGTAVWorldSubsystem::Shown(uint32 Archetype) const
 {
+	if (GHidden.Contains(Archetype))
+	{
+		return false;
+	}
 	const GTAVPack::Archetype* A = Data.Archetype(Archetype);
 	if (!A || !A->hasModel)
 	{

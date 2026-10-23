@@ -21,6 +21,7 @@
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVertexColor.h"
+#include "Materials/MaterialExpressionVertexInterpolator.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -289,9 +290,16 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	Uv->B.Connect(0, V);
 	Add(Uv);
 	Palette->Coordinates.Connect(0, Uv);
+	// Looked up per vertex and the colour interpolated, as the game does: between two vertices the blue sweeps over
+	// the columns in between, and palettes keep pure marker colours among their real ones.
+	Palette->MipValueMode = TMVM_MipLevel;
+	Palette->ConstMipValue = 0;
+	auto* PerVertex = NewObject<UMaterialExpressionVertexInterpolator>(M);
+	PerVertex->Input.Connect(0, Palette);
+	Add(PerVertex);
 	auto* Tinted = NewObject<UMaterialExpressionMultiply>(M);
 	Tinted->A.Connect(0, Diffuse);
-	Tinted->B.Connect(0, Palette);
+	Tinted->B.Connect(0, PerVertex);
 	Add(Tinted);
 	// (a scalar, not a static switch: the renderer's materials are made at run time, where switches cannot change)
 	auto* UseTint = NewObject<UMaterialExpressionLinearInterpolate>(M);
