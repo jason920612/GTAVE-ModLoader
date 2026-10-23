@@ -661,20 +661,20 @@ namespace loader::ui
 			ImGui::TextColored(kMuted, "解析度（其餘由 UE 放大）、陰影、全域光照、反射、繪製距離、近處燈光數量。立即套用。");
 			ImGui::Unindent();
 			{
-				static const char* kGameLabels[] = {"依照遊戲", "品質", "平衡", "效能（建議）", "超高效能"};
-				static const char* kGameValues[] = {"game", "quality", "balanced", "performance", "ultra"};
-				int game = 3;
-				for (int i = 0; i < 5; ++i)
+				static const char* kGameLabels[] = {"依照遊戲（建議）", "品質", "平衡", "效能"};
+				static const char* kGameValues[] = {"game", "quality", "balanced", "performance"};
+				int game = 0;
+				for (int i = 0; i < 4; ++i)
 					if (cfg.ue5GameResolution == kGameValues[i])
 						game = i;
 				ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
-				if (ImGui::Combo("遊戲本身的解析度", &game, kGameLabels, 5))
+				if (ImGui::Combo("遊戲本身的解析度", &game, kGameLabels, 4))
 				{
 					cfg.ue5GameResolution = kGameValues[game];
 					changed = true;
 				}
 				ImGui::Indent();
-				ImGui::TextColored(kMuted, "UE5 繪製世界時，遊戲自己的 3D 只用來提供行人和車輛：以較低的 DLSS 模式渲染可省下顯示卡。重新啟動遊戲後生效。");
+				ImGui::TextColored(kMuted, "UE5 繪製世界時，遊戲自己的 3D 只用來提供行人和車輛，可改用較低的 DLSS 模式（實測未必更快）。重新啟動遊戲後生效。");
 				ImGui::Unindent();
 			}
 			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);

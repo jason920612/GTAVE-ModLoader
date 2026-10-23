@@ -76,6 +76,84 @@ namespace loader::graphics::bridge
 			return prefix + std::to_wstring(GetCurrentProcessId());
 		}
 
+		// The game's own render resolution while UE5 draws the world (config ue5GameResolution): the game takes it from
+		// its settings.xml (<dlssQuality value="..."/>: 0 Performance, 1 Balanced, 2 Quality, 3 DLAA, measured) when it
+		// starts and asks Streamline nothing, so the value is written there before the game reads it and the person's
+		// own put back once the game renders (ModLoader/ue5_dlssquality.txt keeps it meanwhile, should the game stop
+		// before).
+		std::filesystem::path g_settingsFile;
+		bool g_settingsRestored = true;
+
+		std::filesystem::path SettingsFile()
+		{
+			wchar_t documents[MAX_PATH]{};
+			DWORD size = sizeof(documents);
+			// (the registry, not the shell: this runs while the process loads)
+			if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders", L"Personal", RRF_RT_REG_SZ,
+			        nullptr, documents, &size) != ERROR_SUCCESS)
+				return {};
+			return std::filesystem::path(documents) / L"Rockstar Games" / L"GTAV Enhanced" / L"settings.xml";
+		}
+
+		// The settings file with dlssQuality set to `value`; the value it had (-1: none).
+		int SetDlssQuality(const std::filesystem::path& file, int value)
+		{
+			std::ifstream in(file, std::ios::binary);
+			std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			in.close();
+			const std::string key = "<dlssQuality value=\"";
+			const size_t at = text.find(key);
+			if (at == std::string::npos)
+				return -1;
+			const size_t from = at + key.size(), to = text.find('"', from);
+			if (to == std::string::npos)
+				return -1;
+			const int old = std::atoi(text.substr(from, to - from).c_str());
+			if (old != value)
+			{
+				text.replace(from, to - from, std::to_string(value));
+				std::ofstream(file, std::ios::binary | std::ios::trunc).write(text.data(), static_cast<std::streamsize>(text.size()));
+			}
+			return old;
+		}
+
+		void PrepareGameResolution()
+		{
+			const auto& c = config::Get();
+			const auto saved = paths::Get().root / L"ue5_dlssquality.txt";
+			g_settingsFile = SettingsFile();
+			if (g_settingsFile.empty())
+				return;
+			int original = -1;
+			if (std::ifstream in(saved); in >> original)
+				SetDlssQuality(g_settingsFile, original); // (a run that stopped before putting it back)
+			std::error_code ec;
+			std::filesystem::remove(saved, ec);
+			const std::string& r = c.ue5GameResolution;
+			const int value = r == "performance" ? 0 : r == "balanced" ? 1 : r == "quality" ? 2 : -1;
+			if (!c.ue5Renderer || value < 0)
+				return;
+			original = SetDlssQuality(g_settingsFile, value);
+			if (original < 0 || original == value)
+				return;
+			std::ofstream(saved) << original;
+			g_settingsRestored = false;
+			log::Info("ue5 bridge: the game renders its own picture at DLSS quality {} (its setting {} is put back once it renders)", value, original);
+		}
+
+		void RestoreGameResolution()
+		{
+			if (g_settingsRestored)
+				return;
+			g_settingsRestored = true;
+			const auto saved = paths::Get().root / L"ue5_dlssquality.txt";
+			int original = -1;
+			if (std::ifstream in(saved); in >> original)
+				SetDlssQuality(g_settingsFile, original);
+			std::error_code ec;
+			std::filesystem::remove(saved, ec);
+		}
+
 		void Retire(IUnknown* object)
 		{
 			if (object)
@@ -456,6 +534,7 @@ namespace loader::graphics::bridge
 
 	void Start()
 	{
+		PrepareGameResolution();
 		if (!config::Get().ue5Renderer)
 			return;
 		g_key = KeyFromName(config::Get().ue5Key);
@@ -467,6 +546,9 @@ namespace loader::graphics::bridge
 
 	void Tick()
 	{
+		// (the game has read its settings by its first DLSS frame)
+		if (g_width)
+			RestoreGameResolution();
 		if (!config::Get().ue5Renderer || g_failed || !state::story || state::online)
 			return;
 		if (!g_shared)

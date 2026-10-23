@@ -75,6 +75,10 @@ def test_settings(on):
             text = f.read()
         text = set_setting(text, "Windowed", 1)
         text = set_setting(text, "PauseOnFocusLoss", 0)
+        # (more for one run: GTACTL_SETTINGS="name=value,name=value")
+        for item in filter(None, os.environ.get("GTACTL_SETTINGS", "").split(",")):
+            name, value = item.split("=", 1)
+            text = set_setting(text, name.strip(), value.strip())
         with open(SETTINGS, "w", encoding="utf-8") as f:
             f.write(text)
     elif os.path.exists(BACKUP):

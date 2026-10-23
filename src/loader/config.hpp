@@ -61,9 +61,10 @@ namespace loader::config
 		// exposure, 1: the game's).
 		float ue5ExposureMatch = 1.0f;
 		// While UE5 draws the world the game's own 3D picture only carries its peds and vehicles: the DLSS mode the
-		// game renders for then ("game": its own setting; "quality", "balanced", "performance", "ultra" for Ultra
-		// Performance), which sets the game's internal resolution. Takes effect when the game starts.
-		std::string ue5GameResolution = "performance";
+		// game renders for then ("game": its own setting; "quality", "balanced", "performance"), which sets the game's
+		// internal resolution. Takes effect when the game starts. (Measured at Legion Square, high preset: the game's
+		// Quality 60 frames/s, Performance 53: lower is not faster there, hence "game".)
+		std::string ue5GameResolution = "game";
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

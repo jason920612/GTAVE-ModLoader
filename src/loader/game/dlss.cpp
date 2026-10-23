@@ -639,7 +639,7 @@ namespace loader::game::dlss
 			if (!c.ue5Renderer)
 				return 0;
 			const std::string& r = c.ue5GameResolution;
-			return r == "performance" ? 1 : r == "balanced" ? 2 : r == "quality" ? 3 : r == "ultra" ? 4 : 0;
+			return r == "performance" ? 1 : r == "balanced" ? 2 : r == "quality" ? 3 : 0;
 		}
 
 		// slDLSSGetOptimalSettings(const sl::DLSSOptions&, sl::DLSSOptimalSettings&): the render size for a mode; asked
@@ -680,7 +680,10 @@ namespace loader::game::dlss
 			std::memcpy(&mode, o + kModeOffset, sizeof(mode));
 			std::memcpy(game.data(), o + kPresetsOffset, sizeof(game));
 			const uint32_t rendererMode = mode ? RendererMode() : 0; // (DLSS off stays off)
-			const Presets sent = Choose(game);
+			Presets sent = Choose(game);
+			// (while UE5 draws the world the game's DLSS picture only carries peds and vehicles: the lighter model K)
+			if (rendererMode && !(Version::Unpack(g_sr.loaded.load(std::memory_order_relaxed)) < kModelK))
+				sent.fill(kPresetK);
 			Report(rendererMode ? rendererMode : mode, game, sent);
 			if (sent == game && !rendererMode)
 				return g_dlssSetOptions(viewport, options);
