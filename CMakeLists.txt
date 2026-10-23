@@ -206,10 +206,13 @@ add_executable(ue5export
     tools/ue5export/meta.cpp
     tools/ue5export/gamefiles.cpp
     tools/ue5export/mapdata.cpp
+    tools/ue5export/drawable.cpp
+    tools/ue5export/exporter.cpp
     src/loader/convert/archive.cpp
     src/loader/convert/resource.cpp)
 target_include_directories(ue5export PRIVATE src/loader)
 target_compile_definitions(ue5export PRIVATE NOMINMAX)
+target_link_libraries(ue5export PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(ue5export PRIVATE /W4 /utf-8 /O2 /permissive-)
 
 # In-game web browser (src/browser): CEF (Chromium Embedded Framework, BSD) renders the game's own web pages off-screen;

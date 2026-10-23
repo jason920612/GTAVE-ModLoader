@@ -1,0 +1,22 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "",
+	"Description": "GTA V Enhanced rendered by Unreal Engine 5 (the mod loader's graphics mod). Generated content stays on the player's computer.",
+	"Modules": [
+		{
+			"Name": "GTAVRenderer",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "GTAVImporter",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}
+	]
+}

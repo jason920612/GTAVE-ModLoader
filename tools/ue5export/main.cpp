@@ -6,6 +6,7 @@
 //   ue5export index --out <dir> --game <dir>      every file in the game's archives: <out>\index.tsv
 //   ue5export extract --out <dir> --game <dir> --file <index path>   one file, plain: <out>\files\<name>
 //   ue5export map --out <dir> --game <dir>         the map as story mode sees it: archetypes and entities
+//   ue5export area --out <dir> --game <dir> --area x0,y0,x1,y1 --name <n>   an area's models, textures, entities (<out>\export)
 #include <Windows.h>
 
 #include <algorithm>
@@ -20,6 +21,7 @@
 #include <vector>
 
 #include "convert/archive.hpp"
+#include "exporter.hpp"
 #include "gamefiles.hpp"
 #include "mapdata.hpp"
 #include "meta.hpp"
@@ -180,6 +182,29 @@ namespace
 		return 0;
 	}
 
+	// The models, textures and entities of an area: --area x0,y0,x1,y1 --name <name>.
+	int ExportArea(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::Area area;
+		area.name = g_options.contains("name") ? g_options["name"] : "area";
+		if (sscanf_s(g_options["area"].c_str(), "%f,%f,%f,%f", &area.bounds[0], &area.bounds[1], &area.bounds[2], &area.bounds[3]) != 4)
+			return Fail("--area x0,y0,x1,y1 is needed");
+		ue5export::GameFiles files;
+		std::string error;
+		const auto start = std::chrono::steady_clock::now();
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto map = ue5export::mapdata::Read(files);
+		std::vector<std::string> warnings;
+		const auto stats = ue5export::ExportArea(files, map, area, g_options["out"], warnings);
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		std::printf("%s: %zu entities, %zu models (%zu missing), %zu textures written (%zu missing) in %.1f s\n", area.name.c_str(), stats.entities,
+		    stats.models, stats.missingModels, stats.textures, stats.missingTextures, seconds);
+		for (const auto& w : warnings)
+			std::printf("warning: %s\n", w.c_str());
+		return 0;
+	}
+
 	int Index(const loader::convert::Decryptor& decrypt)
 	{
 		const fs::path game = g_options["game"];
@@ -239,6 +264,8 @@ int main(int argc, char** argv)
 		return Index(decrypt);
 	if (command == "map")
 		return Map(decrypt);
+	if (command == "area")
+		return ExportArea(decrypt);
 	if (command == "extract")
 		return g_options.contains("file") ? Extract(decrypt) : Fail("--file <path> is needed");
 	return Fail("unknown command " + command);

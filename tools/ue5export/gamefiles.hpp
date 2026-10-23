@@ -28,6 +28,8 @@ namespace ue5export
 		// The file the game uses under this name (lower case, with extension), or nullptr.
 		const File* Find(const std::string& name) const;
 		const std::map<std::string, File>& Files() const { return byName_; }
+		// Every version of a data file (.meta) in the active archives, in mount order (the DLC packs' gtxd.meta...).
+		std::vector<File> AllOf(const std::string& name) const;
 		bool Read(const File& file, loader::convert::Bytes& out, std::string& error) const;
 
 		std::vector<std::string> warnings;
@@ -45,6 +47,7 @@ namespace ue5export
 		std::vector<std::string> order_;
 		std::map<std::string, File> loose_;
 		std::map<std::string, File> byName_;
+		std::map<std::string, std::vector<File>> all_;
 		const loader::convert::Decryptor* decrypt_ = nullptr;
 
 		void Mount(const std::shared_ptr<const loader::convert::Archive>& archive, uint32_t node, const std::string& prefix,

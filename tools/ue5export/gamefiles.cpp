@@ -286,15 +286,32 @@ namespace ue5export
 					if (n.directory)
 						self(self, c);
 					else
-						byName_[Lower(n.name)] = {m.archive, c, m.source + "/" + n.name};
+					{
+						File file{m.archive, c, m.source + "/" + n.name};
+						const std::string name = Lower(n.name);
+						if (name.ends_with(".meta"))
+							all_[name].push_back(file);
+						byName_[name] = std::move(file);
+					}
 				}
 			};
 			walk(walk, 0);
 		}
 		for (const auto& [path, file] : loose_)
-			byName_[path.substr(path.rfind('/') + 1)] = file;
+		{
+			const std::string name = path.substr(path.rfind('/') + 1);
+			if (name.ends_with(".meta"))
+				all_[name].push_back(file);
+			byName_[name] = file;
+		}
 		activeArchives = order_.size();
 		return true;
+	}
+
+	std::vector<GameFiles::File> GameFiles::AllOf(const std::string& name) const
+	{
+		const auto it = all_.find(name);
+		return it == all_.end() ? std::vector<File>{} : it->second;
 	}
 
 	const GameFiles::File* GameFiles::Find(const std::string& name) const

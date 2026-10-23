@@ -1,0 +1,16 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "GTA V Importer",
+	"Description": "Builds the map exported by ue5export (Nanite meshes, materials, the world) from the player's own game files.",
+	"Category": "Importers",
+	"CanContainContent": true,
+	"Modules": [
+		{
+			"Name": "GTAVImporter",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

@@ -11,3 +11,12 @@ research/*.bin
 research/*.txt
 research/*.json
 tools/stress_logs/
+
+# UE5 graphics mod: build products (the project itself is set up next to the export, tools/ue5_setup.py)
+ue5/Binaries/
+ue5/Intermediate/
+ue5/Saved/
+ue5/DerivedDataCache/
+ue5/Content/
+ue5/Plugins/*/Binaries/
+ue5/Plugins/*/Intermediate/
