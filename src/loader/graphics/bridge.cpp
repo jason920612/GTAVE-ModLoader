@@ -380,7 +380,8 @@ namespace loader::graphics::bridge
 			queue->Wait(g_fence, value);
 			ID3D12Resource* picture = g_texture[value % 2];
 			// (the game's peds and vehicles kept; a plain copy when that cannot be done)
-			if (composite::Record(frame, picture, std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f)))
+			if (composite::Record(frame, picture, std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f),
+			                      std::clamp(config::Get().ue5GradeMatch, 0.0f, 1.0f)))
 				return;
 			auto* list = static_cast<ID3D12GraphicsCommandList*>(commandList);
 			D3D12_RESOURCE_BARRIER barrier{};

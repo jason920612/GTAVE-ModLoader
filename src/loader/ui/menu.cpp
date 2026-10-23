@@ -691,6 +691,11 @@ namespace loader::ui
 			ImGui::Indent();
 			ImGui::TextColored(kMuted, "1：畫面整體亮度跟遊戲原本的場景一致；0：完全依 UE 自己的曝光（光影比例永遠是 UE 的）。");
 			ImGui::Unindent();
+			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+			changed |= ImGui::SliderFloat("色調跟隨遊戲", &cfg.ue5GradeMatch, 0.0f, 1.0f, "%.2f");
+			ImGui::Indent();
+			ImGui::TextColored(kMuted, "1：整體色溫、色調跟遊戲當下的調色一致（各時段、天氣、地區的色調，和遊戲畫的行人車輛一致）；0：UE 依物理算出的顏色。");
+			ImGui::Unindent();
 		}
 
 		void SettingsTab()

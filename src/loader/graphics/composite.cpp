@@ -22,6 +22,11 @@ namespace loader::graphics::composite
 		// the game's mean luminance, never past 10): physical light (the moon's 2,500 nits over a night city's few) is
 		// beyond what the game's own picture ever holds, and its lens effects then streak across the screen. Not a
 		// number (a shader's 0/0) is black, not a blot the upscaler and the bloom spread.
+		// Its colour balance follows the game's grading the same way (the timecycle's light colours, the region's and the
+		// moment's tints: the game's people and vehicles are lit by them): at the same samples, the difference of each
+		// picture's red to green and blue to green (log2), in 64 bins of 1/16 stop; the medians (the scenery both draw
+		// alike outweighs what only one of them has, as the renderer's grass) are the white balance the renderer's picture
+		// takes, at its own luminance. Lit samples only (−4 to +6 stops about the game's mean), not the sky.
 		constexpr char kShader[] = R"(
 Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
@@ -29,8 +34,9 @@ Texture2D<float> Depth : register(t2);
 RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float),
                                              // 16 the game's mean log2 luminance (float); the sky's: 20 game sum,
-                                             // 24 renderer sum, 28 count
-cbuffer Sizes : register(b0) { uint2 OutSize; uint2 RenderSize; float Adapt; float Match; };
+                                             // 24 renderer sum, 28 count; 32, 36 the colour balance (log2 red / green,
+                                             // blue / green, floats); 64.. the red bins, 320.. the blue bins
+cbuffer Sizes : register(b0) { uint2 OutSize; uint2 RenderSize; float Adapt; float Match; float Grade; };
 
 bool Dynamic(uint s)
 {
@@ -51,10 +57,14 @@ int2 RenderPixel(uint2 p)
 groupshared int g_game[64];
 groupshared int g_renderer[64];
 groupshared int g_count[64];
+groupshared uint g_bins[128];
 
 [numthreads(8, 8, 1)]
 void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 {
+	g_bins[index] = 0;
+	g_bins[index + 64] = 0;
+	GroupMemoryBarrierWithGroupSync();
 	uint2 p = id * 8 + 4;
 	int game = 0, renderer = 0, count = 0, sky = 0;
 	if (all(p < OutSize))
@@ -62,10 +72,23 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 		int2 q = RenderPixel(p);
 		if (!Dynamic(Stencil.Load(int3(q, 0)).y))
 		{
-			game = int(clamp(log2(max(Luminance(Output[p].rgb), 1e-4)), -14.0, 14.0) * 64);
-			renderer = int(clamp(log2(max(Luminance(Picture.Load(int3(p, 0)).rgb), 1e-4)), -14.0, 14.0) * 64);
+			float3 g = max(Output[p].rgb, 1e-4), r = max(Picture.Load(int3(p, 0)).rgb, 1e-4);
+			float gl = log2(max(Luminance(g), 1e-4)), rl = log2(max(Luminance(r), 1e-4));
+			game = int(clamp(gl, -14.0, 14.0) * 64);
+			renderer = int(clamp(rl, -14.0, 14.0) * 64);
 			count = 1;
 			sky = Depth.Load(int3(q, 0)) > 0 ? 0 : 1;
+			float key = asfloat(Exposure.Load(16)), scale = asfloat(Exposure.Load(12));
+			rl += scale > 0 ? log2(scale) : 0;
+			if (!sky && abs(key) < 20.0 && gl > key - 4.0 && gl < key + 6.0 && rl > key - 4.0 && rl < key + 6.0)
+			{
+				float3 lg = log2(g), lr = log2(r);
+				float2 d = float2((lg.r - lg.g) - (lr.r - lr.g), (lg.b - lg.g) - (lr.b - lr.g));
+				uint2 bin = uint2(clamp(floor((d + 2.0) * 16.0), 0.0, 63.0));
+				uint ignored;
+				InterlockedAdd(g_bins[bin.x], 1, ignored);
+				InterlockedAdd(g_bins[64 + bin.y], 1, ignored);
+			}
 		}
 	}
 	// (the ground's in 0..63 of the group's slots, the sky's in a second pass)
@@ -95,6 +118,34 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 		}
 		GroupMemoryBarrierWithGroupSync();
 	}
+	uint ignored;
+	if (g_bins[index] > 0)
+		Exposure.InterlockedAdd(64 + index * 4, g_bins[index], ignored);
+	if (g_bins[index + 64] > 0)
+		Exposure.InterlockedAdd(320 + index * 4, g_bins[index + 64], ignored);
+}
+
+// The median of 64 bins at 64 + base * 4 (log2, from -2 in 1/16 stops), and how many; the bins emptied.
+float Median(uint base, out uint total)
+{
+	total = 0;
+	[loop] for (uint i = 0; i < 64; ++i)
+		total += Exposure.Load(64 + (base + i) * 4);
+	float median = 0;
+	uint below = 0;
+	bool found = false;
+	[loop] for (uint j = 0; j < 64; ++j)
+	{
+		uint n = Exposure.Load(64 + (base + j) * 4);
+		if (!found && n > 0 && 2 * (below + n) >= total)
+		{
+			median = (float(j) + (0.5 * total - below) / n) / 16.0 - 2.0;
+			found = true;
+		}
+		below += n;
+		Exposure.Store(64 + (base + j) * 4, 0);
+	}
+	return median;
 }
 
 [numthreads(1, 1, 1)]
@@ -118,6 +169,14 @@ void Update()
 	}
 	Exposure.Store4(0, uint4(0, 0, 0, asuint(scale > 0 ? scale : 1.0)));
 	Exposure.Store4(16, uint4(asuint(key), 0, 0, 0));
+	float2 balance = float2(asfloat(Exposure.Load(32)), asfloat(Exposure.Load(36)));
+	if (!all(abs(balance) < 4.0))
+		balance = 0;
+	uint red, blue;
+	float2 target = float2(Median(0, red), Median(64, blue));
+	if (red > 64 && blue > 64)
+		balance = lerp(balance, clamp(target, -1.5, 1.5) * Grade, Adapt);
+	Exposure.Store2(32, asuint(balance));
 }
 
 [numthreads(8, 8, 1)]
@@ -139,6 +198,14 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	float4 picture = Picture.Load(int3(id, 0)) * float4(scale.xxx, 1);
 	if (any(isnan(picture.rgb)) || any(isinf(picture.rgb)))
 		picture.rgb = 0;
+	float2 balance = float2(asfloat(Exposure.Load(32)), asfloat(Exposure.Load(36)));
+	if (all(abs(balance) < 4.0))
+	{
+		float before = Luminance(picture.rgb);
+		picture.rgb *= exp2(float3(balance.x, 0, balance.y));
+		float after = Luminance(picture.rgb);
+		picture.rgb *= after > 0 ? before / after : 0;
+	}
 	float key = asfloat(Exposure.Load(16));
 	float knee = exp2(key + 7.0), top = exp2(key + 10.0), l = Luminance(picture.rgb);
 	if (l > knee)
@@ -198,7 +265,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			ranges[1].OffsetInDescriptorsFromTableStart = 3;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 6;
+			parameters[0].Constants.Num32BitValues = 7;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -227,7 +294,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 				heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 				D3D12_RESOURCE_DESC buffer{};
 				buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-				buffer.Width = 256;
+				buffer.Width = 1024;
 				buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
 				buffer.SampleDesc.Count = 1;
 				buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -264,7 +331,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		}
 	}
 
-	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, float match)
+	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, float match, float grade)
 	{
 		auto* output = static_cast<ID3D12Resource*>(frame.output);
 		auto* depth = static_cast<ID3D12Resource*>(frame.depth);
@@ -313,7 +380,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		D3D12_UNORDERED_ACCESS_VIEW_DESC raw{};
 		raw.Format = DXGI_FORMAT_R32_TYPELESS;
 		raw.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-		raw.Buffer.NumElements = 64;
+		raw.Buffer.NumElements = 256;
 		raw.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
 		g_device->CreateUnorderedAccessView(g_exposure, nullptr, &raw, cpu);
 
@@ -327,10 +394,11 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
 		const float adapt = kAdapt;
-		UINT constants[6] = {width, height, frame.renderWidth, frame.renderHeight, 0, 0};
+		UINT constants[7] = {width, height, frame.renderWidth, frame.renderHeight, 0, 0, 0};
 		std::memcpy(&constants[4], &adapt, 4);
 		std::memcpy(&constants[5], &match, 4);
-		list->SetComputeRoot32BitConstants(0, 6, constants, 0);
+		std::memcpy(&constants[6], &grade, 4);
+		list->SetComputeRoot32BitConstants(0, 7, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);

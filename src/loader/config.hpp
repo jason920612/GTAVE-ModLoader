@@ -60,6 +60,9 @@ namespace loader::config
 		// How far the renderer's picture is brought to the brightness of the game's own scene (0: the renderer's own
 		// exposure, 1: the game's).
 		float ue5ExposureMatch = 1.0f;
+		// How far its colour balance follows the game's grading (the timecycle's light colours and tints; 0: the
+		// renderer's own physical colour).
+		float ue5GradeMatch = 1.0f;
 		// While UE5 draws the world the game's own 3D picture only carries its peds and vehicles: the DLSS mode the
 		// game renders for then ("game": its own setting; "quality", "balanced", "performance"), which sets the game's
 		// internal resolution. Takes effect when the game starts. (Measured at Legion Square, high preset: the game's
