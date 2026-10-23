@@ -76,7 +76,7 @@ int32 UGTAVImportCommandlet::Main(const FString& Params)
 	if (FParse::Param(*Params, TEXT("masters")))
 	{
 		// The master materials only, made anew (the renderer's run-time materials are their instances).
-		for (const TCHAR* Name : {TEXT("M_GTAV_Opaque"), TEXT("M_GTAV_Translucent"), TEXT("M_GTAV_Cutout"), TEXT("M_GTAV_Terrain4"), TEXT("M_GTAV_Water"), TEXT("M_GTAV_Ocean"), TEXT("M_GTAV_OceanFar"), TEXT("M_GTAV_Corona"), TEXT("MPC_GTAV")})
+		for (const TCHAR* Name : {TEXT("M_GTAV_Opaque"), TEXT("M_GTAV_Translucent"), TEXT("M_GTAV_Cutout"), TEXT("M_GTAV_Terrain4"), TEXT("M_GTAV_Water"), TEXT("M_GTAV_Ocean"), TEXT("M_GTAV_OceanFar"), TEXT("M_GTAV_Corona"), TEXT("M_GTAV_Rain"), TEXT("MPC_GTAV")})
 		{
 			IFileManager::Get().Delete(*FPackageName::LongPackageNameToFilename(FString(TEXT("/Game/GTAV/Materials/")) + Name, FPackageName::GetAssetPackageExtension()));
 		}
@@ -86,6 +86,7 @@ int32 UGTAVImportCommandlet::Main(const FString& Params)
 			Materials.Master(Kind);
 		}
 		Materials.Corona();
+		Materials.Rain();
 		int32 Saved = 0;
 		for (UPackage* Package : Materials.Dirty)
 		{

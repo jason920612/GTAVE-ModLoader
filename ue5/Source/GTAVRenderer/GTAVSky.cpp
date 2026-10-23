@@ -10,6 +10,9 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "GameFramework/Actor.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
@@ -28,13 +31,13 @@ namespace
 	// 1 = an ordinary day in the city), ground fog density, wet ground.
 	struct FLook
 	{
-		float Sun = 1, Sky = 1, Clouds = 0.35f, Haze = 1, Fog = 0.002f, Wet = 0, Wind = 4;
+		float Sun = 1, Sky = 1, Clouds = 0.35f, Haze = 1, Fog = 0.002f, Wet = 0, Wind = 4, Rain = 0; // (rain in mm/h)
 	};
 
 	FLook Lerp(const FLook& A, const FLook& B, float T)
 	{
 		return {FMath::Lerp(A.Sun, B.Sun, T), FMath::Lerp(A.Sky, B.Sky, T), FMath::Lerp(A.Clouds, B.Clouds, T), FMath::Lerp(A.Haze, B.Haze, T),
-			FMath::Lerp(A.Fog, B.Fog, T), FMath::Lerp(A.Wet, B.Wet, T), FMath::Lerp(A.Wind, B.Wind, T)};
+			FMath::Lerp(A.Fog, B.Fog, T), FMath::Lerp(A.Wet, B.Wet, T), FMath::Lerp(A.Wind, B.Wind, T), FMath::Lerp(A.Rain, B.Rain, T)};
 	}
 
 	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
@@ -46,21 +49,21 @@ namespace
 	{
 		static const TMap<uint32, FLook> Looks = [] {
 			TMap<uint32, FLook> Out;
-			const auto Add = [&](const TCHAR* Name, float Sun, float Sky, float Clouds, float Haze, float Fog, float Wet, float Wind) {
-				Out.Add(GTAVHash(Name), {Sun, Sky, Clouds, Haze, Fog, Wet, Wind});
+			const auto Add = [&](const TCHAR* Name, float Sun, float Sky, float Clouds, float Haze, float Fog, float Wet, float Wind, float Rain = 0) {
+				Out.Add(GTAVHash(Name), {Sun, Sky, Clouds, Haze, Fog, Wet, Wind, Rain});
 			};
 			// (rain washes the air: clearing and rain are the clearest, smog the worst; wind in m/s when the game
 			// gives none)
 			Add(TEXT("EXTRASUNNY"), 1.0f, 1.0f, 0.0f, 0.8f, 0.001f, 0.0f, 3.0f);
 			Add(TEXT("CLEAR"), 1.0f, 1.0f, 0.12f, 1.0f, 0.002f, 0.0f, 4.0f);
 			Add(TEXT("NEUTRAL"), 0.9f, 1.0f, 0.4f, 1.0f, 0.002f, 0.0f, 4.0f);
-			Add(TEXT("CLOUDS"), 0.75f, 0.9f, 0.45f, 1.0f, 0.003f, 0.0f, 6.0f);
+			Add(TEXT("CLOUDS"), 0.6f, 0.9f, 0.45f, 1.0f, 0.003f, 0.0f, 6.0f);
 			Add(TEXT("SMOG"), 0.7f, 0.9f, 0.35f, 3.0f, 0.004f, 0.0f, 2.0f);
-			Add(TEXT("FOGGY"), 0.35f, 0.8f, 0.6f, 1.5f, 0.06f, 0.15f, 2.0f);
-			Add(TEXT("OVERCAST"), 0.3f, 0.75f, 0.95f, 1.2f, 0.006f, 0.1f, 7.0f);
-			Add(TEXT("CLEARING"), 0.55f, 0.8f, 0.6f, 0.45f, 0.004f, 0.7f, 6.0f);
-			Add(TEXT("RAIN"), 0.12f, 0.6f, 1.0f, 0.5f, 0.012f, 1.0f, 9.0f);
-			Add(TEXT("THUNDER"), 0.08f, 0.5f, 1.0f, 0.5f, 0.016f, 1.0f, 14.0f);
+			Add(TEXT("FOGGY"), 0.25f, 0.8f, 0.6f, 1.5f, 0.06f, 0.15f, 2.0f);
+			Add(TEXT("OVERCAST"), 0.12f, 0.75f, 0.95f, 1.2f, 0.006f, 0.1f, 7.0f);
+			Add(TEXT("CLEARING"), 0.55f, 0.8f, 0.6f, 0.45f, 0.004f, 0.7f, 6.0f, 0.5f);
+			Add(TEXT("RAIN"), 0.03f, 0.6f, 1.0f, 0.5f, 0.012f, 1.0f, 9.0f, 8.0f);
+			Add(TEXT("THUNDER"), 0.02f, 0.5f, 1.0f, 0.5f, 0.016f, 1.0f, 14.0f, 25.0f);
 			Add(TEXT("SNOW"), 0.3f, 0.8f, 0.9f, 0.7f, 0.02f, 0.2f, 6.0f);
 			Add(TEXT("BLIZZARD"), 0.1f, 0.6f, 1.0f, 1.0f, 0.06f, 0.2f, 16.0f);
 			Add(TEXT("SNOWLIGHT"), 0.5f, 0.9f, 0.7f, 0.7f, 0.008f, 0.1f, 4.0f);
@@ -84,6 +87,7 @@ namespace
 		TWeakObjectPtr<AExponentialHeightFog> Fog;
 		TWeakObjectPtr<USkyAtmosphereComponent> Atmosphere;
 		TWeakObjectPtr<UMaterialParameterCollection> Collection;
+		TWeakObjectPtr<AActor> Rain; // the rain's layers around the camera
 	};
 
 	void Find(UWorld* World, FActors& A)
@@ -181,6 +185,41 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		Air->SetMieAbsorption(FLinearColor(FMath::Lerp(0.44f, 0.3f, City), FMath::Lerp(0.44f, 0.4f, City), FMath::Lerp(0.44f, 0.55f, City)));
 		Air->SetMieExponentialDistribution(FMath::Lerp(1.4f, 0.7f, City));
 	}
+	// Rain: three layers around the camera (3, 7 and 15 m out), while it rains.
+	if (L.Rain > 0.05f && !A.Rain.IsValid())
+	{
+		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+		UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Rain.M_GTAV_Rain"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (Cylinder && Material)
+		{
+			AActor* Owner = World->SpawnActor<AActor>();
+			USceneComponent* Root = NewObject<USceneComponent>(Owner, TEXT("Root"));
+			Owner->SetRootComponent(Root);
+			Root->SetMobility(EComponentMobility::Movable);
+			Root->RegisterComponent();
+			for (const float Radius : {3.0f, 7.0f, 15.0f})
+			{
+				UStaticMeshComponent* Layer = NewObject<UStaticMeshComponent>(Owner);
+				Layer->SetMobility(EComponentMobility::Movable);
+				Layer->SetStaticMesh(Cylinder);
+				Layer->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				Layer->SetCastShadow(false);
+				UMaterialInstanceDynamic* MI = UMaterialInstanceDynamic::Create(Material, Layer);
+				MI->SetScalarParameterValue(TEXT("Radius"), Radius);
+				Layer->SetMaterial(0, MI);
+				// (the engine's cylinder: 50 cm radius, 1 m high, centred)
+				Layer->SetRelativeScale3D(FVector(Radius * 2.0, Radius * 2.0, 30.0));
+				Layer->SetupAttachment(Root);
+				Layer->RegisterComponent();
+			}
+			A.Rain = Owner;
+		}
+	}
+	if (AActor* Rain = A.Rain.Get())
+	{
+		Rain->SetActorLocation(Camera);
+		Rain->SetActorHiddenInGame(L.Rain <= 0.05f);
+	}
 	if (AExponentialHeightFog* Fog = A.Fog.Get())
 	{
 		UExponentialHeightFogComponent* C = Fog->GetComponent();
@@ -198,6 +237,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 			Instance->SetScalarParameterValue(TEXT("WindX"), Way.X);
 			Instance->SetScalarParameterValue(TEXT("WindY"), Way.Y);
 			Instance->SetScalarParameterValue(TEXT("WindSpeed"), bGame ? GameWindSpeed : L.Wind);
+			Instance->SetScalarParameterValue(TEXT("RainRate"), L.Rain);
 		}
 	}
 }

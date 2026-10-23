@@ -30,6 +30,8 @@ public:
 	UMaterial* Master(int32 Kind);
 	// The distant lights' material (the renderer's LOD lights).
 	UMaterial* Corona();
+	// Falling rain.
+	UMaterial* Rain();
 
 private:
 	FString ExportRoot;
@@ -38,7 +40,7 @@ private:
 	TMap<FString, UMaterialInterface*> Instances;
 	TMap<FString, UTexture2D*> Textures;
 
-	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9;
+	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9, kRain = 10;
 	UTexture2D* BlackMask();
 	UMaterialParameterCollection* Collection();
 	void Wetten(UMaterial* M);

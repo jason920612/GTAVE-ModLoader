@@ -558,8 +558,101 @@ UMaterial* FGTAVMaterials::Corona()
 	return Masters.Add(kCorona, M);
 }
 
+// Falling rain (M_GTAV_Rain): streaks on cylinders around the camera, lit by the scene's lights (rain shows under a
+// street light), the layer's Radius (m) per instance.
+UMaterial* FGTAVMaterials::Rain()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Rain");
+	if (UMaterial** Found = Masters.Find(kRain))
+	{
+		return *Found;
+	}
+	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
+	{
+		return Masters.Add(kRain, Existing);
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterial* M = NewObject<UMaterial>(Package, TEXT("M_GTAV_Rain"), RF_Public | RF_Standalone);
+	M->BlendMode = BLEND_Translucent;
+	M->TwoSided = true;
+	M->TranslucencyLightingMode = TLM_VolumetricNonDirectional;
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	UMaterialParameterCollection* C = Collection();
+	const auto Global = [&](const TCHAR* Name) {
+		auto* E = NewObject<UMaterialExpressionCollectionParameter>(M);
+		E->Collection = C;
+		E->ParameterName = Name;
+		E->ParameterId = C->GetParameterId(Name);
+		return Add(E);
+	};
+	auto* Radius = NewObject<UMaterialExpressionScalarParameter>(M);
+	Radius->ParameterName = TEXT("Radius");
+	Radius->DefaultValue = 5.0f;
+	Add(Radius);
+	auto* Streaks = NewObject<UMaterialExpressionCustom>(M);
+	Streaks->OutputType = CMOT_Float1;
+	Streaks->Description = TEXT("Rain");
+	Streaks->Code = TEXT(R"HLSL(// Rain on a cylinder around the camera: streaks of drops falling at their terminal velocity (about 6.5 m/s for the
+// millimetre drops of moderate rain), slanted by the wind, as many as the rain rate gives (Marshall-Palmer: some
+// thousand drops in a cubic metre at 8 mm/h; a share of the cells of this layer).
+if (RainRate <= 0.01) return 0;
+float3 d = (Pos - Cam) * 0.01;
+float v = 6.5;
+float2 wind = float2(WindX, WindY) * WindSpeed * 0.5;
+float ang = atan2(d.y, d.x);
+float2 side = float2(-sin(ang), cos(ang));
+float u = ang * Radius + dot(wind, side) * (d.z / v);
+float h = d.z + v * Time;
+float cellW = 0.02 * Radius;
+float cellH = 0.5;
+float2 g = float2(u / cellW, h / cellH);
+float2 cell = floor(g);
+float rnd = frac(sin(dot(cell, float2(12.9898, 78.233))) * 43758.5453);
+if (rnd > saturate(RainRate / 25.0) * 0.6 + 0.05) return 0;
+float2 f = frac(g);
+float x = frac(f.x + rnd * 7.31);
+float y = frac(f.y + rnd * 3.17);
+// (a streak: what a 1/60 s exposure makes of a falling drop, about 10 cm long)
+float len = 0.22;
+float across = saturate(1 - abs(x - 0.5) * 14);
+float along = smoothstep(0, 0.05, y) * (1 - smoothstep(len - 0.06, len, y));
+// (no rain right at the camera or far above and below it)
+float fade = saturate(1 - abs(d.z) / 12.0);
+return across * along * fade;
+)HLSL");
+	Streaks->Inputs.Reset();
+	for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("Pos"), Add(NewObject<UMaterialExpressionWorldPosition>(M))),
+			 {TEXT("Cam"), Add(NewObject<UMaterialExpressionCameraPositionWS>(M))}, {TEXT("Time"), Add(NewObject<UMaterialExpressionTime>(M))},
+			 {TEXT("RainRate"), Global(TEXT("RainRate"))}, {TEXT("WindX"), Global(TEXT("WindX"))}, {TEXT("WindY"), Global(TEXT("WindY"))},
+			 {TEXT("WindSpeed"), Global(TEXT("WindSpeed"))}, {TEXT("Radius"), Radius}})
+	{
+		FCustomInput& In = Streaks->Inputs.AddDefaulted_GetRef();
+		In.InputName = I.Key;
+		In.Input.Connect(0, I.Value);
+	}
+	Add(Streaks);
+	auto* Water = NewObject<UMaterialExpressionConstant3Vector>(M);
+	Water->Constant = FLinearColor(0.75f, 0.78f, 0.82f);
+	Add(Water);
+	Inputs->BaseColor.Connect(0, Water);
+	auto* Opacity = NewObject<UMaterialExpressionMultiply>(M);
+	Opacity->A.Connect(0, Streaks);
+	Opacity->ConstB = 0.18f;
+	Add(Opacity);
+	Inputs->Opacity.Connect(0, Opacity);
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return Masters.Add(kRain, M);
+}
+
 // The renderer's global values for every material: Wetness (0..1, the weather's), the wind (WindX, WindY: the way it
-// blows in Unreal's space; WindSpeed m/s).
+// blows in Unreal's space; WindSpeed m/s), RainRate (mm/h).
 UMaterialParameterCollection* FGTAVMaterials::Collection()
 {
 	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/MPC_GTAV");
@@ -574,7 +667,7 @@ UMaterialParameterCollection* FGTAVMaterials::Collection()
 	UPackage* Package = CreatePackage(PackageName);
 	UMaterialParameterCollection* C = NewObject<UMaterialParameterCollection>(Package, TEXT("MPC_GTAV"), RF_Public | RF_Standalone);
 	for (const TPair<const TCHAR*, float>& P : {TPair<const TCHAR*, float>(TEXT("Wetness"), 0.0f), {TEXT("WindX"), 1.0f}, {TEXT("WindY"), 0.0f},
-			 {TEXT("WindSpeed"), 4.0f}})
+			 {TEXT("WindSpeed"), 4.0f}, {TEXT("RainRate"), 0.0f}})
 	{
 		FCollectionScalarParameter Parameter;
 		Parameter.ParameterName = P.Key;
@@ -622,6 +715,41 @@ void FGTAVMaterials::Wetten(UMaterial* M)
 	Wet->A.Connect(0, Wetness);
 	Wet->B.Connect(0, Facing);
 	Add(Wet);
+	auto* Where = NewObject<UMaterialExpressionWorldPosition>(M);
+	Add(Where);
+	auto* Puddle = NewObject<UMaterialExpressionCustom>(M);
+	Puddle->OutputType = CMOT_Float1;
+	Puddle->Description = TEXT("Puddles");
+	Puddle->Code = TEXT(R"HLSL(// Standing water: where a two-octave value noise over the ground (features of a few metres) dips under a level
+// that rises with the wetness, on surfaces that face up.
+if (Wet < 0.05) return 0;
+float2 p = Pos.xy * 0.01 / 3.0;
+float n = 0, amp = 0.65, norm = 0;
+[unroll] for (int o = 0; o < 2; o++)
+{
+    float2 i = floor(p), f = frac(p);
+    float2 s = f * f * (3 - 2 * f);
+    float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);
+    float b = frac(sin(dot(i + float2(1, 0), float2(127.1, 311.7))) * 43758.5453);
+    float c = frac(sin(dot(i + float2(0, 1), float2(127.1, 311.7))) * 43758.5453);
+    float e = frac(sin(dot(i + float2(1, 1), float2(127.1, 311.7))) * 43758.5453);
+    n += amp * lerp(lerp(a, b, s.x), lerp(c, e, s.x), s.y);
+    norm += amp;
+    p *= 2.7;
+    amp *= 0.5;
+}
+n /= norm;
+return saturate((Wet * 0.3 + 0.1 - n) * 12) * Facing;
+)HLSL");
+	Puddle->Inputs.Reset();
+	for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("Pos"), Where), {TEXT("Wet"), Wetness},
+			 {TEXT("Facing"), Facing}})
+	{
+		FCustomInput& In = Puddle->Inputs.AddDefaulted_GetRef();
+		In.InputName = I.Key;
+		In.Input.Connect(0, I.Value);
+	}
+	Add(Puddle);
 	FExpressionInput Color = Inputs->BaseColor, Rough = Inputs->Roughness;
 	auto* Darker = NewObject<UMaterialExpressionMultiply>(M);
 	Darker->A = Color;
@@ -632,13 +760,28 @@ void FGTAVMaterials::Wetten(UMaterial* M)
 	WetColor->B.Connect(0, Darker);
 	WetColor->Alpha.Connect(0, Wet);
 	Add(WetColor);
-	Inputs->BaseColor.Connect(0, WetColor);
+	// (in a puddle: darker still, a mirror)
+	auto* Deeper = NewObject<UMaterialExpressionMultiply>(M);
+	Deeper->A.Connect(0, WetColor);
+	Deeper->ConstB = 0.7f;
+	Add(Deeper);
+	auto* PuddleColor = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	PuddleColor->A.Connect(0, WetColor);
+	PuddleColor->B.Connect(0, Deeper);
+	PuddleColor->Alpha.Connect(0, Puddle);
+	Add(PuddleColor);
+	Inputs->BaseColor.Connect(0, PuddleColor);
 	auto* WetRough = NewObject<UMaterialExpressionLinearInterpolate>(M);
 	WetRough->A = Rough;
 	WetRough->ConstB = 0.08f;
 	WetRough->Alpha.Connect(0, Wet);
 	Add(WetRough);
-	Inputs->Roughness.Connect(0, WetRough);
+	auto* PuddleRough = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	PuddleRough->A.Connect(0, WetRough);
+	PuddleRough->ConstB = 0.02f;
+	PuddleRough->Alpha.Connect(0, Puddle);
+	Add(PuddleRough);
+	Inputs->Roughness.Connect(0, PuddleRough);
 }
 
 UTexture2D* FGTAVMaterials::Texture(const FString& Path, bool bLinear, bool bNormalMap, bool bPalette)

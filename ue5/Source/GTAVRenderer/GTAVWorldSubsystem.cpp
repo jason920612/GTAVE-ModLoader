@@ -117,6 +117,7 @@ void UGTAVWorldSubsystem::AddSky(UWorld& World)
 	Sun->SetMobility(EComponentMobility::Movable);
 	UDirectionalLightComponent* Light = CastChecked<UDirectionalLightComponent>(Sun->GetLightComponent());
 	Light->SetAtmosphereSunLight(true);
+	Light->bCastCloudShadows = true; // (the volumetric clouds shade the ground)
 	Light->SetIntensity(10.0f);
 	World.SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator);
 	ASkyLight* Sky = World.SpawnActor<ASkyLight>(FVector(0, 0, 5000), FRotator::ZeroRotator);
