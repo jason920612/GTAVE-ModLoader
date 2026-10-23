@@ -10,8 +10,8 @@
 namespace
 {
 	constexpr float kCell = 25600.0f;
-	// The game's intensity byte -> candela (a street light, 170, lights the road under it with about 20 lux).
-	constexpr float kCandela = 2000.0f;
+	// The game's intensity byte -> candela (a street light, 170: about 3000 cd, some 40 lux on the road 8 m below).
+	constexpr float kCandela = 4500.0f;
 	// The game's cone bytes -> degrees (127.5: a half sphere).
 	constexpr float kConeDegrees = 90.0f / 127.5f;
 

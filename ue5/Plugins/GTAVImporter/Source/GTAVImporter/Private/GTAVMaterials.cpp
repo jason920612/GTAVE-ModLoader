@@ -444,12 +444,18 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		Add(Opacity);
 		Inputs->Opacity.Connect(0, Opacity);
 	}
-	// Emissive (the game's emissiveMultiplier; 0 for everything else).
+	// Emissive in nits: the game's emissiveMultiplier (0 for everything else) times EmissiveNits (a sign at 4-16 then
+	// shines with 150-650 nits, a lit window at 1-4 with 40-160; by day such light is lost in the sun's, at night
+	// it is what one sees).
 	auto* Glow = NewObject<UMaterialExpressionMultiply>(M);
 	Glow->A.Connect(0, UseTint);
 	Glow->B.Connect(0, Scalar(TEXT("EmissiveMultiplier"), 0.0f));
 	Add(Glow);
-	Inputs->EmissiveColor.Connect(0, Glow);
+	auto* Nits = NewObject<UMaterialExpressionMultiply>(M);
+	Nits->A.Connect(0, Glow);
+	Nits->B.Connect(0, Scalar(TEXT("EmissiveNits"), 40.0f));
+	Add(Nits);
+	Inputs->EmissiveColor.Connect(0, Nits);
 	if (Kind != 1)
 	{
 		Wetten(M);
@@ -501,13 +507,17 @@ UMaterial* FGTAVMaterials::Corona()
 	Add(RGB);
 	auto* Brightness = NewObject<UMaterialExpressionScalarParameter>(M);
 	Brightness->ParameterName = TEXT("Brightness");
-	Brightness->DefaultValue = 20.0f;
+	Brightness->DefaultValue = 20000.0f; // nits: a lamp's glowing housing
 	Add(Brightness);
 	auto* Glow = NewObject<UMaterialExpressionMultiply>(M);
 	Glow->A.Connect(0, RGB);
 	Glow->B.Connect(0, Brightness);
 	Add(Glow);
-	Inputs->EmissiveColor.Connect(0, Glow);
+	// Grown with the distance (below): the glow spreads over the larger sphere, dimmer in step with its size.
+	auto* Spread = NewObject<UMaterialExpressionDivide>(M);
+	Spread->A.Connect(0, Glow);
+	Add(Spread);
+	Inputs->EmissiveColor.Connect(0, Spread);
 	// Grown with the distance: (vertex - centre) * (max(distance / 30000, 1) - 1) (the mesh's radius is 30 cm).
 	auto* Centre = NewObject<UMaterialExpressionObjectPositionWS>(M);
 	Add(Centre);
@@ -525,6 +535,7 @@ UMaterial* FGTAVMaterials::Corona()
 	AtLeast->A.Connect(0, Scaled);
 	AtLeast->ConstB = 1.0f;
 	Add(AtLeast);
+	Spread->B.Connect(0, AtLeast);
 	auto* Grow = NewObject<UMaterialExpressionSubtract>(M);
 	Grow->A.Connect(0, AtLeast);
 	Grow->ConstB = 1.0f;

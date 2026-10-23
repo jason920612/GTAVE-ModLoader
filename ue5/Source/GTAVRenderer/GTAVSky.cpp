@@ -51,10 +51,10 @@ namespace
 			};
 			// (rain washes the air: clearing and rain are the clearest, smog the worst; wind in m/s when the game
 			// gives none)
-			Add(TEXT("EXTRASUNNY"), 1.0f, 1.0f, 0.15f, 0.8f, 0.001f, 0.0f, 3.0f);
-			Add(TEXT("CLEAR"), 1.0f, 1.0f, 0.35f, 1.0f, 0.002f, 0.0f, 4.0f);
+			Add(TEXT("EXTRASUNNY"), 1.0f, 1.0f, 0.0f, 0.8f, 0.001f, 0.0f, 3.0f);
+			Add(TEXT("CLEAR"), 1.0f, 1.0f, 0.12f, 1.0f, 0.002f, 0.0f, 4.0f);
 			Add(TEXT("NEUTRAL"), 0.9f, 1.0f, 0.4f, 1.0f, 0.002f, 0.0f, 4.0f);
-			Add(TEXT("CLOUDS"), 0.75f, 0.9f, 0.65f, 1.0f, 0.003f, 0.0f, 6.0f);
+			Add(TEXT("CLOUDS"), 0.75f, 0.9f, 0.45f, 1.0f, 0.003f, 0.0f, 6.0f);
 			Add(TEXT("SMOG"), 0.7f, 0.9f, 0.35f, 3.0f, 0.004f, 0.0f, 2.0f);
 			Add(TEXT("FOGGY"), 0.35f, 0.8f, 0.6f, 1.5f, 0.06f, 0.15f, 2.0f);
 			Add(TEXT("OVERCAST"), 0.3f, 0.75f, 0.95f, 1.2f, 0.006f, 0.1f, 7.0f);
@@ -137,7 +137,9 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	const FLook L = Lerp(Look(WeatherFrom), Look(WeatherTo), FMath::Clamp(Blend, 0.0f, 1.0f));
 
-	// The sun from the hour: east at 6, highest at 12 (to the south), west at 18; at night a faint blue moon opposite.
+	// The sun from the hour: east at 6, highest at 12 (to the south), west at 18; at night the moon opposite. Physical
+	// units throughout (lux; the lights in candela, glowing surfaces in nits), the exposure adapting as an eye does:
+	// a clear sun gives 100,000 lux, a full moon a quarter of one.
 	if (ADirectionalLight* Sun = A.Sun.Get())
 	{
 		const float Angle = (Hours - 6.0f) / 12.0f * PI;
@@ -145,7 +147,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		const bool bDay = Toward.Z > -0.05f;
 		Sun->SetActorRotation((bDay ? -Toward : Toward).Rotation());
 		ULightComponent* Light = Sun->GetLightComponent();
-		Light->SetIntensity(bDay ? 10.0f * L.Sun : 0.3f * FMath::Max(L.Sun, 0.2f));
+		Light->SetIntensity(bDay ? 100000.0f * L.Sun : 0.25f * FMath::Max(L.Sun, 0.2f));
 		Light->SetLightColor(bDay ? FLinearColor::White : FLinearColor(0.6f, 0.7f, 1.0f));
 	}
 	if (ASkyLight* Sky = A.Sky.Get())
@@ -154,10 +156,15 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	if (UMaterialInstanceDynamic* Clouds = A.CloudMaterial.Get())
 	{
-		// (the engine's cloud material: Cloud_GlobalCoverage 0 is its most clouded sky, 0.5 and up a clear one)
+		// (the engine's cloud material: Cloud_GlobalCoverage 0 gives scattered cumulus, 0.3 a hazy overcast, 0.45 a milky
+		// one, measured; a clear sky has none at all)
 		const float Override = CVarCloudCoverage.GetValueOnGameThread();
-		const float Cover = Override >= 0 ? Override : L.Clouds;
-		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), 0.5f * (1.0f - FMath::Clamp(Cover, 0.0f, 1.0f)));
+		const float Cover = FMath::Clamp(Override >= 0 ? Override : L.Clouds, 0.0f, 1.0f);
+		if (UVolumetricCloudComponent* Layer = A.Clouds.Get())
+		{
+			Layer->SetVisibility(Cover >= 0.1f);
+		}
+		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Max(Cover - 0.1f, 0.0f) / 0.9f * 0.45f);
 	}
 	// The air: aerosols (Mie scattering) that blur and tint the distance, thickest in the Los Santos basin (a city's
 	// haze under an inversion about a kilometre up: the hills rise out of it), thinner over the countryside north of
@@ -166,13 +173,13 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	const float City = 1.0f - FMath::SmoothStep(1500.0f, 3500.0f, GameY);
 	if (USkyAtmosphereComponent* Air = A.Atmosphere.Get())
 	{
-		// (per km at the ground: a city day 0.09, visibility about 40 km; smog 0.27; the open country a third of the city)
-		const float Scattering = 0.05f * L.Haze * FMath::Lerp(0.6f, 1.8f, City) * FMath::Max(CVarHaze.GetValueOnGameThread(), 0.0f);
+		// (per km at the ground: a city day 0.06, visibility about 60 km; smog 0.19; the open country a third of the city)
+		const float Scattering = 0.035f * L.Haze * FMath::Lerp(0.6f, 1.8f, City) * FMath::Max(CVarHaze.GetValueOnGameThread(), 0.0f);
 		Air->SetMieScatteringScale(Scattering);
 		Air->SetMieAbsorptionScale(Scattering * FMath::Lerp(0.12f, 0.3f, City));
 		// (city aerosols absorb blue more than red: brownish)
 		Air->SetMieAbsorption(FLinearColor(FMath::Lerp(0.44f, 0.3f, City), FMath::Lerp(0.44f, 0.4f, City), FMath::Lerp(0.44f, 0.55f, City)));
-		Air->SetMieExponentialDistribution(FMath::Lerp(1.6f, 0.9f, City));
+		Air->SetMieExponentialDistribution(FMath::Lerp(1.4f, 0.7f, City));
 	}
 	if (AExponentialHeightFog* Fog = A.Fog.Get())
 	{
