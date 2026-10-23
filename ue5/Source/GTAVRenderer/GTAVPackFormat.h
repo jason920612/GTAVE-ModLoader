@@ -8,7 +8,7 @@
 
 namespace GTAVPack
 {
-	constexpr uint32_t kVersion = 1;
+	constexpr uint32_t kVersion = 2;
 
 	enum Kind : uint32_t
 	{
@@ -58,10 +58,14 @@ namespace GTAVPack
 		char magic[4]; // "GMDL"
 		uint32_t version;
 		float boundsMin[3], boundsMax[3];
+		float sphere[4];       // centre, radius
+		float lodDistances[4]; // the drawable's own levels of detail (metres; sections say which level they are)
 		uint16_t materialCount, sectionCount;
+		uint8_t lodCount;
+		uint8_t reserved[3];
 		uint32_t flags;
 	};
-	static_assert(sizeof(ModelHeader) == 40);
+	static_assert(sizeof(ModelHeader) == 76);
 
 	// What a material draws like (the renderer's master materials).
 	enum MaterialKind : uint8_t
@@ -131,14 +135,179 @@ namespace GTAVPack
 		uint8_t flags;
 		uint32_t vertexCount;
 		uint32_t indexCount;
+		uint8_t lod; // 0: the most detailed
+		uint8_t reserved[3];
 	};
-	static_assert(sizeof(SectionHeader) == 12);
+	static_assert(sizeof(SectionHeader) == 16);
 
 	// --- world ------------------------------------------------------------------------------------------------
+	// One entry per section, each an array of one of the structs below. Positions, rotations and boxes are in Unreal's
+	// space (centimetres, y mirrored) unless said otherwise. "None" indices are 0xFFFFFFFF.
 	enum WorldSection : uint64_t
 	{
-		kPlacements = 1, // Placement[]: a test area's models as placed (ue5export pack --area)
+		kPlacements = 1,       // Placement[]: a test area's models as placed (old test packs)
+		kArchetypes = 2,       // Archetype[], sorted by name
+		kYmaps = 3,            // Ymap[]
+		kEntities = 4,         // Entity[], ymap by ymap (every level of detail)
+		kGroups = 5,           // Group[]: map data groups (what scripts switch on)
+		kInteriors = 6,        // Interior[]: interior (MLO) archetypes
+		kInteriorEntities = 7, // InteriorEntity[]: their entities, in the interior's space
+		kRooms = 8,            // Room[]
+		kPortals = 9,          // Portal[]
+		kEntitySets = 10,      // EntitySet[]
+		kInteriorPlacements = 11, // InteriorPlacement[]: interiors as placed (CMloInstanceDef entities)
+		kGrassBatches = 12,    // GrassBatch[]
+		kGrassInstances = 13,  // GrassInstance[] (the game's own 16 bytes)
+		kLists = 14,           // uint32[]: the variable-length lists the others point into
 	};
+	constexpr uint32_t kNone = 0xFFFFFFFF;
+
+	enum ArchetypeKind : uint8_t
+	{
+		kBase = 0,
+		kTimed = 1,    // shown at some hours only (timeFlags)
+		kInterior = 2, // an MLO
+	};
+
+	struct Archetype
+	{
+		uint32_t name;
+		uint32_t flags;
+		float lodDist;      // metres (the game's)
+		float hdTextureDist;
+		float boundsMin[3], boundsMax[3];
+		float sphere[4]; // centre, radius
+		uint32_t timeFlags;
+		uint32_t interior; // index into kInteriors
+		uint32_t specialAttribute;
+		uint8_t kind;      // ArchetypeKind
+		uint8_t hasModel;  // in models.gpk under its name
+		uint8_t reserved[2];
+	};
+	static_assert(sizeof(Archetype) == 72);
+
+	struct Ymap
+	{
+		uint32_t name;
+		uint32_t parent; // ymap index
+		uint32_t flags, contentFlags;
+		float streamingMin[3], streamingMax[3];
+		float entitiesMin[3], entitiesMax[3];
+		uint32_t firstEntity, entityCount;
+		uint32_t firstGrass, grassCount;
+		uint32_t group; // group index: the ymap is shown only while its group is on
+		uint32_t reserved;
+	};
+	static_assert(sizeof(Ymap) == 88);
+
+	struct Entity
+	{
+		uint32_t archetype; // name hash
+		uint32_t ymap;
+		float position[3];
+		float rotation[4];
+		float scaleXY, scaleZ;
+		float lodDist, childLodDist; // metres
+		uint32_t parent;             // entity index (the next level of detail out)
+		uint32_t flags;
+		uint32_t tintValue;
+		uint32_t interiorPlacement; // index into kInteriorPlacements for a placed interior
+		uint8_t lodLevel;           // 0 HD, 1 LOD, 2-4 SLOD1-3, 5 orphan HD, 6 SLOD4
+		uint8_t priorityLevel;
+		uint16_t numChildren;
+	};
+	static_assert(sizeof(Entity) == 72);
+
+	struct Group
+	{
+		uint32_t name;
+		uint32_t flags;
+		uint32_t hoursOnOff; // bit per hour, 0: not by the hour
+		uint32_t ymap;       // the ymap it switches
+		uint32_t firstWeather, weatherCount; // into kLists (weather type hashes)
+	};
+	static_assert(sizeof(Group) == 24);
+
+	struct Interior
+	{
+		uint32_t archetype;
+		uint32_t mloFlags;
+		uint32_t firstEntity, entityCount; // into kInteriorEntities
+		uint32_t firstRoom, roomCount;
+		uint32_t firstPortal, portalCount;
+		uint32_t firstSet, setCount;
+	};
+	static_assert(sizeof(Interior) == 40);
+
+	struct InteriorEntity
+	{
+		uint32_t archetype;
+		float position[3]; // in the interior's space
+		float rotation[4];
+		float scaleXY, scaleZ;
+		float lodDist;
+		uint32_t flags;
+		uint32_t tintValue;
+		uint8_t lodLevel;
+		uint8_t reserved[3];
+	};
+	static_assert(sizeof(InteriorEntity) == 56);
+
+	struct Room
+	{
+		float boundsMin[3], boundsMax[3]; // interior space
+		uint32_t flags;
+		int32_t floorId;
+		uint32_t firstObject, objectCount; // into kLists: entity indices relative to the interior's first entity
+	};
+	static_assert(sizeof(Room) == 40);
+
+	struct Portal
+	{
+		uint32_t roomFrom, roomTo, flags, opacity;
+		float corners[4][3]; // interior space
+		uint32_t firstObject, objectCount;
+	};
+	static_assert(sizeof(Portal) == 72);
+
+	struct EntitySet
+	{
+		uint32_t name;
+		uint32_t firstEntity, entityCount;     // into kInteriorEntities
+		uint32_t firstLocation, locationCount; // into kLists: the room of each entity
+	};
+	static_assert(sizeof(EntitySet) == 20);
+
+	struct InteriorPlacement
+	{
+		uint32_t entity;   // the placing entity
+		uint32_t interior; // index into kInteriors (kNone: archetype not found)
+		uint32_t groupId, floorId, flags;
+		uint32_t firstDefaultSet, defaultSetCount; // into kLists: entity set names on by default
+	};
+	static_assert(sizeof(InteriorPlacement) == 28);
+
+	struct GrassBatch
+	{
+		uint32_t archetype;
+		uint32_t ymap;
+		float boundsMin[3], boundsMax[3]; // the GAME's space (metres): instance positions are fractions of it
+		float scaleRange[3];
+		float lodDist, fadeStart, fadeRange, orientToTerrain;
+		uint32_t firstInstance, instanceCount;
+	};
+	static_assert(sizeof(GrassBatch) == 68);
+
+	struct GrassInstance
+	{
+		uint16_t position[3]; // in the batch's box, 0..65535
+		uint8_t normalX, normalY;
+		uint8_t color[3];
+		uint8_t scale;
+		uint8_t ao;
+		uint8_t reserved[3];
+	};
+	static_assert(sizeof(GrassInstance) == 16);
 
 	struct Placement
 	{

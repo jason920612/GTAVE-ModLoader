@@ -289,7 +289,7 @@ namespace ue5export
 					{
 						File file{m.archive, c, m.source + "/" + n.name};
 						const std::string name = Lower(n.name);
-						if (name.ends_with(".meta"))
+						if (name.ends_with(".meta") || name.ends_with(".ymf")) // (data files, and every archive's manifest)
 							all_[name].push_back(file);
 						byName_[name] = std::move(file);
 					}
@@ -300,7 +300,7 @@ namespace ue5export
 		for (const auto& [path, file] : loose_)
 		{
 			const std::string name = path.substr(path.rfind('/') + 1);
-			if (name.ends_with(".meta"))
+			if (name.ends_with(".meta") || name.ends_with(".ymf")) // (data files, and every archive's manifest)
 				all_[name].push_back(file);
 			byName_[name] = file;
 		}

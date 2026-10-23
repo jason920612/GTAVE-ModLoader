@@ -54,6 +54,7 @@ namespace ue5export::drawable
 	struct Section
 	{
 		uint32_t material = 0;
+		uint8_t lod = 0; // the drawable's level of detail (0 high, 1 medium, 2 low, 3 very low)
 		uint32_t vertices = 0;
 		std::vector<float> position, normal, tangent; // 3, 3, 4 per vertex (normal / tangent empty when absent)
 		std::vector<uint8_t> color0, color1;          // RGBA8 per vertex, or empty
@@ -67,11 +68,14 @@ namespace ue5export::drawable
 		std::vector<Material> materials;
 		std::vector<Texture> embedded;
 		std::array<float, 3> bbMin{}, bbMax{};
+		std::array<float, 4> sphere{};       // centre, radius
+		std::array<float, 4> lodDistances{}; // per level of detail
+		uint8_t lodCount = 0;
 		std::vector<std::string> warnings;
 	};
 
-	// The drawable at `at` (a pointer into the resource).
-	bool Read(const View& view, uint64_t at, Model& out, std::string& error);
+	// The drawable at `at` (a pointer into the resource): every level of detail it has (allLods) or the highest.
+	bool Read(const View& view, uint64_t at, Model& out, std::string& error, bool allLods = false);
 	// Drawables of a resource by kind: ydr -> one (hash 0), ydd -> name hash -> drawable, yft -> its main drawable.
 	std::map<uint32_t, uint64_t> Drawables(const View& view, const std::string& extension);
 	// The textures of a dictionary (ytd root, or a drawable's shader group dictionary).

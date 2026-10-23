@@ -7,6 +7,8 @@
 #include "HAL/PlatformMisc.h"
 #include "Misc/CommandLine.h"
 #include "UnrealClient.h"
+
+#include "GTAVWorldSubsystem.h"
 #if WITH_EDITOR
 #include "ShaderCompiler.h"
 #include "StaticMeshCompiler.h"
@@ -78,6 +80,12 @@ void UGTAVShotSubsystem::Tick(float DeltaTime)
 		return;
 	}
 #endif
+	// (the streamed world: everything in view loaded and drawn)
+	if (const UGTAVWorldSubsystem* Streamer = World->GetSubsystem<UGTAVWorldSubsystem>(); Streamer && !Streamer->IsSettled())
+	{
+		StartTime = Now;
+		return;
+	}
 	float Delay = 30.0f;
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavshotdelay="), Delay);
 	if (!bShot && Now - StartTime > Delay)

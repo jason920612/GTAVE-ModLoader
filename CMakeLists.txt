@@ -204,6 +204,7 @@ add_executable(ue5export
     tools/ue5export/main.cpp
     tools/ue5export/ng.cpp
     tools/ue5export/meta.cpp
+    tools/ue5export/pso.cpp
     tools/ue5export/gamefiles.cpp
     tools/ue5export/mapdata.cpp
     tools/ue5export/drawable.cpp

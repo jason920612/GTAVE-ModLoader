@@ -145,3 +145,49 @@ namespace ue5export::meta
 		return {meta, meta->Find(structure), at + f->offset};
 	}
 }
+
+namespace ue5export::meta
+{
+	namespace
+	{
+		// An array field's data and count.
+		bool ArrayData(const Ref& r, uint32_t field, size_t& data, uint16_t& count)
+		{
+			const Field* f = r.type ? r.type->Find(field) : nullptr;
+			if (!f || f->type != 0x52)
+				return false;
+			uint64_t pointer = 0;
+			std::memcpy(&pointer, r.meta->At(r.at + f->offset), 8);
+			std::memcpy(&count, r.meta->At(r.at + f->offset + 8), 2);
+			const auto d = r.meta->Resolve(pointer);
+			if (!d || !count)
+				return false;
+			data = *d;
+			return true;
+		}
+	}
+
+	std::vector<uint32_t> Ref::U32Array(uint32_t field) const
+	{
+		std::vector<uint32_t> out;
+		size_t data = 0;
+		uint16_t count = 0;
+		if (!ArrayData(*this, field, data, count) || data + count * 4u > meta->Size())
+			return out;
+		out.resize(count);
+		std::memcpy(out.data(), meta->At(data), count * 4u);
+		return out;
+	}
+
+	std::vector<std::array<float, 4>> Ref::VectorArray(uint32_t field) const
+	{
+		std::vector<std::array<float, 4>> out;
+		size_t data = 0;
+		uint16_t count = 0;
+		if (!ArrayData(*this, field, data, count) || data + count * 16u > meta->Size())
+			return out;
+		out.resize(count);
+		std::memcpy(out.data(), meta->At(data), count * 16u);
+		return out;
+	}
+}

@@ -159,10 +159,17 @@ namespace ue5export::drawable
 		return out;
 	}
 
-	bool Read(const View& view, uint64_t at, Model& out, std::string& error)
+	bool Read(const View& view, uint64_t at, Model& out, std::string& error, bool allLods)
 	{
 		if (!view.At(at, 0xB0))
 			return error = "no drawable", false;
+		// +0x20 bounding sphere, +0x30 / +0x40 box, +0x50 the model lists of the four levels of detail, +0x70 their
+		// distances.
+		for (int i = 0; i < 4; ++i)
+		{
+			out.sphere[i] = view.Get<float>(at + 0x20 + 4 * i);
+			out.lodDistances[i] = view.Get<float>(at + 0x70 + 4 * i);
+		}
 		for (int i = 0; i < 3; ++i)
 		{
 			out.bbMin[i] = view.Get<float>(at + 0x30 + 4 * i);
@@ -214,87 +221,94 @@ namespace ue5export::drawable
 			}
 			out.materials.push_back(std::move(m));
 		}
-		// The highest level of detail.
-		const uint64_t list = view.Get<uint64_t>(at + 0x50);
-		const uint64_t models = view.Get<uint64_t>(list);
-		const uint16_t modelCount = view.Get<uint16_t>(list + 8);
-		for (uint16_t mi = 0; mi < modelCount; ++mi)
+		// The levels of detail, most detailed first.
+		for (uint8_t lod = 0; lod < (allLods ? 4 : 1); ++lod)
 		{
-			const uint64_t model = view.Get<uint64_t>(models + 8u * mi);
-			const uint64_t geometries = view.Get<uint64_t>(model + 0x08), mapping = view.Get<uint64_t>(model + 0x20);
-			const uint16_t count = view.Get<uint16_t>(model + 0x10);
-			for (uint16_t gi = 0; gi < count; ++gi)
+			const uint64_t list = view.Get<uint64_t>(at + 0x50 + 8u * lod);
+			if (!list)
+				break;
+			out.lodCount = lod + 1;
+			const uint64_t models = view.Get<uint64_t>(list);
+			const uint16_t modelCount = view.Get<uint16_t>(list + 8);
+			for (uint16_t mi = 0; mi < modelCount; ++mi)
 			{
-				const uint64_t g = view.Get<uint64_t>(geometries + 8u * gi);
-				const uint64_t vb = view.Get<uint64_t>(g + 0x18), ib = view.Get<uint64_t>(g + 0x38);
-				const uint32_t vertices = view.Get<uint32_t>(vb + 0x08), stride = view.Get<uint16_t>(vb + 0x0C) & 0xFFF;
-				const uint64_t decl = view.Get<uint64_t>(vb + 0x38);
-				const uint8_t* declaration = view.At(decl, 0x140);
-				const uint8_t* data = view.At(view.Get<uint64_t>(vb + 0x18), static_cast<size_t>(vertices) * stride);
-				const uint32_t indexCount = view.Get<uint32_t>(ib + 0x08), indexSize = view.Get<uint16_t>(ib + 0x0C) & 0xFFF;
-				const uint8_t* indexData = view.At(view.Get<uint64_t>(ib + 0x18), static_cast<size_t>(indexCount) * indexSize);
-				if (!declaration || !data || !indexData || !vertices || (indexSize != 2 && indexSize != 4))
+				const uint64_t model = view.Get<uint64_t>(models + 8u * mi);
+				const uint64_t geometries = view.Get<uint64_t>(model + 0x08), mapping = view.Get<uint64_t>(model + 0x20);
+				const uint16_t count = view.Get<uint16_t>(model + 0x10);
+				for (uint16_t gi = 0; gi < count; ++gi)
 				{
-					out.warnings.push_back(std::format("geometry {}: unreadable", gi));
-					continue;
-				}
-				uint32_t flags;
-				std::memcpy(&flags, declaration + 0x138, 4);
-				if (flags & 1)
-				{
-					out.warnings.push_back(std::format("geometry {}: a stream per element (not supported yet)", gi));
-					continue;
-				}
-				const auto format = [&](int slot) { return declaration[0x104 + slot]; };
-				const auto offset = [&](int slot) {
-					uint32_t o;
-					std::memcpy(&o, declaration + 4 * slot, 4);
-					return o;
-				};
-				Section s;
-				s.material = view.Get<uint16_t>(mapping + 2u * gi);
-				s.vertices = vertices;
-				int uvSets = 0;
-				for (int k = 0; k < 8; ++k)
-					if (format(kUv0 + k))
-						uvSets = k + 1;
-				s.uv.resize(uvSets);
-				float v[4];
-				for (uint32_t i = 0; i < vertices; ++i)
-				{
-					const uint8_t* p = data + static_cast<size_t>(i) * stride;
-					const int n = Decode(format(kPosition), p + offset(kPosition), v);
-					s.position.insert(s.position.end(), {v[0], n > 1 ? v[1] : 0, n > 2 ? v[2] : 0});
-					if (format(kNormal) && Decode(format(kNormal), p + offset(kNormal), v) >= 3)
-						s.normal.insert(s.normal.end(), {v[0], v[1], v[2]});
-					if (format(kTangent) && Decode(format(kTangent), p + offset(kTangent), v) >= 3)
-						s.tangent.insert(s.tangent.end(), {v[0], v[1], v[2], v[3]});
-					for (const auto& [slot, colors] : {std::pair{kColor0, &s.color0}, std::pair{kColor1, &s.color1}})
-						if (format(slot) == 28 || format(slot) == 30)
-							colors->insert(colors->end(), p + offset(slot), p + offset(slot) + 4);
-						else if (format(slot) && Decode(format(slot), p + offset(slot), v) == 4)
-							for (int c = 0; c < 4; ++c)
-								colors->push_back(static_cast<uint8_t>(std::lround(std::clamp(v[c], 0.0f, 1.0f) * 255)));
-					for (int k = 0; k < uvSets; ++k)
+					const uint64_t g = view.Get<uint64_t>(geometries + 8u * gi);
+					const uint64_t vb = view.Get<uint64_t>(g + 0x18), ib = view.Get<uint64_t>(g + 0x38);
+					const uint32_t vertices = view.Get<uint32_t>(vb + 0x08), stride = view.Get<uint16_t>(vb + 0x0C) & 0xFFF;
+					const uint64_t decl = view.Get<uint64_t>(vb + 0x38);
+					const uint8_t* declaration = view.At(decl, 0x140);
+					const uint8_t* data = view.At(view.Get<uint64_t>(vb + 0x18), static_cast<size_t>(vertices) * stride);
+					const uint32_t indexCount = view.Get<uint32_t>(ib + 0x08), indexSize = view.Get<uint16_t>(ib + 0x0C) & 0xFFF;
+					const uint8_t* indexData = view.At(view.Get<uint64_t>(ib + 0x18), static_cast<size_t>(indexCount) * indexSize);
+					if (!declaration || !data || !indexData || !vertices || (indexSize != 2 && indexSize != 4))
 					{
-						v[0] = v[1] = 0;
-						if (format(kUv0 + k))
-							Decode(format(kUv0 + k), p + offset(kUv0 + k), v);
-						s.uv[k].insert(s.uv[k].end(), {v[0], v[1]});
+						out.warnings.push_back(std::format("geometry {}: unreadable", gi));
+						continue;
 					}
+					uint32_t flags;
+					std::memcpy(&flags, declaration + 0x138, 4);
+					if (flags & 1)
+					{
+						out.warnings.push_back(std::format("geometry {}: a stream per element (not supported yet)", gi));
+						continue;
+					}
+					const auto format = [&](int slot) { return declaration[0x104 + slot]; };
+					const auto offset = [&](int slot) {
+						uint32_t o;
+						std::memcpy(&o, declaration + 4 * slot, 4);
+						return o;
+					};
+					Section s;
+					s.lod = lod;
+					s.material = view.Get<uint16_t>(mapping + 2u * gi);
+					s.vertices = vertices;
+					int uvSets = 0;
+					for (int k = 0; k < 8; ++k)
+						if (format(kUv0 + k))
+							uvSets = k + 1;
+					s.uv.resize(uvSets);
+					float v[4];
+					for (uint32_t i = 0; i < vertices; ++i)
+					{
+						const uint8_t* p = data + static_cast<size_t>(i) * stride;
+						const int n = Decode(format(kPosition), p + offset(kPosition), v);
+						s.position.insert(s.position.end(), {v[0], n > 1 ? v[1] : 0, n > 2 ? v[2] : 0});
+						if (format(kNormal) && Decode(format(kNormal), p + offset(kNormal), v) >= 3)
+							s.normal.insert(s.normal.end(), {v[0], v[1], v[2]});
+						if (format(kTangent) && Decode(format(kTangent), p + offset(kTangent), v) >= 3)
+							s.tangent.insert(s.tangent.end(), {v[0], v[1], v[2], v[3]});
+						for (const auto& [slot, colors] : {std::pair{kColor0, &s.color0}, std::pair{kColor1, &s.color1}})
+							if (format(slot) == 28 || format(slot) == 30)
+								colors->insert(colors->end(), p + offset(slot), p + offset(slot) + 4);
+							else if (format(slot) && Decode(format(slot), p + offset(slot), v) == 4)
+								for (int c = 0; c < 4; ++c)
+									colors->push_back(static_cast<uint8_t>(std::lround(std::clamp(v[c], 0.0f, 1.0f) * 255)));
+						for (int k = 0; k < uvSets; ++k)
+						{
+							v[0] = v[1] = 0;
+							if (format(kUv0 + k))
+								Decode(format(kUv0 + k), p + offset(kUv0 + k), v);
+							s.uv[k].insert(s.uv[k].end(), {v[0], v[1]});
+						}
+					}
+					if (s.normal.size() != 3 * static_cast<size_t>(vertices))
+						s.normal.clear();
+					if (s.tangent.size() != 4 * static_cast<size_t>(vertices))
+						s.tangent.clear();
+					s.indices.resize(indexCount);
+					for (uint32_t i = 0; i < indexCount; ++i)
+					{
+						uint32_t index = 0;
+						std::memcpy(&index, indexData + static_cast<size_t>(i) * indexSize, indexSize);
+						s.indices[i] = index < vertices ? index : 0;
+					}
+					out.sections.push_back(std::move(s));
 				}
-				if (s.normal.size() != 3 * static_cast<size_t>(vertices))
-					s.normal.clear();
-				if (s.tangent.size() != 4 * static_cast<size_t>(vertices))
-					s.tangent.clear();
-				s.indices.resize(indexCount);
-				for (uint32_t i = 0; i < indexCount; ++i)
-				{
-					uint32_t index = 0;
-					std::memcpy(&index, indexData + static_cast<size_t>(i) * indexSize, indexSize);
-					s.indices[i] = index < vertices ? index : 0;
-				}
-				out.sections.push_back(std::move(s));
 			}
 		}
 		return true;

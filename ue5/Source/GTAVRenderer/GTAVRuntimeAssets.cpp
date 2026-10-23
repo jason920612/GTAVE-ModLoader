@@ -4,11 +4,11 @@
 #include "Engine/Texture2D.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Misc/CommandLine.h"
 #include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
-#include "MeshDescription.h"
-#include "StaticMeshAttributes.h"
 #include "StaticMeshResources.h"
+#include "Tasks/Task.h"
 #include "TextureResource.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGTAVAssets, Log, All);
@@ -28,6 +28,7 @@ namespace
 		case 87: case 88: return PF_B8G8R8A8;
 		case 28: case 29: return PF_R8G8B8A8;
 		case 61: return PF_G8;
+		case 65: return PF_A8;
 		default: return PF_Unknown;
 		}
 	}
@@ -64,6 +65,7 @@ namespace
 		}
 	};
 
+	// The master materials' texture parameters, by the pack's slot.
 	const TCHAR* SlotParameter(int32 Slot)
 	{
 		switch (Slot)
@@ -83,12 +85,41 @@ namespace
 		default: return nullptr; // (not used by the masters yet)
 		}
 	}
+
+	constexpr int32 kPumps = 6; // worker loops preparing models
 }
+
+// A model read and turned into render data on a worker thread, with the textures no other model asked for yet.
+struct FGTAVRuntimeAssets::FPrepared
+{
+	uint64 Key = 0;
+	bool bOk = false;
+	TArray<GTAVPack::Material> Materials;
+	TArray<uint16> SlotMaterials; // the material of each of the mesh's slots
+	TUniquePtr<FStaticMeshRenderData> RenderData;
+	bool bTranslucent = false;
+	TArray<TPair<uint64, TArray<uint8>>> NewTextures;
+	bool bTexturesMoved = false;
+};
 
 FGTAVRuntimeAssets::FGTAVRuntimeAssets(const FGTAVPack& InPack)
 	: Pack(InPack)
 {
 	Fallback = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial"));
+}
+
+FGTAVRuntimeAssets::~FGTAVRuntimeAssets()
+{
+	{
+		FScopeLock Lock(&QueueLock);
+		bStopping = true;
+	}
+	UE::Tasks::Wait(Tasks);
+	FPrepared* P = nullptr;
+	while (Done.Dequeue(P))
+	{
+		delete P;
+	}
 }
 
 void FGTAVRuntimeAssets::AddReferencedObjects(FReferenceCollector& Collector)
@@ -100,34 +131,337 @@ void FGTAVRuntimeAssets::AddReferencedObjects(FReferenceCollector& Collector)
 	Collector.AddReferencedObject(Fallback);
 }
 
-UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, int32* OutWidth, int32* OutHeight)
+FGTAVRuntimeAssets::EState FGTAVRuntimeAssets::State(uint64 Key) const
 {
-	const uint64 CacheKey = Key * 4 + uint64(Usage);
-	if (TObjectPtr<UTexture2D>* Found = Textures.Find(CacheKey))
+	const EState* S = States.Find(Key);
+	return S ? *S : EState::None;
+}
+
+UStaticMesh* FGTAVRuntimeAssets::Get(uint64 Key) const
+{
+	const TObjectPtr<UStaticMesh>* M = Meshes.Find(Key);
+	return M ? M->Get() : nullptr;
+}
+
+int32 FGTAVRuntimeAssets::Loading() const
+{
+	FScopeLock Lock(&QueueLock);
+	return Queue.Num() + Working + Waiting.Num();
+}
+
+FGTAVRuntimeAssets::EState FGTAVRuntimeAssets::Request(uint64 Key, float Priority)
+{
+	EState& S = States.FindOrAdd(Key, EState::None);
+	if (S != EState::None)
 	{
-		if (*Found && OutWidth)
+		return S;
+	}
+	S = EState::Loading;
+	FScopeLock Lock(&QueueLock);
+	Queue.HeapPush({Priority, Key}, [](const TPair<float, uint64>& A, const TPair<float, uint64>& B) { return A.Key < B.Key; });
+	if (Pumps < kPumps)
+	{
+		++Pumps;
+		Tasks.RemoveAll([](const UE::Tasks::FTask& T) { return T.IsCompleted(); });
+		Tasks.Add(UE::Tasks::Launch(UE_SOURCE_LOCATION, [this] { Pump(); }));
+	}
+	return S;
+}
+
+// A worker loop: the nearest queued model, until there are none.
+void FGTAVRuntimeAssets::Pump()
+{
+	for (;;)
+	{
+		uint64 Key = 0;
 		{
-			*OutWidth = (*Found)->GetSizeX();
-			*OutHeight = (*Found)->GetSizeY();
+			FScopeLock Lock(&QueueLock);
+			if (bStopping || Queue.IsEmpty())
+			{
+				--Pumps;
+				return;
+			}
+			TPair<float, uint64> Top;
+			Queue.HeapPop(Top, [](const TPair<float, uint64>& A, const TPair<float, uint64>& B) { return A.Key < B.Key; }, EAllowShrinking::No);
+			Key = Top.Value;
+			++Working;
 		}
-		return *Found;
+		Done.Enqueue(Prepare(Key).Release());
 	}
-	const auto Fail = [&] {
-		++TexturesFailed;
-		Textures.Add(CacheKey, nullptr);
-		return nullptr;
-	};
+}
+
+TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key)
+{
+	TUniquePtr<FPrepared> P = MakeUnique<FPrepared>();
+	P->Key = Key;
 	TArray<uint8> Data;
-	FReader R{Data};
-	if (!Pack.Textures.Read(Key, Data))
+	if (!Pack.Models.Read(Key, Data))
 	{
-		return Fail();
+		return P;
 	}
+	FReader R{Data};
+	const GTAVPack::ModelHeader H = R.Get<GTAVPack::ModelHeader>();
+	const GTAVPack::Material* Mats = R.Array<GTAVPack::Material>(H.materialCount);
+	if (!R.bOk || FMemory::Memcmp(H.magic, "GMDL", 4) != 0)
+	{
+		return P;
+	}
+	P->Materials.Append(Mats, H.materialCount);
+
+	// The vertices, indices and sections of the most detailed level, in the engine's layout.
+	TArray<FStaticMeshBuildVertex> Vertices;
+	TArray<uint32> Indices;
+	FStaticMeshSectionArray Sections;
+	TMap<uint16, int32> SlotOf;
+	int32 UvChannels = 1;
+	FBox3f Box(ForceInit);
+	for (int32 S = 0; S < H.sectionCount && R.bOk; ++S)
+	{
+		const GTAVPack::SectionHeader SH = R.Get<GTAVPack::SectionHeader>();
+		const int64 V = SH.vertexCount;
+		const float* Pos = R.Array<float>(3 * V);
+		const int8* N = (SH.flags & GTAVPack::kNormals) ? R.Array<int8>(4 * V) : nullptr;
+		const int8* T = (SH.flags & GTAVPack::kTangents) ? R.Array<int8>(4 * V) : nullptr;
+		const uint8* C0 = (SH.flags & GTAVPack::kColor0) ? R.Array<uint8>(4 * V) : nullptr;
+		const uint8* C1 = (SH.flags & GTAVPack::kColor1) ? R.Array<uint8>(4 * V) : nullptr;
+		TArray<const float*, TInlineAllocator<8>> Uv;
+		for (int32 K = 0; K < SH.uvCount; ++K)
+		{
+			Uv.Add(R.Array<float>(2 * V));
+		}
+		const bool bWide = (SH.flags & GTAVPack::kIndex32) != 0;
+		const uint8* I = R.Take(int64(SH.indexCount) * (bWide ? 4 : 2));
+		R.Take((4 - R.At % 4) % 4);
+		if (!R.bOk || SH.material >= H.materialCount)
+		{
+			break;
+		}
+		if (SH.lod != 0 || V == 0)
+		{
+			continue; // (the drawable's own lower levels of detail: not used yet)
+		}
+		const GTAVPack::Material& Mat = Mats[SH.material];
+		UvChannels = FMath::Clamp<int32>(FMath::Max<int32>(UvChannels, SH.uvCount), 1, MAX_STATIC_TEXCOORDS);
+		int32* Slot = SlotOf.Find(SH.material);
+		if (!Slot)
+		{
+			Slot = &SlotOf.Add(SH.material, P->SlotMaterials.Add(SH.material));
+			P->bTranslucent |= Mat.kind == GTAVPack::kTranslucent || Mat.kind == GTAVPack::kDecal || Mat.kind == GTAVPack::kWater;
+		}
+		const bool bTerrain = Mat.kind == GTAVPack::kTerrain && C1;
+		const uint32 Base = Vertices.Num();
+		Vertices.AddUninitialized(V);
+		for (int64 X = 0; X < V; ++X)
+		{
+			FStaticMeshBuildVertex& Out = Vertices[Base + X];
+			Out.Position = FVector3f(Pos[3 * X], Pos[3 * X + 1], Pos[3 * X + 2]);
+			Out.CurveRadius = 0;
+			Box += Out.Position;
+			const FVector3f Normal = N ? FVector3f(N[4 * X], N[4 * X + 1], N[4 * X + 2]).GetSafeNormal(UE_SMALL_NUMBER, FVector3f::UpVector) : FVector3f::UpVector;
+			FVector3f Tangent;
+			float Sign = 1.0f;
+			if (T)
+			{
+				Tangent = FVector3f(T[4 * X], T[4 * X + 1], T[4 * X + 2]).GetSafeNormal(UE_SMALL_NUMBER, FVector3f::ForwardVector);
+				Sign = T[4 * X + 3] < 0 ? -1.0f : 1.0f;
+			}
+			else
+			{
+				FVector3f Unused;
+				Normal.FindBestAxisVectors(Tangent, Unused);
+			}
+			Out.TangentX = Tangent;
+			Out.TangentY = FVector3f::CrossProduct(Normal, Tangent).GetSafeNormal() * Sign;
+			Out.TangentZ = Normal;
+			// (the game's bytes as they are; terrain: the blend weights are the second colour set's green and blue)
+			if (bTerrain)
+			{
+				Out.Color = FColor(C0 ? C0[4 * X] : 255, C1[4 * X + 1], C1[4 * X + 2], 255);
+			}
+			else
+			{
+				Out.Color = C0 ? FColor(C0[4 * X], C0[4 * X + 1], C0[4 * X + 2], C0[4 * X + 3]) : FColor::White;
+			}
+			for (int32 K = 0; K < MAX_STATIC_TEXCOORDS; ++K)
+			{
+				Out.UVs[K] = K < Uv.Num() ? FVector2f(Uv[K][2 * X], Uv[K][2 * X + 1]) : FVector2f::ZeroVector;
+			}
+		}
+		FStaticMeshSection& Section = Sections.AddDefaulted_GetRef();
+		Section.MaterialIndex = *Slot;
+		Section.FirstIndex = Indices.Num();
+		Section.MinVertexIndex = Base;
+		Section.MaxVertexIndex = Base + V - 1;
+		Section.bEnableCollision = false;
+		Section.bCastShadow = true;
+		for (uint32 K = 0; K + 2 < SH.indexCount; K += 3)
+		{
+			uint32 A, B, C;
+			if (bWide)
+			{
+				const uint32* W = reinterpret_cast<const uint32*>(I);
+				A = W[K], B = W[K + 1], C = W[K + 2];
+			}
+			else
+			{
+				const uint16* W = reinterpret_cast<const uint16*>(I);
+				A = W[K], B = W[K + 1], C = W[K + 2];
+			}
+			if (A == B || B == C || A == C || A >= V || B >= V || C >= V)
+			{
+				continue;
+			}
+			// (the game's order as it is: mirroring flips the winding, and the engine's front faces wind the other way)
+			Indices.Append({Base + A, Base + B, Base + C});
+			++Section.NumTriangles;
+		}
+		if (Section.NumTriangles == 0)
+		{
+			Sections.Pop(EAllowShrinking::No);
+		}
+	}
+	if (!R.bOk || Indices.IsEmpty())
+	{
+		return P;
+	}
+	P->RenderData = MakeUnique<FStaticMeshRenderData>();
+	P->RenderData->AllocateLODResources(1);
+	FStaticMeshLODResources& L = P->RenderData->LODResources[0];
+	L.VertexBuffers.PositionVertexBuffer.Init(Vertices);
+	FStaticMeshVertexBufferFlags Flags;
+	Flags.bNeedsCPUAccess = true;
+	L.VertexBuffers.StaticMeshVertexBuffer.Init(Vertices, UvChannels, Flags);
+	L.VertexBuffers.ColorVertexBuffer.Init(Vertices);
+	L.bHasColorVertexData = true;
+	L.IndexBuffer.SetIndices(Indices, Vertices.Num() > 0xFFFF ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
+	L.Sections = MoveTemp(Sections);
+	P->RenderData->Bounds = FBoxSphereBounds(FBox(Box));
+	P->RenderData->ScreenSize[0].Default = 1.0f;
+
+	// The textures nobody asked for yet.
+	for (const GTAVPack::Material& M : P->Materials)
+	{
+		for (int32 Slot = 0; Slot < GTAVPack::kSlotCount; ++Slot)
+		{
+			const uint64 T = M.textures[Slot];
+			if (!T || !SlotParameter(Slot))
+			{
+				continue;
+			}
+			{
+				FScopeLock Lock(&RequestedLock);
+				bool bAlready = false;
+				Requested.Add(T, &bAlready);
+				if (bAlready)
+				{
+					continue;
+				}
+			}
+			TArray<uint8>& Bytes = P->NewTextures.Emplace_GetRef(T, TArray<uint8>()).Value;
+			Pack.Textures.Read(T, Bytes); // (empty if it is not there: made as nothing)
+		}
+	}
+	P->bOk = true;
+	return P;
+}
+
+void FGTAVRuntimeAssets::Tick(double Budget)
+{
+	const double Start = FPlatformTime::Seconds();
+	for (FPrepared* P = nullptr; Done.Dequeue(P);)
+	{
+		{
+			FScopeLock Lock(&QueueLock);
+			--Working;
+		}
+		Waiting.Emplace(P);
+		// (its textures are there for every model from now on)
+		for (TPair<uint64, TArray<uint8>>& T : Waiting.Last()->NewTextures)
+		{
+			Arrived.Add(T.Key);
+			TextureData.Add(T.Key, MoveTemp(T.Value));
+		}
+		Waiting.Last()->NewTextures.Empty();
+	}
+	// Finish what has its textures (some may come with another model still on its way).
+	for (int32 I = 0; I < Waiting.Num() && FPlatformTime::Seconds() - Start < Budget;)
+	{
+		if (Finish(*Waiting[I]))
+		{
+			Waiting.RemoveAt(I, EAllowShrinking::No);
+		}
+		else
+		{
+			++I;
+		}
+	}
+}
+
+// The engine objects of a prepared model; false if a texture it uses has not arrived yet.
+bool FGTAVRuntimeAssets::Finish(FPrepared& P)
+{
+	if (!P.bOk)
+	{
+		++MeshesFailed;
+		States.Add(P.Key, EState::Failed);
+		return true;
+	}
+	for (const GTAVPack::Material& M : P.Materials)
+	{
+		for (int32 Slot = 0; Slot < GTAVPack::kSlotCount; ++Slot)
+		{
+			if (M.textures[Slot] && SlotParameter(Slot) && !Arrived.Contains(M.textures[Slot]))
+			{
+				return false;
+			}
+		}
+	}
+	UStaticMesh* Mesh = NewObject<UStaticMesh>(GetTransientPackage(), NAME_None, RF_Transient);
+	Mesh->NeverStream = true;
+	for (int32 Slot = 0; Slot < P.SlotMaterials.Num(); ++Slot)
+	{
+		const FName Name(*FString::Printf(TEXT("m%u"), P.SlotMaterials[Slot]));
+		Mesh->GetStaticMaterials().Add(FStaticMaterial(Material(P.Materials[P.SlotMaterials[Slot]]), Name, Name));
+	}
+	// Lumen's surface cache: cards from the bounds (what the engine does for meshes built at run time).
+	FCardRepresentationData* Cards = new FCardRepresentationData();
+	Cards->MeshCardsBuildData.Bounds = P.RenderData->Bounds.GetBox();
+	Cards->MeshCardsBuildData.bMostlyTwoSided = P.bTranslucent;
+	MeshCardRepresentation::SetCardsFromBounds(Cards->MeshCardsBuildData);
+	P.RenderData->LODResources[0].CardRepresentationData = Cards;
+#if WITH_EDITORONLY_DATA
+	// (an editor build takes each section's material from this map, not from the section)
+	for (int32 Section = 0; Section < P.RenderData->LODResources[0].Sections.Num(); ++Section)
+	{
+		const FStaticMeshSection& S = P.RenderData->LODResources[0].Sections[Section];
+		FMeshSectionInfo Info;
+		Info.MaterialIndex = S.MaterialIndex;
+		Info.bEnableCollision = false;
+		Info.bCastShadow = S.bCastShadow;
+		Mesh->GetSectionInfoMap().Set(0, Section, Info);
+	}
+#endif
+	Mesh->SetRenderData(MoveTemp(P.RenderData));
+	if (IsRayTracingAllowed())
+	{
+		Mesh->GetRenderData()->InitializeRayTracingRepresentationFromRenderingLODs();
+	}
+	Mesh->InitResources();
+	Mesh->CalculateExtendedBounds();
+	++MeshesBuilt;
+	Meshes.Add(P.Key, Mesh);
+	States.Add(P.Key, EState::Ready);
+	return true;
+}
+
+UTexture2D* FGTAVRuntimeAssets::MakeTexture(const TArray<uint8>& Data, EUsage Usage)
+{
+	FReader R{Data};
 	const GTAVPack::TextureHeader H = R.Get<GTAVPack::TextureHeader>();
 	const EPixelFormat Format = PixelFormat(H.dxgi);
 	if (!R.bOk || Format == PF_Unknown)
 	{
-		return Fail();
+		return nullptr;
 	}
 	const FPixelFormatInfo& Info = GPixelFormats[Format];
 	FTexturePlatformData* Platform = new FTexturePlatformData();
@@ -153,7 +487,7 @@ UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, int32* OutWidt
 	if (Platform->Mips.IsEmpty())
 	{
 		delete Platform;
-		return Fail();
+		return nullptr;
 	}
 	UTexture2D* T = NewObject<UTexture2D>(GetTransientPackage(), NAME_None, RF_Transient);
 	T->SetPlatformData(Platform);
@@ -167,13 +501,45 @@ UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, int32* OutWidt
 		T->Filter = TF_Nearest;
 	}
 	T->UpdateResource();
-	++TexturesMade;
-	if (OutWidth)
+	return T;
+}
+
+UTexture2D* FGTAVRuntimeAssets::Texture(uint64 Key, EUsage Usage, int32* OutWidth, int32* OutHeight)
+{
+	const uint64 CacheKey = Key * 4 + uint64(Usage);
+	UTexture2D* T = nullptr;
+	if (const TObjectPtr<UTexture2D>* Found = Textures.Find(CacheKey))
 	{
-		*OutWidth = H.width;
-		*OutHeight = H.height;
+		T = *Found;
 	}
-	Textures.Add(CacheKey, T);
+	else
+	{
+		// The bytes a worker read (the first use), or read again (another use of the same texture: rare).
+		TArray<uint8> Data;
+		if (TArray<uint8>* Read = TextureData.Find(Key))
+		{
+			Data = MoveTemp(*Read);
+			TextureData.Remove(Key);
+		}
+		else
+		{
+			Pack.Textures.Read(Key, Data);
+		}
+		T = Data.Num() ? MakeTexture(Data, Usage) : nullptr;
+		++(T ? TexturesMade : TexturesFailed);
+		if (TexturesMade + TexturesFailed <= 12 && Data.Num() >= 8)
+		{
+			const GTAVPack::TextureHeader* H = reinterpret_cast<const GTAVPack::TextureHeader*>(Data.GetData());
+			UE_LOG(LogGTAVAssets, Display, TEXT("texture %016llx usage %d: %dx%d dxgi %d mips %d, %d bytes -> %s"), Key, int32(Usage), H->width, H->height,
+				H->dxgi, H->mips, Data.Num(), T ? *FString::Printf(TEXT("%dx%d %s"), T->GetSizeX(), T->GetSizeY(), GPixelFormats[T->GetPixelFormat()].Name) : TEXT("none"));
+		}
+		Textures.Add(CacheKey, T);
+	}
+	if (T && OutWidth)
+	{
+		*OutWidth = T->GetSizeX();
+		*OutHeight = T->GetSizeY();
+	}
 	return T;
 }
 
@@ -209,10 +575,15 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 		return Materials.Add(Key, Fallback);
 	}
 	UMaterialInstanceDynamic* MI = UMaterialInstanceDynamic::Create(Parent, GetTransientPackage());
+	static const FString Skip = [] {
+		FString S;
+		FParse::Value(FCommandLine::Get(), TEXT("-gtavskip="), S); // (checking: parameters left at their defaults)
+		return S;
+	}();
 	for (int32 Slot = 0; Slot < GTAVPack::kSlotCount; ++Slot)
 	{
 		const TCHAR* Parameter = SlotParameter(Slot);
-		if (!Parameter || !M.textures[Slot])
+		if (!Parameter || !M.textures[Slot] || (!Skip.IsEmpty() && Skip.Contains(Parameter)))
 		{
 			continue;
 		}
@@ -241,163 +612,4 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	}
 	++MaterialsMade;
 	return Materials.Add(Key, MI);
-}
-
-UStaticMesh* FGTAVRuntimeAssets::Mesh(uint64 Key)
-{
-	if (TObjectPtr<UStaticMesh>* Found = Meshes.Find(Key))
-	{
-		return *Found;
-	}
-	TArray<uint8> Data;
-	if (!Pack.Models.Read(Key, Data))
-	{
-		++MeshesFailed;
-		return Meshes.Add(Key, nullptr);
-	}
-	FReader R{Data};
-	const GTAVPack::ModelHeader H = R.Get<GTAVPack::ModelHeader>();
-	const GTAVPack::Material* Mats = R.Array<GTAVPack::Material>(H.materialCount);
-	if (!R.bOk || FMemory::Memcmp(H.magic, "GMDL", 4) != 0)
-	{
-		++MeshesFailed;
-		return Meshes.Add(Key, nullptr);
-	}
-
-	FMeshDescription Description;
-	FStaticMeshAttributes Attributes(Description);
-	Attributes.Register();
-	TVertexAttributesRef<FVector3f> Positions = Attributes.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector3f> Normals = Attributes.GetVertexInstanceNormals();
-	TVertexInstanceAttributesRef<FVector3f> Tangents = Attributes.GetVertexInstanceTangents();
-	TVertexInstanceAttributesRef<float> BinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
-	TVertexInstanceAttributesRef<FVector4f> Colors = Attributes.GetVertexInstanceColors();
-	TVertexInstanceAttributesRef<FVector2f> UVs = Attributes.GetVertexInstanceUVs();
-	TPolygonGroupAttributesRef<FName> SlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-	int32 UvChannels = 1;
-	TMap<uint16, FPolygonGroupID> Groups;
-	TArray<TPair<FName, uint16>> Slots;
-	bool bTranslucent = false;
-	for (int32 S = 0; S < H.sectionCount && R.bOk; ++S)
-	{
-		const GTAVPack::SectionHeader SH = R.Get<GTAVPack::SectionHeader>();
-		const int64 V = SH.vertexCount;
-		const float* P = R.Array<float>(3 * V);
-		const int8* N = (SH.flags & GTAVPack::kNormals) ? R.Array<int8>(4 * V) : nullptr;
-		const int8* T = (SH.flags & GTAVPack::kTangents) ? R.Array<int8>(4 * V) : nullptr;
-		const uint8* C0 = (SH.flags & GTAVPack::kColor0) ? R.Array<uint8>(4 * V) : nullptr;
-		const uint8* C1 = (SH.flags & GTAVPack::kColor1) ? R.Array<uint8>(4 * V) : nullptr;
-		TArray<const float*, TInlineAllocator<8>> Uv;
-		for (int32 K = 0; K < SH.uvCount; ++K)
-		{
-			Uv.Add(R.Array<float>(2 * V));
-		}
-		const bool bWide = (SH.flags & GTAVPack::kIndex32) != 0;
-		const uint8* I = R.Take(int64(SH.indexCount) * (bWide ? 4 : 2));
-		R.Take((4 - R.At % 4) % 4);
-		if (!R.bOk || SH.material >= H.materialCount)
-		{
-			break;
-		}
-		const GTAVPack::Material& Mat = Mats[SH.material];
-		if (int32(SH.uvCount) > UvChannels)
-		{
-			UvChannels = FMath::Min<int32>(SH.uvCount, 8);
-			UVs.SetNumChannels(UvChannels);
-		}
-		FPolygonGroupID* Group = Groups.Find(SH.material);
-		if (!Group)
-		{
-			const FName Slot(*FString::Printf(TEXT("m%u"), SH.material));
-			Group = &Groups.Add(SH.material, Description.CreatePolygonGroup());
-			SlotNames[*Group] = Slot;
-			Slots.Add({Slot, SH.material});
-			bTranslucent |= Mat.kind == GTAVPack::kTranslucent || Mat.kind == GTAVPack::kDecal || Mat.kind == GTAVPack::kWater;
-		}
-		const bool bTerrain = Mat.kind == GTAVPack::kTerrain && C1;
-		TArray<FVertexInstanceID> Instances;
-		Instances.SetNumUninitialized(V);
-		for (int64 X = 0; X < V; ++X)
-		{
-			const FVertexID Vertex = Description.CreateVertex();
-			Positions[Vertex] = FVector3f(P[3 * X], P[3 * X + 1], P[3 * X + 2]);
-			const FVertexInstanceID Instance = Description.CreateVertexInstance(Vertex);
-			Instances[X] = Instance;
-			if (N)
-			{
-				Normals[Instance] = FVector3f(N[4 * X], N[4 * X + 1], N[4 * X + 2]) / 127.0f;
-			}
-			if (T)
-			{
-				Tangents[Instance] = FVector3f(T[4 * X], T[4 * X + 1], T[4 * X + 2]) / 127.0f;
-				BinormalSigns[Instance] = T[4 * X + 3] < 0 ? -1.0f : 1.0f;
-			}
-			// (the exact inverse of the engine's sRGB conversion when it builds the mesh: the material reads the game's bytes;
-			// terrain: the blend weights are the second colour set's green and blue)
-			FColor Color(255, 255, 255, 255);
-			if (bTerrain)
-			{
-				Color = FColor(C0 ? C0[4 * X] : 255, C1[4 * X + 1], C1[4 * X + 2], 255);
-			}
-			else if (C0)
-			{
-				Color = FColor(C0[4 * X], C0[4 * X + 1], C0[4 * X + 2], C0[4 * X + 3]);
-			}
-			const FLinearColor Linear = FLinearColor::FromSRGBColor(Color);
-			Colors[Instance] = FVector4f(Linear.R, Linear.G, Linear.B, Linear.A);
-			for (int32 K = 0; K < UvChannels; ++K)
-			{
-				UVs.Set(Instance, K, K < Uv.Num() ? FVector2f(Uv[K][2 * X], Uv[K][2 * X + 1]) : FVector2f::ZeroVector);
-			}
-		}
-		for (uint32 K = 0; K + 2 < SH.indexCount; K += 3)
-		{
-			uint32 A, B, C;
-			if (bWide)
-			{
-				const uint32* W = reinterpret_cast<const uint32*>(I);
-				A = W[K], B = W[K + 1], C = W[K + 2];
-			}
-			else
-			{
-				const uint16* W = reinterpret_cast<const uint16*>(I);
-				A = W[K], B = W[K + 1], C = W[K + 2];
-			}
-			if (A == B || B == C || A == C || A >= V || B >= V || C >= V)
-			{
-				continue;
-			}
-			// (the game's order as it is: mirroring flips the winding, and the engine's front faces wind the other way)
-			Description.CreateTriangle(*Group, {Instances[A], Instances[B], Instances[C]});
-		}
-	}
-	if (!R.bOk || Description.Triangles().Num() == 0)
-	{
-		UE_LOG(LogGTAVAssets, Warning, TEXT("model %016llx: no geometry"), Key);
-		++MeshesFailed;
-		return Meshes.Add(Key, nullptr);
-	}
-
-	UStaticMesh* Mesh = NewObject<UStaticMesh>(GetTransientPackage(), NAME_None, RF_Transient);
-	for (const TPair<FName, uint16>& Slot : Slots)
-	{
-		Mesh->GetStaticMaterials().Add(FStaticMaterial(Material(Mats[Slot.Value]), Slot.Key, Slot.Key));
-	}
-	UStaticMesh::FBuildMeshDescriptionsParams Params;
-	Params.bFastBuild = true;
-	Params.bMarkPackageDirty = false;
-	Params.bCommitMeshDescription = false;
-	Params.bBuildSimpleCollision = false;
-	Mesh->BuildFromMeshDescriptions({&Description}, Params);
-	// Lumen's surface cache: cards from the bounds (what the engine does for meshes built at run time).
-	if (FStaticMeshRenderData* RenderData = Mesh->GetRenderData(); RenderData && RenderData->LODResources.Num())
-	{
-		FCardRepresentationData* Cards = new FCardRepresentationData();
-		Cards->MeshCardsBuildData.Bounds = RenderData->Bounds.GetBox();
-		Cards->MeshCardsBuildData.bMostlyTwoSided = bTranslucent;
-		MeshCardRepresentation::SetCardsFromBounds(Cards->MeshCardsBuildData);
-		RenderData->LODResources[0].CardRepresentationData = Cards;
-	}
-	++MeshesBuilt;
-	return Meshes.Add(Key, Mesh);
 }

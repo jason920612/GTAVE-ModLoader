@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -29,6 +30,7 @@
 #include "meta.hpp"
 #include "ng.hpp"
 #include "pack.hpp"
+#include "pso.hpp"
 
 namespace fs = std::filesystem;
 using loader::convert::Archive;
@@ -171,11 +173,27 @@ namespace
 			++byLevel[e.lodLevel];
 			interiors += e.interior;
 			if (!map.archetypes.contains(e.archetype))
-				++missing, ++missingByYmap[map.ymapNames.at(e.ymap)];
+				++missing, ++missingByYmap[map.ymaps[e.ymap].file];
 		}
 		for (const auto& [level, count] : byLevel)
 			std::printf("  lod level %u: %zu\n", level, count);
 		std::printf("  interiors placed: %zu; entities without a known archetype: %zu\n", interiors, missing);
+		size_t interiorEntities = 0, grassBatches = 0, grassInstances = 0, grouped = 0;
+		for (const auto& in : map.interiors)
+		{
+			interiorEntities += in.entities.size();
+			for (const auto& s : in.entitySets)
+				interiorEntities += s.entities.size();
+		}
+		for (const auto& y : map.ymaps)
+		{
+			grassBatches += y.grass.size();
+			for (const auto& b : y.grass)
+				grassInstances += b.instances.size();
+			grouped += y.group >= 0;
+		}
+		std::printf("  interior types: %zu (%zu entities); grass: %zu batches, %zu instances; groups: %zu (%zu ymaps)\n", map.interiors.size(),
+		    interiorEntities, grassBatches, grassInstances, map.groups.size(), grouped);
 		for (const auto& [ymap, count] : missingByYmap)
 			std::printf("    %s: %zu\n", ymap.c_str(), count);
 		for (const auto& w : files.warnings)
@@ -208,11 +226,123 @@ namespace
 		return 0;
 	}
 
+	// Field and structure names to recognise in metadata files (their hashes; research/phase0.md §59.2).
+	const std::map<uint32_t, std::string>& MetaNames()
+	{
+		static const std::map<uint32_t, std::string> names = [] {
+			std::map<uint32_t, std::string> m;
+			for (const char* n : {"CPackFileMetaData", "MapDataGroups", "HDTxdBindingArray", "imapDependencies", "imapDependencies_2", "itypDependencies_2",
+			         "Interiors", "CMapDataGroup", "Name", "Bounds", "Flags", "WeatherTypes", "HoursOnOff", "CImapDependency", "CImapDependencies",
+			         "CItypDependencies", "imapName", "itypName", "packFileName", "manifestFlags", "itypDepArray", "CInteriorBoundsFiles",
+			         "CHDTxdAssetBinding", "assetType", "targetAsset", "HDTxd", "CMapData", "name", "parent", "flags", "contentFlags",
+			         "streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax", "entities", "containerLods",
+			         "boxOccluders", "occludeModels", "physicsDictionaries", "instancedData", "timeCycleModifiers", "carGenerators",
+			         "LODLightsSOA", "DistantLODLightsSOA", "block", "rage__fwInstancedMapData", "ImapLink", "PropInstanceList",
+			         "GrassInstanceList", "rage__fwGrassInstanceListDef", "BatchAABB", "ScaleRange", "archetypeName", "lodDist",
+			         "LodFadeStartDist", "LodInstFadeRange", "OrientToTerrain", "InstanceList", "rage__fwGrassInstanceListDef__InstanceData",
+			         "Position", "NormalX", "NormalY", "Color", "Scale", "Ao", "Pad", "rage__spdAABB", "min", "max", "CEntityDef", "guid",
+			         "position", "rotation", "scaleXY", "scaleZ", "parentIndex", "childLodDist", "lodLevel", "numChildren", "priorityLevel",
+			         "extensions", "ambientOcclusionMultiplier", "artificialAmbientOcclusion", "tintValue", "CMloInstanceDef", "groupId",
+			         "floorId", "defaultEntitySets", "numExitPortals", "MLOInstflags", "CMloArchetypeDef", "mloFlags", "rooms", "portals",
+			         "entitySets", "CMloRoomDef", "bbMin", "bbMax", "blend", "timecycleName", "secondaryTimecycleName", "portalCount",
+			         "exteriorVisibiltyDepth", "attachedObjects", "CMloPortalDef", "roomFrom", "roomTo", "mirrorPriority", "opacity",
+			         "audioOcclusion", "corners", "CMloEntitySet", "locations", "CMloTimeCycleModifier", "sphere", "percentage", "range",
+			         "startHour", "endHour", "CBaseArchetypeDef", "specialAttribute", "bsCentre", "bsRadius", "hdTextureDist",
+			         "textureDictionary", "clipDictionary", "drawableDictionary", "physicsDictionary", "assetName", "CTimeArchetypeDef",
+			         "timeFlags", "CMapTypes", "archetypes", "dependencies", "compositeEntityTypes", "CLODLight", "direction", "falloff",
+			         "falloffExponent", "timeAndStateFlags", "hash", "coneInnerAngle", "coneOuterAngleOrCapExt", "coronaIntensity",
+			         "CDistantLODLight", "RGBI", "numStreetLights", "category", "CBlockDesc", "version", "exportedBy", "owner", "time",
+			         "CCarGen", "CTimeCycleModifier", "minExtents", "maxExtents", "CExtensionDefLightEffect", "instances", "CLightAttrDef",
+			         "posn", "colour", "flashiness", "intensity", "boneTag", "lightType", "falloff", "cullingPlane", "shadowBlur",
+			         "extraFlags", "coneOuterAngle", "coronaSize", "coronaZBias", "volumeIntensity", "volumeSizeScale", "volumeOuterColour",
+			         "lightHash", "volumeOuterIntensity", "volumeOuterExponent", "lightFadeDistance", "shadowFadeDistance",
+			         "specularFadeDistance", "volumetricFadeDistance", "shadowNearClip", "projectedTextureKey", "tangent", "padding1",
+			         "padding2", "padding3", "CExtensionDefParticleEffect", "CExtensionDefDoor", "CExtensionDefSpawnPoint", "offsetPosition",
+			         "offsetRotation", "CBoxOccluder", "COccludeModel", "CContainerLodDef", "BoxOccluder", "iCenterX", "iCenterY",
+			         "iCenterZ", "iCosZ", "iLength", "iWidth", "iHeight", "iSinZ", "verts", "dataSize", "bmin", "bmax", "Entities"})
+				m[ue5export::meta::Hash(n)] = n;
+			return m;
+		}();
+		return names;
+	}
+
+	std::string MetaName(uint32_t hash)
+	{
+		const auto it = MetaNames().find(hash);
+		return it != MetaNames().end() ? it->second : std::format("<{:08x}>", hash);
+	}
+
+	// The structures of a metadata file (--file <name> [--version n]: the nth file of that name, manifests have many).
+	int MetaDump(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const std::string name = g_options["file"];
+		std::vector<ue5export::GameFiles::File> versions = files.AllOf(name);
+		if (versions.empty())
+			if (const auto* f = files.Find(name))
+				versions.push_back(*f);
+		const size_t version = g_options.contains("version") ? std::stoul(g_options["version"]) : 0;
+		if (version >= versions.size())
+			return Fail(std::format("{}: {} version(s)", name, versions.size()));
+		loader::convert::Bytes data;
+		if (!files.Read(versions[version], data, error))
+			return Fail(error);
+		std::printf("%s (%zu versions)\n", versions[version].path.c_str(), versions.size());
+		if (data.size() > 4 && std::memcmp(data.data(), "PSIN", 4) == 0)
+		{
+			ue5export::pso::Pso p;
+			if (!p.Read(data, error))
+				return Fail(error);
+			const auto root = p.Root();
+			std::printf("PSO, root %s\n", root ? MetaName(root.type->name).c_str() : "-");
+			for (const uint32_t hash : {ue5export::meta::Hash("CPackFileMetaData"), ue5export::meta::Hash("CMapDataGroup"),
+			         ue5export::meta::Hash("CHDTxdAssetBinding"), ue5export::meta::Hash("CImapDependencies")})
+				if (const auto* s = p.Find(hash))
+				{
+					std::printf("struct %s (%u bytes)\n", MetaName(hash).c_str(), s->size);
+					for (const auto& f : s->fields)
+						std::printf("  +%-4u type %02x/%02x ref %08x %s\n", f.offset, f.type, f.subtype, f.ref, MetaName(f.name).c_str());
+				}
+			for (const auto& g : root.Array(ue5export::meta::Hash("MapDataGroups")))
+			{
+				std::printf("group %08x flags %x hours %06x:", g.U32(ue5export::meta::Hash("Name")), g.U32(ue5export::meta::Hash("Flags")),
+				    g.U32(ue5export::meta::Hash("HoursOnOff")));
+				for (const uint32_t y : g.U32Array(ue5export::meta::Hash("Bounds")))
+					std::printf(" %08x", y);
+				std::printf("\n");
+			}
+			for (const auto& b : root.Array(ue5export::meta::Hash("HDTxdBindingArray")))
+				std::printf("hd txd: %u %s -> %s\n", b.U32(ue5export::meta::Hash("assetType")), b.String(ue5export::meta::Hash("targetAsset")).c_str(),
+				    b.String(ue5export::meta::Hash("HDTxd")).c_str());
+			return 0;
+		}
+		ue5export::meta::Meta m;
+		if (!m.Read(data, error))
+			return Fail(error);
+		for (const auto& [hash, s] : m.Structures())
+		{
+			std::printf("struct %s (%u bytes)\n", MetaName(hash).c_str(), s.size);
+			for (const auto& f : s.fields)
+				std::printf("  +%-4d type %02x %s\n", f.offset, f.type, MetaName(f.name).c_str());
+		}
+		const auto root = m.Root();
+		std::printf("root: %s\n", root ? MetaName(root.type->name).c_str() : "-");
+		return 0;
+	}
+
 	// The renderer's pack files: --pack <name> (default "pack"), --area x0,y0,x1,y1 for a test area.
 	int Pack(const loader::convert::Decryptor& decrypt)
 	{
 		ue5export::PackOptions options;
 		options.dir = fs::path(g_options["out"]) / (g_options.contains("pack") ? g_options["pack"] : "pack");
+		options.gameDir = g_options["game"];
+		options.decrypt = &decrypt;
+		if (g_options.contains("workers"))
+			options.workers = std::stoul(g_options["workers"]);
+		options.worldOnly = g_options.contains("world-only") && g_options["world-only"] == "1";
 		if (g_options.contains("area"))
 		{
 			ue5export::Area area;
@@ -229,9 +359,9 @@ namespace
 		std::vector<std::string> warnings;
 		const auto stats = ue5export::WritePack(files, map, options, warnings);
 		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-		std::printf("%s: %zu models (%zu missing, %.1f MB), %zu textures (%.1f MB, %zu references missing), %zu placements in %.1f s\n",
+		std::printf("%s: %zu models (%zu missing, %.1f MB), %zu textures (%.1f MB, %zu references missing), %zu entities (%.1f MB) in %.1f s\n",
 		    options.dir.string().c_str(), stats.models, stats.missingModels, stats.modelBytes / 1048576.0, stats.textures, stats.textureBytes / 1048576.0,
-		    stats.missingTextures, stats.placements, seconds);
+		    stats.missingTextures, stats.entities, stats.worldBytes / 1048576.0, seconds);
 		for (const auto& w : warnings)
 			std::printf("warning: %s\n", w.c_str());
 		return 0;
@@ -329,6 +459,8 @@ int main(int argc, char** argv)
 		return ExportArea(decrypt);
 	if (command == "pack")
 		return Pack(decrypt);
+	if (command == "metadump")
+		return g_options.contains("file") ? MetaDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")
 		return TextureStats(decrypt);
 	if (command == "extract")

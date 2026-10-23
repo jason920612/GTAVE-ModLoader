@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -49,6 +50,9 @@ namespace ue5export::meta
 		std::vector<Ref> Array(uint32_t field) const;
 		// An inline structure field.
 		Ref Struct(uint32_t field, uint32_t structure) const;
+		// The elements of an array of basic values: 4-byte ones (u32, hashes), or vectors (16 bytes each).
+		std::vector<uint32_t> U32Array(uint32_t field) const;
+		std::vector<std::array<float, 4>> VectorArray(uint32_t field) const;
 	};
 
 	class Meta
@@ -61,6 +65,7 @@ namespace ue5export::meta
 		const uint8_t* At(size_t at) const { return v_.data() + at; }
 		size_t Size() const { return v_.size(); }
 		uint32_t BlockStructure(uint64_t pointer) const;
+		const std::map<uint32_t, Structure>& Structures() const { return structures_; }
 
 	private:
 		loader::convert::Bytes v_;

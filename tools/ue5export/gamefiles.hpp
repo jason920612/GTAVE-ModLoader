@@ -28,7 +28,7 @@ namespace ue5export
 		// The file the game uses under this name (lower case, with extension), or nullptr.
 		const File* Find(const std::string& name) const;
 		const std::map<std::string, File>& Files() const { return byName_; }
-		// Every version of a data file (.meta) in the active archives, in mount order (the DLC packs' gtxd.meta...).
+		// Every version of a data file (.meta) or manifest (.ymf) in the active archives, in mount order (the DLC packs' gtxd.meta...).
 		std::vector<File> AllOf(const std::string& name) const;
 		bool Read(const File& file, loader::convert::Bytes& out, std::string& error) const;
 
