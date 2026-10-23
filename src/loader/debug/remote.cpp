@@ -36,11 +36,11 @@ namespace loader::debug::remote
 		                   kSetCamFov = 0xB13C14F66A00D047, kSetCamActive = 0x026FB97D0A425F84, kRenderScriptCams = 0x07E5B515DB0636FC,
 		                   kDestroyCam = 0x865908C81A2C22E9, kSetFocusPosAndVel = 0xBB7454BAFF08FE25, kClearFocus = 0x31B73D1EA9F01DA2,
 		                   kSetClockTime = 0x47C3B5848C3E45D8, kPauseClock = 0x4055E40BD2DBEC1D, kSetWeatherTypeNowPersist = 0xED712CA327900C8A,
-		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5;
+		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5, kSetClockDate = 0xB096419DF0D06CE7;
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6, kSetEntityCoords = 0x06843DA7060A026B;
 		struct CamRequest
 		{
-			bool pending = false, on = false;
+			bool pending = false, on = false, keep = false; // (keep: the clock and weather as they are)
 			float x = 0, y = 0, z = 0, heading = 0, pitch = 0, fov = 50;
 		};
 		constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\gtave-modloader";
@@ -55,7 +55,9 @@ namespace loader::debug::remote
 		CamRequest g_cam;            // (the game thread applies it)
 		bool g_teleport = false;
 		float g_teleportTo[3] = {};
-		int g_hour = -1, g_minute = 0; // "time": the clock set and stopped there
+		int g_hour = -1, g_minute = 0; // "time": the clock set and stopped there (or left running: the game moves its sun
+		bool g_clockRuns = false;      // only while the clock runs)
+		int g_date[3] = {};            // "date": day, month (1-12), year
 		std::string g_weather;         // "weather": that type, kept
 		int32_t g_camHandle = 0;
 
@@ -490,13 +492,27 @@ namespace loader::debug::remote
 			}
 			if (cmd == "time")
 			{
-				// time h [m]: the clock there, stopped
+				// time h [m] [run]: the clock there, stopped (or running on)
 				int h = -1, m = 0;
 				if (!(in >> h) || h < 0 || h > 23)
-					return "err time h [m]";
+					return "err time h [m] [run]";
 				in >> m;
+				std::string run;
+				in.clear();
+				in >> run;
 				std::lock_guard lock(g_mutex);
 				g_hour = h, g_minute = std::clamp(m, 0, 59);
+				g_clockRuns = run == "run";
+				return "ok";
+			}
+			if (cmd == "date")
+			{
+				// date d m y: the calendar there (month 1-12)
+				int d = 0, m = 0, y = 0;
+				if (!(in >> d >> m >> y) || d < 1 || d > 31 || m < 1 || m > 12 || y < 1)
+					return "err date d m y";
+				std::lock_guard lock(g_mutex);
+				g_date[0] = d, g_date[1] = m, g_date[2] = y;
 				return "ok";
 			}
 			if (cmd == "weather")
@@ -511,7 +527,7 @@ namespace loader::debug::remote
 			}
 			if (cmd == "cam")
 			{
-				// cam x y z heading pitch [fov]  |  cam off
+				// cam x y z heading pitch [fov [keep]]  |  cam off
 				CamRequest r;
 				std::string first;
 				in >> first;
@@ -523,6 +539,10 @@ namespace loader::debug::remote
 					in >> r.y >> r.z >> r.heading >> r.pitch;
 					if (!(in >> r.fov))
 						r.fov = 50;
+					std::string keep;
+					in.clear();
+					in >> keep;
+					r.keep = keep == "keep";
 				}
 				std::lock_guard lock(g_mutex);
 				g_cam = r;
@@ -667,9 +687,12 @@ namespace loader::debug::remote
 				natives::Invoke<void>(kSetCamActive, g_camHandle, 1);
 				natives::Invoke<void>(kRenderScriptCams, 1, 0, 0, 1, 0, 0);
 				natives::Invoke<void>(kSetFocusPosAndVel, g_cam.x, g_cam.y, g_cam.z, 0.0f, 0.0f, 0.0f);
-				natives::Invoke<void>(kSetClockTime, 12, 0, 0);
-				natives::Invoke<void>(kPauseClock, 1);
-				natives::Invoke<void>(kSetWeatherTypeNowPersist, "EXTRASUNNY");
+				if (!g_cam.keep)
+				{
+					natives::Invoke<void>(kSetClockTime, 12, 0, 0);
+					natives::Invoke<void>(kPauseClock, 1);
+					natives::Invoke<void>(kSetWeatherTypeNowPersist, "EXTRASUNNY");
+				}
 				log::Info("remote: camera at {:.1f} {:.1f} {:.1f} heading {:.1f} pitch {:.1f} fov {:.1f}", g_cam.x, g_cam.y, g_cam.z, g_cam.heading, g_cam.pitch,
 				    g_cam.fov);
 			}
@@ -687,9 +710,15 @@ namespace loader::debug::remote
 		if (g_hour >= 0)
 		{
 			game::natives::Invoke<void>(kSetClockTime, g_hour, g_minute, 0);
-			game::natives::Invoke<void>(kPauseClock, 1);
-			log::Info("remote: clock at {:02}:{:02}", g_hour, g_minute);
+			game::natives::Invoke<void>(kPauseClock, g_clockRuns ? 0 : 1);
+			log::Info("remote: clock at {:02}:{:02}{}", g_hour, g_minute, g_clockRuns ? ", running" : "");
 			g_hour = -1;
+		}
+		if (g_date[0])
+		{
+			game::natives::Invoke<void>(kSetClockDate, g_date[0], g_date[1] - 1, g_date[2]);
+			log::Info("remote: date {}-{:02}-{:02}", g_date[2], g_date[1], g_date[0]);
+			g_date[0] = 0;
 		}
 		if (!g_weather.empty())
 		{

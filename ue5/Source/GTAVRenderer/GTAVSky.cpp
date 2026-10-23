@@ -43,8 +43,9 @@ namespace
 			FMath::Lerp(A.Fog, B.Fog, T), FMath::Lerp(A.Wet, B.Wet, T), FMath::Lerp(A.Wind, B.Wind, T), FMath::Lerp(A.Rain, B.Rain, T)};
 	}
 
-	// The game's date, as days since 2000-01-01 (the game's start: 2013-09-17).
+	// The game's date, as days since 2000-01-01 (the game's start: 2013-09-17), and its month.
 	double GameDay = 5007.0;
+	int32 GameMonth = 9;
 	TWeakObjectPtr<UTexture2D> MoonTexture, StarTexture;
 
 	// Days from 2000-01-01 to a date (month 1-12).
@@ -59,14 +60,81 @@ namespace
 		return double(Era) * 146097.0 + double(DayOfEra) - 719468.0 - 10957.0;
 	}
 
-	// Where the sun is at an hour (unit, towards it, Unreal's space): east at 6, highest at 12 (to the south), west at
-	// 18, its daily circle about the celestial pole 30 degrees up in the north.
-	FVector SunAt(float Hours)
+	// The sun where the game has it (research/phase0.md §59.11; its own path, measured from the running game, the same
+	// on every date): up due east at 6, highest at 13 (58 degrees, due south), down due west at 20, on a circle through
+	// east and west tilted 32 degrees to the south; the 14 hours of day at an even pace, the night's half circle a
+	// quarter by midnight and the rest by 6. Its timecycle (the colours of the sky and of the light on the people and
+	// vehicles in its picture, the street lights) keeps to this path, so the renderer's sun does too.
+	FVector GameSun(double Hours)
 	{
-		const float Angle = (Hours - 6.0f) / 12.0f * PI;
-		return FVector(FMath::Cos(Angle), FMath::Sin(Angle) * 0.5f, FMath::Sin(Angle) * 0.866f).GetSafeNormal(); // (y: south, mirrored)
+		const double H = FMath::Fmod(FMath::Fmod(Hours, 24.0) + 24.0, 24.0);
+		const double Angle = H >= 6.0 && H < 20.0 ? (H - 6.0) / 14.0 * PI
+							 : H >= 20.0		  ? PI + (H - 20.0) / 4.0 * HALF_PI
+												  : 1.5 * PI + H / 6.0 * HALF_PI;
+		const double Up = FMath::DegreesToRadians(58.0);
+		// (Unreal's space: x east, y south)
+		return FVector(FMath::Cos(Angle), FMath::Sin(Angle) * FMath::Cos(Up), FMath::Sin(Angle) * FMath::Sin(Up));
 	}
-	const FVector kPole = FVector(0.0, -0.866, 0.5); // (the axis the sky turns about)
+
+	// The night sky over Los Santos as over Los Angeles (34.05 N, 118.24 W) on the game's date, its clock the local
+	// time (daylight saving time April to October): the moon by the main terms of its longitude and latitude (to about a
+	// degree), its phase from the true sun (the low precision solar coordinates, the Astronomical Almanac's), the stars
+	// turned by the sidereal time. Days (n) from J2000.0, angles in degrees.
+	constexpr double kLatitude = 34.05, kLongitude = -118.24;
+
+	struct FSkyPositions
+	{
+		FVector Moon;        // unit, towards it, Unreal's space
+		double Elongation;   // the moon's from the sun (degrees: 180 full)
+		double SiderealTime; // local, degrees
+	};
+
+	// Right ascension, declination (degrees) -> towards it in Unreal's space (x east, y south: the game's y mirrored).
+	FVector Local(double RightAscension, double Declination, double SiderealTime)
+	{
+		const double H = FMath::DegreesToRadians(SiderealTime - RightAscension), D = FMath::DegreesToRadians(Declination);
+		const double P = FMath::DegreesToRadians(kLatitude);
+		const double Altitude = FMath::Asin(FMath::Sin(P) * FMath::Sin(D) + FMath::Cos(P) * FMath::Cos(D) * FMath::Cos(H));
+		// (azimuth from the north towards the east)
+		const double Azimuth = FMath::Atan2(-FMath::Sin(H) * FMath::Cos(D), FMath::Sin(D) * FMath::Cos(P) - FMath::Cos(D) * FMath::Sin(P) * FMath::Cos(H));
+		const double C = FMath::Cos(Altitude);
+		return FVector(C * FMath::Sin(Azimuth), -C * FMath::Cos(Azimuth), FMath::Sin(Altitude));
+	}
+
+	// Ecliptic longitude, latitude -> right ascension, declination (degrees).
+	void Equatorial(double Longitude, double Latitude, double Obliquity, double& RightAscension, double& Declination)
+	{
+		const double L = FMath::DegreesToRadians(Longitude), B = FMath::DegreesToRadians(Latitude), E = FMath::DegreesToRadians(Obliquity);
+		RightAscension = FMath::RadiansToDegrees(FMath::Atan2(FMath::Sin(L) * FMath::Cos(E) - FMath::Tan(B) * FMath::Sin(E), FMath::Cos(L)));
+		Declination = FMath::RadiansToDegrees(FMath::Asin(FMath::Sin(B) * FMath::Cos(E) + FMath::Cos(B) * FMath::Sin(E) * FMath::Sin(L)));
+	}
+
+	FSkyPositions SkyAt(double Day, int32 Month, double Hours)
+	{
+		const double Zone = Month >= 4 && Month <= 10 ? 7.0 : 8.0; // (hours behind UTC)
+		const double N = Day - 0.5 + (Hours + Zone) / 24.0;
+		const auto Deg = [](double A) { return FMath::DegreesToRadians(A); };
+		const double Obliquity = 23.439 - 4.0e-7 * N;
+		// The sun (its ecliptic longitude, for the moon's phase).
+		const double MeanLongitude = 280.460 + 0.9856474 * N, Anomaly = Deg(357.528 + 0.9856003 * N);
+		const double SunLongitude = MeanLongitude + 1.915 * FMath::Sin(Anomaly) + 0.020 * FMath::Sin(2.0 * Anomaly);
+		// The moon (its mean longitude, mean anomaly, argument of latitude; the main periodic terms).
+		const double L0 = 218.316 + 13.176396 * N, M = Deg(134.963 + 13.064993 * N), F = Deg(93.272 + 13.229350 * N);
+		const double D = Deg(297.850 + 12.190749 * N);
+		const double MoonLongitude = L0 + 6.289 * FMath::Sin(M) + 1.274 * FMath::Sin(2.0 * D - M) + 0.658 * FMath::Sin(2.0 * D) -
+									 0.186 * FMath::Sin(Anomaly) + 0.214 * FMath::Sin(2.0 * M);
+		const double MoonLatitude = 5.128 * FMath::Sin(F);
+		double MoonRa, MoonDec;
+		Equatorial(MoonLongitude, MoonLatitude, Obliquity, MoonRa, MoonDec);
+		// The local sidereal time.
+		const double Sidereal = FMath::Fmod(280.46061837 + 360.98564736629 * N + kLongitude, 360.0);
+		FSkyPositions Out;
+		Out.Moon = Local(MoonRa, MoonDec, Sidereal);
+		Out.Elongation = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(
+			FMath::Cos(Deg(MoonLatitude)) * FMath::Cos(Deg(MoonLongitude - SunLongitude)), -1.0, 1.0)));
+		Out.SiderealTime = Sidereal;
+		return Out;
+	}
 
 	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
 	bool bInside = false;
@@ -167,6 +235,7 @@ void GTAVSky::SetIndoors(bool bIndoors)
 void GTAVSky::SetDate(int32 Year, int32 Month, int32 Day)
 {
 	GameDay = DaysOf(Year, FMath::Clamp(Month, 1, 12), FMath::Clamp(Day, 1, 31));
+	GameMonth = FMath::Clamp(Month, 1, 12);
 }
 
 void GTAVSky::SetSkyTextures(UTexture2D* Moon, UTexture2D* Stars)
@@ -191,25 +260,22 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	const FLook L = Lerp(Look(WeatherFrom), Look(WeatherTo), FMath::Clamp(Blend, 0.0f, 1.0f));
 
-	// The sun from the hour: east at 6, highest at 12 (to the south), west at 18; at night the moon opposite. Physical
-	// units throughout (lux; the lights in candela, glowing surfaces in nits), the exposure adapting as an eye does:
-	// a clear sun gives 100,000 lux, a full moon a quarter of one.
-	const FVector Toward = SunAt(Hours);
-	// The moon: its age from the date (days since the new moon of 2000-01-06 18:14 UTC, the game's clock in Los
-	// Santos, UTC-8; a synodic month 29.53 days), its elongation from the sun that age's share of 360 degrees: it
-	// keeps to the sun's daily circle, that many hours behind (full: opposite, rising at sunset). Moonlight by the
-	// phase angle (0.25 lux full, the lunar phase law), none while it is down.
-	const double Days = GameDay + (Hours + 8.0) / 24.0 - 5.7597;
-	const double Age = FMath::Fmod(Days, 29.530588853);
-	const float Elongation = float((Age < 0 ? Age + 29.530588853 : Age) / 29.530588853 * 360.0);
-	const FVector MoonToward = SunAt(Hours - Elongation / 15.0f);
-	const float Phase = FMath::Abs(180.0f - Elongation); // (degrees; 0 full)
+	// The sun on the game's path, the moon and the stars as in the real sky. Physical units throughout (lux; the lights
+	// in candela, glowing surfaces in nits), the exposure adapting as an eye does: a clear sun gives 100,000 lux, a full
+	// moon a quarter of one.
+	const FSkyPositions Heavens = SkyAt(GameDay, GameMonth, Hours);
+	const FVector Toward = GameSun(Hours);
+	// The moon: moonlight by the phase angle (0.25 lux full, the lunar phase law), none while it is down.
+	const FVector MoonToward = Heavens.Moon;
+	const float Elongation = float(Heavens.Elongation);
+	const float Phase = 180.0f - Elongation; // (degrees; 0 full)
 	{
 		static double LoggedDay = -1;
 		if (GameDay != LoggedDay)
 		{
 			LoggedDay = GameDay;
-			UE_LOG(LogGTAVSky, Display, TEXT("day %.0f: the moon %.1f days old, %.0f degrees from the sun"), GameDay, Age < 0 ? Age + 29.530588853 : Age, Elongation);
+			UE_LOG(LogGTAVSky, Display, TEXT("day %.0f, %.2f h: the sun %s, the moon %s, %.0f degrees from the sun"), GameDay, Hours,
+				*Toward.ToString(), *MoonToward.ToString(), Elongation);
 		}
 	}
 	const float MoonLux = 0.25f * FMath::Pow(10.0f, -0.4f * (0.026f * Phase + 4.0e-9f * FMath::Pow(Phase, 4.0f))) *
@@ -279,8 +345,9 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	if (UStaticMeshComponent* Stars = A.Stars.Get())
 	{
-		const double Turn = (GameDay / 365.2422 + Hours / 24.0) * 2.0 * PI; // (a sidereal day: the sun's plus one turn a year)
-		Stars->SetWorldLocationAndRotation(Camera, FQuat(kPole, FMath::Fmod(Turn, 2.0 * PI)));
+		// (turned about the celestial pole, as high as the latitude in the north, by the sidereal time)
+		const FVector Pole(0.0, -FMath::Cos(FMath::DegreesToRadians(kLatitude)), FMath::Sin(FMath::DegreesToRadians(kLatitude)));
+		Stars->SetWorldLocationAndRotation(Camera, FQuat(Pole, FMath::DegreesToRadians(Heavens.SiderealTime)));
 		Stars->SetWorldScale3D(FVector(20000000.0 / 50.0));
 		Stars->SetVisibility(Toward.Z < 0.05); // (a full-screen layer: not drawn by day, when no star shows)
 	}

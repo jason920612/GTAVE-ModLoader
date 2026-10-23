@@ -5,6 +5,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "UObject/StrongObjectPtr.h"
 
 namespace
 {
@@ -57,8 +58,11 @@ void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32
 		Root->RegisterComponent();
 		Pool.Owner = Owner;
 	}
-	static UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	static UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	// (held: until a shape uses it, nothing else would keep the engine's mesh from being collected)
+	static TStrongObjectPtr<UStaticMesh> CylinderMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
+	static TStrongObjectPtr<UStaticMesh> CubeMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+	UStaticMesh* Cylinder = CylinderMesh.Get();
+	UStaticMesh* Cube = CubeMesh.Get();
 	if (!Cylinder || !Cube)
 	{
 		return;

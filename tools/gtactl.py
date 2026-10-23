@@ -18,9 +18,12 @@ usage:
       log:<regex>[,<timeout s>]    waits for a line in the police mod's log (newer than this run's start)
       raw:<command line>           any pipe command (ping, story, window offscreen|restore, mute on|off, release,
                                    fakefocus <ms>: GetForegroundWindow reports the game for that long,
-                                   cam x y z heading pitch [fov] | cam off: a fixed scripted camera at noon, clear sky,
+                                   cam x y z heading pitch [fov [keep]] | cam off: a fixed scripted camera at noon,
+                                   clear sky ("keep": the clock and weather left as they are; while a scripted camera
+                                   is on, the game keeps its shadows' sun where it was when the camera came on),
                                    tp x y z: the player there, depthdump <file>: the next DLSS pass's depth and stencil,
-                                   time h [m]: the clock there (stopped), weather <type>: kept)
+                                   time h [m] [run]: the clock there, stopped (the game's sun then stays where it
+                                   was: "run" lets it go on), date d m y: the calendar, weather <type>: kept)
 Exits 1 on the first step that fails.
 """
 import json, os, re, shutil, subprocess, sys, time
