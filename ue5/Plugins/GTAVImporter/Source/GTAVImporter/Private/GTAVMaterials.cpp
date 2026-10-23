@@ -22,6 +22,11 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVertexColor.h"
 #include "Materials/MaterialExpressionVertexInterpolator.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialExpressionSaturate.h"
+#include "Materials/MaterialExpressionSubtract.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -235,6 +240,7 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		Rough->R = 0.85f;
 		M->GetExpressionCollection().AddExpression(Rough);
 		Inputs->Roughness.Connect(0, Rough);
+		Wetten(M);
 		M->PreEditChange(nullptr);
 		M->PostEditChange();
 		Package->MarkPackageDirty();
@@ -336,11 +342,93 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	Glow->B.Connect(0, Scalar(TEXT("EmissiveMultiplier"), 0.0f));
 	Add(Glow);
 	Inputs->EmissiveColor.Connect(0, Glow);
+	if (Kind != 1)
+	{
+		Wetten(M);
+	}
 	M->PreEditChange(nullptr);
 	M->PostEditChange();
 	Package->MarkPackageDirty();
 	Dirty.Add(Package);
 	return Masters.Add(Kind, M);
+}
+
+// The renderer's global values for every material: Wetness (0..1, the weather's).
+UMaterialParameterCollection* FGTAVMaterials::Collection()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/MPC_GTAV");
+	if (GlobalParameters)
+	{
+		return GlobalParameters;
+	}
+	if (UMaterialParameterCollection* Existing = LoadExisting<UMaterialParameterCollection>(PackageName))
+	{
+		return GlobalParameters = Existing;
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterialParameterCollection* C = NewObject<UMaterialParameterCollection>(Package, TEXT("MPC_GTAV"), RF_Public | RF_Standalone);
+	FCollectionScalarParameter Wetness;
+	Wetness.ParameterName = TEXT("Wetness");
+	Wetness.DefaultValue = 0.0f;
+	C->ScalarParameters.Add(Wetness);
+	C->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return GlobalParameters = C;
+}
+
+// Wet ground in the rain: surfaces that face up get darker and glossy with the collection's Wetness.
+void FGTAVMaterials::Wetten(UMaterial* M)
+{
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	UMaterialParameterCollection* C = Collection();
+	auto* Wetness = NewObject<UMaterialExpressionCollectionParameter>(M);
+	Wetness->Collection = C;
+	Wetness->ParameterName = TEXT("Wetness");
+	Wetness->ParameterId = C->GetParameterId(TEXT("Wetness"));
+	Add(Wetness);
+	auto* Normal = NewObject<UMaterialExpressionVertexNormalWS>(M);
+	Add(Normal);
+	auto* Up = NewObject<UMaterialExpressionComponentMask>(M);
+	Up->Input.Connect(0, Normal);
+	Up->B = true;
+	Add(Up);
+	auto* Steep = NewObject<UMaterialExpressionMultiply>(M); // (flat ground 1, walls 0)
+	Steep->A.Connect(0, Up);
+	Steep->ConstB = 2.5f;
+	Add(Steep);
+	auto* Shifted = NewObject<UMaterialExpressionSubtract>(M);
+	Shifted->A.Connect(0, Steep);
+	Shifted->ConstB = 1.2f;
+	Add(Shifted);
+	auto* Facing = NewObject<UMaterialExpressionSaturate>(M);
+	Facing->Input.Connect(0, Shifted);
+	Add(Facing);
+	auto* Wet = NewObject<UMaterialExpressionMultiply>(M);
+	Wet->A.Connect(0, Wetness);
+	Wet->B.Connect(0, Facing);
+	Add(Wet);
+	FExpressionInput Color = Inputs->BaseColor, Rough = Inputs->Roughness;
+	auto* Darker = NewObject<UMaterialExpressionMultiply>(M);
+	Darker->A = Color;
+	Darker->ConstB = 0.55f;
+	Add(Darker);
+	auto* WetColor = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	WetColor->A = Color;
+	WetColor->B.Connect(0, Darker);
+	WetColor->Alpha.Connect(0, Wet);
+	Add(WetColor);
+	Inputs->BaseColor.Connect(0, WetColor);
+	auto* WetRough = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	WetRough->A = Rough;
+	WetRough->ConstB = 0.08f;
+	WetRough->Alpha.Connect(0, Wet);
+	Add(WetRough);
+	Inputs->Roughness.Connect(0, WetRough);
 }
 
 UTexture2D* FGTAVMaterials::Texture(const FString& Path, bool bLinear, bool bNormalMap, bool bPalette)

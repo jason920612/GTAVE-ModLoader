@@ -28,6 +28,7 @@
 
 #include "GTAVBridgeProtocol.h"
 #include "GTAVPack.h"
+#include "GTAVSky.h"
 #include "GTAVWorldSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGTAVBridge, Log, All);
@@ -313,21 +314,8 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 		}
 	}
 
-	// The sun from the hour: east at 6, highest at 12 (to the south), west at 18.
-	if (!Sun)
-	{
-		for (TActorIterator<ADirectionalLight> It(GetWorld()); It; ++It)
-		{
-			Sun = *It;
-		}
-	}
-	if (Sun)
-	{
-		const float Angle = (Shared->hours - 6.0f) / 12.0f * PI;
-		const FVector Toward = FVector(FMath::Cos(Angle), FMath::Sin(Angle) * 0.5f, FMath::Sin(Angle) * 0.866f).GetSafeNormal(); // (y: south, mirrored)
-		Sun->SetActorRotation((-Toward).Rotation());
-		Sun->GetLightComponent()->SetIntensity(Toward.Z > -0.05f ? 10.0f : 0.0f);
-	}
+	// The sun by the hour, the weather.
+	GTAVSky::Apply(GetWorld(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
 
 	// The world: the hour (timed archetypes, groups by the hour) and the map data groups the game has on.
 	if (UGTAVWorldSubsystem* World = GetWorld()->GetSubsystem<UGTAVWorldSubsystem>())

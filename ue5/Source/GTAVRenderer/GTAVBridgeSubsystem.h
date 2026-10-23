@@ -6,7 +6,6 @@
 #include "GTAVBridgeSubsystem.generated.h"
 
 class ACameraActor;
-class ADirectionalLight;
 class FGTAVBridgeViewExtension;
 namespace GTAVBridge { struct Shared; }
 
@@ -34,8 +33,6 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<ACameraActor> Camera;
-	UPROPERTY()
-	TObjectPtr<ADirectionalLight> Sun;
 
 	void Resize(uint32 Width, uint32 Height);
 };

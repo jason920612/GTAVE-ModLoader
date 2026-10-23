@@ -49,6 +49,7 @@ private:
 	bool bLoaded = false;
 	float DistanceScale = 1.0f;
 	int32 CurrentHour = 12;
+	uint32 OfflineWeather = 0; // -gtavweather
 	TSet<uint32> GroupsOn;
 	TArray<bool> YmapOn; // per ymap, from the groups
 

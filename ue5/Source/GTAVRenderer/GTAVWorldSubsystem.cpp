@@ -1,4 +1,5 @@
 #include "GTAVWorldSubsystem.h"
+#include "GTAVSky.h"
 
 #include "Camera/PlayerCameraManager.h"
 #include "Components/DirectionalLightComponent.h"
@@ -133,6 +134,12 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavpack="), Folder, false);
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavlod="), DistanceScale);
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavhour="), CurrentHour);
+	// (checking without the game: -gtavweather=RAIN and so on, at -gtavhour)
+	FString Weather;
+	if (FParse::Value(FCommandLine::Get(), TEXT("-gtavweather="), Weather))
+	{
+		OfflineWeather = GTAVHash(Weather);
+	}
 	int32 BudgetMB = 3072;
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavbudget="), BudgetMB);
 	BudgetBytes = int64(BudgetMB) << 20;
@@ -307,6 +314,10 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	Assets->Tick(kAssetBudget);
+	if (OfflineWeather)
+	{
+		GTAVSky::Apply(GetWorld(), float(CurrentHour), OfflineWeather, OfflineWeather, 0.0f);
+	}
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	if (!PC || !PC->PlayerCameraManager)
 	{

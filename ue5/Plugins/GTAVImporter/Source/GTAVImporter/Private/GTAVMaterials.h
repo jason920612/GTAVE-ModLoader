@@ -4,6 +4,7 @@
 
 class UMaterial;
 class UMaterialInterface;
+class UMaterialParameterCollection;
 class UTexture2D;
 class FJsonObject;
 
@@ -30,10 +31,13 @@ public:
 private:
 	FString ExportRoot;
 	TMap<int32, UMaterial*> Masters;
+	UMaterialParameterCollection* GlobalParameters = nullptr; // MPC_GTAV
 	TMap<FString, UMaterialInterface*> Instances;
 	TMap<FString, UTexture2D*> Textures;
 
 	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7;
 	UTexture2D* BlackMask();
+	UMaterialParameterCollection* Collection();
+	void Wetten(UMaterial* M);
 	UTexture2D* Texture(const FString& Path, bool bLinear, bool bNormalMap, bool bPalette = false);
 };
