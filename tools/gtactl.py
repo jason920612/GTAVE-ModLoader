@@ -19,7 +19,8 @@ usage:
       raw:<command line>           any pipe command (ping, story, window offscreen|restore, mute on|off, release,
                                    fakefocus <ms>: GetForegroundWindow reports the game for that long,
                                    cam x y z heading pitch [fov] | cam off: a fixed scripted camera at noon, clear sky,
-                                   tp x y z: the player there, depthdump <file>: the next DLSS pass's depth and stencil)
+                                   tp x y z: the player there, depthdump <file>: the next DLSS pass's depth and stencil,
+                                   time h [m]: the clock there (stopped), weather <type>: kept)
 Exits 1 on the first step that fails.
 """
 import json, os, re, shutil, subprocess, sys, time

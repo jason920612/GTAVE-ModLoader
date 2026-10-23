@@ -4,8 +4,9 @@
 #include "streamline.hpp"
 
 // The UE5 renderer's picture put over DLSS's output, keeping what the renderer does not draw: the game's peds and
-// vehicles, found by the stencil the game gave DLSS (research/phase0.md §59.6). A compute pass on the game's command
-// list, right after DLSS (which leaves the list's state for the game to set again anyway).
+// vehicles, found by the stencil the game gave DLSS (research/phase0.md §59.6), and brought to the brightness of the
+// game's own scene. Compute passes on the game's command list, right after DLSS (which leaves the list's state for the
+// game to set again anyway).
 namespace loader::graphics::composite
 {
 	// Records the pass; picture: the renderer's frame (DLSS's output size and format). False when it cannot (an

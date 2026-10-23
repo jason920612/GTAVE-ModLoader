@@ -55,6 +55,8 @@ namespace loader::debug::remote
 		CamRequest g_cam;            // (the game thread applies it)
 		bool g_teleport = false;
 		float g_teleportTo[3] = {};
+		int g_hour = -1, g_minute = 0; // "time": the clock set and stopped there
+		std::string g_weather;         // "weather": that type, kept
 		int32_t g_camHandle = 0;
 
 		// Keys for the game itself, frontend menus included (they pause scripts, so controls cannot reach them). The
@@ -486,6 +488,27 @@ namespace loader::debug::remote
 				g_teleport = true;
 				return "ok";
 			}
+			if (cmd == "time")
+			{
+				// time h [m]: the clock there, stopped
+				int h = -1, m = 0;
+				if (!(in >> h) || h < 0 || h > 23)
+					return "err time h [m]";
+				in >> m;
+				std::lock_guard lock(g_mutex);
+				g_hour = h, g_minute = std::clamp(m, 0, 59);
+				return "ok";
+			}
+			if (cmd == "weather")
+			{
+				// weather EXTRASUNNY | CLEAR | CLOUDS | RAIN | THUNDER | FOGGY | ...
+				std::string type;
+				if (!(in >> type))
+					return "err weather <type>";
+				std::lock_guard lock(g_mutex);
+				g_weather = type;
+				return "ok";
+			}
 			if (cmd == "cam")
 			{
 				// cam x y z heading pitch [fov]  |  cam off
@@ -629,6 +652,19 @@ namespace loader::debug::remote
 			g_teleport = false;
 			game::natives::Invoke<void>(kSetEntityCoords, game::natives::Invoke<int32_t>(kPlayerPedId), g_teleportTo[0], g_teleportTo[1], g_teleportTo[2], 0, 0, 0, 1);
 			log::Info("remote: player to {:.1f} {:.1f} {:.1f}", g_teleportTo[0], g_teleportTo[1], g_teleportTo[2]);
+		}
+		if (g_hour >= 0)
+		{
+			game::natives::Invoke<void>(kSetClockTime, g_hour, g_minute, 0);
+			game::natives::Invoke<void>(kPauseClock, 1);
+			log::Info("remote: clock at {:02}:{:02}", g_hour, g_minute);
+			g_hour = -1;
+		}
+		if (!g_weather.empty())
+		{
+			game::natives::Invoke<void>(kSetWeatherTypeNowPersist, g_weather.c_str());
+			log::Info("remote: weather {}", g_weather);
+			g_weather.clear();
 		}
 		if (g_cam.pending)
 		{
