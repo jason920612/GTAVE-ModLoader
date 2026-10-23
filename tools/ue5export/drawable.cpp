@@ -212,7 +212,7 @@ namespace ue5export::drawable
 		// +0x08 position, +0x18 colour (rgb), +0x1C intensity, +0x20 flags, +0x24 bone, +0x26 type, +0x28 hours,
 		// +0x2C falloff, +0x30 its exponent, +0x74 direction (where it shines), +0x80 tangent (a capsule's axis: a strip
 		// light 20 m long shining down lies along it), +0x8C / +0x90 cone angles (degrees), +0x94 a capsule's length (m;
-		// the same in the two floats after; the LOD lights have it as coneOuterAngleOrCapExt, x 1.25)
+		// the same in the two floats after; the LOD lights have it as coneOuterAngleOrCapExt, x 1.8)
 		for (uint16_t i = 0; i < count && list; ++i)
 		{
 			const uint64_t at = list + uint64_t{kStride} * i;

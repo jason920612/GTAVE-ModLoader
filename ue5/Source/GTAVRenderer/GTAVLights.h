@@ -55,6 +55,7 @@ private:
 	bool On(const GTAVPack::LodLight& L, int32 Hour) const { return (L.flags >> Hour) & 1; }
 	void Gather(const FVector& Camera, float Radius, int32 Hour, TArray<TPair<float, int32>>& Out) const;
 	TMap<int64, FEntityLight> Extra; // the entities' lights near, by their keys (negative)
+	TMap<int32, FVector3f> LodAxes;  // LOD capsule lights' axes, from their models' lights
 	const GTAVPack::LodLight& LightAt(int64 Key) const { return Key >= 0 ? Lights[int32(Key)] : Extra[Key].Light; }
 	float LengthAt(int64 Key) const;
 	void UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour);

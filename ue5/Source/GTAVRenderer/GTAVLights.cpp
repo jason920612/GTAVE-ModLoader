@@ -165,9 +165,10 @@ float FGTAVLights::LengthAt(int64 Key) const
 	{
 		return Extra[Key].Length;
 	}
-	// (a LOD light's capsule: its length in the outer cone's byte, x 1.25 m; measured against the models' own)
+	// (a LOD light's capsule: its length in the outer cone's byte, x 1.8 m; measured against the models' own: 20 m 36,
+	// 24 m 43, 5 m 9)
 	const GTAVPack::LodLight& L = Lights[int32(Key)];
-	return KindOf(L) == kCapsule ? L.coneOuter / 1.25f * 100.0f : 0.0f;
+	return KindOf(L) == kCapsule ? L.coneOuter / 1.8f * 100.0f : 0.0f;
 }
 
 void FGTAVLights::Dump(const FVector& Point, float Radius) const
@@ -182,8 +183,9 @@ void FGTAVLights::Dump(const FVector& Point, float Radius) const
 		}
 		++Shown;
 		const FVector P = C->GetComponentLocation() / 100.0;
-		UE_LOG(LogGTAVLights, Display, TEXT("dump: light %s %lld at %.1f %.1f %.1f, %s %.1f, reach %.1f m, colour %s"), A.Key < 0 ? TEXT("entity") : TEXT("map"), A.Key,
-			P.X, -P.Y, P.Z, Cast<USpotLightComponent>(C) ? TEXT("spot lux") : TEXT("point cd"), C->Intensity, C->AttenuationRadius / 100.0f, *C->GetLightColor().ToString());
+		UE_LOG(LogGTAVLights, Display, TEXT("dump: light %s %lld at %.1f %.1f %.1f, %s %.1f, reach %.1f m, tube %.1f m, colour %s"), A.Key < 0 ? TEXT("entity") : TEXT("map"), A.Key,
+			P.X, -P.Y, P.Z, Cast<USpotLightComponent>(C) ? TEXT("spot lux") : TEXT("point cd"), C->Intensity, C->AttenuationRadius / 100.0f,
+			Cast<UPointLightComponent>(C) ? Cast<UPointLightComponent>(C)->SourceLength / 100.0f : 0.0f, *C->GetLightColor().ToString());
 	}
 	int32 Candidates = 0;
 	for (const TPair<uint64, TArray<FEntityLight>>& E : EntityLights)
@@ -234,7 +236,7 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 	// (a sign's neon tubes; everything inside).
 	TArray<TPair<float, int64>> Near;
 	NearRadius = FMath::Max(CVarLightRadius.GetValueOnGameThread(), 10.0f) * 100.0f;
-	TSet<FIntVector> Taken;
+	TMap<FIntVector, int32> Taken; // (where a LOD light is: which)
 	{
 		TArray<TPair<float, int32>> Map;
 		Gather(Camera, NearRadius, Hour, Map);
@@ -243,9 +245,12 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 		for (const TPair<float, int32>& M : Map)
 		{
 			Near.Emplace(M.Key, M.Value);
-			Taken.Add(Spot50(Lights[M.Value]));
+			Taken.Add(Spot50(Lights[M.Value]), M.Value);
 		}
 	}
+	// A LOD light's capsule has no axis in the map's data: the drawn model's own light at the same place lends its
+	// (the tube's length and the light stay the LOD light's).
+	LodAxes.Reset();
 	Extra.Reset();
 	for (const TPair<uint64, TArray<FEntityLight>>& E : EntityLights)
 	{
@@ -257,19 +262,23 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 			{
 				continue;
 			}
-			bool bTaken = false;
+			const int32* Lod = nullptr;
 			const FIntVector P = Spot50(L);
-			for (int32 X = -1; X <= 1 && !bTaken; ++X)
+			for (int32 X = -1; X <= 1 && !Lod; ++X)
 			{
-				for (int32 Y = -1; Y <= 1 && !bTaken; ++Y)
+				for (int32 Y = -1; Y <= 1 && !Lod; ++Y)
 				{
-					for (int32 Z = -1; Z <= 1 && !bTaken; ++Z)
+					for (int32 Z = -1; Z <= 1 && !Lod; ++Z)
 					{
-						bTaken = Taken.Contains(P + FIntVector(X, Y, Z));
+						Lod = Taken.Find(P + FIntVector(X, Y, Z));
 					}
 				}
 			}
-			if (!bTaken)
+			if (Lod && E.Value[I].Length > 0 && !E.Value[I].Axis.IsNearlyZero() && KindOf(Lights[*Lod]) == kCapsule)
+			{
+				LodAxes.Add(*Lod, E.Value[I].Axis);
+			}
+			if (!Lod)
 			{
 				const int64 Key = EntityLightKey(E.Key, I);
 				Extra.Add(Key, E.Value[I]);
@@ -349,8 +358,10 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 		}
 		else if (UPointLightComponent* P = Cast<UPointLightComponent>(C))
 		{
-			// (a tube: the engine's capsule light lies along the light's z axis; a LOD light's has no axis, a bulb then)
-			const FVector3f Axis = N.Value < 0 ? Extra[N.Value].Axis : FVector3f::ZeroVector;
+			// (a tube: the engine's capsule light lies along the light's z axis; a LOD light's from its model's light,
+			// else a bulb)
+			const FVector3f* Lent = N.Value >= 0 ? LodAxes.Find(int32(N.Value)) : nullptr;
+			const FVector3f Axis = N.Value < 0 ? Extra[N.Value].Axis : Lent ? *Lent : FVector3f::ZeroVector;
 			if (Length > 0 && !Axis.IsNearlyZero())
 			{
 				P->SetWorldRotation(FRotationMatrix::MakeFromZ(FVector(Axis)).Rotator());
@@ -368,6 +379,16 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 		C->SetCastShadows(bShadows);
 		C->SetVisibility(true);
 		Active.Add(N.Value, C);
+	}
+	// (a LOD capsule shaped as a bulb before its model came in: its tube now)
+	for (const TPair<int32, FVector3f>& A : LodAxes)
+	{
+		const TWeakObjectPtr<ULocalLightComponent>* Found = Active.Find(A.Key);
+		if (UPointLightComponent* P = Found ? Cast<UPointLightComponent>(Found->Get()) : nullptr; P && !Cast<USpotLightComponent>(P))
+		{
+			P->SetWorldRotation(FRotationMatrix::MakeFromZ(FVector(A.Value)).Rotator());
+			P->SetSourceLength(LengthAt(A.Key));
+		}
 	}
 	if (bShadows != bLastShadows)
 	{

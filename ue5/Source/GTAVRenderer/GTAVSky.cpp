@@ -220,6 +220,11 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		Sun->SetActorRotation((bDay ? -Toward : -MoonToward).Rotation());
 		ULightComponent* Light = Sun->GetLightComponent();
 		Light->SetIntensity(bDay ? 100000.0f * L.Sun : MoonLux * FMath::Max(L.Sun, 0.2f));
+		// The sun shines as a 5,778 K black body (the air reddens it further, low down: the sky atmosphere's
+		// transmittance); white, as it was, is D65's 6,500 K, a cooler light than sunlight. Moonlight bluish: what an
+		// eye sees by night (its rods), the reflected sunlight itself being warmer still.
+		Light->SetUseTemperature(bDay);
+		Light->SetTemperature(5778.0f);
 		Light->SetLightColor(bDay ? FLinearColor::White : FLinearColor(0.6f, 0.7f, 1.0f));
 	}
 	// The moon itself, 100 km off (as big as it looks: 0.52 degrees; the engine's sphere is 50 cm across its
@@ -288,12 +293,12 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	if (UMaterialInstanceDynamic* Clouds = A.CloudMaterial.Get())
 	{
 		// (the engine's cloud material: Cloud_GlobalCoverage 0 gives scattered cumulus, 0.3 a hazy overcast, 0.45 a milky
-		// one, measured; a clear sky has none at all)
+		// one, measured; a clear sky has none at all: its few wisps are cirrus, which a cumulus layer cannot be)
 		if (UVolumetricCloudComponent* Layer = A.Clouds.Get())
 		{
-			Layer->SetVisibility(Cover >= 0.1f);
+			Layer->SetVisibility(Cover >= 0.2f);
 		}
-		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Max(Cover - 0.1f, 0.0f) / 0.9f * 0.45f);
+		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Max(Cover - 0.2f, 0.0f) / 0.8f * 0.45f);
 	}
 	// The air: aerosols (Mie scattering) that blur and tint the distance, thickest in the Los Santos basin (a city's
 	// haze under an inversion about a kilometre up: the hills rise out of it), thinner over the countryside north of

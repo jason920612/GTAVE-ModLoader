@@ -450,7 +450,59 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		Colour->A.Connect(0, Blend(TEXT("DiffuseTexture_layer"), White, SAMPLERTYPE_Color, -1200));
 		Colour->B.Connect(0, Dark);
 		M->GetExpressionCollection().AddExpression(Colour);
-		Inputs->BaseColor.Connect(0, Colour);
+		// The tint (terrain_cb_*_tnt): each layer lerp(D, lerp(grey(T), T, b) D, b), T the palette's colour at the
+		// first colour set's blue (third UV set) on the material's row, b tintBlendLayer (the shader's own default,
+		// which no material overrides: 1, the tint in full; desaturateTint on). The same T and b for the four layers:
+		// applied to their blend.
+		auto* TintUv = NewObject<UMaterialExpressionTextureCoordinate>(M);
+		TintUv->CoordinateIndex = 2;
+		M->GetExpressionCollection().AddExpression(TintUv);
+		const auto TerrainScalar = [&](const TCHAR* Parameter, float Default) {
+			auto* E = NewObject<UMaterialExpressionScalarParameter>(M);
+			E->ParameterName = Parameter;
+			E->DefaultValue = Default;
+			M->GetExpressionCollection().AddExpression(E);
+			return E;
+		};
+		auto* PaletteUv = NewObject<UMaterialExpressionCustom>(M);
+		PaletteUv->Description = TEXT("Palette texel");
+		PaletteUv->OutputType = CMOT_Float2;
+		PaletteUv->Code = TEXT("return float2((Column.x * 255.0 + 0.5) / Width, (Row + 0.5) / Height);");
+		PaletteUv->Inputs.Reset();
+		for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("Column"), TintUv),
+				 {TEXT("Width"), TerrainScalar(TEXT("TintPaletteWidth"), 256.0f)}, {TEXT("Height"), TerrainScalar(TEXT("TintPaletteHeight"), 4.0f)},
+				 {TEXT("Row"), TerrainScalar(TEXT("TintRow"), 0.0f)}})
+		{
+			FCustomInput& In = PaletteUv->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Key;
+			In.Input.Connect(0, I.Value);
+		}
+		M->GetExpressionCollection().AddExpression(PaletteUv);
+		auto* Palette = Sample(TEXT("TintPaletteTex"), White, SAMPLERTYPE_Color, -1500, -900);
+		Palette->Coordinates.Connect(0, PaletteUv);
+		Palette->MipValueMode = TMVM_MipLevel;
+		Palette->ConstMipValue = 0;
+		auto* PaletteAtVertex = NewObject<UMaterialExpressionVertexInterpolator>(M);
+		PaletteAtVertex->Input.Connect(0, Palette);
+		M->GetExpressionCollection().AddExpression(PaletteAtVertex);
+		auto* Tint = NewObject<UMaterialExpressionCustom>(M);
+		Tint->Description = TEXT("Terrain tint");
+		Tint->OutputType = CMOT_Float3;
+		Tint->Code = TEXT("float g = dot(T, float3(1, 1, 1)) / 3.0;\nfloat3 Tinted = lerp(float3(g, g, g), T, Blend);\nreturn lerp(float3(1, 1, 1), Tinted, Blend * UseTint);");
+		Tint->Inputs.Reset();
+		for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("T"), PaletteAtVertex),
+				 {TEXT("Blend"), TerrainScalar(TEXT("TintBlend"), 1.0f)}, {TEXT("UseTint"), TerrainScalar(TEXT("UseTint"), 0.0f)}})
+		{
+			FCustomInput& In = Tint->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Key;
+			In.Input.Connect(0, I.Value);
+		}
+		M->GetExpressionCollection().AddExpression(Tint);
+		auto* Tinted = NewObject<UMaterialExpressionMultiply>(M);
+		Tinted->A.Connect(0, Colour);
+		Tinted->B.Connect(0, Tint);
+		M->GetExpressionCollection().AddExpression(Tinted);
+		Inputs->BaseColor.Connect(0, Tinted);
 		Inputs->Normal.Connect(0, Blend(TEXT("BumpTexture_layer"), FlatNormal, SAMPLERTYPE_Normal, 0));
 		auto* Rough = NewObject<UMaterialExpressionConstant>(M);
 		Rough->R = 0.85f;

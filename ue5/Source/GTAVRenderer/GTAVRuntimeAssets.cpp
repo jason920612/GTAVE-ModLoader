@@ -297,6 +297,10 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			P->bTranslucent |= Mat.kind == GTAVPack::kTranslucent || Mat.kind == GTAVPack::kDecal || Mat.kind == GTAVPack::kWater;
 		}
 		const bool bTerrain = Mat.kind == GTAVPack::kTerrain;
+		if (bTerrain)
+		{
+			UvChannels = FMath::Max(UvChannels, 3); // (the third: the first colour set's blue, red: see below)
+		}
 		const uint32 Base = Vertices.Num();
 		Vertices.AddUninitialized(V);
 		for (int64 X = 0; X < V; ++X)
@@ -336,6 +340,12 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			for (int32 K = 0; K < MAX_STATIC_TEXCOORDS; ++K)
 			{
 				Out.UVs[K] = K < Uv.Num() ? FVector2f(Uv[K][2 * X], Uv[K][2 * X + 1]) : FVector2f::ZeroVector;
+			}
+			// (terrain: the first colour set's blue, the tint palette's column, and red, the ambient occlusion, as the
+			// third UV set: the vertex colour carries the second set)
+			if (bTerrain)
+			{
+				Out.UVs[2] = C0 ? FVector2f(C0[4 * X + 2] / 255.0f, C0[4 * X] / 255.0f) : FVector2f(0.0f, 1.0f);
 			}
 		}
 		FStaticMeshSection& Section = Sections.AddDefaulted_GetRef();
