@@ -25,8 +25,20 @@ namespace loader::graphics::streamline
 	using OnCamera = void (*)(const Camera& camera);
 	void SetOnCamera(OnCamera callback);
 
-	// Called on the render thread right after the game's DLSS Super Resolution pass was recorded into commandList:
-	// output is DLSS's output colour (the HDR scene before the game's post-processing and UI), in outputState.
-	using AfterDlss = void (*)(void* commandList, void* output, uint32_t outputState);
+	// One DLSS pass: the command list it was recorded into and the buffers the game tagged for it (ID3D12Resource*,
+	// with the state the game says each is in).
+	struct DlssFrame
+	{
+		void* commandList = nullptr;
+		void* output = nullptr; // DLSS's output colour: the HDR scene before the game's post-processing and UI
+		uint32_t outputState = 0;
+		void* input = nullptr; // the scene at the render resolution
+		uint32_t inputState = 0;
+		void* depth = nullptr; // depth and stencil at the render resolution
+		uint32_t depthState = 0;
+		uint32_t renderWidth = 0, renderHeight = 0; // the part of the inputs in use
+	};
+	// Called on the render thread right after the game's DLSS Super Resolution pass was recorded.
+	using AfterDlss = void (*)(const DlssFrame& frame);
 	void SetAfterDlss(AfterDlss callback);
 }

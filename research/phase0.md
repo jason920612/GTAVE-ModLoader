@@ -2396,3 +2396,99 @@
   貼圖，第一次在遊戲模式打開時才壓（之後在 DDC 裡）。
 - 還沒做：地形四層混合的確認（權重通道、UV 組）、細節貼圖（DetailTex + detailSettings）、視差高度圖（HeightTexture、nxg_*_h）、
   每個實體的 tintValue（同一模型不同列）、樹的風、BC7、室內（MLO）、預設關閉的地圖區塊（sp_manifest.ymt）、遠景。
+
+## 59. 畫質模組：打包檔與執行時串流、接上遊戲（2026-10-23）
+
+使用者建議做一個自訂格式一次處理小檔、降低複雜度和顯存、確保原版能顯示的都能顯示。改成：不匯入成 UE 資產，UE 在執行時直接讀
+自己的打包檔（像遊戲讀 RPF），照遊戲自己的規則串流。
+
+### 59.1 打包格式（`ue5/Source/GTAVRenderer/GTAVPackFormat.h`，版本 2；`tools/ue5export pack`）
+
+- 每個檔：48 位元組檔頭（"GPK1"、種類、版本、項目數、表格位置）、各項目資料（16 位元組對齊）、依鍵排序的表格（鍵 u64、位移、
+  大小、旗標；24 位元組）。執行端二分搜尋。
+- `models.gpk`：鍵 = 物件類型名稱的 joaat。ModelHeader（包圍盒、球、可繪物件的 4 個 LOD 距離與數量）、Material[]（效果雜湊、
+  繪製分組、種類、15 個貼圖槽的內容雜湊、tintRow／emissive／bumpiness／specular／水色／detailSettings／alphaTest）、各段（材質、
+  UV 組數、旗標、頂點數、索引數、LOD）＋資料：位置 float3（UE 空間、公分、y 鏡像）、法線／切線 snorm8x4（切線 w = UE 的副法線
+  符號）、兩組頂點顏色 RGBA8、UV float2、16／32 位索引。
+- `textures.gpk`：鍵 = 貼圖內容雜湊（同內容只存一次）；TextureHeader（寬高、mip 數、遊戲的 DXGI）＋遊戲原本的 mip 鏈。BC1–BC7、
+  BGRA8、RGBA8、R8、A8 直接當 UE 的像素格式用，不解壓不重壓（BC7 因此自動支援）。
+- `world.gpk`：一個區段一種陣列：物件類型、ymap、物件（全部 LOD 層級，父物件索引）、地圖區塊群組、室內（物件、房間、入口、
+  物件組）、室內放置、草（批次＋遊戲原本 16 位元組的實例）、水面、共用清單。
+- `globals.gpk`：遊戲 `graphics.ytd` 的水面法線、泡沫、水下光紋、雨水窪法線（依名稱雜湊）；`groups.txt`：群組名稱（遊戲端查詢用）。
+- 全地圖約 7 分鐘（14 條執行緒，各自開遊戲檔案）：126,731 個模型（60 個檔案不存在）、58,145 張不重複貼圖、18 GB
+  （模型 7.3、貼圖 11.1、世界 0.4）。`--world-only 1` 只重寫世界檔（5 秒）。
+
+### 59.2 地圖資料補充
+
+- PSO（`_manifest.ymf`）：大端序；區段 PSIN（資料）、PMAP（根編號、區塊數，(結構, 位移, 0, 長度)）、PSCH（定義數、(名稱, 位移)，
+  結構＝類型 0／項目數、大小、0、12 位元組項目 (名稱, 類型<<24|子類型<<16|位移, 參照)）。指標＝區塊編號 | 位移<<12；陣列 {指標,
+  0, u16 數量, u16 容量, 0}；類型 0x0b 子類型 0 = 內嵌字串（長度＝參照>>16）、7 = 名稱雜湊；0x0c 結構、0x0d 陣列、0x0e 列舉、
+  0x0f 旗標、0x06 u32。名稱一樣是區分大小寫的 joaat。
+- CPackFileMetaData：MapDataGroups（CMapDataGroup：Name、Bounds＝碰撞檔、Flags、WeatherTypes、HoursOnOff）、HDTxdBindingArray
+  （targetAsset → HDTxd，都照 +hi／+hidr 命名）、imapDependencies_2…。**群組就是同名的 ymap**（REQUEST_IPL 開的那個）；1389 份
+  manifest、500 個群組、288 個對到 ymap。
+- **LOD 的父物件**：parentIndex 指向父 ymap，**除非物件自己的 ymap 裡有更粗一層的物件**（LOD ymap 把 LOD 和它們的 SLOD1 放在一起）：
+  HD → 父 ymap、LOD → 同一個 ymap、SLOD1 → 父 ymap；全圖 35 萬條連結全部吻合（只用父 ymap 時，近處同時畫出 HD 和 SLOD1）。
+- 室內：CMloArchetypeDef（entities、rooms〔bbMin/bbMax、flags、attachedObjects〕、portals〔roomFrom/To、corners、attachedObjects〕、
+  entitySets〔name、locations、entities〕）；CMloInstanceDef 多 groupId、floorId、defaultEntitySets、MLOInstflags。227 種、放置 472 個。
+- 草：CMapData.instancedData.GrassInstanceList（BatchAABB、ScaleRange、archetypeName、lodDist、LodFadeStartDist、
+  LodInstFadeRange、OrientToTerrain、InstanceList：u16 位置×3〔批次盒內 0–65535〕、法線 x/y、顏色×3、縮放、AO）。5.4 萬批、
+  2335 萬株。
+- 水（`common:/data/levels/gta5/water.xml`）：WaterQuads（minX/maxX/minY/maxY、Type、z、a1–a4、IsInvisible…）、CalmingQuads、
+  WaveQuads。Type 1–4 是直角三角形，由「哪兩邊和別的水面相接」推得：1 去掉 maxX/maxY 角、2 去掉 maxX/minY、3 去掉 minX/minY、
+  4 去掉 minX/maxY。範圍 -4000..4500 × -4000..8000，外面另補到地平線的海。
+
+### 59.3 執行端（`GTAVRuntimeAssets`、`GTAVWorldData`、`GTAVWorldSubsystem`）
+
+- 串流照遊戲：物件在相機距它的**包圍盒**小於 lodDist 時畫（用原點時大型 LOD 區塊在近處不切換）；距離小於 childLodDist 且子物件
+  都載入好時整組換成子物件（子物件全部一起、強制顯示，不留洞）；群組的 ymap 只在群組開時；限時物件看鐘點；室內放置物件近時畫
+  它的物件和預設物件組；草批次在 lodDist 內畫成實例化元件。沒有父物件的物件依格子（256 m）放，格子帶包圍盒；lodDist > 2 km 的
+  直接每次檢查（204 個）。父物件在子物件畫好前不移除。
+- 載入：6 條背景迴圈依距離由近到遠取模型，直接產生頂點／索引緩衝（FStaticMeshBuildVertex → FStaticMeshRenderData），遊戲執行緒
+  只建物件與上傳（每幀 6 ms）。萊吉恩廣場第一個畫面 2540 個模型幾秒內完成（離屏 15 fps）。Lumen 表面快取用引擎的
+  SetCardsFromBounds（執行時建的網格也有全域光照）。**編輯器版要填 SectionInfoMap**，否則每段用第 n 個材質（材質全錯置）。
+- 卸載：材質與貼圖引用計數；超過 -gtavbudget（預設 3072 MB）時，20 秒沒用到的模型由舊到新釋放，連同只被它用的材質、貼圖；
+  模型準備好時它要的貼圖若已被釋放，自己補讀（否則會永遠等）。
+- 母材質的色調開關改成純量（執行時的實例不能改靜態開關）；水與海：雙向流動的 waterbump、Fresnel、淺水淡出但保留下限、Lumen
+  前層反射。
+- 實測：全地圖八個地點（好萊塢標誌、千年山、沙漠、帕立托、海灘、機場、農地、市中心）各約 8 秒載完；預算 1.5 GB 時繞 12 個點
+  釋放 9789 個模型、無卡死。
+
+### 59.4 Streamline（遊戲的 DLSS 介面，`src/loader/graphics/streamline.cpp`）
+
+- sl.interposer 匯出 slSetTag、slSetTagForFrame、slSetConstants、slEvaluateFeature 都掛得上。結構：BaseStructure 32 位元組；
+  ResourceTag 64 位元組（Resource* @32、BufferType @40、lifecycle @44、Extent〔top, left, width, height〕內嵌 @48）；Resource：
+  native（ID3D12Resource*）@40、state @64、寬 @68、高 @72、格式 @76；Constants：5 個 4x4 矩陣後 jitter @352、mvecScale @360、
+  pinhole @368、cameraPos/Up/Right/Fwd @376/388/400/412、near/far/fov/aspect @424..436；FrameToken 是介面（第一個虛擬函式回傳
+  畫格編號）。（曾把 FrameToken 當數值、把 ResourceTag 當 56 位元組，後者讀到 0x29 讓遊戲崩潰。）
+- 每格在渲染工作執行緒上（各自的命令列表）：slSetConstants（相機，遊戲座標）→ slSetTagForFrame（3 輸入色 1067x600 RGBA16F、
+  4 輸出色 1600x900 RGBA16F〔UAV 狀態〕、0 深度 R32G8X24、1 移動向量…）→ slEvaluateFeature(0)。畫格生成關閉時沒有「不含 UI 的
+  畫面」。DLSS 輸出是遊戲後製（泛光、色調映射、調色）與 UI 之前的線性 HDR 場景。
+
+### 59.5 接上遊戲（`src/loader/graphics/bridge.cpp`、`GTAVBridgeProtocol.h`、`GTAVBridgeSubsystem`）
+
+- loader.json `ue5Renderer`、`ue5Editor`、`ue5Project`、`ue5Pack`、`ue5Key`（F7）。故事模式第一次 DLSS 後（知道輸出尺寸）建立
+  共用記憶體 `Local\GTAVUE5Bridge-<pid>`、以工作物件（遊戲結束就關）啟動 `UnrealEditor.exe … -game -RenderOffscreen
+  -gtavbridge=<pid> -ResX -ResY`。
+- 每格（遊戲執行緒）：GET_FINAL_RENDERED_CAM_COORD／ROT(2)／FOV／NEAR／FAR、鐘點、GET_CURR_WEATHER_STATE；每 0.5 秒對 groups.txt
+  每個名稱 IS_IPL_ACTIVE（測試時 75 個開著）。
+- UE：等遊戲的下一個畫格才畫（一格對一格）；相機（垂直視角 → 水平、y 鏡像、roll 反號）、太陽依鐘點、群組；場景擴充在
+  MotionBlur 之後（泛光、色調映射之前）把場景顏色複製到共用貼圖（RGBA16F、SIMULTANEOUS_ACCESS、具名 NT 控制代碼），再
+  RHISignalManualFence 共用柵欄、公布值。UE 自己的動態模糊、景深關掉（遊戲會做）。
+- 遊戲：DLSS 評估錄好後，遊戲的直接佇列先 Wait(柵欄, 值)，在同一個命令列表上 輸出 UAV → COPY_DEST、CopyResource、轉回。
+  不動遊戲的描述元堆積。
+
+### 59.6 對齊遊戲的畫面（萊吉恩廣場固定腳本相機 `cam 150 -1010 55 -45 -12 50`）
+
+- **Streamline 的 cameraFwd 是相機的「後方」向量**（右手座標、相機看 -z）；取反才是視線方向（用腳本相機在萊吉恩廣場對過）。
+  fov 是垂直視角（度，50）；viewToClip[0] = 1.2063（水平 79.33°）、[5] = 2.1445，反向深度、近平面 0.1。
+- UE 的相機元件改 FieldOfView 沒用：玩家控制器的 PlayerCameraManager 會保持自己的 90°，要每格 SetFOV。
+- UE 的場景顏色是 FloatR11G11B10，和共用的 RGBA16F 格式不同，複製在關閉命令列表時 E_INVALIDARG；改用 AddDrawTexturePass 畫過去。
+  RDG 外用立即命令列表要包在 AddPostExecuteCallback → EnqueueLambda 裡（否則 "ComputeContext" 斷言）。
+- 亮度：UE 的自動曝光比遊戲暗約 2 EV（遊戲自己的後製在上面再做一次色調映射），目前用 `r.ExposureOffset 2`。
+- DLSS 時的模板值（`depthdump`，深度 R32 + 模板 8 位）：0x0 天空、0x3 一般（建築、地面）、0x4 地形／岩石、0x7 植物。
+  行人、車輛的值待查（萊吉恩廣場那張圖裡沒有）；計畫用它把遊戲自己畫的行人、車輛留在 UE 畫面上（DLSS 後的運算著色器合成）。
+- **調色盤（*_tnt）是逐頂點查的**：頂點藍色 = 欄、tintPaletteSelector = 列，查到的顏色再在三角形內內插。逐像素查時，兩個頂點
+  之間的藍色值會掃過中間的欄位，而調色盤裡夾著純藍、純綠、純紅等標記色（dt1_13_build1_pal：78–100 藍、102–125 綠、126–128 紅、
+  255 洋紅），噴水池的卵石地（normal_spec_pxm_tnt、normal_spec_decal_tnt，頂點藍色 47–254 連續變化）就出現藍綠色塊。母材質改用
+  VertexInterpolator 在頂點著色器取樣（mip 0）。同一張調色盤上整片同值的頂點（廣場的粉紅條紋 133、米黃 148）本來就是作者要的色。

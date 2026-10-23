@@ -12,6 +12,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../config.hpp"
@@ -107,11 +108,91 @@ namespace loader::graphics::bridge
 			return ok;
 		}
 
+		// Research: the depth and stencil the game gave DLSS, read back once on request (bridge::DumpDepth).
+		std::mutex g_dumpMutex;
+		std::wstring g_dumpPath;
+		ID3D12Resource* g_dumpBuffer = nullptr;
+
+		void DumpDepth(const streamline::DlssFrame& frame)
+		{
+			std::wstring path;
+			{
+				std::lock_guard lock(g_dumpMutex);
+				if (g_dumpPath.empty() || !frame.depth)
+					return;
+				path = std::move(g_dumpPath);
+				g_dumpPath.clear();
+			}
+			auto* depth = static_cast<ID3D12Resource*>(frame.depth);
+			ID3D12Device* device = nullptr;
+			if (FAILED(depth->GetDevice(IID_PPV_ARGS(&device))))
+				return;
+			const D3D12_RESOURCE_DESC desc = depth->GetDesc();
+			D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprints[2]{};
+			UINT rows[2]{};
+			UINT64 rowBytes[2]{}, total = 0;
+			device->GetCopyableFootprints(&desc, 0, 2, 0, footprints, rows, rowBytes, &total);
+			D3D12_HEAP_PROPERTIES heap{};
+			heap.Type = D3D12_HEAP_TYPE_READBACK;
+			D3D12_RESOURCE_DESC buffer{};
+			buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			buffer.Width = total;
+			buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+			buffer.SampleDesc.Count = 1;
+			buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			ID3D12Resource* readback = nullptr;
+			const bool made = SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback)));
+			device->Release();
+			if (!made)
+				return;
+			auto* list = static_cast<ID3D12GraphicsCommandList*>(frame.commandList);
+			D3D12_RESOURCE_BARRIER barrier{};
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = depth;
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barrier.Transition.StateBefore = static_cast<D3D12_RESOURCE_STATES>(frame.depthState);
+			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			list->ResourceBarrier(1, &barrier);
+			for (UINT plane = 0; plane < 2; ++plane)
+			{
+				D3D12_TEXTURE_COPY_LOCATION to{readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+				to.PlacedFootprint = footprints[plane];
+				D3D12_TEXTURE_COPY_LOCATION from{depth, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+				from.SubresourceIndex = plane;
+				list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+			}
+			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+			list->ResourceBarrier(1, &barrier);
+			// (the game runs the list soon: read it a moment later)
+			std::thread([readback, footprints0 = footprints[0], footprints1 = footprints[1], rows0 = rows[0], rows1 = rows[1], path,
+			                width = frame.renderWidth, height = frame.renderHeight] {
+				Sleep(2000);
+				void* data = nullptr;
+				if (SUCCEEDED(readback->Map(0, nullptr, &data)))
+				{
+					std::ofstream out(std::filesystem::path(path), std::ios::binary);
+					const uint32_t header[8] = {footprints0.Footprint.Width, rows0, footprints0.Footprint.RowPitch, static_cast<uint32_t>(footprints0.Offset),
+					    footprints1.Footprint.Width, rows1, footprints1.Footprint.RowPitch, static_cast<uint32_t>(footprints1.Offset)};
+					out.write(reinterpret_cast<const char*>(header), sizeof(header));
+					const uint32_t used[2] = {width, height};
+					out.write(reinterpret_cast<const char*>(used), sizeof(used));
+					const size_t size = footprints1.Offset + size_t{footprints1.Footprint.RowPitch} * rows1;
+					out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+					readback->Unmap(0, nullptr);
+					log::Info("ue5 bridge: depth and stencil written ({}x{}, in use {}x{})", footprints0.Footprint.Width, rows0, width, height);
+				}
+				readback->Release();
+			}).detach();
+		}
+
 		// Right after the game's DLSS pass: the renderer's newest frame over DLSS's output, once the game's queue has
 		// waited for it.
-		void AfterDlss(void* commandList, void* output, uint32_t outputState)
+		void AfterDlss(const streamline::DlssFrame& frame)
 		{
-			auto* target = static_cast<ID3D12Resource*>(output);
+			DumpDepth(frame);
+			void* commandList = frame.commandList;
+			const uint32_t outputState = frame.outputState;
+			auto* target = static_cast<ID3D12Resource*>(frame.output);
 			const D3D12_RESOURCE_DESC desc = target->GetDesc();
 			g_width = static_cast<uint32_t>(desc.Width);
 			g_height = desc.Height;
@@ -387,5 +468,11 @@ namespace loader::graphics::bridge
 	bool Showing()
 	{
 		return g_showing && g_shared && g_shared->rendererState == 1;
+	}
+
+	void DumpDepth(const std::wstring& path)
+	{
+		std::lock_guard lock(g_dumpMutex);
+		g_dumpPath = path;
 	}
 }

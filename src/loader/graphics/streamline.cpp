@@ -41,9 +41,8 @@ namespace loader::graphics::streamline
 		std::atomic<AfterDlss> g_afterDlss = nullptr;
 		std::atomic<OnCamera> g_onCamera = nullptr;
 		// The output colour tagged last on this thread (the game tags, then evaluates, on one render thread).
-		thread_local void* t_output = nullptr;
-		thread_local uint32_t t_outputState = 0;
-		constexpr uint32_t kBufferScalingOutputColor = 4, kFeatureDlss = 0;
+		thread_local DlssFrame t_frame;
+		constexpr uint32_t kBufferDepth = 0, kBufferScalingInputColor = 3, kBufferScalingOutputColor = 4, kFeatureDlss = 0;
 
 		void RememberOutput(const void* tags, uint32_t count)
 		{
@@ -54,10 +53,22 @@ namespace loader::graphics::streamline
 				const uint8_t* resource = nullptr;
 				std::memcpy(&type, t + kTagType, 4);
 				std::memcpy(&resource, t + kTagResource, 8);
-				if (type == kBufferScalingOutputColor && resource)
+				if (!resource)
+					continue;
+				void** target = type == kBufferScalingOutputColor ? &t_frame.output : type == kBufferScalingInputColor ? &t_frame.input
+				              : type == kBufferDepth                ? &t_frame.depth
+				                                                    : nullptr;
+				uint32_t* state = type == kBufferScalingOutputColor ? &t_frame.outputState : type == kBufferScalingInputColor ? &t_frame.inputState
+				                : type == kBufferDepth                ? &t_frame.depthState
+				                                                      : nullptr;
+				if (!target)
+					continue;
+				std::memcpy(target, resource + kResourceNative, 8);
+				std::memcpy(state, resource + 64, 4);
+				if (type == kBufferScalingInputColor)
 				{
-					std::memcpy(&t_output, resource + kResourceNative, 8);
-					std::memcpy(&t_outputState, resource + 64, 4);
+					std::memcpy(&t_frame.renderWidth, t + 56, 4); // (the extent's width and height)
+					std::memcpy(&t_frame.renderHeight, t + 60, 4);
 				}
 			}
 		}
@@ -193,9 +204,12 @@ namespace loader::graphics::streamline
 			if (Tracing(index))
 				log::Info("streamline: thread {} frame {} slEvaluateFeature {} cmd {} inputs {}", GetCurrentThreadId(), index, feature, commandList, count);
 			const int result = g_evaluateFeature(feature, frame, inputs, count, commandList);
-			if (feature == kFeatureDlss && result == 0 && t_output && commandList)
+			if (feature == kFeatureDlss && result == 0 && t_frame.output && commandList)
 				if (const AfterDlss after = g_afterDlss.load(std::memory_order_relaxed))
-					after(commandList, t_output, t_outputState);
+				{
+					t_frame.commandList = commandList;
+					after(t_frame);
+				}
 			return result;
 		}
 

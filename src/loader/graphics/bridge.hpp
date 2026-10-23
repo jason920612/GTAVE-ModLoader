@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 
 // The graphics mod's bridge to the UE5 renderer (research/phase0.md §59.5): with loader.json "ue5Renderer" on, the
 // loader starts the renderer (ue5/, the pack files ue5export made), gives it the game's view and world state every
@@ -17,4 +18,7 @@ namespace loader::graphics::bridge
 	void Stop();
 	// The renderer's picture is the one shown.
 	bool Showing();
+	// Research: the depth and stencil of the next DLSS pass to a file (header: plane widths, rows, row pitches, offsets;
+	// the size in use; then the planes).
+	void DumpDepth(const std::wstring& path);
 }

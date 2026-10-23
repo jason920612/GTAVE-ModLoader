@@ -20,6 +20,7 @@
 
 #include "../config.hpp"
 #include "../game/natives.hpp"
+#include "../graphics/bridge.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../state.hpp"
@@ -36,6 +37,7 @@ namespace loader::debug::remote
 		                   kDestroyCam = 0x865908C81A2C22E9, kSetFocusPosAndVel = 0xBB7454BAFF08FE25, kClearFocus = 0x31B73D1EA9F01DA2,
 		                   kSetClockTime = 0x47C3B5848C3E45D8, kPauseClock = 0x4055E40BD2DBEC1D, kSetWeatherTypeNowPersist = 0xED712CA327900C8A,
 		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5;
+		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6, kSetEntityCoords = 0x06843DA7060A026B;
 		struct CamRequest
 		{
 			bool pending = false, on = false;
@@ -51,6 +53,8 @@ namespace loader::debug::remote
 		std::mutex g_mutex;
 		std::map<int, Held> g_held; // control -> how long
 		CamRequest g_cam;            // (the game thread applies it)
+		bool g_teleport = false;
+		float g_teleportTo[3] = {};
 		int32_t g_camHandle = 0;
 
 		// Keys for the game itself, frontend menus included (they pause scripts, so controls cannot reach them). The
@@ -462,6 +466,26 @@ namespace loader::debug::remote
 				std::string error;
 				return ui::Capture(wpath, error) ? "ok" : "err " + error;
 			}
+			if (cmd == "depthdump")
+			{
+				std::string path;
+				std::getline(in >> std::ws, path);
+				const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+				std::wstring wpath(static_cast<size_t>(wide), L'\0');
+				MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+				wpath.resize(wcslen(wpath.c_str()));
+				graphics::bridge::DumpDepth(wpath);
+				return "ok";
+			}
+			if (cmd == "tp")
+			{
+				// tp x y z: the player there
+				std::lock_guard lock(g_mutex);
+				if (!(in >> g_teleportTo[0] >> g_teleportTo[1] >> g_teleportTo[2]))
+					return "err tp x y z";
+				g_teleport = true;
+				return "ok";
+			}
 			if (cmd == "cam")
 			{
 				// cam x y z heading pitch [fov]  |  cam off
@@ -599,6 +623,12 @@ namespace loader::debug::remote
 			}
 			game::natives::Invoke<int>(kSetControlValueNextFrame, 0, it->first, it->second.value);
 			++it;
+		}
+		if (g_teleport)
+		{
+			g_teleport = false;
+			game::natives::Invoke<void>(kSetEntityCoords, game::natives::Invoke<int32_t>(kPlayerPedId), g_teleportTo[0], g_teleportTo[1], g_teleportTo[2], 0, 0, 0, 1);
+			log::Info("remote: player to {:.1f} {:.1f} {:.1f}", g_teleportTo[0], g_teleportTo[1], g_teleportTo[2]);
 		}
 		if (g_cam.pending)
 		{
