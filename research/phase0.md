@@ -2330,3 +2330,69 @@
   （腳本觸發的破壞場景，定義在 ytyp 的另一個陣列）。
 - 還沒做：預設關閉、要腳本開啟的地圖區塊（IPL 群組，例如炸毀前後的建築會同時出現）。故事模式的地圖清單
   `update.rpf/x64/levels/gta5/sp_manifest.ymt` 是另一種二進位格式（PSO，`PSIN` 開頭），待解。
+
+### 58.4 模型、材質、貼圖的匯出（`tools/ue5export/drawable.cpp`、`exporter.cpp`）
+
+- 可繪物件（ydr 根、ydd 字典 `+0x20` 雜湊陣列／`+0x30` 可繪物件陣列、yft `+0x30`）：`+0x10` 著色器群組、`+0x30/+0x40` 包圍盒、
+  `+0x50` 最精細 LOD 的模型清單（指標陣列 + u16 數量）。模型：`+0x08` 幾何體陣列、`+0x10` u16 數量、`+0x20` 每個幾何體的著色器編號（u16）。
+  幾何體：`+0x18` 頂點緩衝區（`+0x08` 數量、`+0x0C` 步長、`+0x18` 資料、`+0x38` 宣告）、`+0x38` 索引緩衝區（`+0x08` 數量、`+0x0C` 2 或 4）。
+  地圖模型的頂點都是交錯排列：位置、法線 float3，切線 float4，顏色 RGBA8，UV float2（宣告 `+0x138` 位元 0 = 每元件獨立串流，地圖沒見到）。
+- 著色器群組：`+0x08` 內嵌貼圖字典、`+0x10` 著色器陣列、`+0x18` 數量。著色器：`+0x00` 效果雜湊、`+0x08` 常數緩衝區指標陣列、
+  `+0x10` 貼圖指標陣列、`+0x20` 參數表、`+0x39` 繪製分組（0 不透明、1 半透明、2 貼花、3 鏤空；同一個效果會出現在不同分組）。
+  參數表：8 位元組標頭（[0] 常數緩衝區數、[1] 貼圖數、[3] 取樣器數、**[4] 全部項目數**），項目 (名稱雜湊, 資訊)：資訊 & 3 =
+  0 貼圖（(>>2)&0x3F 是貼圖槽）、2 取樣器、3 常數（同欄位是緩衝區、(>>8)&0xFFF 位移、>>20 大小）。參數不必從遊戲的效果擷取。
+- 參數名稱是**小寫** joaat（和地圖中繼資料不同）：DiffuseTex、BumpTex、SpecularTex、DetailTex、DirtTex、DirtBumpTex、TintPaletteTex、
+  DiffuseTexture_layer0–3、BumpTexture_layer0–3、HeightTexture、LookupTexture、NoiseTex、SnowTex、DamageTexture、PlateBgTex、
+  PlateBgBumpTex、VolumeTex；常數 bumpiness、wetnessMultiplier、useTessellation、HardAlphaBlend、globalAnimUV0/1、
+  emissiveMultiplier、detailSettings、tintPaletteSelector、AlphaTest… 效果名稱遊戲裡找不到清單（只有雜湊），先依貼圖組合分類。
+- 貼圖（0x80）：`+0x08` u32 區塊數、`+0x0C` u16 區塊大小、`+0x18/+0x1A/+0x1C` 寬高深、`+0x1F` DXGI 格式、`+0x22` mip 數、
+  `+0x28` 名稱、`+0x38` 資料。資料就是標準的 BC 區塊、mip 依序緊密排列，加 DDS 檔頭（DX10）即可（預覽正確）。
+- 貼圖的找法（遊戲的順序）：可繪物件的 `<名稱>+hidr.ytd`（靠近時換上的高畫質版）→ 內嵌字典 → 物件類型的 txd（先 `+hi`）→
+  父字典鏈（原版 `levels/gta5/generic/gtxd.rpf/gtxd.ymt` 是 RBF 二進位表：字串值 `FD FF <u16 長度> <u16> 字串\0`，依序 parent、
+  child，2983 組；DLC 包的 `common/data/gtxd.meta` 是 XML）→ 全域細節貼圖 `x64a.rpf/textures/mapdetail.ytd`（env_*）。
+  萊吉恩廣場：562 個實體、133 個模型、642 張貼圖，找不到的只剩 12 處（草的地形貼圖）。
+- 輸出（`<匯出>\export`）：`models\<名稱>.gmesh`（自訂二進位：各段的材質、頂點、索引、屬性旗標、UV 組數、資料）+ `.json`
+  （效果、分組、貼圖 `<字典>/<貼圖>`、常數、包圍盒）、`textures\<字典>\<貼圖>.dds`、`areas\<名稱>.json`（實體：物件類型、
+  位置、旋轉（照存的）、縮放）。不用 glTF：幾萬個模型走引擎的 glTF 匯入太慢，自己的外掛直接建網格也保留多組 UV 與頂點顏色。
+
+### 58.5 UE5 專案與匯入（`ue5/`、`tools/ue5_setup.py`）
+
+- 專案建在匯出資料夾旁（`D:\GTAV-UE5\Project`），轉出來的遊戲資源永遠不靠近專案庫；原始碼、設定、外掛每次從專案庫的 `ue5\`
+  複製過去（D 槽是 exFAT，不能建目錄連結）。UE 5.8.2 + MSVC 14.44 編譯外掛約 1.5 分鐘。設定：DX12 SM6、Lumen（硬體光追）、
+  虛擬陰影、Nanite、虛擬貼圖、不用靜態光照。
+- `GTAVImport` 指令（無畫面 `UnrealEditor-Cmd -run=GTAVImport -export=<匯出資料夾> -area=<名稱>`）：
+  - 座標：遊戲（公尺、右手、z 上）→ UE（公分、左手）：y 取反、副法線符號取反；旋轉 (x,y,z,w) → (-x,y,-z,w)（ymap 存的就是實體的旋轉，
+    不是反向；與遊戲同角度截圖比對，傾斜的立方體角度一致）。**三角形照遊戲的順序**：鏡像本來會翻轉繞序，但引擎的正面也是反過來的
+    （一開始反轉了，從上往下看時地面全部被當成背面剔除）。
+  - 網格：FMeshDescription → UStaticMesh，開 Nanite（有半透明材質的不開：Nanite 不畫半透明），BatchBuild 平行建置。
+  - 貼圖：引擎的 DDS 匯入不收區塊壓縮（「DDS DXGIFormat not supported : 77 : BC3_UNORM」），外掛自己解 BC1–BC5 成 BGRA8
+    當來源，讓引擎依用途重新壓縮（法線圖 TC_Normalmap、遮罩類線性）。BC7 還沒做（萊吉恩廣場沒用到）。
+  - 母材質依繪製分組（不透明、半透明（貼花暫時也用它）、鏤空（雙面）、水（分組 6））與四層地形：DiffuseTex → 底色、BumpTex → 法線、
+    SpecularTex 紅色 → 高光與粗糙度；材質實例依貼圖組合共用。母材質要在匯入時就勾 Nanite／實例化網格的用途（遊戲執行時不能補，
+    會退回預設材質）；取樣類型要和預設貼圖一致（高光圖用自建的線性黑色遮罩貼圖，引擎的 Black 是 sRGB，整個材質會編譯失敗）。
+  - 地圖：一個區域一個關卡，加太陽（大氣陽光）、天空大氣、即時擷取的天光、體積雲、高度霧。
+  - 萊吉恩廣場：133 個網格、555 張貼圖、562 個實體，存 1009 個資源，約 30 秒。關卡世界要在存檔後 DestroyWorld，
+    否則結束時 WorldPartitionSubsystem 的 ensure 讓程式當掉。
+- 截圖模式（`GTAVRenderer` 遊戲模組的 UGTAVShotSubsystem）：`UnrealEditor.exe <專案> /Game/GTAV/Maps/<區域> -game -RenderOffscreen
+  -gtavcam=x,y,z,方向,俯仰 -gtavshot=<檔案>`，相機用遊戲座標（方向照遊戲：0 北、90 西），等著色器編譯完再倒數截圖、結束。
+
+### 58.6 和遊戲對照：萊吉恩廣場（`tools/ue5export` + `GTAVImporter`）
+
+- 對照方法：UE 截圖模式 `-gtavcam=150,-1010,55,-45,-12`；遊戲端測試探針 `test_cam.txt "at x y z 方向 俯仰 [視角]"`（腳本相機、正午、
+  晴天、玩家藏在下面讓串流跟著；UE 的水平 60° 約等於遊戲的垂直 36°）。兩邊取景幾乎完全重合：位置、鏡像、相機換算都對。
+- 區域篩選要用實體的包圍範圍（物件類型 bbMin/bbMax × 縮放），不是原點：大的地面、道路網格原點常在區域外。萊吉恩廣場一帶 754 個實體、
+  298 個模型。
+- **色調盤**（*_tnt 類著色器，帶 TintPaletteTex）：漫射貼圖是灰階，顏色 = 色調盤[行 = 第一組頂點顏色的藍色（0–255），列 =
+  tintPaletteSelector]。萊吉恩廣場的牆 101 灰紫、立方體 133 紅、黃牆 148 黃，和遊戲一致。色調盤匯入成不壓縮、最近點、無 mip。
+  頂點顏色用 `FLinearColor::FromSRGBColor` 存（引擎建網格時的 sRGB 轉換的精確反函數），材質讀到的就是遊戲的位元組值。
+- 頂點顏色紅色 = 自然環境遮蔽（接到 UE 的環境遮蔽）；地形的混合權重在**第二組**頂點顏色（綠、藍），網格把它放進頂點顏色。
+- 貼花（分組 2）多半是沒有透明度的 BC1，遊戲用**頂點透明度**淡出：不透明度 = 貼圖透明度 × 頂點透明度（沒乘之前整片深色水漬蓋在牆上）。
+- 水（分組 6，例如噴水池）：沒有貼圖，常數 e9c969fb 是水色；遊戲的水主要是反射，底色壓暗、低粗糙度、高反射、半透明，並開
+  Lumen 的半透明前層反射。
+- 自發光：emissiveMultiplier（例：招牌燈 16）× 底色。
+- UE 端踩到的坑：Git Bash 會把 `/Game/...` 轉成 `C:/Program Files/Git/Game/...`（設 `MSYS_NO_PATHCONV=1`）；`FParse::Value` 遇到逗號
+  就停（要 `bShouldStopOnSeparator=false`）；離屏渲染沒有顯示這一步節制，CPU 一路往前送命令，堆到 D3D12 residency set 上限（1024）
+  當掉（`t.MaxFPS 15, r.FinishCurrentFrame 1`）；關掉 residency 管理則第一格就 GPU 頁面錯誤。匯入指令在 -nullrhi 下不會替平台壓縮
+  貼圖，第一次在遊戲模式打開時才壓（之後在 DDC 裡）。
+- 還沒做：地形四層混合的確認（權重通道、UV 組）、細節貼圖（DetailTex + detailSettings）、視差高度圖（HeightTexture、nxg_*_h）、
+  每個實體的 tintValue（同一模型不同列）、樹的風、BC7、室內（MLO）、預設關閉的地圖區塊（sp_manifest.ymt）、遠景。

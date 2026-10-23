@@ -53,8 +53,6 @@ namespace
 		}
 	};
 
-	// sRGB byte -> linear (vertex colours are stored as authored).
-	float Linear(uint8 C) { return FMath::Pow(C / 255.0f, 2.2f); }
 }
 
 FGTAVMeshes::FGTAVMeshes(const FString& InExportRoot, FGTAVMaterials& InMaterials)
@@ -121,6 +119,7 @@ UStaticMesh* FGTAVMeshes::Create(const FString& Name, const FString& PackageName
 	TMap<uint32, FPolygonGroupID> Groups; // material -> polygon group
 	TArray<UMaterialInterface*> SlotMaterials;
 	TArray<FName> SlotOrder;
+	TSet<uint32> TerrainMaterials;
 	bool bTranslucent = false, bNormals = true, bTangents = true;
 	int32 UvChannels = 1;
 	for (uint32 S = 0; S < SectionCount && R.bOk; ++S)
@@ -154,13 +153,19 @@ UStaticMesh* FGTAVMeshes::Create(const FString& Name, const FString& PackageName
 			const FName Slot(*FString::Printf(TEXT("m%u"), Material));
 			Group = &Groups.Add(Material, Description.CreatePolygonGroup());
 			SlotNames[*Group] = Slot;
-			bool bThisTranslucent = false;
+			bool bThisTranslucent = false, bThisTerrain = false;
 			UMaterialInterface* MI = MaterialsJson && MaterialsJson->IsValidIndex(Material)
-				? Materials.Get((*MaterialsJson)[Material]->AsObject(), bThisTranslucent) : nullptr;
+				? Materials.Get((*MaterialsJson)[Material]->AsObject(), bThisTranslucent, bThisTerrain) : nullptr;
 			bTranslucent |= bThisTranslucent;
 			SlotMaterials.Add(MI);
 			SlotOrder.Add(Slot);
+			if (bThisTerrain)
+			{
+				TerrainMaterials.Add(Material);
+			}
 		}
+		// Terrain: the blend weights are the second colour set (green, blue); red keeps the first set's red.
+		const bool bTerrainColors = TerrainMaterials.Contains(Material) && C1.Num();
 		TArray<FVertexInstanceID> Instances;
 		Instances.SetNum(VertexCount);
 		for (uint32 V = 0; V < VertexCount; ++V)
@@ -178,7 +183,18 @@ UStaticMesh* FGTAVMeshes::Create(const FString& Name, const FString& PackageName
 				Tangents[Instance] = GTAV::Direction(T[4 * V], T[4 * V + 1], T[4 * V + 2]);
 				BinormalSigns[Instance] = T[4 * V + 3] < 0 ? 1.0f : -1.0f; // (mirrored: the sign flips)
 			}
-			Colors[Instance] = C0.Num() ? FVector4f(Linear(C0[4 * V]), Linear(C0[4 * V + 1]), Linear(C0[4 * V + 2]), C0[4 * V + 3] / 255.0f) : FVector4f(1, 1, 1, 1);
+			// (the exact inverse of the engine's sRGB conversion when it builds the mesh: the material reads the game's bytes)
+			FColor Color(255, 255, 255, 255);
+			if (bTerrainColors)
+			{
+				Color = FColor(C0.Num() ? C0[4 * V] : 255, C1[4 * V + 1], C1[4 * V + 2], 255);
+			}
+			else if (C0.Num())
+			{
+				Color = FColor(C0[4 * V], C0[4 * V + 1], C0[4 * V + 2], C0[4 * V + 3]);
+			}
+			const FLinearColor Linear = FLinearColor::FromSRGBColor(Color);
+			Colors[Instance] = FVector4f(Linear.R, Linear.G, Linear.B, Linear.A);
 			for (int32 K = 0; K < UvChannels; ++K)
 			{
 				UVs.Set(Instance, K, K < Uv.Num() ? FVector2f(Uv[K][2 * V], Uv[K][2 * V + 1]) : FVector2f::ZeroVector);
@@ -191,8 +207,8 @@ UStaticMesh* FGTAVMeshes::Create(const FString& Name, const FString& PackageName
 			{
 				continue;
 			}
-			// (mirrored: the winding flips)
-			Description.CreateTriangle(*Group, {Instances[A], Instances[C], Instances[B]});
+			// (the game's order as it is: mirroring flips the winding, and the engine's front faces wind the other way)
+			Description.CreateTriangle(*Group, {Instances[A], Instances[B], Instances[C]});
 		}
 	}
 	if (!R.bOk || Description.Triangles().Num() == 0)

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "convert/archive.hpp"
+#include "drawable.hpp"
 #include "exporter.hpp"
 #include "gamefiles.hpp"
 #include "mapdata.hpp"
@@ -205,6 +206,35 @@ namespace
 		return 0;
 	}
 
+	// Texture formats over every --step'th texture dictionary of the map (DXGI format -> textures).
+	int TextureStats(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const size_t step = g_options.contains("step") ? std::stoul(g_options["step"]) : 20;
+		std::map<int, size_t> formats;
+		size_t n = 0, dictionaries = 0;
+		for (const auto& [name, file] : files.Files())
+		{
+			if (!name.ends_with(".ytd") || n++ % step)
+				continue;
+			loader::convert::Bytes data;
+			loader::convert::Resource resource;
+			if (!files.Read(file, data, error) || !loader::convert::Read(data, resource, error))
+				continue;
+			++dictionaries;
+			const ue5export::drawable::View view(resource);
+			for (const auto& t : ue5export::drawable::Textures(view, ue5export::drawable::View::kRoot))
+				++formats[t.dxgi];
+		}
+		std::printf("%zu dictionaries sampled\n", dictionaries);
+		for (const auto& [format, count] : formats)
+			std::printf("  DXGI %d: %zu\n", format, count);
+		return 0;
+	}
+
 	int Index(const loader::convert::Decryptor& decrypt)
 	{
 		const fs::path game = g_options["game"];
@@ -266,6 +296,8 @@ int main(int argc, char** argv)
 		return Map(decrypt);
 	if (command == "area")
 		return ExportArea(decrypt);
+	if (command == "texstats")
+		return TextureStats(decrypt);
 	if (command == "extract")
 		return g_options.contains("file") ? Extract(decrypt) : Fail("--file <path> is needed");
 	return Fail("unknown command " + command);

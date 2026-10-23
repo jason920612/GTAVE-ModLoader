@@ -103,6 +103,19 @@ bool GTAVDds::Decode(const TArray<uint8>& File, bool bNormalMap, int32& OutWidth
 			OutPixels[Y * W + X] = FColor(R, G, B, A);
 		}
 	};
+	if (Format == 65) // A8
+	{
+		if (Size < int64(W) * H)
+		{
+			OutError = TEXT("cut short");
+			return false;
+		}
+		for (int32 I = 0; I < W * H; ++I)
+		{
+			OutPixels[I] = FColor(255, 255, 255, Data[I]);
+		}
+		return true;
+	}
 	if (Format == 87 || Format == 28) // B8G8R8A8 / R8G8B8A8
 	{
 		if (Size < int64(W) * H * 4)

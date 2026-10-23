@@ -9,12 +9,20 @@
 #include "UnrealClient.h"
 #if WITH_EDITOR
 #include "ShaderCompiler.h"
+#include "StaticMeshCompiler.h"
+#include "TextureCompiler.h"
 #endif
 
 bool UGTAVShotSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
 	return World && World->IsGameWorld() && FString(FCommandLine::Get()).Contains(TEXT("-gtavshot="));
+}
+
+void UGTAVShotSubsystem::OnWorldBeginPlay(UWorld& World)
+{
+	Super::OnWorldBeginPlay(World);
+	UE_LOG(LogTemp, Display, TEXT("GTAVShot: begin play in %s"), *World.GetName());
 }
 
 void UGTAVShotSubsystem::Tick(float DeltaTime)
@@ -29,7 +37,7 @@ void UGTAVShotSubsystem::Tick(float DeltaTime)
 	{
 		APlayerController* PC = World->GetFirstPlayerController();
 		FString Cam;
-		if (!PC || !FParse::Value(FCommandLine::Get(), TEXT("-gtavcam="), Cam))
+		if (!PC || !FParse::Value(FCommandLine::Get(), TEXT("-gtavcam="), Cam, false))
 		{
 			return;
 		}
@@ -51,18 +59,21 @@ void UGTAVShotSubsystem::Tick(float DeltaTime)
 		Camera->GetCameraComponent()->bConstrainAspectRatio = false;
 		PC->SetViewTarget(Camera);
 		bPlaced = true;
+		UE_LOG(LogTemp, Display, TEXT("GTAVShot: camera at %s looking %s"), *Camera->GetActorLocation().ToString(), *Rotation.ToString());
 		return;
 	}
 #if WITH_EDITOR
-	// (the first run compiles the materials' shaders: the delay counts from when that is done)
-	if (GShaderCompilingManager && GShaderCompilingManager->GetNumRemainingJobs() > 0)
+	// (the first run compiles shaders, textures, meshes: the delay counts from when that is done)
+	const int32 Pending = (GShaderCompilingManager ? GShaderCompilingManager->GetNumRemainingJobs() : 0) +
+		FTextureCompilingManager::Get().GetNumRemainingTextures() + FStaticMeshCompilingManager::Get().GetNumRemainingMeshes();
+	if (Pending > 0)
 	{
 		StartTime = Now;
 		static double Told = 0;
 		if (Now - Told > 30)
 		{
 			Told = Now;
-			UE_LOG(LogTemp, Display, TEXT("GTAVShot: %d shader jobs left"), GShaderCompilingManager->GetNumRemainingJobs());
+			UE_LOG(LogTemp, Display, TEXT("GTAVShot: %d shaders, textures, meshes left"), Pending);
 		}
 		return;
 	}
@@ -72,8 +83,9 @@ void UGTAVShotSubsystem::Tick(float DeltaTime)
 	if (!bShot && Now - StartTime > Delay)
 	{
 		FString File;
-		FParse::Value(FCommandLine::Get(), TEXT("-gtavshot="), File);
+		FParse::Value(FCommandLine::Get(), TEXT("-gtavshot="), File, false);
 		FScreenshotRequest::RequestScreenshot(File, false, false);
+		UE_LOG(LogTemp, Display, TEXT("GTAVShot: screenshot %s"), *File);
 		bShot = true;
 		ShotTime = Now;
 	}

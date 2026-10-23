@@ -17,6 +17,8 @@
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "StaticMeshCompiler.h"
+#include "TextureCompiler.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -95,11 +97,14 @@ int32 UGTAVImportCommandlet::Main(const FString& Params)
 		Meshes.Get(E->AsObject()->GetStringField(TEXT("archetype")));
 	}
 	Meshes.Build();
+	// Compressed textures and built meshes in the cache now, not when the level is first shown.
+	FTextureCompilingManager::Get().FinishAllCompilation();
+	FStaticMeshCompilingManager::Get().FinishAllCompilation();
 	UE_LOG(LogGTAVImport, Display, TEXT("%d meshes built (%d failed), %d textures imported (%d missing) in %.0f s"), Meshes.Created, Meshes.Failed,
 		Materials.TexturesImported, Materials.TexturesMissing, FPlatformTime::Seconds() - Start);
 
 	// The area as a level.
-	const FString MapName = GTAV::AssetName(Area);
+	const FString MapName = GTAV::AssetName(Area) + (bInverse ? TEXT("_inv") : TEXT(""));
 	UPackage* MapPackage = CreatePackage(*(TEXT("/Game/GTAV/Maps/") + MapName));
 	UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, FName(*MapName), MapPackage);
 	World->SetFlags(RF_Public | RF_Standalone);

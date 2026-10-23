@@ -269,10 +269,16 @@ namespace ue5export
 		{
 			if ((e.lodLevel != mapdata::kHd && e.lodLevel != mapdata::kOrphanHd) || e.interior)
 				continue;
-			if (e.position[0] < area.bounds[0] || e.position[1] < area.bounds[1] || e.position[0] > area.bounds[2] || e.position[1] > area.bounds[3])
-				continue;
 			const auto a = map.archetypes.find(e.archetype);
 			if (a == map.archetypes.end() || a->second.assetType == mapdata::AssetType::Assetless)
+				continue;
+			// In the area when its bounds reach into it (big ground and road meshes have their origin far away).
+			float radius = 0;
+			for (int i = 0; i < 3; ++i)
+				radius = std::max({radius, std::abs(a->second.bbMin[i]), std::abs(a->second.bbMax[i])});
+			radius *= std::max(e.scaleXY, e.scaleZ) * 1.7321f;
+			if (e.position[0] + radius < area.bounds[0] || e.position[1] + radius < area.bounds[1] || e.position[0] - radius > area.bounds[2] ||
+			    e.position[1] - radius > area.bounds[3])
 				continue;
 			archetypes.insert(e.archetype);
 			entities.push_back({{"archetype", stem(e.archetype)},
