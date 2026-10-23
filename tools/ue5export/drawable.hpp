@@ -62,6 +62,17 @@ namespace ue5export::drawable
 		std::vector<uint32_t> indices;
 	};
 
+	// A light attribute of a drawable (0xA8 bytes each; research/phase0.md §59.9), in the game's space (metres).
+	struct Light
+	{
+		std::array<float, 3> position{}, direction{};
+		std::array<uint8_t, 3> color{};
+		uint8_t type = 0; // 1 point, 2 spot, 4 capsule
+		uint16_t bone = 0;
+		float intensity = 0, falloff = 0, falloffExponent = 0, coneInner = 0, coneOuter = 0;
+		uint32_t timeFlags = 0, flags = 0;
+	};
+
 	struct Model
 	{
 		std::vector<Section> sections;
@@ -71,11 +82,15 @@ namespace ue5export::drawable
 		std::array<float, 4> sphere{};       // centre, radius
 		std::array<float, 4> lodDistances{}; // per level of detail
 		uint8_t lodCount = 0;
+		std::vector<Light> lights;
 		std::vector<std::string> warnings;
 	};
 
 	// The drawable at `at` (a pointer into the resource): every level of detail it has (allLods) or the highest.
 	bool Read(const View& view, uint64_t at, Model& out, std::string& error, bool allLods = false);
+	// The light attributes of an atArray at `field`: a drawable's (+0xB0) or a fragment's (+0x110). Only lights on the
+	// root bone (the others need the skeleton's pose).
+	std::vector<Light> Lights(const View& view, uint64_t field);
 	// Drawables of a resource by kind: ydr -> one (hash 0), ydd -> name hash -> drawable, yft -> its main drawable.
 	std::map<uint32_t, uint64_t> Drawables(const View& view, const std::string& extension);
 	// The textures of a dictionary (ytd root, or a drawable's shader group dictionary).

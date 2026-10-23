@@ -294,6 +294,7 @@ namespace ue5export
 			header.lodCount = std::max<uint8_t>(1, m.model.lodCount);
 			header.materialCount = static_cast<uint16_t>(m.model.materials.size());
 			header.sectionCount = static_cast<uint16_t>(m.model.sections.size());
+			header.flags = m.model.lights.empty() ? 0 : GTAVPack::kModelLights;
 			Put(out, header);
 			for (size_t i = 0; i < m.model.materials.size(); ++i)
 			{
@@ -374,6 +375,24 @@ namespace ue5export
 						Put(out, static_cast<uint16_t>(i));
 				while (out.size() % 4)
 					out.push_back(0);
+			}
+			if (!m.model.lights.empty())
+			{
+				Put(out, static_cast<uint32_t>(m.model.lights.size()));
+				for (const drawable::Light& l : m.model.lights)
+				{
+					GTAVPack::ModelLight x{};
+					Point(l.position, x.position);
+					x.direction[0] = l.direction[0], x.direction[1] = -l.direction[1], x.direction[2] = l.direction[2];
+					std::memcpy(x.color, l.color.data(), 3);
+					x.type = l.type;
+					x.intensity = l.intensity;
+					x.falloff = l.falloff * 100;
+					x.falloffExponent = l.falloffExponent;
+					x.coneInner = l.coneInner, x.coneOuter = l.coneOuter;
+					x.timeFlags = l.timeFlags, x.flags = l.flags;
+					Put(out, x);
+				}
 			}
 			return out;
 		}

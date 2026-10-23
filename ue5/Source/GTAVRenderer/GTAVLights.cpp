@@ -75,9 +75,42 @@ void FGTAVLights::Gather(const FVector& Camera, float Radius, int32 Hour, TArray
 	}
 }
 
+void FGTAVLights::AddEntity(uint64 Key, const FTransform& Transform, const TArray<GTAVPack::ModelLight>& Model)
+{
+	TArray<GTAVPack::LodLight>& Out = EntityLights.FindOrAdd(Key);
+	Out.Reset();
+	for (const GTAVPack::ModelLight& M : Model)
+	{
+		GTAVPack::LodLight L{};
+		const FVector P = Transform.TransformPosition(FVector(M.position[0], M.position[1], M.position[2]));
+		const FVector D = Transform.TransformVectorNoScale(FVector(M.direction[0], M.direction[1], M.direction[2])).GetSafeNormal();
+		L.position[0] = float(P.X), L.position[1] = float(P.Y), L.position[2] = float(P.Z);
+		L.direction[0] = float(D.X), L.direction[1] = float(D.Y), L.direction[2] = float(D.Z);
+		L.falloff = M.falloff * float(Transform.GetScale3D().X);
+		L.falloffExponent = M.falloffExponent;
+		// (the game's intensity in the LOD lights' byte: a lit window, 8, is about 42 there)
+		const uint32 I = uint32(FMath::Clamp(M.intensity * 5.33f, 0.0f, 255.0f));
+		L.rgbi = (I << 24) | (uint32(M.color[0]) << 16) | (uint32(M.color[1]) << 8) | M.color[2];
+		L.flags = M.timeFlags;
+		const bool bSpot = M.type == 2;
+		L.coneInner = uint8(FMath::Clamp(M.coneInner / kConeDegrees, 0.0f, 127.0f));
+		L.coneOuter = uint8(bSpot ? FMath::Clamp(M.coneOuter / kConeDegrees, 1.0f, 127.0f) : 127.0f);
+		Out.Add(L);
+	}
+	LastNearTime = 0; // (at the next update)
+}
+
+void FGTAVLights::RemoveEntity(uint64 Key)
+{
+	if (EntityLights.Remove(Key))
+	{
+		LastNearTime = 0;
+	}
+}
+
 void FGTAVLights::Update(AActor* Owner, const FVector& Camera, int32 Hour)
 {
-	if (Lights.IsEmpty() || !Owner)
+	if ((Lights.IsEmpty() && EntityLights.IsEmpty()) || !Owner)
 	{
 		return;
 	}
@@ -101,6 +134,19 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 {
 	TArray<TPair<float, int32>> Near;
 	Gather(Camera, NearRadius, Hour, Near);
+	Extra.Reset();
+	for (const TPair<uint64, TArray<GTAVPack::LodLight>>& E : EntityLights)
+	{
+		for (const GTAVPack::LodLight& L : E.Value)
+		{
+			const float D2 = float(FVector::DistSquared(Camera, FVector(L.position[0], L.position[1], L.position[2])));
+			if (D2 <= NearRadius * NearRadius && On(L, Hour))
+			{
+				Extra.Add(L);
+				Near.Emplace(D2, -Extra.Num());
+			}
+		}
+	}
 	Near.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
 	const int32 Most = FMath::Max(CVarLights.GetValueOnGameThread(), 0);
 	if (Near.Num() > Most)
@@ -110,7 +156,7 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 	int32 UsedPoints = 0, UsedSpots = 0;
 	for (const TPair<float, int32>& N : Near)
 	{
-		const GTAVPack::LodLight& L = Lights[N.Value];
+		const GTAVPack::LodLight& L = LightAt(N.Value);
 		ULocalLightComponent* C = nullptr;
 		if (IsSpot(L))
 		{

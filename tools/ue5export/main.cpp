@@ -137,6 +137,16 @@ namespace
 				fs::create_directories(out.parent_path(), ec);
 				std::ofstream(out, std::ios::binary).write(reinterpret_cast<const char*>(data.data()), data.size());
 				std::printf("%s: %zu bytes\n", out.string().c_str(), data.size());
+				// (a resource also as its two blocks, decompressed: <name>.virtual, <name>.physical)
+				loader::convert::Resource resource;
+				if (g_options.contains("split") && loader::convert::Read(data, resource, error))
+				{
+					std::ofstream(fs::path(out).concat(".virtual"), std::ios::binary)
+					    .write(reinterpret_cast<const char*>(resource.virtualBlock.data()), resource.virtualBlock.size());
+					std::ofstream(fs::path(out).concat(".physical"), std::ios::binary)
+					    .write(reinterpret_cast<const char*>(resource.physicalBlock.data()), resource.physicalBlock.size());
+					std::printf("  virtual %zu bytes, physical %zu bytes\n", resource.virtualBlock.size(), resource.physicalBlock.size());
+				}
 				return 0;
 			}
 			rest = rest.substr(slash + 1);

@@ -224,6 +224,7 @@ namespace ue5export
 		const auto d = drawables.find(inDictionary);
 		if (d == drawables.end() || !drawable::Read(view, d->second, out.model, error))
 			return error = std::format("{} has no drawable {:08x} {}", it->second, inDictionary, error), false;
+		out.model.lights = drawable::Lights(view, ext == "yft" ? drawable::View::kRoot + 0x110 : d->second + 0xB0);
 		out.file = f->path;
 
 		const std::string name = Stem(a.name);

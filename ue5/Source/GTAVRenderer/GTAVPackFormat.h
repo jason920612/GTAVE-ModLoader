@@ -63,9 +63,30 @@ namespace GTAVPack
 		uint16_t materialCount, sectionCount;
 		uint8_t lodCount;
 		uint8_t reserved[3];
-		uint32_t flags;
+		uint32_t flags; // ModelFlags
 	};
 	static_assert(sizeof(ModelHeader) == 76);
+
+	enum ModelFlags : uint32_t
+	{
+		kModelLights = 1, // after the sections: uint32 count, ModelLight[count]
+	};
+
+	// A light the model carries (the drawable's light attributes; research/phase0.md §59.9), in the model's space.
+	struct ModelLight
+	{
+		float position[3];  // Unreal's space (cm)
+		float direction[3]; // unit, Unreal's space
+		uint8_t color[3];
+		uint8_t type;       // the game's: 1 point, 2 spot, 4 capsule
+		float intensity;    // the game's
+		float falloff;      // cm
+		float falloffExponent;
+		float coneInner, coneOuter; // degrees
+		uint32_t timeFlags; // bits 0-23: the hours it is on
+		uint32_t flags;
+	};
+	static_assert(sizeof(ModelLight) == 56);
 
 	// What a material draws like (the renderer's master materials).
 	enum MaterialKind : uint8_t

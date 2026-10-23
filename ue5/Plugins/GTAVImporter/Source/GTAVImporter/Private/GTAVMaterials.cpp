@@ -422,6 +422,32 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	UseTint->Alpha.Connect(0, Scalar(TEXT("UseTint"), 0.0f));
 	Add(UseTint);
 	Inputs->BaseColor.Connect(0, UseTint);
+	if (Kind == 3)
+	{
+		// Grass instances carry the ground's colour (custom data 0..2, linear; 1 for everything not instanced): the
+		// blades take on the colour of the soil they grow from.
+		UMaterialExpressionPerInstanceCustomData* Channel[3];
+		for (int32 I = 0; I < 3; ++I)
+		{
+			Channel[I] = NewObject<UMaterialExpressionPerInstanceCustomData>(M);
+			Channel[I]->DataIndex = I;
+			Channel[I]->ConstDefaultValue = 1.0f;
+			Add(Channel[I]);
+		}
+		auto* RG = NewObject<UMaterialExpressionAppendVector>(M);
+		RG->A.Connect(0, Channel[0]);
+		RG->B.Connect(0, Channel[1]);
+		Add(RG);
+		auto* RGB = NewObject<UMaterialExpressionAppendVector>(M);
+		RGB->A.Connect(0, RG);
+		RGB->B.Connect(0, Channel[2]);
+		Add(RGB);
+		auto* Ground = NewObject<UMaterialExpressionMultiply>(M);
+		Ground->A.Connect(0, UseTint);
+		Ground->B.Connect(0, RGB);
+		Add(Ground);
+		Inputs->BaseColor.Connect(0, Ground);
+	}
 	Inputs->Normal.Connect(0, Bump);
 	// Specular map: red = intensity. Rough where there is none, smoother where it shines.
 	auto* Rough = NewObject<UMaterialExpressionLinearInterpolate>(M);

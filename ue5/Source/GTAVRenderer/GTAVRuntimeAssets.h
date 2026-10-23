@@ -36,6 +36,8 @@ public:
 	EState Request(uint64 Key, float Priority = 0);
 	EState State(uint64 Key) const;
 	UStaticMesh* Get(uint64 Key) const;
+	// The lights a loaded model carries (none: null).
+	const TArray<GTAVPack::ModelLight>* LightsOf(uint64 Key) const { return ModelLights.Find(Key); }
 	// Finishes loaded models for up to Budget seconds.
 	void Tick(double Budget);
 	int32 Loading() const;
@@ -64,6 +66,7 @@ private:
 	const FGTAVPack& Pack;
 	TMap<uint64, EState> States;
 	TMap<uint64, TObjectPtr<UStaticMesh>> Meshes;
+	TMap<uint64, TArray<GTAVPack::ModelLight>> ModelLights;
 	TMap<uint64, TObjectPtr<UTexture2D>> Textures; // key * 4 + usage
 	TMap<uint32, TObjectPtr<UMaterialInterface>> Materials; // by the material's bytes
 	TMap<int32, TObjectPtr<UMaterial>> Masters;

@@ -619,9 +619,15 @@ void UGTAVWorldSubsystem::Apply()
 			C->SetGenerateOverlapEvents(false);
 		}
 		C->SetStaticMesh(Mesh);
-		C->SetWorldTransform(EntityTransform(W.Key));
+		const FTransform Transform = EntityTransform(W.Key);
+		C->SetWorldTransform(Transform);
 		C->RegisterComponent();
 		Drawn.Add(W.Key, C);
+		// (an interior's lights come with its models; outside, the map's LOD lights stand for them)
+		if (const TArray<GTAVPack::ModelLight>* ML = (W.Key & kInteriorKey) ? Assets->LightsOf(W.Value) : nullptr)
+		{
+			Lights.AddEntity(W.Key, Transform, *ML);
+		}
 	}
 	for (const uint32 B : WantedGrass)
 	{
@@ -664,7 +670,19 @@ void UGTAVWorldSubsystem::Apply()
 			}
 			Transforms.Add(FTransform(Q, FVector(P.X * 100, -P.Y * 100, P.Z * 100), FVector(Scale)));
 		}
+		C->NumCustomDataFloats = 3;
 		C->AddInstances(Transforms, false, true);
+		// (the ground's colour each blade carries: a factor around the game's mid grey 128, in its gamma space)
+		for (uint32 I = 0; I < G.instanceCount; ++I)
+		{
+			const GTAVPack::GrassInstance& X = Data.GrassInstances[G.firstInstance + I];
+			float Tint[3];
+			for (int32 K = 0; K < 3; ++K)
+			{
+				Tint[K] = FMath::Pow(X.color[K] / 127.5f, 2.2f);
+			}
+			C->SetCustomData(int32(I), MakeArrayView(Tint, 3), false);
+		}
 		C->RegisterComponent();
 		DrawnGrass.Add(B, C);
 	}
@@ -679,6 +697,7 @@ void UGTAVWorldSubsystem::Apply()
 		{
 			It.Value()->UnregisterComponent();
 			Pool.Add(It.Value());
+			Lights.RemoveEntity(It.Key());
 			It.RemoveCurrent();
 		}
 	}

@@ -101,6 +101,7 @@ struct FGTAVRuntimeAssets::FPrepared
 	bool bTranslucent = false;
 	TArray<TPair<uint64, TArray<uint8>>> NewTextures;
 	bool bTexturesMoved = false;
+	TArray<GTAVPack::ModelLight> Lights;
 };
 
 FGTAVRuntimeAssets::FGTAVRuntimeAssets(const FGTAVPack& InPack)
@@ -220,6 +221,7 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 	TMap<uint16, int32> SlotOf;
 	int32 UvChannels = 1;
 	FBox3f Box(ForceInit);
+	bool bStopped = false;
 	for (int32 S = 0; S < H.sectionCount && R.bOk; ++S)
 	{
 		const GTAVPack::SectionHeader SH = R.Get<GTAVPack::SectionHeader>();
@@ -239,6 +241,7 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		R.Take((4 - R.At % 4) % 4);
 		if (!R.bOk || SH.material >= H.materialCount)
 		{
+			bStopped = true;
 			break;
 		}
 		if (SH.lod != 0 || V == 0)
@@ -342,6 +345,15 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		if (Section.NumTriangles == 0)
 		{
 			Sections.Pop(EAllowShrinking::No);
+		}
+	}
+	// The lights the model carries (after the sections).
+	if ((H.flags & GTAVPack::kModelLights) && R.bOk && !bStopped)
+	{
+		const uint32 Count = R.Get<uint32>();
+		if (const GTAVPack::ModelLight* ML = Count < 4096 ? R.Array<GTAVPack::ModelLight>(Count) : nullptr)
+		{
+			P->Lights.Append(ML, Count);
 		}
 	}
 	if (!R.bOk || Indices.IsEmpty())
@@ -502,6 +514,10 @@ bool FGTAVRuntimeAssets::Finish(FPrepared& P)
 	Mesh->CalculateExtendedBounds();
 	++MeshesBuilt;
 	Meshes.Add(P.Key, Mesh);
+	if (!P.Lights.IsEmpty())
+	{
+		ModelLights.Add(P.Key, MoveTemp(P.Lights));
+	}
 	States.Add(P.Key, EState::Ready);
 	return true;
 }
@@ -822,6 +838,7 @@ void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
 		}
 		MeshBytes -= Use.Bytes;
 		Meshes.Remove(O.Value);
+		ModelLights.Remove(O.Value);
 		States.Remove(O.Value);
 		++Evicted;
 	}

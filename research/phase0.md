@@ -2507,3 +2507,44 @@
 - 有的可繪物件的包圍盒欄位不可信（cs3_07_mil_runway13 的盒子在 500 m 外），網格的邊界一律用頂點算（執行端本來就是）。
 - 天氣（`GTAVSky`）：GET_CURR_WEATHER_STATE 的兩種天氣依比例混合，每種一組值（太陽、天光、雲量 Cloud_GlobalCoverage、霧密度、
   濕度）；濕度放在 MPC_GTAV 的 Wetness，母材質（不透明、鏤空、地形）朝上的面隨它變暗、變光滑。離線檢查用 `-gtavweather=RAIN`。
+
+### 59.8 夜間燈光、物理單位、天空與海（2026-10-23）
+
+- **LOD 燈**：`lodlights_*.ymap` 的 CMapData.LODLightsSOA（direction FloatXYZ[]、falloff、falloffExponent、timeAndStateFlags、
+  hash、coneInnerAngle、coneOuterAngleOrCapExt、coronaIntensity，每個欄位一個陣列）配上父 ymap `distlodlights_*` 的
+  DistantLODLightsSOA（position、RGBI、numStreetLights、category），同索引對應；全圖 51,164 盞。RGBI = I<<24 | R<<16 | G<<8 | B
+  （路燈 0xaaff9d66：鈉燈的橘）；timeAndStateFlags 低 24 位是亮著的小時；錐角位元組 × 90/127.5 = 度（≥80° 當點光源）。
+  執行端：最近的 N 盞（gtav.Lights）是真的聚光燈／點光源（不投影），5 km 內全部是 M_GTAV_Corona 的發光點（一個實例化網格，
+  材質隨距離放大、亮度按放大倍數降）。
+- **物理單位**：太陽 100,000 lux（月光 0.25）、燈以燭光（路燈 I=170 ≈ 3000 cd）、發光材質以 nits（EmissiveNits 40 × 遊戲的
+  emissiveMultiplier：招牌 150–650、窗 40–160），曝光開 ExtendDefaultLuminanceRange 讓它自己適應：白天窗光淹沒在陽光裡、晚上
+  自然亮起，不必依時間開關。和遊戲畫面亮度的對齊由合成做（ue5ExposureMatch）。
+- **大氣**：SkyAtmosphere 的 Mie 散射（每 km，地面）＝ 0.035 × 天氣的霾 × 地區（洛聖都盆地 1.8、北邊 0.6；y 1500–3500 m
+  過渡）；城市吸收偏藍（棕色霾）、逆溫層 0.7 km；雨洗空氣（雨 0.5、轉晴 0.45）、霧霾 3。UE 預設 0.004 只相當於能見度幾百公里。
+- **雲**：引擎的 m_SimpleVolumetricCloud 的 Cloud_GlobalCoverage 在遊戲裡量過：0 零散積雲、0.3 霧濛的陰天、0.45 乳白；雲量 <0.1
+  整層關掉（晴天沒有雲）。雨天直射光 3%、雷雨 2%，體積雲投影到地面。
+- **海一直沒畫出來**：水面四邊形的繞向在鏡像後是背面（遊戲模型在 UE 空間的正面＝右手法則法線朝內，1000 個三角形全部一致），
+  看到的藍色是大氣的虛擬地面。改繞向後：近海（water.xml 內）半透明，外海到 400 km 不透明（M_GTAV_OceanFar，霾才蓋得上去，
+  海天交界柔和）；`bUseTranslucencyVertexFog` 在 UE 裡就是「Apply Fogging」總開關，關掉會整個不套霧。
+- **用物理補細節**：海的法線＝Pierson–Moskowitz 風浪譜的 12 個分量（深水色散 ω²=gk、峰值 0.877g/U），超過像素大小一半的
+  短波濾掉；風來自遊戲（GET_WIND_DIRECTION／GET_WIND_SPEED）。水的不透明度＝Fresnel（基底 0.02）＋ Beer–Lambert（海 0.35/m、
+  湖 0.6/m）。雨：繞相機的三層圓柱（3、7、15 m），雨滴終端速度 6.5 m/s、被風吹斜，數量依雨量（MPC RainRate：雨 8 mm/h、
+  雷雨 25），被場景燈光照亮。水窪：兩層值雜訊低於隨濕度上升的水位處，朝上的面，更暗、鏡面。
+
+### 59.9 模型自己的燈（CLightAttr，0xA8 位元組）
+
+- 位置：ydr／ydd 的可繪物件 +0xB0（atArray：指標、u16 數量），yft 的碎片類型 +0x110。
+- 欄位：+0x08 位置（float3，模型空間 m）、+0x18 RGB、+0x1B 閃爍、+0x1C 強度（壁燈 8、路燈 32）、+0x20 旗標、+0x24 骨骼 ID、
+  +0x26 類型（1 點、2 聚光、4 膠囊）、+0x27 群組、+0x28 亮著的小時、+0x2C 衰減距離（m）、+0x30 衰減指數、+0x34 裁切平面
+  （float4）、+0x74 方向、+0x80 切線、+0x8C／+0x90 內外錐角（度）、+0x94 範圍（float3）。
+- 掛在骨骼上的（路燈的燈頭，骨骼 29567）位置相對骨骼，要骨架的姿勢才能換算；先只收骨骼 0 的。強度換成 LOD 燈的亮度位元組
+  約 ×5.33（窗光 8 ≈ 42）。執行端：室內（MLO）物件畫出時加它的燈，室外由 LOD 燈代表（避免重複）。
+
+### 59.10 同步、畫質預設、效能
+
+- 逐格同步：UE 用它畫的那一格遊戲畫面的序號當柵欄值，遊戲等自己這一格（DLSS 後）；UE 半秒沒有進度時改等它最新的一格。
+  之前遊戲顯示 UE 最新的一格，鏡頭轉動時合成上去的行人、車輛會差一兩格。
+- 畫質預設（loader.json ue5Preset，選單「UE5 畫質」）：r.ScreenPercentage 50/67/80/100/100、引擎 sg.* 0–4、gtav.LodScale
+  0.8–2、gtav.Lights 32–512，經主控台通道即時套用。萊吉恩廣場中午（RTX 4060，遊戲同時在跑）：高 60（上限）、極高約 49、
+  電影級約 25 格／秒。
+- 重開的渲染器曾停在啟動（LogSlate 之後不動、沒有 CPU）：被強制結束的前一個留下的鎖；再按 F7 就正常。

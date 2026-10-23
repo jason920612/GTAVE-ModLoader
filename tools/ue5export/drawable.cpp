@@ -139,6 +139,42 @@ namespace ue5export::drawable
 		return out;
 	}
 
+	std::vector<Light> Lights(const View& view, uint64_t field)
+	{
+		std::vector<Light> out;
+		const uint64_t list = view.Get<uint64_t>(field);
+		const uint16_t count = view.Get<uint16_t>(field + 8);
+		constexpr uint32_t kStride = 0xA8;
+		// +0x08 position, +0x18 colour (rgb), +0x1C intensity, +0x20 flags, +0x24 bone, +0x26 type, +0x28 hours,
+		// +0x2C falloff, +0x30 its exponent, +0x74 direction, +0x8C / +0x90 cone angles (degrees)
+		for (uint16_t i = 0; i < count && list; ++i)
+		{
+			const uint64_t at = list + uint64_t{kStride} * i;
+			if (!view.At(at, kStride))
+				break;
+			Light l;
+			for (int k = 0; k < 3; ++k)
+			{
+				l.position[k] = view.Get<float>(at + 0x08 + 4 * k);
+				l.direction[k] = view.Get<float>(at + 0x74 + 4 * k);
+				l.color[k] = view.Get<uint8_t>(at + 0x18 + k);
+			}
+			l.intensity = view.Get<float>(at + 0x1C);
+			l.flags = view.Get<uint32_t>(at + 0x20);
+			l.bone = view.Get<uint16_t>(at + 0x24);
+			l.type = view.Get<uint8_t>(at + 0x26);
+			l.timeFlags = view.Get<uint32_t>(at + 0x28);
+			l.falloff = view.Get<float>(at + 0x2C);
+			l.falloffExponent = view.Get<float>(at + 0x30);
+			l.coneInner = view.Get<float>(at + 0x8C);
+			l.coneOuter = view.Get<float>(at + 0x90);
+			const bool sane = (l.type == 1 || l.type == 2 || l.type == 4) && l.falloff > 0 && l.falloff < 500 && l.intensity >= 0 && l.intensity < 10000;
+			if (sane && l.bone == 0)
+				out.push_back(l);
+		}
+		return out;
+	}
+
 	std::map<uint32_t, uint64_t> Drawables(const View& view, const std::string& extension)
 	{
 		std::map<uint32_t, uint64_t> out;

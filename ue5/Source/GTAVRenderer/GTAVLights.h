@@ -20,6 +20,10 @@ public:
 
 	// Game thread, each frame: Owner gets the components; Camera in Unreal's space; Hour 0-23.
 	void Update(AActor* Owner, const FVector& Camera, int32 Hour);
+	// The lights a drawn entity's model carries (interiors: the map's LOD lights leave them out), placed by its
+	// transform; gone with the entity.
+	void AddEntity(uint64 Key, const FTransform& Transform, const TArray<GTAVPack::ModelLight>& Model);
+	void RemoveEntity(uint64 Key);
 
 	float NearRadius = 12000.0f;  // cm: real lights within (gtav.Lights of them, the nearest)
 	float FarRadius = 500000.0f;  // cm: glowing points within
@@ -27,6 +31,7 @@ public:
 private:
 	TArray<GTAVPack::LodLight> Lights;
 	TMap<FIntPoint, TArray<int32>> Grid; // 256 m cells
+	TMap<uint64, TArray<GTAVPack::LodLight>> EntityLights; // (as LOD lights, in the world)
 	TArray<TWeakObjectPtr<UPointLightComponent>> Points;
 	TArray<TWeakObjectPtr<USpotLightComponent>> Spots;
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Glow;
@@ -36,7 +41,10 @@ private:
 
 	static FIntPoint CellOf(const FVector& P);
 	bool On(const GTAVPack::LodLight& L, int32 Hour) const { return (L.flags >> Hour) & 1; }
+	// (indices: the map's lights; -1 - n: the n-th of Extra)
 	void Gather(const FVector& Camera, float Radius, int32 Hour, TArray<TPair<float, int32>>& Out) const;
+	TArray<GTAVPack::LodLight> Extra; // the entities' lights, flattened at each update
+	const GTAVPack::LodLight& LightAt(int32 Index) const { return Index >= 0 ? Lights[Index] : Extra[-1 - Index]; }
 	void UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour);
 	void UpdateFar(AActor* Owner, const FVector& Camera, int32 Hour);
 };
