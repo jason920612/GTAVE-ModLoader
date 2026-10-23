@@ -45,7 +45,7 @@ namespace loader::graphics::bridge
 		uint32_t g_tick = 0;
 		std::filesystem::file_time_type g_consoleStamp{};
 		std::string g_presetSent; // the preset the renderer has
-		uint32_t g_key = VK_F7;
+		uint32_t g_key = VK_F11;
 
 		// Render threads: the picture shown, the size DLSS gives, the renderer's texture and fence on the game's device.
 		std::atomic_bool g_showing = false;
@@ -68,7 +68,7 @@ namespace loader::graphics::bridge
 			if (name.size() >= 2 && (name[0] == 'F' || name[0] == 'f'))
 				if (const int n = std::atoi(name.c_str() + 1); n >= 1 && n <= 24)
 					return VK_F1 + n - 1;
-			return name.size() == 1 ? static_cast<uint32_t>(std::toupper(static_cast<unsigned char>(name[0]))) : VK_F7;
+			return name.size() == 1 ? static_cast<uint32_t>(std::toupper(static_cast<unsigned char>(name[0]))) : VK_F11;
 		}
 
 		std::wstring Named(const wchar_t* prefix)
@@ -76,11 +76,14 @@ namespace loader::graphics::bridge
 			return prefix + std::to_wstring(GetCurrentProcessId());
 		}
 
-		// The game's own render resolution while UE5 draws the world (config ue5GameResolution): the game takes it from
-		// its settings.xml (<dlssQuality value="..."/>: 0 Performance, 1 Balanced, 2 Quality, 3 DLAA, measured) when it
-		// starts and asks Streamline nothing, so the value is written there before the game reads it and the person's
-		// own put back once the game renders (ModLoader/ue5_dlssquality.txt keeps it meanwhile, should the game stop
-		// before).
+		// The game's own settings while UE5 draws the world, written to its settings.xml before the game reads it (when
+		// it starts) and the person's own put back once the game renders (ModLoader/ue5_settings.txt keeps them
+		// meanwhile, should the game stop before):
+		// - its render resolution (config ue5GameResolution): the game asks Streamline nothing, it takes
+		//   <dlssQuality value="..."/> (0 Performance, 1 Balanced, 2 Quality, 3 DLAA, measured);
+		// - its world's detail (config ue5GameDetail "lean"): of the game's picture only the peds and vehicles are
+		//   shown, so what only draws the world it need not (grass, water, tessellation, volumetric fog, ray traced
+		//   trees, the farther levels of detail); the peds' and vehicles' own (their shadows, reflections) stay.
 		std::filesystem::path g_settingsFile;
 		bool g_settingsRestored = true;
 
@@ -95,61 +98,103 @@ namespace loader::graphics::bridge
 			return std::filesystem::path(documents) / L"Rockstar Games" / L"GTAV Enhanced" / L"settings.xml";
 		}
 
-		// The settings file with dlssQuality set to `value`; the value it had (-1: none).
-		int SetDlssQuality(const std::filesystem::path& file, int value)
+		using Settings = std::vector<std::pair<std::string, std::string>>;
+
+		// The settings file with each of `values` set (<name value="..." />); the values they had (those it has).
+		Settings SetSettings(const std::filesystem::path& file, const Settings& values)
 		{
 			std::ifstream in(file, std::ios::binary);
 			std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 			in.close();
-			const std::string key = "<dlssQuality value=\"";
-			const size_t at = text.find(key);
-			if (at == std::string::npos)
-				return -1;
-			const size_t from = at + key.size(), to = text.find('"', from);
-			if (to == std::string::npos)
-				return -1;
-			const int old = std::atoi(text.substr(from, to - from).c_str());
-			if (old != value)
+			Settings old;
+			bool changed = false;
+			for (const auto& [name, value] : values)
 			{
-				text.replace(from, to - from, std::to_string(value));
-				std::ofstream(file, std::ios::binary | std::ios::trunc).write(text.data(), static_cast<std::streamsize>(text.size()));
+				const std::string key = "<" + name + " value=\"";
+				const size_t at = text.find(key);
+				if (at == std::string::npos)
+					continue;
+				const size_t from = at + key.size(), to = text.find('"', from);
+				if (to == std::string::npos)
+					continue;
+				old.emplace_back(name, text.substr(from, to - from));
+				if (old.back().second != value)
+				{
+					text.replace(from, to - from, value);
+					changed = true;
+				}
 			}
+			if (changed && !text.empty())
+				std::ofstream(file, std::ios::binary | std::ios::trunc).write(text.data(), static_cast<std::streamsize>(text.size()));
 			return old;
 		}
 
-		void PrepareGameResolution()
+		// ModLoader/ue5_settings.txt: name=value a line.
+		Settings ReadSaved(const std::filesystem::path& saved)
+		{
+			Settings out;
+			std::ifstream in(saved);
+			for (std::string line; std::getline(in, line);)
+				if (const size_t eq = line.find('='); eq != std::string::npos)
+					out.emplace_back(line.substr(0, eq), line.substr(eq + 1));
+			return out;
+		}
+
+		void PrepareGameSettings()
 		{
 			const auto& c = config::Get();
-			const auto saved = paths::Get().root / L"ue5_dlssquality.txt";
+			const auto root = paths::Get().root;
 			g_settingsFile = SettingsFile();
 			if (g_settingsFile.empty())
 				return;
-			int original = -1;
-			if (std::ifstream in(saved); in >> original)
-				SetDlssQuality(g_settingsFile, original); // (a run that stopped before putting it back)
+			// (a run that stopped before putting them back; ue5_dlssquality.txt: an older loader's)
 			std::error_code ec;
+			if (std::ifstream old(root / L"ue5_dlssquality.txt"); old)
+			{
+				int value = -1;
+				if (old >> value; value >= 0)
+					SetSettings(g_settingsFile, {{"dlssQuality", std::to_string(value)}});
+				old.close();
+				std::filesystem::remove(root / L"ue5_dlssquality.txt", ec);
+			}
+			const auto saved = root / L"ue5_settings.txt";
+			if (const Settings back = ReadSaved(saved); !back.empty())
+				SetSettings(g_settingsFile, back);
 			std::filesystem::remove(saved, ec);
+			if (!c.ue5Renderer)
+				return;
+			Settings wanted;
 			const std::string& r = c.ue5GameResolution;
-			const int value = r == "performance" ? 0 : r == "balanced" ? 1 : r == "quality" ? 2 : -1;
-			if (!c.ue5Renderer || value < 0)
+			if (r == "performance" || r == "balanced" || r == "quality")
+				wanted.emplace_back("dlssQuality", r == "performance" ? "0" : r == "balanced" ? "1" : "2");
+			static constexpr std::pair<const char*, const char*> kLean[] = {{"GrassQuality", "0"}, {"WaterQuality", "0"}, {"Tessellation", "0"},
+			    {"LodScale", "0.600000"}, {"MaxLodScale", "0.000000"}, {"Lighting_FogVolumes", "false"}, {"Shadow_LongShadows", "false"},
+			    {"Raytracing_TreeBvhEnabled", "false"}, {"Raytracing_GrassBvhEnabled", "false"}};
+			if (c.ue5GameDetail == "lean")
+				for (const auto& [name, value] : kLean)
+					wanted.emplace_back(name, value);
+			if (wanted.empty())
 				return;
-			original = SetDlssQuality(g_settingsFile, value);
-			if (original < 0 || original == value)
-				return;
-			std::ofstream(saved) << original;
+			const Settings original = SetSettings(g_settingsFile, wanted);
+			std::ofstream out(saved);
+			std::string list;
+			for (const auto& [name, value] : original)
+			{
+				out << name << '=' << value << '\n';
+				list += std::format(" {}", name);
+			}
 			g_settingsRestored = false;
-			log::Info("ue5 bridge: the game renders its own picture at DLSS quality {} (its setting {} is put back once it renders)", value, original);
+			log::Info("ue5 bridge: the game's own picture with{} changed (put back once it renders)", list);
 		}
 
-		void RestoreGameResolution()
+		void RestoreGameSettings()
 		{
 			if (g_settingsRestored)
 				return;
 			g_settingsRestored = true;
-			const auto saved = paths::Get().root / L"ue5_dlssquality.txt";
-			int original = -1;
-			if (std::ifstream in(saved); in >> original)
-				SetDlssQuality(g_settingsFile, original);
+			const auto saved = paths::Get().root / L"ue5_settings.txt";
+			if (const Settings back = ReadSaved(saved); !back.empty())
+				SetSettings(g_settingsFile, back);
 			std::error_code ec;
 			std::filesystem::remove(saved, ec);
 		}
@@ -413,15 +458,19 @@ namespace loader::graphics::bridge
 		// distances reach (gtav.LodScale) and how many of the map's lights near the camera are real lights.
 		std::string PresetCommands(const std::string& preset)
 		{
+			// (MegaLights from high up: every light of the map within reach lights the scene, at a near constant cost;
+			// without it a few dozen of the most important)
 			struct Level
 			{
 				const char* name;
 				int resolution, scalability;
 				float distance;
-				int lights;
+				int lights, lightRadius;
+				bool megaLights, lightShadows;
 			};
-			static constexpr Level kLevels[] = {
-				{"low", 50, 0, 0.8f, 32}, {"medium", 67, 1, 1.0f, 64}, {"high", 80, 2, 1.25f, 128}, {"ultra", 100, 3, 1.5f, 256}, {"cinematic", 100, 4, 2.0f, 512}};
+			static constexpr Level kLevels[] = {{"low", 50, 0, 0.8f, 32, 150, false, false}, {"medium", 67, 1, 1.0f, 64, 200, false, false},
+			    {"high", 80, 2, 1.25f, 2048, 400, true, false}, {"ultra", 100, 3, 1.5f, 4096, 600, true, false},
+			    {"cinematic", 100, 4, 2.0f, 8192, 800, true, true}};
 			const Level* l = &kLevels[2];
 			for (const Level& k : kLevels)
 				if (preset == k.name)
@@ -429,7 +478,8 @@ namespace loader::graphics::bridge
 			std::string out = std::format("r.ScreenPercentage {}\n", l->resolution);
 			for (const char* group : {"ViewDistance", "Shadow", "GlobalIllumination", "Reflection", "PostProcess", "Texture", "Effects", "Foliage", "Shading"})
 				out += std::format("sg.{}Quality {}\n", group, l->scalability);
-			out += std::format("gtav.LodScale {}\ngtav.Lights {}\n", l->distance, l->lights);
+			out += std::format("gtav.LodScale {}\ngtav.Lights {}\ngtav.LightRadius {}\nr.MegaLights.EnableForProject {}\ngtav.LightShadows {}\n", l->distance,
+			    l->lights, l->lightRadius, l->megaLights ? 1 : 0, l->lightShadows ? 1 : 0);
 			return out;
 		}
 
@@ -534,7 +584,7 @@ namespace loader::graphics::bridge
 
 	void Start()
 	{
-		PrepareGameResolution();
+		PrepareGameSettings();
 		if (!config::Get().ue5Renderer)
 			return;
 		g_key = KeyFromName(config::Get().ue5Key);
@@ -548,7 +598,7 @@ namespace loader::graphics::bridge
 	{
 		// (the game has read its settings by its first DLSS frame)
 		if (g_width)
-			RestoreGameResolution();
+			RestoreGameSettings();
 		if (!config::Get().ue5Renderer || g_failed || !state::story || state::online)
 			return;
 		if (!g_shared)

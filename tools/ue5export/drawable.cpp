@@ -210,7 +210,9 @@ namespace ue5export::drawable
 		const uint16_t count = view.Get<uint16_t>(field + 8);
 		constexpr uint32_t kStride = 0xA8;
 		// +0x08 position, +0x18 colour (rgb), +0x1C intensity, +0x20 flags, +0x24 bone, +0x26 type, +0x28 hours,
-		// +0x2C falloff, +0x30 its exponent, +0x74 direction, +0x8C / +0x90 cone angles (degrees)
+		// +0x2C falloff, +0x30 its exponent, +0x74 direction (where it shines), +0x80 tangent (a capsule's axis: a strip
+		// light 20 m long shining down lies along it), +0x8C / +0x90 cone angles (degrees), +0x94 a capsule's length (m;
+		// the same in the two floats after; the LOD lights have it as coneOuterAngleOrCapExt, x 1.25)
 		for (uint16_t i = 0; i < count && list; ++i)
 		{
 			const uint64_t at = list + uint64_t{kStride} * i;
@@ -221,6 +223,7 @@ namespace ue5export::drawable
 			{
 				l.position[k] = view.Get<float>(at + 0x08 + 4 * k);
 				l.direction[k] = view.Get<float>(at + 0x74 + 4 * k);
+				l.tangent[k] = view.Get<float>(at + 0x80 + 4 * k);
 				l.color[k] = view.Get<uint8_t>(at + 0x18 + k);
 			}
 			l.intensity = view.Get<float>(at + 0x1C);
@@ -232,6 +235,9 @@ namespace ue5export::drawable
 			l.falloffExponent = view.Get<float>(at + 0x30);
 			l.coneInner = view.Get<float>(at + 0x8C);
 			l.coneOuter = view.Get<float>(at + 0x90);
+			l.length = l.type == 4 ? view.Get<float>(at + 0x94) : 0.0f;
+			if (!(l.length >= 0 && l.length < 500))
+				l.length = 0;
 			const bool sane = (l.type == 1 || l.type == 2 || l.type == 4) && l.falloff > 0 && l.falloff < 500 && l.intensity >= 0 && l.intensity < 10000;
 			if (!sane)
 				continue;
@@ -243,6 +249,7 @@ namespace ue5export::drawable
 				const Vec at = Rotate(pose->second.rotation, l.position);
 				l.position = {pose->second.translation[0] + at[0], pose->second.translation[1] + at[1], pose->second.translation[2] + at[2]};
 				l.direction = Rotate(pose->second.rotation, l.direction);
+				l.tangent = Rotate(pose->second.rotation, l.tangent);
 			}
 			out.push_back(l);
 		}

@@ -676,6 +676,15 @@ namespace loader::ui
 				ImGui::Indent();
 				ImGui::TextColored(kMuted, "UE5 繪製世界時，遊戲自己的 3D 只用來提供行人和車輛，可改用較低的 DLSS 模式（實測未必更快）。重新啟動遊戲後生效。");
 				ImGui::Unindent();
+				bool lean = cfg.ue5GameDetail == "lean";
+				if (ImGui::Checkbox("精簡遊戲本身的世界", &lean))
+				{
+					cfg.ue5GameDetail = lean ? "lean" : "game";
+					changed = true;
+				}
+				ImGui::Indent();
+				ImGui::TextColored(kMuted, "只畫世界用的東西（草、水面、曲面細分、體積霧、遠處細節）在遊戲那邊關掉，行人和車輛的畫質不變；按切換鍵看遊戲原畫面時世界會比較簡略。重新啟動遊戲後生效。");
+				ImGui::Unindent();
 			}
 			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
 			changed |= ImGui::SliderFloat("亮度跟隨遊戲", &cfg.ue5ExposureMatch, 0.0f, 1.0f, "%.2f");

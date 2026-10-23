@@ -8,6 +8,7 @@
 //   ue5export map --out <dir> --game <dir>         the map as story mode sees it: archetypes and entities
 //   ue5export area --out <dir> --game <dir> --area x0,y0,x1,y1 --name <n>   an area's models, textures, entities (<out>\export)
 //   ue5export pack --out <dir> --game <dir> [--pack <name>] [--area x0,y0,x1,y1]   the renderer's pack files (<out>\<name>)
+//   ue5export lightdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's light attributes, raw
 #include <Windows.h>
 
 #include <algorithm>
@@ -364,6 +365,40 @@ namespace
 		return 0;
 	}
 
+	// The light attributes of a drawable as they are (0xA8 bytes each, as floats): --file <name.ydr|ydd|yft>.
+	int LightDump(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto* f = files.Find(g_options["file"]);
+		loader::convert::Bytes data;
+		loader::convert::Resource resource;
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
+			return Fail(f ? error : "not found");
+		const ue5export::drawable::View view(resource);
+		const std::string ext = g_options["file"].substr(g_options["file"].rfind('.') + 1);
+		for (const auto& [hash, drawable] : ue5export::drawable::Drawables(view, ext))
+		{
+			const uint64_t field = ext == "yft" ? ue5export::drawable::View::kRoot + 0x110 : drawable + 0xB0;
+			const uint64_t list = view.Get<uint64_t>(field);
+			const uint16_t count = view.Get<uint16_t>(field + 8);
+			std::printf("drawable %08x: %u lights\n", hash, count);
+			for (uint16_t i = 0; i < count && list; ++i)
+			{
+				const uint64_t at = list + 0xA8ull * i;
+				if (!view.At(at, 0xA8))
+					break;
+				std::printf("  light %u (type %u):", i, view.Get<uint8_t>(at + 0x26));
+				for (uint32_t o = 0x08; o < 0xA8; o += 4)
+					std::printf("%s+%02x %g", o % 0x20 == 0x08 ? "\n   " : "  ", o, view.Get<float>(at + o));
+				std::printf("\n");
+			}
+		}
+		return 0;
+	}
+
 	// Where textures are: --names <file> (one name a line); every texture dictionary is searched, the dictionaries that
 	// have any of them printed with the names found.
 	int TextureFind(const loader::convert::Decryptor& decrypt)
@@ -541,6 +576,8 @@ int main(int argc, char** argv)
 		return g_options.contains("file") ? TextureList(decrypt) : Fail("--file <name.ytd> is needed");
 	if (command == "metadump")
 		return g_options.contains("file") ? MetaDump(decrypt) : Fail("--file <name> is needed");
+	if (command == "lightdump")
+		return g_options.contains("file") ? LightDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")
 		return TextureStats(decrypt);
 	if (command == "texfind")

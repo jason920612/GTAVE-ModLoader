@@ -50,9 +50,12 @@ namespace loader::config
 			c.ue5Project = j.value("ue5Project", c.ue5Project);
 			c.ue5Pack = j.value("ue5Pack", c.ue5Pack);
 			c.ue5Key = j.value("ue5Key", c.ue5Key);
+			if (c.ue5Key == "F7")
+				c.ue5Key = "F11"; // (the old default, only ever saved as such: F7 is the trainer's)
 			c.ue5Preset = j.value("ue5Preset", c.ue5Preset);
 			c.ue5ExposureMatch = j.value("ue5ExposureMatch", c.ue5ExposureMatch);
 			c.ue5GameResolution = j.value("ue5GameResolution", c.ue5GameResolution);
+			c.ue5GameDetail = j.value("ue5GameDetail", c.ue5GameDetail);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -86,6 +89,7 @@ namespace loader::config
 				{"ue5Preset", c.ue5Preset},
 				{"ue5ExposureMatch", c.ue5ExposureMatch},
 				{"ue5GameResolution", c.ue5GameResolution},
+				{"ue5GameDetail", c.ue5GameDetail},
 			};
 		}
 	}

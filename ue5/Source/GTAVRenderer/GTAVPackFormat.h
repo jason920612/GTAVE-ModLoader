@@ -8,7 +8,7 @@
 
 namespace GTAVPack
 {
-	constexpr uint32_t kVersion = 2;
+	constexpr uint32_t kVersion = 3;
 
 	enum Kind : uint32_t
 	{
@@ -76,7 +76,7 @@ namespace GTAVPack
 	struct ModelLight
 	{
 		float position[3];  // Unreal's space (cm)
-		float direction[3]; // unit, Unreal's space
+		float direction[3]; // unit, Unreal's space (where it shines)
 		uint8_t color[3];
 		uint8_t type;       // the game's: 1 point, 2 spot, 4 capsule
 		float intensity;    // the game's
@@ -85,8 +85,10 @@ namespace GTAVPack
 		float coneInner, coneOuter; // degrees
 		uint32_t timeFlags; // bits 0-23: the hours it is on
 		uint32_t flags;
+		float tangent[3]; // unit, Unreal's space: a capsule's axis
+		float length;     // a capsule's (a neon or fluorescent tube, a strip light), cm
 	};
-	static_assert(sizeof(ModelLight) == 56);
+	static_assert(sizeof(ModelLight) == 72);
 
 	// What a material draws like (the renderer's master materials).
 	enum MaterialKind : uint8_t

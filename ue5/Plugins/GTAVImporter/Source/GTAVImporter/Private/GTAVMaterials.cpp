@@ -35,6 +35,7 @@
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
+#include "Materials/MaterialExpressionViewProperty.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
@@ -179,7 +180,7 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		auto* RippleNear = NewObject<UMaterialExpressionOneMinus>(M);
 		RippleNear->Input.Connect(0, RippleGone);
 		Add(RippleNear);
-		auto* RippleXY = NewObject<UMaterialExpressionMultiply>(M); // (xy halved near, z kept: gentler waves)
+		auto* RippleXY = NewObject<UMaterialExpressionMultiply>(M); // (the slopes halved near: gentler waves)
 		RippleXY->A.Connect(0, RippleNear);
 		RippleXY->ConstB = 0.5f;
 		Add(RippleXY);
@@ -187,16 +188,26 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		WeightsXY->A.Connect(0, RippleXY);
 		WeightsXY->B.Connect(0, RippleXY);
 		Add(WeightsXY);
-		auto* One = NewObject<UMaterialExpressionConstant>(M);
-		One->R = 1.0f;
-		Add(One);
+		auto* Zero = NewObject<UMaterialExpressionConstant>(M);
+		Zero->R = 0.0f;
+		Add(Zero);
 		auto* Weights = NewObject<UMaterialExpressionAppendVector>(M);
 		Weights->A.Connect(0, WeightsXY);
-		Weights->B.Connect(0, One);
+		Weights->B.Connect(0, Zero);
 		Add(Weights);
-		auto* Flatter = NewObject<UMaterialExpressionMultiply>(M);
-		Flatter->A.Connect(0, Sum);
-		Flatter->B.Connect(0, Weights);
+		auto* Slopes = NewObject<UMaterialExpressionMultiply>(M);
+		Slopes->A.Connect(0, Sum);
+		Slopes->B.Connect(0, Weights);
+		Add(Slopes);
+		// The normal from the two samples' slopes over the two unit z's: the game's water bump map's own z comes out
+		// as 0 (a two-channel map read as a normal map), and with the ripples faded out (0, 0, 0) normalised was NaN,
+		// spread by the temporal upscaler and the bloom into a glaring blob over a pool seen from 60 m.
+		auto* Up = NewObject<UMaterialExpressionConstant3Vector>(M);
+		Up->Constant = FLinearColor(0.0f, 0.0f, 2.0f);
+		Add(Up);
+		auto* Flatter = NewObject<UMaterialExpressionAdd>(M);
+		Flatter->A.Connect(0, Slopes);
+		Flatter->B.Connect(0, Up);
 		Add(Flatter);
 		// The sea's swell over the ripples: the slopes of a wind sea (Pierson-Moskowitz spectrum, deep water dispersion)
 		// for the wind in MPC_GTAV (lakes and pools keep the ripples).
@@ -522,8 +533,8 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	return Masters.Add(Kind, M);
 }
 
-// The map's distant lights at night: unlit, additive, the colour per instance (custom data 0..2), grown with the
-// distance so that a far light stays a few pixels wide.
+// The map's lights as seen (the bulbs): unlit, additive, the colour times the intensity per instance (custom data
+// 0..2), grown so that a far light stays a pixel wide.
 UMaterial* FGTAVMaterials::Corona()
 {
 	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Corona");
@@ -560,20 +571,22 @@ UMaterial* FGTAVMaterials::Corona()
 	RGB->A.Connect(0, RG);
 	RGB->B.Connect(0, Channel[2]);
 	Add(RGB);
-	auto* Brightness = NewObject<UMaterialExpressionScalarParameter>(M);
-	Brightness->ParameterName = TEXT("Brightness");
-	Brightness->DefaultValue = 20000.0f; // nits: a lamp's glowing housing
-	Add(Brightness);
+	// A bulb of intensity I (candela) seen as a disk of radius R shines with I / (pi R^2) nits: Candela is the intensity
+	// of colour 1 (the lights' own), R the sphere's radius as drawn (cm: x 10^4 for m^2).
+	auto* Candela = NewObject<UMaterialExpressionScalarParameter>(M);
+	Candela->ParameterName = TEXT("Candela");
+	Candela->DefaultValue = 4500.0f;
+	Add(Candela);
 	auto* Glow = NewObject<UMaterialExpressionMultiply>(M);
 	Glow->A.Connect(0, RGB);
-	Glow->B.Connect(0, Brightness);
+	Glow->B.Connect(0, Candela);
 	Add(Glow);
-	// Grown with the distance (below): the glow spreads over the larger sphere, dimmer in step with its size.
-	auto* Spread = NewObject<UMaterialExpressionDivide>(M);
-	Spread->A.Connect(0, Glow);
-	Add(Spread);
-	Inputs->EmissiveColor.Connect(0, Spread);
-	// Grown with the distance: (vertex - centre) * (max(distance / 30000, 1) - 1) (the mesh's radius is 30 cm).
+	auto* PerArea = NewObject<UMaterialExpressionMultiply>(M);
+	PerArea->A.Connect(0, Glow);
+	PerArea->ConstB = 10000.0f / UE_PI;
+	Add(PerArea);
+	// Grown so as not to shrink below a pixel (at its distance a pixel spans distance x 2 tan(fov / 2) / width): the
+	// same light over the larger disk, dimmer by its area, as a camera sees a light too small to resolve.
 	auto* Centre = NewObject<UMaterialExpressionObjectPositionWS>(M);
 	Add(Centre);
 	auto* Eye = NewObject<UMaterialExpressionCameraPositionWS>(M);
@@ -582,35 +595,152 @@ UMaterial* FGTAVMaterials::Corona()
 	Far->A.Connect(0, Eye);
 	Far->B.Connect(0, Centre);
 	Add(Far);
-	auto* Scaled = NewObject<UMaterialExpressionMultiply>(M);
-	Scaled->A.Connect(0, Far);
-	Scaled->ConstB = 1.0f / 30000.0f;
-	Add(Scaled);
-	auto* AtLeast = NewObject<UMaterialExpressionMax>(M);
-	AtLeast->A.Connect(0, Scaled);
-	AtLeast->ConstB = 1.0f;
-	Add(AtLeast);
-	Spread->B.Connect(0, AtLeast);
-	auto* Grow = NewObject<UMaterialExpressionSubtract>(M);
-	Grow->A.Connect(0, AtLeast);
-	Grow->ConstB = 1.0f;
-	Add(Grow);
+	auto* TanHalf = NewObject<UMaterialExpressionViewProperty>(M);
+	TanHalf->Property = MEVP_TanHalfFieldOfView;
+	Add(TanHalf);
+	auto* TanX = NewObject<UMaterialExpressionComponentMask>(M);
+	TanX->Input.Connect(0, TanHalf);
+	TanX->R = true;
+	Add(TanX);
+	auto* ViewSize = NewObject<UMaterialExpressionViewProperty>(M);
+	ViewSize->Property = MEVP_ViewSize;
+	Add(ViewSize);
+	auto* Width = NewObject<UMaterialExpressionComponentMask>(M);
+	Width->Input.Connect(0, ViewSize);
+	Width->R = true;
+	Add(Width);
+	auto* Span = NewObject<UMaterialExpressionMultiply>(M);
+	Span->A.Connect(0, Far);
+	Span->B.Connect(0, TanX);
+	Add(Span);
+	auto* Pixel = NewObject<UMaterialExpressionDivide>(M); // (2 x: the half width's tangent; a radius of one pixel)
+	Pixel->A.Connect(0, Span);
+	Pixel->B.Connect(0, Width);
+	Add(Pixel);
+	auto* PixelRadius = NewObject<UMaterialExpressionMultiply>(M);
+	PixelRadius->A.Connect(0, Pixel);
+	PixelRadius->ConstB = 2.0f;
+	Add(PixelRadius);
 	auto* Here = NewObject<UMaterialExpressionWorldPosition>(M);
 	Add(Here);
 	auto* FromCentre = NewObject<UMaterialExpressionSubtract>(M);
 	FromCentre->A.Connect(0, Here);
 	FromCentre->B.Connect(0, Centre);
 	Add(FromCentre);
+	auto* Radius = NewObject<UMaterialExpressionDistance>(M); // (the sphere's own, every vertex the same)
+	Radius->A.Connect(0, Here);
+	Radius->B.Connect(0, Centre);
+	Add(Radius);
+	auto* SafeRadius = NewObject<UMaterialExpressionMax>(M);
+	SafeRadius->A.Connect(0, Radius);
+	SafeRadius->ConstB = 0.1f;
+	Add(SafeRadius);
+	auto* Ratio = NewObject<UMaterialExpressionDivide>(M);
+	Ratio->A.Connect(0, PixelRadius);
+	Ratio->B.Connect(0, SafeRadius);
+	Add(Ratio);
+	auto* AtLeast = NewObject<UMaterialExpressionMax>(M);
+	AtLeast->A.Connect(0, Ratio);
+	AtLeast->ConstB = 1.0f;
+	Add(AtLeast);
+	auto* Grow = NewObject<UMaterialExpressionSubtract>(M);
+	Grow->A.Connect(0, AtLeast);
+	Grow->ConstB = 1.0f;
+	Add(Grow);
 	auto* Offset = NewObject<UMaterialExpressionMultiply>(M);
 	Offset->A.Connect(0, FromCentre);
 	Offset->B.Connect(0, Grow);
 	Add(Offset);
 	Inputs->WorldPositionOffset.Connect(0, Offset);
+	// The drawn radius from the vertices to the pixels.
+	auto* Drawn = NewObject<UMaterialExpressionMultiply>(M);
+	Drawn->A.Connect(0, SafeRadius);
+	Drawn->B.Connect(0, AtLeast);
+	Add(Drawn);
+	auto* DrawnArea = NewObject<UMaterialExpressionMultiply>(M);
+	DrawnArea->A.Connect(0, Drawn);
+	DrawnArea->B.Connect(0, Drawn);
+	Add(DrawnArea);
+	auto* PerVertex = NewObject<UMaterialExpressionVertexInterpolator>(M);
+	PerVertex->Input.Connect(0, DrawnArea);
+	Add(PerVertex);
+	auto* Spread = NewObject<UMaterialExpressionDivide>(M);
+	Spread->A.Connect(0, PerArea);
+	Spread->B.Connect(0, PerVertex);
+	Add(Spread);
+	Inputs->EmissiveColor.Connect(0, Spread);
 	M->PreEditChange(nullptr);
 	M->PostEditChange();
 	Package->MarkPackageDirty();
 	Dirty.Add(Package);
 	return Masters.Add(kCorona, M);
+}
+
+// Light given off by glowing gas and the like (the game's emissive_additive* and decal_emissive*_only shaders, neon
+// tubes as flat cards, one-sided as the game draws them: a sign's back has cards of its own): added to what is behind,
+// unlit, the diffuse's colour times its alpha and the vertex alpha, times the material's emissiveMultiplier in
+// EmissiveNits.
+UMaterial* FGTAVMaterials::Glow()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Glow");
+	if (UMaterial** Found = Masters.Find(kGlow))
+	{
+		return *Found;
+	}
+	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
+	{
+		return Masters.Add(kGlow, Existing);
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterial* M = NewObject<UMaterial>(Package, TEXT("M_GTAV_Glow"), RF_Public | RF_Standalone);
+	M->BlendMode = BLEND_Additive;
+	M->SetShadingModel(MSM_Unlit);
+	M->bUsedWithNanite = true;
+	M->bUsedWithInstancedStaticMeshes = true;
+	M->bUseTranslucencyVertexFog = true; // ("Apply Fogging": the air between dims it)
+	M->bComputeFogPerPixel = true;
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	auto* Diffuse = NewObject<UMaterialExpressionTextureSampleParameter2D>(M);
+	Diffuse->ParameterName = TEXT("DiffuseTex");
+	Diffuse->Texture = EngineTexture(TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+	Diffuse->SamplerType = SAMPLERTYPE_Color;
+	Add(Diffuse);
+	auto* Vertex = NewObject<UMaterialExpressionVertexColor>(M);
+	Add(Vertex);
+	auto* Alpha = NewObject<UMaterialExpressionMultiply>(M);
+	Alpha->A.Connect(4, Diffuse);
+	Alpha->B.Connect(4, Vertex);
+	Add(Alpha);
+	auto* Lit = NewObject<UMaterialExpressionMultiply>(M);
+	Lit->A.Connect(1, Diffuse); // (RGB)
+	Lit->B.Connect(0, Alpha);
+	Add(Lit);
+	auto* Multiplier = NewObject<UMaterialExpressionScalarParameter>(M);
+	Multiplier->ParameterName = TEXT("EmissiveMultiplier");
+	Multiplier->DefaultValue = 1.0f;
+	Add(Multiplier);
+	auto* Nits = NewObject<UMaterialExpressionScalarParameter>(M);
+	Nits->ParameterName = TEXT("EmissiveNits");
+	Nits->DefaultValue = 40.0f;
+	Add(Nits);
+	auto* Scale = NewObject<UMaterialExpressionMultiply>(M);
+	Scale->A.Connect(0, Multiplier);
+	Scale->B.Connect(0, Nits);
+	Add(Scale);
+	auto* Out = NewObject<UMaterialExpressionMultiply>(M);
+	Out->A.Connect(0, Lit);
+	Out->B.Connect(0, Scale);
+	Add(Out);
+	Inputs->EmissiveColor.Connect(0, Out);
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return Masters.Add(kGlow, M);
 }
 
 // Falling rain (M_GTAV_Rain): streaks on cylinders around the camera, lit by the scene's lights (rain shows under a

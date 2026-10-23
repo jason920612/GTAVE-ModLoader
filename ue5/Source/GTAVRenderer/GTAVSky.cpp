@@ -87,6 +87,7 @@ namespace
 		TWeakObjectPtr<UVolumetricCloudComponent> Clouds;
 		TWeakObjectPtr<UMaterialInstanceDynamic> CloudMaterial;
 		TWeakObjectPtr<AExponentialHeightFog> Fog;
+		FLinearColor FogLight = FLinearColor::Black; // the fog's own inscattering (by day)
 		TWeakObjectPtr<USkyAtmosphereComponent> Atmosphere;
 		TWeakObjectPtr<UMaterialParameterCollection> Collection;
 		TWeakObjectPtr<AActor> Rain; // the rain's layers around the camera
@@ -107,6 +108,7 @@ namespace
 		for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
 		{
 			A.Fog = *It;
+			A.FogLight = It->GetComponent()->FogInscatteringLuminance;
 		}
 		for (TActorIterator<ASkyAtmosphere> It(World); It; ++It)
 		{
@@ -151,10 +153,10 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	// The sun from the hour: east at 6, highest at 12 (to the south), west at 18; at night the moon opposite. Physical
 	// units throughout (lux; the lights in candela, glowing surfaces in nits), the exposure adapting as an eye does:
 	// a clear sun gives 100,000 lux, a full moon a quarter of one.
+	const float Angle = (Hours - 6.0f) / 12.0f * PI;
+	const FVector Toward = FVector(FMath::Cos(Angle), FMath::Sin(Angle) * 0.5f, FMath::Sin(Angle) * 0.866f).GetSafeNormal(); // (y: south, mirrored)
 	if (ADirectionalLight* Sun = A.Sun.Get())
 	{
-		const float Angle = (Hours - 6.0f) / 12.0f * PI;
-		const FVector Toward = FVector(FMath::Cos(Angle), FMath::Sin(Angle) * 0.5f, FMath::Sin(Angle) * 0.866f).GetSafeNormal(); // (y: south, mirrored)
 		const bool bDay = Toward.Z > -0.05f;
 		Sun->SetActorRotation((bDay ? -Toward : Toward).Rotation());
 		ULightComponent* Light = Sun->GetLightComponent();
@@ -165,12 +167,12 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	{
 		Sky->GetLightComponent()->SetIntensity(L.Sky);
 	}
+	const float CoverOverride = CVarCloudCoverage.GetValueOnGameThread();
+	const float Cover = FMath::Clamp(CoverOverride >= 0 ? CoverOverride : L.Clouds, 0.0f, 1.0f);
 	if (UMaterialInstanceDynamic* Clouds = A.CloudMaterial.Get())
 	{
 		// (the engine's cloud material: Cloud_GlobalCoverage 0 gives scattered cumulus, 0.3 a hazy overcast, 0.45 a milky
 		// one, measured; a clear sky has none at all)
-		const float Override = CVarCloudCoverage.GetValueOnGameThread();
-		const float Cover = FMath::Clamp(Override >= 0 ? Override : L.Clouds, 0.0f, 1.0f);
 		if (UVolumetricCloudComponent* Layer = A.Clouds.Get())
 		{
 			Layer->SetVisibility(Cover >= 0.1f);
@@ -235,6 +237,21 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		UExponentialHeightFogComponent* C = Fog->GetComponent();
 		C->SetFogDensity(L.Fog * (1.0f - Indoors));
 		C->SetFogHeightFalloff(0.35f);
+		// Light pollution: a city's lights light the aerosols over it from below (and its clouds, many times more), an
+		// orange-grey glow brightest low over the horizon, where a line of sight crosses the most air, the zenith
+		// darker: some 0.25 nits towards the horizon on a clear night over Los Santos and 0.03 overhead (a city sky of
+		// about 17 mag/arcsec^2), less out in the country (the city's dome on the horizon), a low overcast lit orange.
+		// Sodium and white LED street lights mixed. The aerosols as the second fog: a layer about 1.2 km thick (scale
+		// height; the fog's falloff is per 1000 cm), optical depth 0.15 straight up (density per 1000 cm), at night
+		// only (by day the sky atmosphere's haze is the air's).
+		const float Night = 1.0f - FMath::SmoothStep(-0.12f, 0.02f, float(Toward.Z));
+		const float Haze = FMath::Lerp(0.6f, 1.4f, FMath::Clamp(L.Haze * 0.5f, 0.0f, 1.0f));
+		const float Glow = 0.25f * FMath::Lerp(0.3f, 1.0f, City) * (1.0f + 6.0f * Cover) * Haze;
+		C->SetFogInscatteringColor(FMath::Lerp(A.FogLight, FLinearColor(1.0f, 0.68f, 0.42f) * Glow, Night));
+		FExponentialHeightFogData Aerosols;
+		Aerosols.FogHeightFalloff = 1000.0f / 120000.0f;
+		Aerosols.FogDensity = 0.15f / 120000.0f * 1000.0f * Haze * Night * (1.0f - Indoors);
+		C->SetSecondFogData(Aerosols);
 	}
 	if (UMaterialParameterCollection* Collection = A.Collection.Get())
 	{

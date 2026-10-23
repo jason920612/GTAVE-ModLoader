@@ -32,6 +32,8 @@ public:
 	UMaterial* Corona();
 	// Falling rain.
 	UMaterial* Rain();
+	// Glowing gas (neon tubes and the like): additive, unlit.
+	UMaterial* Glow();
 
 private:
 	FString ExportRoot;
@@ -40,7 +42,7 @@ private:
 	TMap<FString, UMaterialInterface*> Instances;
 	TMap<FString, UTexture2D*> Textures;
 
-	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9, kRain = 10;
+	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9, kRain = 10, kGlow = 11;
 	UTexture2D* BlackMask();
 	UMaterialParameterCollection* Collection();
 	void Wetten(UMaterial* M);

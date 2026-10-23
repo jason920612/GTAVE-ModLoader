@@ -67,6 +67,7 @@ namespace
 void UGTAVWorldSubsystem::DumpNear(const FVector& GamePoint, float Radius)
 {
 	const FVector P(GamePoint.X * 100, -GamePoint.Y * 100, GamePoint.Z * 100);
+	Lights.Dump(P, Radius * 100);
 	for (const TPair<uint64, TObjectPtr<UStaticMeshComponent>>& D : Drawn)
 	{
 		if (D.Key & kInteriorKey)
@@ -651,8 +652,7 @@ void UGTAVWorldSubsystem::Apply()
 		C->SetWorldTransform(Transform);
 		C->RegisterComponent();
 		Drawn.Add(W.Key, C);
-		// (an interior's lights come with its models; outside, the map's LOD lights stand for them)
-		if (const TArray<GTAVPack::ModelLight>* ML = (W.Key & kInteriorKey) ? Assets->LightsOf(W.Value) : nullptr)
+		if (const TArray<GTAVPack::ModelLight>* ML = Assets->LightsOf(W.Value))
 		{
 			Lights.AddEntity(W.Key, Transform, *ML);
 		}

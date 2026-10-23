@@ -53,7 +53,7 @@ namespace loader::config
 		std::string ue5Editor;  // UnrealEditor.exe
 		std::string ue5Project; // GTAVRenderer.uproject (tools/ue5_setup.py)
 		std::string ue5Pack;    // the pack folder (ue5export pack)
-		std::string ue5Key = "F7"; // switches between UE5's picture and the game's
+		std::string ue5Key = "F11"; // switches between UE5's picture and the game's (F6-F8: the trainer's, F9-F10: the police mod's)
 		// The renderer's quality: "low", "medium", "high", "ultra", "cinematic" (graphics/bridge.cpp: resolution, the
 		// engine's scalability groups, draw distance, lights). Applied while it runs.
 		std::string ue5Preset = "high";
@@ -65,6 +65,10 @@ namespace loader::config
 		// internal resolution. Takes effect when the game starts. (Measured at Legion Square, high preset: the game's
 		// Quality 60 frames/s, Performance 53: lower is not faster there, hence "game".)
 		std::string ue5GameResolution = "game";
+		// Its world's detail meanwhile: "lean" (what only draws the world off: grass, water, tessellation, volumetric
+		// fog, the farther levels of detail; the peds' and vehicles' own kept) or "game" (its own settings). Takes
+		// effect when the game starts.
+		std::string ue5GameDetail = "lean";
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

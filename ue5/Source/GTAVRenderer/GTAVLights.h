@@ -6,6 +6,7 @@
 
 class AActor;
 class UInstancedStaticMeshComponent;
+class ULocalLightComponent;
 class UPointLightComponent;
 class USpotLightComponent;
 
@@ -20,20 +21,31 @@ public:
 
 	// Game thread, each frame: Owner gets the components; Camera in Unreal's space; Hour 0-23.
 	void Update(AActor* Owner, const FVector& Camera, int32 Hour);
-	// The lights a drawn entity's model carries (interiors: the map's LOD lights leave them out), placed by its
-	// transform; gone with the entity.
+	// The lights a drawn entity's model carries, placed by its transform (where the map has no LOD light of its own
+	// for them); gone with the entity.
 	void AddEntity(uint64 Key, const FTransform& Transform, const TArray<GTAVPack::ModelLight>& Model);
 	void RemoveEntity(uint64 Key);
+	// (checking: the real lights near a point, to the log)
+	void Dump(const FVector& Point, float Radius) const;
 
-	float NearRadius = 12000.0f;  // cm: real lights within (gtav.Lights of them, the nearest)
+	float NearRadius = 40000.0f;  // cm: real lights within (gtav.Lights of them, those that matter most)
 	float FarRadius = 500000.0f;  // cm: glowing points within
 
 private:
+	// An entity's light: as a LOD light, and a capsule's length (cm; 0 for the others) and axis.
+	struct FEntityLight
+	{
+		GTAVPack::LodLight Light;
+		float Length = 0;
+		FVector3f Axis = FVector3f::ZeroVector;
+	};
+
 	TArray<GTAVPack::LodLight> Lights;
 	TMap<FIntPoint, TArray<int32>> Grid; // 256 m cells
-	TMap<uint64, TArray<GTAVPack::LodLight>> EntityLights; // (as LOD lights, in the world)
-	TArray<TWeakObjectPtr<UPointLightComponent>> Points;
-	TArray<TWeakObjectPtr<USpotLightComponent>> Spots;
+	TMap<uint64, TArray<FEntityLight>> EntityLights; // (in the world)
+	TMap<int64, TWeakObjectPtr<ULocalLightComponent>> Active; // the real lights by the light they are
+	TArray<TWeakObjectPtr<ULocalLightComponent>> FreePoints, FreeSpots;
+	bool bLastShadows = false;
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Glow;
 	FVector LastNear = FVector(1e30), LastFar = FVector(1e30);
 	int32 LastHour = -1;
@@ -41,10 +53,10 @@ private:
 
 	static FIntPoint CellOf(const FVector& P);
 	bool On(const GTAVPack::LodLight& L, int32 Hour) const { return (L.flags >> Hour) & 1; }
-	// (indices: the map's lights; -1 - n: the n-th of Extra)
 	void Gather(const FVector& Camera, float Radius, int32 Hour, TArray<TPair<float, int32>>& Out) const;
-	TArray<GTAVPack::LodLight> Extra; // the entities' lights, flattened at each update
-	const GTAVPack::LodLight& LightAt(int32 Index) const { return Index >= 0 ? Lights[Index] : Extra[-1 - Index]; }
+	TMap<int64, FEntityLight> Extra; // the entities' lights near, by their keys (negative)
+	const GTAVPack::LodLight& LightAt(int64 Key) const { return Key >= 0 ? Lights[int32(Key)] : Extra[Key].Light; }
+	float LengthAt(int64 Key) const;
 	void UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour);
 	void UpdateFar(AActor* Owner, const FVector& Camera, int32 Hour);
 };

@@ -391,6 +391,8 @@ namespace ue5export
 					x.falloffExponent = l.falloffExponent;
 					x.coneInner = l.coneInner, x.coneOuter = l.coneOuter;
 					x.timeFlags = l.timeFlags, x.flags = l.flags;
+					x.tangent[0] = l.tangent[0], x.tangent[1] = -l.tangent[1], x.tangent[2] = l.tangent[2];
+					x.length = l.length * 100;
 					Put(out, x);
 				}
 			}

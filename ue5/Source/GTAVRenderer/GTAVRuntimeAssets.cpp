@@ -16,6 +16,24 @@ DEFINE_LOG_CATEGORY_STATIC(LogGTAVAssets, Log, All);
 
 namespace
 {
+	// Glowing gas (M_GTAV_Glow): the game's shaders that only add light (neon tubes, as flat cards seen from both
+	// sides).
+	constexpr int32 kGlowKind = 11;
+
+	bool IsGlow(uint32 Effect)
+	{
+		static const uint32 Glows[] = {GTAVHash(TEXTVIEW("emissive_additive_alpha")), GTAVHash(TEXTVIEW("emissive_additive_uv_alpha")),
+			GTAVHash(TEXTVIEW("decal_emissive_only")), GTAVHash(TEXTVIEW("decal_emissivenight_only"))};
+		for (const uint32 G : Glows)
+		{
+			if (Effect == G)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	EPixelFormat PixelFormat(uint8 Dxgi)
 	{
 		switch (Dxgi)
@@ -617,7 +635,8 @@ UMaterial* FGTAVRuntimeAssets::Master(int32 Kind)
 	{
 		return *Found;
 	}
-	const TCHAR* Name = Kind == 9 ? TEXT("M_GTAV_OceanFar")
+	const TCHAR* Name = Kind == kGlowKind ? TEXT("M_GTAV_Glow")
+		: Kind == 9 ? TEXT("M_GTAV_OceanFar")
 		: Kind == 7 ? TEXT("M_GTAV_Ocean")
 		: Kind == GTAVPack::kWater ? TEXT("M_GTAV_Water")
 		: Kind == GTAVPack::kTerrain ? TEXT("M_GTAV_Terrain4")
@@ -639,7 +658,7 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	{
 		return *Found;
 	}
-	UMaterial* Parent = Master(M.kind);
+	UMaterial* Parent = Master(IsGlow(M.effect) ? kGlowKind : M.kind);
 	if (!Parent)
 	{
 		return Materials.Add(Key, Fallback);

@@ -65,11 +65,12 @@ namespace ue5export::drawable
 	// A light attribute of a drawable (0xA8 bytes each; research/phase0.md §59.9), in the game's space (metres).
 	struct Light
 	{
-		std::array<float, 3> position{}, direction{};
+		std::array<float, 3> position{}, direction{}, tangent{};
 		std::array<uint8_t, 3> color{};
 		uint8_t type = 0; // 1 point, 2 spot, 4 capsule
 		uint16_t bone = 0;
 		float intensity = 0, falloff = 0, falloffExponent = 0, coneInner = 0, coneOuter = 0;
+		float length = 0; // a capsule's (m), along the tangent
 		uint32_t timeFlags = 0, flags = 0;
 	};
 
