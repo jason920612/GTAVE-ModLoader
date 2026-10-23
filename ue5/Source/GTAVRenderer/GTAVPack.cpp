@@ -52,7 +52,27 @@ bool FGTAVPackFile::Read(uint64 Key, TArray<uint8>& Out) const
 
 bool FGTAVPack::Open(const FString& Folder, FString& OutError)
 {
-	return Models.Open(FPaths::Combine(Folder, TEXT("models.gpk")), GTAVPack::kModels, OutError) &&
-		Textures.Open(FPaths::Combine(Folder, TEXT("textures.gpk")), GTAVPack::kTextures, OutError) &&
-		World.Open(FPaths::Combine(Folder, TEXT("world.gpk")), GTAVPack::kWorld, OutError);
+	if (!Models.Open(FPaths::Combine(Folder, TEXT("models.gpk")), GTAVPack::kModels, OutError) ||
+		!Textures.Open(FPaths::Combine(Folder, TEXT("textures.gpk")), GTAVPack::kTextures, OutError) ||
+		!World.Open(FPaths::Combine(Folder, TEXT("world.gpk")), GTAVPack::kWorld, OutError))
+	{
+		return false;
+	}
+	FString Ignored;
+	bGlobals = Globals.Open(FPaths::Combine(Folder, TEXT("globals.gpk")), GTAVPack::kTextures, Ignored);
+	return true;
+}
+
+uint32 GTAVHash(FStringView Name)
+{
+	uint32 H = 0;
+	for (const TCHAR C : Name)
+	{
+		H += uint8(FChar::ToLower(C));
+		H += H << 10;
+		H ^= H >> 6;
+	}
+	H += H << 3;
+	H ^= H >> 11;
+	return H + (H << 15);
 }

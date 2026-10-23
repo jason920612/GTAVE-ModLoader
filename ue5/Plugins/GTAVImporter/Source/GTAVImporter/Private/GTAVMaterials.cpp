@@ -6,6 +6,14 @@
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionAppendVector.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionMax.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialExpressionPanner.h"
+#include "Materials/MaterialExpressionNormalize.h"
+#include "Materials/MaterialExpressionFresnel.h"
+#include "Materials/MaterialExpressionDepthFade.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionComponentMask.h"
 #include "Materials/MaterialExpressionDivide.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
@@ -74,7 +82,7 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		return *Found;
 	}
 	static const TCHAR* Names[] = {TEXT("M_GTAV_Opaque"), TEXT("M_GTAV_Translucent"), nullptr, TEXT("M_GTAV_Cutout"), TEXT("M_GTAV_Terrain4"), nullptr,
-		TEXT("M_GTAV_Water")};
+		TEXT("M_GTAV_Water"), TEXT("M_GTAV_Ocean")};
 	const FString PackageName = FString(TEXT("/Game/GTAV/Materials/")) + Names[Kind];
 	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
 	{
@@ -82,12 +90,12 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	}
 	UPackage* Package = CreatePackage(*PackageName);
 	UMaterial* M = NewObject<UMaterial>(Package, Names[Kind], RF_Public | RF_Standalone);
-	M->BlendMode = Kind == 1 || Kind == kWater ? BLEND_Translucent : Kind == 3 ? BLEND_Masked : BLEND_Opaque;
+	M->BlendMode = Kind == 1 || Kind == kWater || Kind == kOcean ? BLEND_Translucent : Kind == 3 ? BLEND_Masked : BLEND_Opaque;
 	M->TwoSided = Kind == 3; // (foliage, fences)
 	// (usage flags cannot be added in the game: the material would fall back to the default one)
 	M->bUsedWithNanite = true;
 	M->bUsedWithInstancedStaticMeshes = true;
-	if (Kind == 1 || Kind == kWater)
+	if (Kind == 1 || Kind == kWater || Kind == kOcean)
 	{
 		M->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
 	}
@@ -104,31 +112,88 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	};
 	UTexture2D* White = EngineTexture(TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
 	UTexture2D* FlatNormal = EngineTexture(TEXT("/Engine/EngineMaterials/DefaultNormal.DefaultNormal"));
-	if (Kind == kWater)
+	if (Kind == kWater || Kind == kOcean)
 	{
-		// Water (draw bucket 6): its colour, smooth and reflective, see-through.
+		// Water (draw bucket 6: pools, fountains) and the sea (water.xml): ripples from the game's water bump map moving
+		// two ways across the world, dark, smooth and reflective (Lumen's front layer), clear where it is shallow.
+		M->bAllowFrontLayerTranslucency = true;
+		const auto Add = [&](UMaterialExpression* E) {
+			M->GetExpressionCollection().AddExpression(E);
+			return E;
+		};
+		auto* World = NewObject<UMaterialExpressionWorldPosition>(M);
+		Add(World);
+		auto* XY = NewObject<UMaterialExpressionComponentMask>(M);
+		XY->Input.Connect(0, World);
+		XY->R = XY->G = 1;
+		XY->B = XY->A = 0;
+		Add(XY);
+		const auto Ripples = [&](float Size, float SpeedX, float SpeedY, int32 Y) {
+			auto* Scale = NewObject<UMaterialExpressionDivide>(M);
+			Scale->A.Connect(0, XY);
+			Scale->ConstB = Size;
+			Add(Scale);
+			auto* Pan = NewObject<UMaterialExpressionPanner>(M);
+			Pan->Coordinate.Connect(0, Scale);
+			Pan->SpeedX = SpeedX;
+			Pan->SpeedY = SpeedY;
+			Add(Pan);
+			auto* S = Sample(TEXT("WaterBump"), FlatNormal, SAMPLERTYPE_Normal, -700, Y);
+			S->Coordinates.Connect(0, Pan);
+			return S;
+		};
+		auto* Sum = NewObject<UMaterialExpressionAdd>(M);
+		Sum->A.Connect(0, Ripples(Kind == kOcean ? 900.0f : 200.0f, 0.012f, 0.007f, -200));
+		Sum->B.Connect(0, Ripples(Kind == kOcean ? 2300.0f : 450.0f, -0.006f, 0.010f, 100));
+		Add(Sum);
+		auto* Flatter = NewObject<UMaterialExpressionMultiply>(M); // (xy halved, z kept: gentler waves)
+		Flatter->A.Connect(0, Sum);
+		auto* Weights = NewObject<UMaterialExpressionConstant3Vector>(M);
+		Weights->Constant = FLinearColor(0.5f, 0.5f, 1.0f);
+		Add(Weights);
+		Flatter->B.Connect(0, Weights);
+		Add(Flatter);
+		auto* Normal = NewObject<UMaterialExpressionNormalize>(M);
+		Normal->VectorInput.Connect(0, Flatter);
+		Add(Normal);
+		Inputs->Normal.Connect(0, Normal);
 		auto* Color = NewObject<UMaterialExpressionVectorParameter>(M);
 		Color->ParameterName = TEXT("WaterColor");
-		Color->DefaultValue = FLinearColor(0.65f, 0.76f, 0.78f);
-		M->GetExpressionCollection().AddExpression(Color);
+		Color->DefaultValue = Kind == kOcean ? FLinearColor(0.10f, 0.30f, 0.33f) : FLinearColor(0.65f, 0.76f, 0.78f);
+		Add(Color);
 		// (the game's water is mostly what it reflects: its colour is the depth fog, kept dark here)
 		auto* Dark = NewObject<UMaterialExpressionMultiply>(M);
 		Dark->A.Connect(0, Color);
 		Dark->ConstB = 0.12f;
-		M->GetExpressionCollection().AddExpression(Dark);
+		Add(Dark);
 		Inputs->BaseColor.Connect(0, Dark);
 		auto* Specular = NewObject<UMaterialExpressionConstant>(M);
 		Specular->R = 1.0f;
-		M->GetExpressionCollection().AddExpression(Specular);
+		Add(Specular);
 		Inputs->Specular.Connect(0, Specular);
-		auto* Opacity = NewObject<UMaterialExpressionConstant>(M);
-		Opacity->R = 0.4f;
-		M->GetExpressionCollection().AddExpression(Opacity);
-		Inputs->Opacity.Connect(0, Opacity);
 		auto* Rough = NewObject<UMaterialExpressionConstant>(M);
-		Rough->R = 0.03f;
-		M->GetExpressionCollection().AddExpression(Rough);
+		Rough->R = 0.04f;
+		Add(Rough);
 		Inputs->Roughness.Connect(0, Rough);
+		// Opacity: clear in the shallows (the depth behind it), more opaque at grazing angles.
+		auto* Fresnel = NewObject<UMaterialExpressionFresnel>(M);
+		Fresnel->Exponent = 5.0f;
+		Fresnel->BaseReflectFraction = 0.0f;
+		Add(Fresnel);
+		auto* Body = NewObject<UMaterialExpressionLinearInterpolate>(M);
+		Body->ConstA = Kind == kOcean ? 0.75f : 0.35f;
+		Body->ConstB = 0.98f;
+		Body->Alpha.Connect(0, Fresnel);
+		Add(Body);
+		auto* Fade = NewObject<UMaterialExpressionDepthFade>(M);
+		Fade->InOpacity.Connect(0, Body);
+		Fade->FadeDistanceDefault = Kind == kOcean ? 150.0f : 30.0f;
+		Add(Fade);
+		auto* AtLeast = NewObject<UMaterialExpressionMax>(M); // (still water where it is shallow)
+		AtLeast->A.Connect(0, Fade);
+		AtLeast->ConstB = Kind == kOcean ? 0.45f : 0.2f;
+		Add(AtLeast);
+		Inputs->Opacity.Connect(0, AtLeast);
 		M->PreEditChange(nullptr);
 		M->PostEditChange();
 		Package->MarkPackageDirty();

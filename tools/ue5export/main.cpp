@@ -333,6 +333,24 @@ namespace
 		return 0;
 	}
 
+	// The textures of a dictionary: --file <name.ytd>.
+	int TextureList(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto* f = files.Find(g_options["file"]);
+		loader::convert::Bytes data;
+		loader::convert::Resource resource;
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
+			return Fail(f ? error : "not found");
+		const ue5export::drawable::View view(resource);
+		for (const auto& t : ue5export::drawable::Textures(view, ue5export::drawable::View::kRoot))
+			std::printf("%-40s %4ux%-4u dxgi %3u mips %2u\n", t.name.c_str(), t.width, t.height, t.dxgi, t.mips);
+		return 0;
+	}
+
 	// The renderer's pack files: --pack <name> (default "pack"), --area x0,y0,x1,y1 for a test area.
 	int Pack(const loader::convert::Decryptor& decrypt)
 	{
@@ -459,6 +477,8 @@ int main(int argc, char** argv)
 		return ExportArea(decrypt);
 	if (command == "pack")
 		return Pack(decrypt);
+	if (command == "ytdlist")
+		return g_options.contains("file") ? TextureList(decrypt) : Fail("--file <name.ytd> is needed");
 	if (command == "metadump")
 		return g_options.contains("file") ? MetaDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")

@@ -25,6 +25,7 @@ public:
 	TArray<GTAVPack::GrassBatch> GrassBatches;
 	TArray<GTAVPack::GrassInstance> GrassInstances;
 	TArray<uint32> Lists;
+	TArray<GTAVPack::WaterQuad> WaterQuads; // (packs without water: none)
 
 	const GTAVPack::Archetype* Archetype(uint32 Name) const;
 	// The entities an entity hands over to when the camera comes closer than its childLodDist.

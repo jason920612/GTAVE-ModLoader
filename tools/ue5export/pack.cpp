@@ -456,11 +456,74 @@ namespace ue5export
 			return out;
 		}
 
+		// water.xml (the story map's: levels/gta5): <WaterQuads>, <CalmingQuads>, <WaveQuads>, each a list of <Item>s
+		// with <name value="..." /> fields.
+		struct Water
+		{
+			std::vector<GTAVPack::WaterQuad> quads;
+			std::vector<GTAVPack::CalmingQuad> calming;
+			std::vector<GTAVPack::WaveQuad> waves;
+		};
+
+		Water ReadWater(const GameFiles& files, std::vector<std::string>& warnings)
+		{
+			Water w;
+			const GameFiles::File* file = nullptr;
+			std::vector<GameFiles::File> versions = files.AllOf("water.xml");
+			for (const auto& f : versions)
+				if (Lower(f.path).ends_with("levels/gta5/water.xml"))
+					file = &f;
+			loader::convert::Bytes data;
+			std::string error;
+			if (!file || !files.Read(*file, data, error))
+			{
+				warnings.push_back("no levels/gta5/water.xml: no sea");
+				return w;
+			}
+			const std::string xml(data.begin(), data.end());
+			const auto items = [&](const std::string& list) {
+				std::vector<std::string> out;
+				const size_t begin = xml.find("<" + list + ">"), end = xml.find("</" + list + ">");
+				if (begin == std::string::npos || end == std::string::npos)
+					return out;
+				for (size_t at = xml.find("<Item>", begin); at != std::string::npos && at < end; at = xml.find("<Item>", at + 1))
+					out.push_back(xml.substr(at, xml.find("</Item>", at) - at));
+				return out;
+			};
+			const auto value = [](const std::string& item, const std::string& name) {
+				const size_t at = item.find("<" + name + " value=\"");
+				return at == std::string::npos ? std::string() : item.substr(at + name.size() + 9, item.find('"', at + name.size() + 9) - at - name.size() - 9);
+			};
+			const auto number = [&](const std::string& item, const std::string& name) {
+				const std::string v = value(item, name);
+				return v.empty() ? 0.0f : std::stof(v);
+			};
+			for (const auto& item : items("WaterQuads"))
+			{
+				GTAVPack::WaterQuad q{};
+				q.minX = number(item, "minX"), q.minY = number(item, "minY"), q.maxX = number(item, "maxX"), q.maxY = number(item, "maxY");
+				q.z = number(item, "z");
+				q.type = static_cast<uint8_t>(number(item, "Type"));
+				q.flags = (value(item, "IsInvisible") == "true" ? GTAVPack::kInvisible : 0) | (value(item, "HasLimitedDepth") == "true" ? GTAVPack::kLimitedDepth : 0) |
+				          (value(item, "NoStencil") == "true" ? GTAVPack::kNoStencil : 0);
+				for (int k = 0; k < 4; ++k)
+					q.alpha[k] = static_cast<uint8_t>(number(item, "a" + std::to_string(k + 1)));
+				w.quads.push_back(q);
+			}
+			for (const auto& item : items("CalmingQuads"))
+				w.calming.push_back({number(item, "minX"), number(item, "minY"), number(item, "maxX"), number(item, "maxY"), number(item, "fDampening")});
+			for (const auto& item : items("WaveQuads"))
+				w.waves.push_back({number(item, "minX"), number(item, "minY"), number(item, "maxX"), number(item, "maxY"), number(item, "Amplitude"),
+				    number(item, "XDirection"), number(item, "YDirection")});
+			return w;
+		}
+
 		// The map itself.
 		struct WorldWriter
 		{
 			const mapdata::Map& map;
 			const std::set<uint32_t>& converted;
+			const Water& water;
 			std::vector<uint32_t> lists;
 
 			uint32_t List(const std::vector<uint32_t>& values)
@@ -665,14 +728,58 @@ namespace ue5export
 				world.Add(GTAVPack::kGrassBatches, Bytes(batches));
 				world.Add(GTAVPack::kGrassInstances, Bytes(grass));
 				world.Add(GTAVPack::kLists, Bytes(lists));
+				world.Add(GTAVPack::kWaterQuads, Bytes(water.quads));
+				world.Add(GTAVPack::kCalmingQuads, Bytes(water.calming));
+				world.Add(GTAVPack::kWaveQuads, Bytes(water.waves));
 				return world.Close(error);
 			}
 		};
 	}
 
+	// The renderer's own textures from the game's shared dictionaries (water, rain): globals.gpk, keyed by the
+	// joaat of their names.
+	void WriteGlobals(const GameFiles& files, const fs::path& dir, std::vector<std::string>& warnings)
+	{
+		PackFile out;
+		std::string error;
+		if (!out.Open(dir / "globals.gpk", GTAVPack::kTextures, error))
+		{
+			warnings.push_back(error);
+			return;
+		}
+		Resolver resolver(files);
+		std::vector<std::string> names = {"waterbump", "waterbump2", "waternoise", "waterfoam", "caustic", "oceanwaves", "shorewaves", "waterfog",
+		    "puddle_layout"};
+		for (int i = 0; i < 64; ++i)
+			names.push_back(std::format("puddlenormal_{:04}", i));
+		size_t written = 0;
+		for (const std::string& name : names)
+		{
+			Resolver::Texture t;
+			if (!resolver.Find("graphics", name, t))
+			{
+				warnings.push_back("globals: no " + name);
+				continue;
+			}
+			std::string why;
+			const uint8_t mips = UsableMips(*t.texture, why);
+			if (!mips)
+			{
+				warnings.push_back("globals: " + name + ": " + why);
+				continue;
+			}
+			std::vector<uint8_t> data;
+			Put(data, GTAVPack::TextureHeader{t.texture->width, t.texture->height, mips, t.texture->dxgi, 0});
+			data.insert(data.end(), t.texture->data.begin(), t.texture->data.end());
+			written += out.Add(Joaat(name), data);
+		}
+		if (!out.Close(error))
+			warnings.push_back(error);
+		std::printf("  %zu global textures\n", written);
+	}
+
 	PackStats WritePack(const GameFiles& files, const mapdata::Map& map, const PackOptions& options, std::vector<std::string>& warnings)
 	{
-		(void)files;
 		std::error_code ec;
 		fs::create_directories(options.dir, ec);
 		Shared sh{map, options};
@@ -695,9 +802,11 @@ namespace ue5export
 				sh.converted.insert(static_cast<uint32_t>(e.key));
 			PackFile world;
 			size_t entities = 0;
-			WorldWriter writer{map, sh.converted, {}};
+			const Water water = ReadWater(files, warnings);
+			WorldWriter writer{map, sh.converted, water, {}};
 			if (!world.Open(options.dir / "world.gpk", GTAVPack::kWorld, error) || !writer.Write(world, error, entities))
 				warnings.push_back(error);
+			WriteGlobals(files, options.dir, warnings);
 			sh.stats.entities = entities;
 			sh.stats.models = sh.converted.size();
 			sh.stats.worldBytes = world.Bytes();
@@ -737,9 +846,11 @@ namespace ue5export
 		// The map.
 		PackFile world;
 		size_t entities = 0;
-		WorldWriter writer{map, sh.converted, {}};
+		const Water water = ReadWater(files, warnings);
+		WorldWriter writer{map, sh.converted, water, {}};
 		if (!world.Open(options.dir / "world.gpk", GTAVPack::kWorld, error) || !writer.Write(world, error, entities))
 			warnings.push_back(error);
+		WriteGlobals(files, options.dir, warnings);
 		sh.stats.entities = entities;
 		sh.stats.modelBytes = sh.models.Bytes();
 		sh.stats.textureBytes = sh.textures.Bytes();

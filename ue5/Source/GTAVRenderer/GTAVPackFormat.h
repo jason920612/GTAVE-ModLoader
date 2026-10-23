@@ -159,6 +159,9 @@ namespace GTAVPack
 		kGrassBatches = 12,    // GrassBatch[]
 		kGrassInstances = 13,  // GrassInstance[] (the game's own 16 bytes)
 		kLists = 14,           // uint32[]: the variable-length lists the others point into
+		kWaterQuads = 15,      // WaterQuad[]: the sea, lakes, rivers (water.xml)
+		kCalmingQuads = 16,    // CalmingQuad[]
+		kWaveQuads = 17,       // WaveQuad[]
 	};
 	constexpr uint32_t kNone = 0xFFFFFFFF;
 
@@ -308,6 +311,39 @@ namespace GTAVPack
 		uint8_t reserved[3];
 	};
 	static_assert(sizeof(GrassInstance) == 16);
+
+	// Water (the GAME's space, metres): a box at height z, or a right triangle of it (type 1-4: which corner is left
+	// out), with the corners' alpha.
+	enum WaterFlags : uint8_t
+	{
+		kInvisible = 1,
+		kLimitedDepth = 2,
+		kNoStencil = 4,
+	};
+	struct WaterQuad
+	{
+		float minX, minY, maxX, maxY;
+		float z;
+		uint8_t type;
+		uint8_t flags;
+		uint8_t alpha[4];
+		uint8_t reserved[2];
+	};
+	static_assert(sizeof(WaterQuad) == 28);
+
+	struct CalmingQuad
+	{
+		float minX, minY, maxX, maxY;
+		float dampening;
+	};
+	static_assert(sizeof(CalmingQuad) == 20);
+
+	struct WaveQuad
+	{
+		float minX, minY, maxX, maxY;
+		float amplitude, xDirection, yDirection;
+	};
+	static_assert(sizeof(WaveQuad) == 28);
 
 	struct Placement
 	{

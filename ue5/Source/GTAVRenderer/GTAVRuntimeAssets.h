@@ -11,6 +11,7 @@ class UMaterial;
 class UMaterialInterface;
 class UStaticMesh;
 class UTexture2D;
+struct FStaticMeshBuildVertex;
 
 // The game's models, textures and materials made at run time from the pack (research/phase0.md §59): textures keep
 // the game's own compressed data (no re-encoding: the same memory as the game), meshes get their vertex and index
@@ -39,8 +40,19 @@ public:
 	void Tick(double Budget);
 	int32 Loading() const;
 
-	int32 MeshesBuilt = 0, MeshesFailed = 0, TexturesMade = 0, TexturesFailed = 0, MaterialsMade = 0;
-	int64 TextureBytes = 0;
+	// One of the renderer's own textures (globals.gpk) by name, as a normal map or a colour.
+	UTexture2D* GlobalTexture(const TCHAR* Name, bool bNormal);
+	// A material of a master (kind: GTAVPack::MaterialKind, 7 the sea) with the water's bump map set.
+	UMaterialInterface* WaterMaterial(int32 Kind);
+	// A static mesh from vertices and triangles (game thread), with one material.
+	UStaticMesh* BuildMesh(TArray<FStaticMeshBuildVertex>& Vertices, TArray<uint32>& Indices, UMaterialInterface* Material);
+
+	// While the textures and meshes take more than BudgetBytes, the models not used for Unused seconds go (oldest
+	// first), with the materials and textures nothing else uses.
+	void Evict(int64 BudgetBytes, double Unused);
+
+	int32 MeshesBuilt = 0, MeshesFailed = 0, TexturesMade = 0, TexturesFailed = 0, MaterialsMade = 0, MeshesEvicted = 0;
+	int64 TextureBytes = 0, MeshBytes = 0;
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override { return TEXT("FGTAVRuntimeAssets"); }
@@ -56,6 +68,29 @@ private:
 	TMap<uint32, TObjectPtr<UMaterialInterface>> Materials; // by the material's bytes
 	TMap<int32, TObjectPtr<UMaterial>> Masters;
 	TObjectPtr<UMaterialInterface> Fallback;
+	double Clock = 0; // (the time of this tick)
+
+	// What uses what (for eviction).
+	struct FMeshUse
+	{
+		TArray<uint32> Materials;
+		int64 Bytes = 0;
+		double LastUsed = 0;
+	};
+	struct FMaterialUse
+	{
+		TArray<uint64> Textures; // texture cache keys
+		int32 Refs = 0;
+	};
+	struct FTextureUse
+	{
+		uint64 Key = 0; // the pack's key
+		int64 Bytes = 0;
+		int32 Refs = 0;
+	};
+	TMap<uint64, FMeshUse> MeshUse;
+	TMap<uint32, FMaterialUse> MaterialUse;
+	TMap<uint64, FTextureUse> TextureUse;
 
 	// Loading: a queue by priority the workers take from (guarded), then the game thread.
 	mutable FCriticalSection QueueLock;

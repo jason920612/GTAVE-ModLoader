@@ -23,7 +23,7 @@ public:
 	int32 TexturesImported = 0;
 	int32 TexturesMissing = 0;
 
-	// The master material of a kind (0 opaque, 1 translucent, 3 cutout, 4 terrain, 6 water); the renderer makes its
+	// The master material of a kind (0 opaque, 1 translucent, 3 cutout, 4 terrain, 6 water, 7 the sea); the renderer makes its
 	// instances at run time.
 	UMaterial* Master(int32 Kind);
 
@@ -33,7 +33,7 @@ private:
 	TMap<FString, UMaterialInterface*> Instances;
 	TMap<FString, UTexture2D*> Textures;
 
-	static constexpr int32 kTerrain = 4, kWater = 6;
+	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7;
 	UTexture2D* BlackMask();
 	UTexture2D* Texture(const FString& Path, bool bLinear, bool bNormalMap, bool bPalette = false);
 };

@@ -23,9 +23,13 @@ private:
 	mutable FCriticalSection Lock;
 };
 
-// The three pack files of a folder.
+// The pack files of a folder (globals.gpk: the renderer's own textures from the game, by name hash; optional).
 struct FGTAVPack
 {
-	FGTAVPackFile Models, Textures, World;
+	FGTAVPackFile Models, Textures, World, Globals;
+	bool bGlobals = false;
 	bool Open(const FString& Folder, FString& OutError);
 };
+
+// joaat of a lower-cased name: how the game (and the pack) hash names.
+uint32 GTAVHash(FStringView Name);

@@ -49,6 +49,8 @@ namespace ue5export
 		std::string Stem(uint32_t hash) const;
 		// The model an archetype draws, with its textures.
 		bool Load(const mapdata::Archetype& archetype, Model& out, std::string& error);
+		// A texture of a dictionary by their names.
+		bool Find(const std::string& dictionary, const std::string& texture, Texture& out) { return In(Joaat(dictionary), Lower(texture), out); }
 
 	private:
 		const GameFiles& files_;

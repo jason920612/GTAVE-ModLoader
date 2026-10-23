@@ -17,7 +17,8 @@ class UStaticMeshComponent;
 // childLodDist it hands over to its children (the next level of detail in) once they are loaded; ymaps of map data
 // groups only while their group is on; interiors near the camera; grass batches within their distance.
 //   UnrealEditor.exe GTAVRenderer.uproject <map> -game -gtavpack=<folder> [-gtavsky] [-gtavlod=<scale>] [-gtavhour=<h>]
-// -gtavsky adds a sun, sky, clouds and fog (for an empty map); -gtavlod scales every distance (1: the game's).
+// -gtavsky adds a sun, sky, clouds and fog (for an empty map); -gtavlod scales every distance (1: the game's);
+// -gtavbudget=<MB> is what textures and meshes may take before unused ones go (3072).
 UCLASS()
 class UGTAVWorldSubsystem : public UTickableWorldSubsystem
 {
@@ -58,9 +59,12 @@ private:
 	TSet<uint32> WantedGrass;
 	FVector LastCenter = FVector(1e30);
 	double LastUpdate = 0;
+	double LastEvict = 0;
+	int64 BudgetBytes = 0; // textures and meshes (-gtavbudget=<MB>)
 	int32 WantedMissing = 0; // wanted things whose models are still loading
 
 	void AddSky(UWorld& World);
+	void BuildWater();
 	void UpdateYmaps();
 	void Update(const FVector& Center);
 	void Visit(uint32 Entity, const FVector& Center, bool bForced);

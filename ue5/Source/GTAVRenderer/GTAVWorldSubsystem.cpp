@@ -14,6 +14,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
+#include "StaticMeshResources.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGTAVWorld, Log, All);
 
@@ -66,6 +67,9 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavpack="), Folder, false);
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavlod="), DistanceScale);
 	FParse::Value(FCommandLine::Get(), TEXT("-gtavhour="), CurrentHour);
+	int32 BudgetMB = 3072;
+	FParse::Value(FCommandLine::Get(), TEXT("-gtavbudget="), BudgetMB);
+	BudgetBytes = int64(BudgetMB) << 20;
 	const double Start = FPlatformTime::Seconds();
 	if (!Pack.Open(Folder, Error) || !Data.Load(Pack.World, Error))
 	{
@@ -82,6 +86,7 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	Root->SetRootComponent(RootComponent);
 	RootComponent->RegisterComponent();
 	UpdateYmaps();
+	BuildWater();
 	bLoaded = true;
 	int32 Roots = 0;
 	for (const TPair<FIntPoint, FGTAVWorldData::FCell>& Cell : Data.Grid)
@@ -91,6 +96,68 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	UE_LOG(LogGTAVWorld, Display, TEXT("%s: %d archetypes, %d ymaps, %d entities (%d roots on %d cells, %d far), %d interiors, %d grass batches in %.2f s"),
 		*Folder, Data.Archetypes.Num(), Data.Ymaps.Num(), Data.Entities.Num(), Roots, Data.Grid.Num(), Data.Far.Num(),
 		Data.Interiors.Num(), Data.GrassBatches.Num(), FPlatformTime::Seconds() - Start);
+}
+
+// The sea, lakes and rivers (water.xml): one mesh of the quads (the box, or the right triangle of it its type says:
+// 1 to 4 leave out the corner at max x / max y, max x / min y, min x / min y, min x / max y), and the open sea around
+// the map out to the horizon.
+void UGTAVWorldSubsystem::BuildWater()
+{
+	if (Data.WaterQuads.IsEmpty())
+	{
+		return;
+	}
+	TArray<FStaticMeshBuildVertex> Vertices;
+	TArray<uint32> Indices;
+	const auto Vertex = [&](float X, float Y, float Z) {
+		FStaticMeshBuildVertex V{};
+		V.Position = FVector3f(X * 100, -Y * 100, Z * 100);
+		V.TangentX = FVector3f(1, 0, 0);
+		V.TangentY = FVector3f(0, 1, 0);
+		V.TangentZ = FVector3f(0, 0, 1);
+		V.Color = FColor::White;
+		V.UVs[0] = FVector2f(X, Y) * 0.01f;
+		return uint32(Vertices.Add(V));
+	};
+	// (clockwise seen from above in the game's space: what its own models do, and what shows here)
+	const auto Quad = [&](float X0, float Y0, float X1, float Y1, float Z, int32 Type) {
+		const uint32 C0 = Vertex(X0, Y0, Z), C1 = Vertex(X1, Y0, Z), C2 = Vertex(X1, Y1, Z), C3 = Vertex(X0, Y1, Z);
+		switch (Type)
+		{
+		case 1: Indices.Append({C0, C3, C1}); break;
+		case 2: Indices.Append({C0, C3, C2}); break;
+		case 3: Indices.Append({C1, C3, C2}); break;
+		case 4: Indices.Append({C0, C2, C1}); break;
+		default: Indices.Append({C0, C2, C1, C0, C3, C2}); break;
+		}
+	};
+	FBox2f Covered(ForceInit);
+	for (const GTAVPack::WaterQuad& Q : Data.WaterQuads)
+	{
+		if (Q.flags & GTAVPack::kInvisible)
+		{
+			continue;
+		}
+		Quad(Q.minX, Q.minY, Q.maxX, Q.maxY, Q.z, Q.type);
+		Covered += FVector2f(Q.minX, Q.minY);
+		Covered += FVector2f(Q.maxX, Q.maxY);
+	}
+	constexpr float Far = 60000.0f;
+	Quad(-Far, -Far, Far, Covered.Min.Y, 0, 0);
+	Quad(-Far, Covered.Max.Y, Far, Far, 0, 0);
+	Quad(-Far, Covered.Min.Y, Covered.Min.X, Covered.Max.Y, 0, 0);
+	Quad(Covered.Max.X, Covered.Min.Y, Far, Covered.Max.Y, 0, 0);
+	UStaticMesh* Mesh = Assets->BuildMesh(Vertices, Indices, Assets->WaterMaterial(7));
+	if (!Mesh)
+	{
+		return;
+	}
+	UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Root);
+	C->SetMobility(EComponentMobility::Static);
+	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	C->SetCastShadow(false);
+	C->SetStaticMesh(Mesh);
+	C->RegisterComponent();
 }
 
 void UGTAVWorldSubsystem::SetGroup(uint32 Name, bool bOn)
@@ -173,6 +240,11 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		LastUpdate = Now;
 	}
 	Apply();
+	if (Now - LastEvict > 2.0)
+	{
+		LastEvict = Now;
+		Assets->Evict(BudgetBytes, 20.0);
+	}
 	// (checking: -gtavdump=x,y,z,radius in the game's metres lists what is drawn there once everything is in)
 	static bool bDumped = false;
 	FString Dump;
@@ -203,9 +275,9 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	if (Now - Told > 10)
 	{
 		Told = Now;
-		UE_LOG(LogGTAVWorld, Display, TEXT("drawn %d (%d wanted, %d waiting for models), grass %d; models %d built, %d loading, %d failed; textures %d (%.0f MB, %d failed)"),
+		UE_LOG(LogGTAVWorld, Display, TEXT("drawn %d (%d wanted, %d waiting for models), grass %d; models %d built, %d loading, %d failed; textures %d (%.0f MB, %d failed), meshes %.0f MB, %d evicted"),
 			Drawn.Num(), Wanted.Num(), WantedMissing, DrawnGrass.Num(), Assets->MeshesBuilt, Assets->Loading(), Assets->MeshesFailed, Assets->TexturesMade,
-			Assets->TextureBytes / 1048576.0, Assets->TexturesFailed);
+			Assets->TextureBytes / 1048576.0, Assets->TexturesFailed, Assets->MeshBytes / 1048576.0, Assets->MeshesEvicted);
 	}
 }
 
