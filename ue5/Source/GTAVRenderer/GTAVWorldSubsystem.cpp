@@ -95,6 +95,31 @@ void UGTAVWorldSubsystem::DumpNear(const FVector& GamePoint, float Radius)
 	}
 }
 
+bool UGTAVWorldSubsystem::IsInside(const FVector& Point) const
+{
+	for (const uint32 Entity : NearInteriors)
+	{
+		const GTAVPack::Entity& E = Data.Entities[Entity];
+		const GTAVPack::InteriorPlacement& P = Data.InteriorPlacements[E.interiorPlacement];
+		if (P.interior >= uint32(Data.Interiors.Num()))
+		{
+			continue;
+		}
+		const GTAVPack::Interior& In = Data.Interiors[P.interior];
+		const FVector Local = FTransform(Rotation(E.rotation), Position(E.position)).InverseTransformPosition(Point);
+		// (room 0 is the limbo outside)
+		for (uint32 R = 1; R < In.roomCount; ++R)
+		{
+			const GTAVPack::Room& Room = Data.Rooms[In.firstRoom + R];
+			if (FBox(Position(Room.boundsMin), Position(Room.boundsMax)).IsInsideOrOn(Local))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 bool UGTAVWorldSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
@@ -341,6 +366,7 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		GTAVSky::Apply(GetWorld(), Center, float(CurrentHour), OfflineWeather, OfflineWeather, 0.0f);
 	}
 	Lights.Update(Root, Center, CurrentHour);
+	GTAVSky::SetIndoors(IsInside(Center));
 	const double Now = FPlatformTime::Seconds();
 	if (FVector::DistSquared(Center, LastCenter) > 100.0f * 100.0f || Now - LastUpdate > 0.25)
 	{
@@ -475,6 +501,7 @@ void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 	}
 	const GTAVPack::Interior& In = Data.Interiors[P.interior];
 	const FTransform Placement(Rotation(E.rotation), Position(E.position));
+	NearInteriors.AddUnique(Entity);
 	const auto Add = [&](uint32 Index) {
 		const GTAVPack::InteriorEntity& X = Data.InteriorEntities[Index];
 		const float Range = (X.lodDist > 0 ? X.lodDist : 100.0f) * 100.0f * DistanceScale;
@@ -507,6 +534,7 @@ void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 
 void UGTAVWorldSubsystem::Update(const FVector& Center)
 {
+	NearInteriors.Reset();
 	Wanted.Reset();
 	WantedGrass.Reset();
 	WantedMissing = 0;

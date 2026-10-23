@@ -13,4 +13,6 @@ namespace GTAVSky
 	void Apply(UWorld* World, const FVector& Camera, float Hours, uint32 WeatherFrom, uint32 WeatherTo, float Blend);
 	// The game's wind (the way it blows in Unreal's space, m/s), each frame the bridge has it.
 	void SetWind(const FVector2f& Way, float Speed);
+	// The camera is inside a building's rooms: no sunlit haze or ground fog in the air there.
+	void SetIndoors(bool bIndoors);
 }

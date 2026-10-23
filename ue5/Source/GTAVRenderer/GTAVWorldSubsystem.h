@@ -42,6 +42,8 @@ public:
 	void SetHour(int32 Hour);
 	// Checking: what is drawn near a point (the game's metres), to the log.
 	void DumpNear(const FVector& GamePoint, float Radius);
+	// A point (Unreal's space) inside one of the rooms of an interior near the camera.
+	bool IsInside(const FVector& Point) const;
 
 private:
 	FGTAVPack Pack;
@@ -54,6 +56,7 @@ private:
 	TSet<uint32> GroupsOn;
 	TArray<bool> YmapOn; // per ymap, from the groups
 	FGTAVLights Lights;
+	TArray<uint32> NearInteriors; // the placing entities of the interiors wanted at the last update
 
 	UPROPERTY()
 	TObjectPtr<AActor> Root;

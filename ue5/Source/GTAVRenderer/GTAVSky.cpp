@@ -41,6 +41,8 @@ namespace
 	}
 
 	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
+	bool bInside = false;
+	float Indoors = 0; // (eased)
 	FVector2f GameWind = FVector2f::ZeroVector;
 	float GameWindSpeed = 0;
 	double GameWindTime = -1e9;
@@ -125,6 +127,11 @@ namespace
 	}
 }
 
+void GTAVSky::SetIndoors(bool bIndoors)
+{
+	bInside = bIndoors;
+}
+
 void GTAVSky::SetWind(const FVector2f& Way, float Speed)
 {
 	GameWind = Way;
@@ -173,6 +180,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	// The air: aerosols (Mie scattering) that blur and tint the distance, thickest in the Los Santos basin (a city's
 	// haze under an inversion about a kilometre up: the hills rise out of it), thinner over the countryside north of
 	// it; a ground fog mostly in fog and rain.
+	Indoors = FMath::FInterpConstantTo(Indoors, bInside ? 1.0f : 0.0f, 1.0f / 30.0f, 1.0f); // (about half a second)
 	const float GameY = float(-Camera.Y / 100.0);
 	const float City = 1.0f - FMath::SmoothStep(1500.0f, 3500.0f, GameY);
 	if (USkyAtmosphereComponent* Air = A.Atmosphere.Get())
@@ -184,6 +192,8 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		// (city aerosols absorb blue more than red: brownish)
 		Air->SetMieAbsorption(FLinearColor(FMath::Lerp(0.44f, 0.3f, City), FMath::Lerp(0.44f, 0.4f, City), FMath::Lerp(0.44f, 0.55f, City)));
 		Air->SetMieExponentialDistribution(FMath::Lerp(1.4f, 0.7f, City));
+		// (indoors the air is not lit by the sky: the haze there is the room's distance, nothing)
+		Air->SetAerialPespectiveViewDistanceScale(FMath::Lerp(1.0f, 0.001f, Indoors));
 	}
 	// Rain: three layers around the camera (3, 7 and 15 m out), while it rains.
 	if (L.Rain > 0.05f && !A.Rain.IsValid())
@@ -223,7 +233,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	if (AExponentialHeightFog* Fog = A.Fog.Get())
 	{
 		UExponentialHeightFogComponent* C = Fog->GetComponent();
-		C->SetFogDensity(L.Fog);
+		C->SetFogDensity(L.Fog * (1.0f - Indoors));
 		C->SetFogHeightFalloff(0.35f);
 	}
 	if (UMaterialParameterCollection* Collection = A.Collection.Get())
