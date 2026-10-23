@@ -211,9 +211,12 @@ namespace ue5export
 			outMax[0] = hi[0] * 100, outMax[1] = -lo[1] * 100, outMax[2] = hi[2] * 100;
 		}
 		// (the mirrored world's rotation: (x, y, z, w) -> (-x, y, -z, w))
-		void Rotation(const mapdata::Quat& q, float* out)
+		// The game's rotation (x, y, z, w) in Unreal's space (y mirrored). inverted: the map stores the inverse, as it does
+		// for the entities of a ymap (an MLO placement's is the rotation itself): a road at the Zancudo bridge lines up with
+		// the bridge only this way.
+		void Rotation(const mapdata::Quat& q, float* out, bool inverted)
 		{
-			const float r[4] = {-q[0], q[1], -q[2], q[3]};
+			const float r[4] = {inverted ? q[0] : -q[0], inverted ? -q[1] : q[1], inverted ? q[2] : -q[2], q[3]};
 			const float n = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]);
 			for (int k = 0; k < 4; ++k)
 				out[k] = n > 0 ? r[k] / n : (k == 3 ? 1.0f : 0.0f);
@@ -538,7 +541,7 @@ namespace ue5export
 				GTAVPack::InteriorEntity x{};
 				x.archetype = e.archetype;
 				Point(e.position, x.position);
-				Rotation(e.rotation, x.rotation);
+				Rotation(e.rotation, x.rotation, false);
 				x.scaleXY = e.scaleXY, x.scaleZ = e.scaleZ;
 				x.lodDist = e.lodDist;
 				x.flags = e.flags;
@@ -640,7 +643,7 @@ namespace ue5export
 					x.archetype = e.archetype;
 					x.ymap = e.ymap;
 					Point(e.position, x.position);
-					Rotation(e.rotation, x.rotation);
+					Rotation(e.rotation, x.rotation, !e.interior);
 					x.scaleXY = e.scaleXY, x.scaleZ = e.scaleZ;
 					x.lodDist = e.lodDist, x.childLodDist = e.childLodDist;
 					const int64_t parent = map.Parent(i);

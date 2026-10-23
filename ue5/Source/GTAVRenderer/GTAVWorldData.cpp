@@ -35,6 +35,22 @@ bool FGTAVWorldData::Load(const FGTAVPackFile& World, FString& OutError)
 	{
 		ArchetypeIndex.Add(Archetypes[I].name, I);
 	}
+	// An entity without a distance of its own (-1: a third of the map, nearly all the street props) has its
+	// archetype's, as in the game.
+	for (GTAVPack::Entity& E : Entities)
+	{
+		if (const GTAVPack::Archetype* A = E.lodDist <= 0 ? Archetype(E.archetype) : nullptr)
+		{
+			E.lodDist = A->lodDist;
+		}
+	}
+	for (GTAVPack::InteriorEntity& E : InteriorEntities)
+	{
+		if (const GTAVPack::Archetype* A = E.lodDist <= 0 ? Archetype(E.archetype) : nullptr)
+		{
+			E.lodDist = A->lodDist;
+		}
+	}
 
 	// Children: counted, then placed (a compact list per parent).
 	ChildStart.SetNumZeroed(Entities.Num() + 1);

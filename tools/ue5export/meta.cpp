@@ -24,6 +24,18 @@ namespace ue5export::meta
 				return std::nullopt;
 			return static_cast<size_t>(p & 0x0FFFFFFF);
 		}
+
+		// A data block's place: the virtual segment, or the physical one (big files put most of their data blocks
+		// there), which follows the virtual one in v_.
+		std::optional<size_t> Segment(uint64_t p, size_t virtualSize, size_t size)
+		{
+			const size_t offset = static_cast<size_t>(p & 0x0FFFFFFF);
+			if ((p >> 32) == 0 && (p >> 28) == 5 && offset < virtualSize)
+				return offset;
+			if ((p >> 32) == 0 && (p >> 28) == 6 && virtualSize + offset < size)
+				return virtualSize + offset;
+			return std::nullopt;
+		}
 	}
 
 	const Field* Structure::Find(uint32_t fieldName) const
@@ -40,6 +52,8 @@ namespace ue5export::meta
 		if (!loader::convert::Read(file, resource, error))
 			return false;
 		v_ = std::move(resource.virtualBlock);
+		const size_t virtualSize = v_.size();
+		v_.insert(v_.end(), resource.physicalBlock.begin(), resource.physicalBlock.end());
 		const auto structs = Virtual(Peek<uint64_t>(v_, 0x20), v_.size());
 		const auto blocks = Virtual(Peek<uint64_t>(v_, 0x30), v_.size());
 		const uint16_t structCount = Peek<uint16_t>(v_, 0x48), blockCount = Peek<uint16_t>(v_, 0x4C);
@@ -64,8 +78,9 @@ namespace ue5export::meta
 		for (uint16_t i = 0; i < blockCount; ++i)
 		{
 			const size_t o = *blocks + i * 0x10u;
-			const auto at = Virtual(Peek<uint64_t>(v_, o + 8), v_.size());
-			blocks_.push_back({Peek<uint32_t>(v_, o), Peek<uint32_t>(v_, o + 4), at.value_or(0)});
+			const auto at = Segment(Peek<uint64_t>(v_, o + 8), virtualSize, v_.size());
+			// (a block that cannot be placed has no size: pointers into it resolve to nothing)
+			blocks_.push_back({Peek<uint32_t>(v_, o), at ? Peek<uint32_t>(v_, o + 4) : 0, at.value_or(0)});
 		}
 		return true;
 	}

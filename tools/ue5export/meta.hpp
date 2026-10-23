@@ -66,6 +66,7 @@ namespace ue5export::meta
 		size_t Size() const { return v_.size(); }
 		uint32_t BlockStructure(uint64_t pointer) const;
 		const std::map<uint32_t, Structure>& Structures() const { return structures_; }
+		const std::vector<Block>& Blocks() const { return blocks_; }
 
 	private:
 		loader::convert::Bytes v_;

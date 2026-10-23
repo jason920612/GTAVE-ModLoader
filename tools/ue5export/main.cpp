@@ -328,6 +328,8 @@ namespace
 			for (const auto& f : s.fields)
 				std::printf("  +%-4d type %02x %s\n", f.offset, f.type, MetaName(f.name).c_str());
 		}
+		for (size_t i = 0; i < m.Blocks().size(); ++i)
+			std::printf("block %zu: %s, %u bytes at %#zx\n", i + 1, MetaName(m.Blocks()[i].structure).c_str(), m.Blocks()[i].size, m.Blocks()[i].at);
 		const auto root = m.Root();
 		std::printf("root: %s\n", root ? MetaName(root.type->name).c_str() : "-");
 		return 0;
