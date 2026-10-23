@@ -2290,3 +2290,43 @@
   50 個大資源全部吻合（49 個剛好、1 個後面多一段空隙）。修在 `src/loader/convert/archive.cpp`，載入器也受益。
 - 遊戲的地圖相關檔案量：ydr 84,607 個（12.7 GB）、yft 61,064（13.6 GB）、ydd 23,108（4.3 GB）、ytd 89,817（31.7 GB）、
   ymap 19,941（0.6 GB）、ytyp 2,869。ymap、ytyp 都是資源（RSC7）。
+
+### 58.2 地圖的中繼資料：ymap、ytyp（`tools/ue5export/meta.cpp`、`mapdata.cpp`）
+
+- ymap、ytyp 是自我描述的中繼資源（RSC7，資料在虛擬區塊）：`+0x20` 結構定義表、`+0x28` 列舉表、`+0x30` 資料區塊表、
+  `+0x1C` 根資料區塊編號、`+0x48/+0x4A/+0x4C` u16 結構／列舉／區塊數。
+  - 結構定義（0x20）：名稱雜湊、key、`+0x10` 欄位表、`+0x18` 大小、`+0x1E` u16 欄位數。
+  - 欄位（0x10）：名稱雜湊、`+4` 位移、`+8` 類型（`0x4A` 雜湊、`0x15` u32、`0x14` s32、`0x21` float、`0x33` vec3（16 位元組）、
+    `0x34` vec4／四元數、`0x52` 陣列（指標 + u16 數量）、`0x05` 內嵌結構、`0x07` 指標、`0x62` 列舉、`0x44` 字串、`0x13` u16）。
+    陣列前一筆名為 `0x100` 的欄位是元素型別：`0x07` 表示元素是指標（多型，例如 entities 可以是 CEntityDef 或
+    CMloInstanceDef）。
+  - 資料區塊（0x10）：結構名稱雜湊（或基本型別編號，例如 7 = 指標陣列）、大小、資料位置。同一結構的資料可以分成好幾塊。
+  - 資料內的指標 = 區塊編號（從 1 起，低 12 位元）| 位移 << 12。
+  - 名稱是**區分大小寫**的 joaat（`archetypeName` 只有不轉小寫才對得上）。用候選名稱算雜湊比對，全部欄位都對上了：
+    CMapData（name、parent、flags、contentFlags、streaming／entities 範圍、entities、containerLods、boxOccluders、
+    occludeModels、physicsDictionaries、instancedData（草叢實例）、timeCycleModifiers、carGenerators、LODLightsSOA、
+    DistantLODLightsSOA、block）、CEntityDef（archetypeName、flags、guid、position、rotation、scaleXY、scaleZ、parentIndex、
+    lodDist、childLodDist、lodLevel、numChildren、priorityLevel、extensions、ambientOcclusionMultiplier、
+    artificialAmbientOcclusion、tintValue）、CMapTypes（archetypes、name）、CBaseArchetypeDef（lodDist、flags、
+    specialAttribute、bbMin/Max、bsCentre/Radius、hdTextureDist、name、textureDictionary、clipDictionary、drawableDictionary、
+    physicsDictionary、assetType（未定／fragment／drawable／drawable 字典／無資源）、assetName、extensions）、
+    CTimeArchetypeDef、CMloArchetypeDef（室內：entities、rooms、portals、entitySets、timeCycleModifiers）、CMloRoomDef、
+    CMloPortalDef、CLODLight、CDistantLODLight、CBlockDesc。
+  - lodLevel：0 HD、1 LOD、2–4 SLOD1–3、5 獨立 HD（沒有 LOD 上層）、6 SLOD4。
+
+### 58.3 故事模式實際看到的檔案（`tools/ue5export/gamefiles.cpp`）
+
+- 原版：`x64*.rpf` 是 platform:/、`common.rpf` 是 common:/；標題更新 `update\update.rpf`、`update2.rpf` 裡的 `x64\<路徑>`
+  取代 platform:/`<路徑>`（例如 lodlights.rpf、paths.rpf），`common\` 同理。
+- DLC 包照 `common/data/dlclist.xml`（更新版本在 update.rpf）的順序：`platform:/dlcPacks/x/` 在 `x64w.rpf/dlcpacks/x/dlc.rpf`，
+  `dlcpacks:/x/` 在 `update\x64\dlcpacks\x\`。強化版把一個包拆成 `dlc.rpf`、`dlc1.rpf`、`dlc2.rpf`…，共用同一個裝置名稱，
+  content.xml 指的檔案可能在任何一個裡。
+- 包的 setup2.xml 列出變更集群組；故事模式執行 GROUP_MAP（線上地圖，例如佩里科島的 MPHEIST4_MAP_UPDATE）以外的群組。
+  content.xml 的變更集 `filesToEnable` 列出要掛載的資源包；`disabled` 沒設的資料檔隨包一起掛載。
+- **覆蓋（overlay）是逐檔的**：補丁包裡同名的區塊包常常只放改過的幾個檔案（例如 patchday2ng 的 `v_storage.rpf` 只有
+  prop_box_wood04a），原本的包要留著，同名檔案以後掛的為準。一開始當成整包取代，72% 的實體找不到物件類型。
+- 結果（2.7 秒）：3532 個生效的資源包、20.9 萬個檔案；1381 個 ytyp、13.8 萬種物件類型；4591 個 ymap、72.6 萬個實體
+  （HD 30.2 萬、獨立 HD 35.0 萬、LOD 6.7 萬、SLOD 7 千）、472 個室內實例。找不到物件類型的只剩 17 個，都是 `des_*`
+  （腳本觸發的破壞場景，定義在 ytyp 的另一個陣列）。
+- 還沒做：預設關閉、要腳本開啟的地圖區塊（IPL 群組，例如炸毀前後的建築會同時出現）。故事模式的地圖清單
+  `update.rpf/x64/levels/gta5/sp_manifest.ymt` 是另一種二進位格式（PSO，`PSIN` 開頭），待解。

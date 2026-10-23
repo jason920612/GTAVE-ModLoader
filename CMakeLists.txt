@@ -203,6 +203,9 @@ target_compile_options(relocate PRIVATE /utf-8 /O2)
 add_executable(ue5export
     tools/ue5export/main.cpp
     tools/ue5export/ng.cpp
+    tools/ue5export/meta.cpp
+    tools/ue5export/gamefiles.cpp
+    tools/ue5export/mapdata.cpp
     src/loader/convert/archive.cpp
     src/loader/convert/resource.cpp)
 target_include_directories(ue5export PRIVATE src/loader)

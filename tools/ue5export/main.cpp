@@ -4,7 +4,8 @@
 // usage:
 //   ue5export keys  --out <dir> [--dump <image>]  the archive keys, once, from the running game (or a dump of it)
 //   ue5export index --out <dir> --game <dir>      every file in the game's archives: <out>\index.tsv
-//   ue5export extract --out <dir> --game <dir> --file <index path>   one file, plain: <out>iles\<name>
+//   ue5export extract --out <dir> --game <dir> --file <index path>   one file, plain: <out>\files\<name>
+//   ue5export map --out <dir> --game <dir>         the map as story mode sees it: archetypes and entities
 #include <Windows.h>
 
 #include <algorithm>
@@ -19,6 +20,9 @@
 #include <vector>
 
 #include "convert/archive.hpp"
+#include "gamefiles.hpp"
+#include "mapdata.hpp"
+#include "meta.hpp"
 #include "ng.hpp"
 
 namespace fs = std::filesystem;
@@ -142,6 +146,40 @@ namespace
 		}
 	}
 
+	// The map's metadata as story mode sees it: counts, and the entities of an area (--area x0,y0,x1,y1).
+	int Map(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		const auto start = std::chrono::steady_clock::now();
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto map = ue5export::mapdata::Read(files);
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		std::printf("%zu active archives, %zu files; %zu ytyp, %zu archetypes; %zu ymap, %zu entities (%.1f s)\n", files.activeArchives,
+		    files.Files().size(), map.ytypCount, map.archetypes.size(), map.ymapCount, map.entities.size(), seconds);
+		std::map<uint32_t, size_t> byLevel;
+		size_t missing = 0, interiors = 0;
+		std::map<std::string, size_t> missingByYmap;
+		for (const auto& e : map.entities)
+		{
+			++byLevel[e.lodLevel];
+			interiors += e.interior;
+			if (!map.archetypes.contains(e.archetype))
+				++missing, ++missingByYmap[map.ymapNames.at(e.ymap)];
+		}
+		for (const auto& [level, count] : byLevel)
+			std::printf("  lod level %u: %zu\n", level, count);
+		std::printf("  interiors placed: %zu; entities without a known archetype: %zu\n", interiors, missing);
+		for (const auto& [ymap, count] : missingByYmap)
+			std::printf("    %s: %zu\n", ymap.c_str(), count);
+		for (const auto& w : files.warnings)
+			std::printf("warning: %s\n", w.c_str());
+		for (const auto& e : map.errors)
+			std::printf("error: %s\n", e.c_str());
+		return 0;
+	}
+
 	int Index(const loader::convert::Decryptor& decrypt)
 	{
 		const fs::path game = g_options["game"];
@@ -199,6 +237,8 @@ int main(int argc, char** argv)
 	SetDllDirectoryW(fs::path(g_options["game"]).c_str()); // (the game's zlib1.dll)
 	if (command == "index")
 		return Index(decrypt);
+	if (command == "map")
+		return Map(decrypt);
 	if (command == "extract")
 		return g_options.contains("file") ? Extract(decrypt) : Fail("--file <path> is needed");
 	return Fail("unknown command " + command);
