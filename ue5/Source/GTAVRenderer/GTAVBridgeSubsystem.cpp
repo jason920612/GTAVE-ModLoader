@@ -83,17 +83,25 @@ public:
 		Desc.SampleDesc.Count = 1;
 		Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 		const FString Pid = FString::FromInt(GamePid);
-		if (FAILED(Device->CreateCommittedResource(&Heap, D3D12_HEAP_FLAG_SHARED, &Desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&Resource))) ||
-			FAILED(Device->CreateSharedHandle(Resource, nullptr, GENERIC_ALL, *(FString(GTAVBridge::kTextureName) + Pid), &TextureHandle)) ||
-			FAILED(Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&Fence))) ||
-			FAILED(Device->CreateSharedHandle(Fence, nullptr, GENERIC_ALL, *(FString(GTAVBridge::kFenceName) + Pid), &FenceHandle)))
+		bool bOk = SUCCEEDED(Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&Fence))) &&
+				   SUCCEEDED(Device->CreateSharedHandle(Fence, nullptr, GENERIC_ALL, *(FString(GTAVBridge::kFenceName) + Pid), &FenceHandle));
+		for (int32 I = 0; I < 2 && bOk; ++I)
 		{
-			UE_LOG(LogGTAVBridge, Error, TEXT("could not make the shared texture / fence (%ux%u)"), Width, Height);
+			bOk = SUCCEEDED(Device->CreateCommittedResource(&Heap, D3D12_HEAP_FLAG_SHARED, &Desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&Resource[I]))) &&
+				  SUCCEEDED(Device->CreateSharedHandle(Resource[I], nullptr, GENERIC_ALL, *FString::Printf(TEXT("%s%s-%d"), GTAVBridge::kTextureName, *Pid, I),
+					  &TextureHandle[I]));
+			if (bOk)
+			{
+				Texture[I] = RHI->RHICreateTexture2DFromResource(PF_FloatRGBA, TexCreate_RenderTargetable | TexCreate_ShaderResource, FClearValueBinding::None, Resource[I]);
+				Target[I] = CreateRenderTarget(Texture[I], TEXT("GTAVBridgeFrame"));
+			}
+		}
+		if (!bOk)
+		{
+			UE_LOG(LogGTAVBridge, Error, TEXT("could not make the shared textures / fence (%ux%u)"), Width, Height);
 			Release();
 			return false;
 		}
-		Texture = RHI->RHICreateTexture2DFromResource(PF_FloatRGBA, TexCreate_RenderTargetable | TexCreate_ShaderResource, FClearValueBinding::None, Resource);
-		Target = CreateRenderTarget(Texture, TEXT("GTAVBridgeFrame"));
 		Shared->textureWidth = Width;
 		Shared->textureHeight = Height;
 		Shared->frameValue = 0;
@@ -105,19 +113,22 @@ public:
 
 	void Release()
 	{
-		Target.SafeRelease();
-		Texture.SafeRelease();
-		if (Resource)
+		for (int32 I = 0; I < 2; ++I)
 		{
-			Resource->Release();
-			Resource = nullptr;
+			Target[I].SafeRelease();
+			Texture[I].SafeRelease();
+			if (Resource[I])
+			{
+				Resource[I]->Release();
+				Resource[I] = nullptr;
+			}
 		}
 		if (Fence)
 		{
 			Fence->Release();
 			Fence = nullptr;
 		}
-		for (HANDLE* H : {&TextureHandle, &FenceHandle})
+		for (HANDLE* H : {&TextureHandle[0], &TextureHandle[1], &FenceHandle})
 		{
 			if (*H)
 			{
@@ -133,20 +144,25 @@ public:
 
 private:
 	GTAVBridge::Shared* Shared;
-	ID3D12Resource* Resource = nullptr;
+	ID3D12Resource* Resource[2] = {};
 	ID3D12Fence* Fence = nullptr;
-	HANDLE TextureHandle = nullptr, FenceHandle = nullptr;
-	FTextureRHIRef Texture;
-	TRefCountPtr<IPooledRenderTarget> Target;
+	HANDLE TextureHandle[2] = {}, FenceHandle = nullptr;
+	FTextureRHIRef Texture[2];
+	TRefCountPtr<IPooledRenderTarget> Target[2];
 	uint64 Value = 0;
 
 	FScreenPassTexture AfterMotionBlur(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 	{
 		const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(GraphBuilder, Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
-		if (Target && Fence && bEnabled && SceneColor.IsValid() && SceneColor.ViewRect.Width() == int32(Shared->textureWidth) &&
+		if (Target[0] && Target[1] && Fence && bEnabled && SceneColor.IsValid() && SceneColor.ViewRect.Width() == int32(Shared->textureWidth) &&
 			SceneColor.ViewRect.Height() == int32(Shared->textureHeight))
 		{
-			FRDGTextureRef Dest = GraphBuilder.RegisterExternalTexture(Target, TEXT("GTAVBridgeFrame"));
+			// (the fence counts the game's frames: the game waits for the frame of its own camera; the frame goes into the
+			// texture of its value's parity)
+			const uint32 FrameSequence = Sequence;
+			const uint64 FrameValue = FMath::Max<uint64>(FrameSequence, Value + 1);
+			Value = FrameValue;
+			FRDGTextureRef Dest = GraphBuilder.RegisterExternalTexture(Target[FrameValue % 2], TEXT("GTAVBridgeFrame"));
 			// (drawn, not copied: the scene colour's format need not be the shared texture's)
 			FRDGDrawTextureInfo Draw;
 			Draw.SourcePosition = SceneColor.ViewRect.Min;
@@ -160,10 +176,6 @@ private:
 					SceneColor.Texture->Desc.Extent.X, SceneColor.Texture->Desc.Extent.Y, SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height(),
 					SceneColor.ViewRect.Min.X, SceneColor.ViewRect.Min.Y);
 			}
-			// (the fence counts the game's frames: the game waits for the frame of its own camera)
-			const uint32 FrameSequence = Sequence;
-			const uint64 FrameValue = FMath::Max<uint64>(FrameSequence, ++Value);
-			Value = FrameValue;
 			GTAVBridge::Shared* S = Shared;
 			ID3D12Fence* F = Fence;
 			// (after the graph, on the immediate list: behind the copy, on the same queue; the game waits for this value

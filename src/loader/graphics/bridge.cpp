@@ -52,7 +52,7 @@ namespace loader::graphics::bridge
 		std::atomic_bool g_restart = false; // the hotkey while the renderer is not running
 		std::atomic<uint32_t> g_width = 0, g_height = 0;
 		std::mutex g_renderMutex;
-		ID3D12Resource* g_texture = nullptr;
+		ID3D12Resource* g_texture[2] = {}; // (the renderer's frame with fence value v is in g_texture[v % 2])
 		ID3D12Fence* g_fence = nullptr;
 		uint32_t g_openedSequence = 0;
 		std::vector<std::pair<std::chrono::steady_clock::time_point, IUnknown*>> g_retired; // released a while later
@@ -86,11 +86,11 @@ namespace loader::graphics::bridge
 		bool Open(ID3D12Device* device)
 		{
 			const uint32_t sequence = g_shared->textureSequence;
-			if (sequence == g_openedSequence && g_texture && g_fence)
+			if (sequence == g_openedSequence && g_texture[0] && g_texture[1] && g_fence)
 				return true;
-			Retire(g_texture);
+			for (ID3D12Resource*& t : g_texture)
+				Retire(t), t = nullptr;
 			Retire(g_fence);
-			g_texture = nullptr;
 			g_fence = nullptr;
 			g_openedSequence = sequence;
 			if (!sequence)
@@ -98,14 +98,19 @@ namespace loader::graphics::bridge
 			ID3D12Device1* device1 = nullptr;
 			if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device1))))
 				return false;
-			HANDLE texture = nullptr, fence = nullptr;
-			bool ok = SUCCEEDED(device1->OpenSharedHandleByName(Named(GTAVBridge::kTextureName).c_str(), GENERIC_ALL, &texture)) &&
-			          SUCCEEDED(device1->OpenSharedHandleByName(Named(GTAVBridge::kFenceName).c_str(), GENERIC_ALL, &fence));
-			ok = ok && SUCCEEDED(device->OpenSharedHandle(texture, IID_PPV_ARGS(&g_texture))) && SUCCEEDED(device->OpenSharedHandle(fence, IID_PPV_ARGS(&g_fence)));
-			if (texture)
-				CloseHandle(texture);
+			HANDLE fence = nullptr;
+			bool ok = SUCCEEDED(device1->OpenSharedHandleByName(Named(GTAVBridge::kFenceName).c_str(), GENERIC_ALL, &fence)) &&
+			          SUCCEEDED(device->OpenSharedHandle(fence, IID_PPV_ARGS(&g_fence)));
 			if (fence)
 				CloseHandle(fence);
+			for (int i = 0; i < 2 && ok; ++i)
+			{
+				HANDLE texture = nullptr;
+				ok = SUCCEEDED(device1->OpenSharedHandleByName((Named(GTAVBridge::kTextureName) + L"-" + std::to_wstring(i)).c_str(), GENERIC_ALL, &texture)) &&
+				     SUCCEEDED(device->OpenSharedHandle(texture, IID_PPV_ARGS(&g_texture[i])));
+				if (texture)
+					CloseHandle(texture);
+			}
 			device1->Release();
 			log::Info("ue5 bridge: renderer texture {} ({}x{})", ok ? "opened" : "could not be opened", g_shared->textureWidth, g_shared->textureHeight);
 			return ok;
@@ -225,7 +230,7 @@ namespace loader::graphics::bridge
 			device->Release();
 			if (!opened)
 				return;
-			const D3D12_RESOURCE_DESC source = g_texture->GetDesc();
+			const D3D12_RESOURCE_DESC source = g_texture[0]->GetDesc();
 			if (source.Width != desc.Width || source.Height != desc.Height || source.Format != desc.Format)
 			{
 				if (!g_warnedSize)
@@ -241,9 +246,11 @@ namespace loader::graphics::bridge
 			if (newest != g_lastValue)
 				g_lastValue = newest, g_lastProgress = tick;
 			const bool stalled = tick - g_lastProgress > 500;
-			queue->Wait(g_fence, !stalled && t_sequence > newest ? t_sequence : newest);
+			const uint64_t value = !stalled && t_sequence > newest ? t_sequence : newest;
+			queue->Wait(g_fence, value);
+			ID3D12Resource* picture = g_texture[value % 2];
 			// (the game's peds and vehicles kept; a plain copy when that cannot be done)
-			if (composite::Record(frame, g_texture, std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f)))
+			if (composite::Record(frame, picture, std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f)))
 				return;
 			auto* list = static_cast<ID3D12GraphicsCommandList*>(commandList);
 			D3D12_RESOURCE_BARRIER barrier{};
@@ -253,7 +260,7 @@ namespace loader::graphics::bridge
 			barrier.Transition.StateBefore = static_cast<D3D12_RESOURCE_STATES>(outputState);
 			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 			list->ResourceBarrier(1, &barrier);
-			list->CopyResource(target, g_texture);
+			list->CopyResource(target, picture);
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			list->ResourceBarrier(1, &barrier);
 		}
@@ -487,9 +494,9 @@ namespace loader::graphics::bridge
 			if (g_fence)
 				g_fence->Signal(~0ull >> 1);
 			// (a new renderer counts its textures from 1 again: these must not pass for its own)
-			Retire(g_texture);
+			for (ID3D12Resource*& t : g_texture)
+				Retire(t), t = nullptr;
 			Retire(g_fence);
-			g_texture = nullptr;
 			g_fence = nullptr;
 			g_openedSequence = 0;
 			return;

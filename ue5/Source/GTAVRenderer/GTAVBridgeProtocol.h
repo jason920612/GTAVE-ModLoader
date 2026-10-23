@@ -13,11 +13,13 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 3;
+	constexpr uint32_t kVersion = 4;
 	constexpr uint32_t kMaxGroups = 1024;
 
 	// Names: shared memory, and the renderer's texture and fence (NT handles by name; <pid> is the game's process id).
 	inline constexpr wchar_t kMemoryName[] = L"Local\\GTAVUE5Bridge-";
+	// (two textures: kTextureName + pid + "-0" / "-1", the frame with fence value v in v % 2, so that the renderer
+	// draws the next frame into the other one while the game reads this one)
 	inline constexpr wchar_t kTextureName[] = L"Local\\GTAVUE5Frame-";
 	inline constexpr wchar_t kFenceName[] = L"Local\\GTAVUE5Fence-";
 
