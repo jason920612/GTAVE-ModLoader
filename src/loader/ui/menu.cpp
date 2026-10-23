@@ -634,6 +634,39 @@ namespace loader::ui
 			ImGui::Unindent();
 		}
 
+		// The graphics mod (research §59): UE5 drawing the game's world, its quality and brightness.
+		void Ue5Settings(bool& changed)
+		{
+			auto& cfg = config::Get();
+			ImGui::SeparatorText("UE5 畫質");
+			changed |= ImGui::Checkbox("以 Unreal Engine 5 繪製遊戲世界（重新啟動遊戲後生效）", &cfg.ue5Renderer);
+			ImGui::Indent();
+			if (cfg.ue5Renderer && (cfg.ue5Editor.empty() || cfg.ue5Project.empty() || cfg.ue5Pack.empty()))
+				ImGui::TextColored(kWarn, "loader.json 還需要 ue5Editor、ue5Project、ue5Pack（tools/ue5_setup.py、ue5export pack）。");
+			ImGui::TextColored(kMuted, "%s 鍵切換 UE5 與遊戲原本的畫面。需要遊戲的 NVIDIA DLSS。", cfg.ue5Key.c_str());
+			ImGui::Unindent();
+			static const char* kLabels[] = {"低", "中", "高（建議）", "極高", "電影級"};
+			static const char* kValues[] = {"low", "medium", "high", "ultra", "cinematic"};
+			int current = 2;
+			for (int i = 0; i < 5; ++i)
+				if (cfg.ue5Preset == kValues[i])
+					current = i;
+			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+			if (ImGui::Combo("畫質", &current, kLabels, 5))
+			{
+				cfg.ue5Preset = kValues[current];
+				changed = true;
+			}
+			ImGui::Indent();
+			ImGui::TextColored(kMuted, "解析度（其餘由 UE 放大）、陰影、全域光照、反射、繪製距離、近處燈光數量。立即套用。");
+			ImGui::Unindent();
+			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+			changed |= ImGui::SliderFloat("亮度跟隨遊戲", &cfg.ue5ExposureMatch, 0.0f, 1.0f, "%.2f");
+			ImGui::Indent();
+			ImGui::TextColored(kMuted, "1：畫面整體亮度跟遊戲原本的場景一致；0：完全依 UE 自己的曝光（光影比例永遠是 UE 的）。");
+			ImGui::Unindent();
+		}
+
 		void SettingsTab()
 		{
 			auto& cfg = config::Get();
@@ -662,6 +695,7 @@ namespace loader::ui
 				changed = true;
 			}
 			DlssSettings(changed);
+			Ue5Settings(changed);
 			if (changed)
 				config::Save();
 		}

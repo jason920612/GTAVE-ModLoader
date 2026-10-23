@@ -9,7 +9,8 @@
 // game to set again anyway).
 namespace loader::graphics::composite
 {
-	// Records the pass; picture: the renderer's frame (DLSS's output size and format). False when it cannot (an
-	// unknown depth format, no device objects): the caller copies the picture instead.
-	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture);
+	// Records the pass; picture: the renderer's frame (DLSS's output size and format); match: how far its brightness
+	// is brought to the game's (0..1). False when it cannot (an unknown depth format, no device objects): the caller
+	// copies the picture instead.
+	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, float match);
 }

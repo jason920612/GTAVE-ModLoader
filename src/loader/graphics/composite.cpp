@@ -24,7 +24,7 @@ Texture2D<uint2> Stencil : register(t1);
 Texture2D<float> Depth : register(t2);
 RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float)
-cbuffer Sizes : register(b0) { uint2 OutSize; uint2 RenderSize; float Adapt; };
+cbuffer Sizes : register(b0) { uint2 OutSize; uint2 RenderSize; float Adapt; float Match; };
 
 bool Dynamic(uint s)
 {
@@ -91,7 +91,7 @@ void Update()
 	float scale = asfloat(Exposure.Load(12));
 	if (count > 64)
 	{
-		float target = clamp((float(game) - float(renderer)) / (64.0 * count), -6.0, 6.0); // log2 of the ratio
+		float target = clamp((float(game) - float(renderer)) / (64.0 * count), -6.0, 6.0) * Match; // log2 of the ratio
 		float current = scale > 0 ? log2(scale) : target;
 		scale = exp2(lerp(current, target, Adapt));
 	}
@@ -167,7 +167,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			ranges[1].OffsetInDescriptorsFromTableStart = 3;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 5;
+			parameters[0].Constants.Num32BitValues = 6;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -233,7 +233,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		}
 	}
 
-	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture)
+	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, float match)
 	{
 		auto* output = static_cast<ID3D12Resource*>(frame.output);
 		auto* depth = static_cast<ID3D12Resource*>(frame.depth);
@@ -296,9 +296,10 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
 		const float adapt = kAdapt;
-		UINT constants[5] = {width, height, frame.renderWidth, frame.renderHeight, 0};
+		UINT constants[6] = {width, height, frame.renderWidth, frame.renderHeight, 0, 0};
 		std::memcpy(&constants[4], &adapt, 4);
-		list->SetComputeRoot32BitConstants(0, 5, constants, 0);
+		std::memcpy(&constants[5], &match, 4);
+		list->SetComputeRoot32BitConstants(0, 6, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);

@@ -54,6 +54,12 @@ namespace loader::config
 		std::string ue5Project; // GTAVRenderer.uproject (tools/ue5_setup.py)
 		std::string ue5Pack;    // the pack folder (ue5export pack)
 		std::string ue5Key = "F7"; // switches between UE5's picture and the game's
+		// The renderer's quality: "low", "medium", "high", "ultra", "cinematic" (graphics/bridge.cpp: resolution, the
+		// engine's scalability groups, draw distance, lights). Applied while it runs.
+		std::string ue5Preset = "high";
+		// How far the renderer's picture is brought to the brightness of the game's own scene (0: the renderer's own
+		// exposure, 1: the game's).
+		float ue5ExposureMatch = 1.0f;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

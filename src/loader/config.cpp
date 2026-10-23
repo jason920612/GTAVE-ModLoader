@@ -50,6 +50,8 @@ namespace loader::config
 			c.ue5Project = j.value("ue5Project", c.ue5Project);
 			c.ue5Pack = j.value("ue5Pack", c.ue5Pack);
 			c.ue5Key = j.value("ue5Key", c.ue5Key);
+			c.ue5Preset = j.value("ue5Preset", c.ue5Preset);
+			c.ue5ExposureMatch = j.value("ue5ExposureMatch", c.ue5ExposureMatch);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -80,6 +82,8 @@ namespace loader::config
 				{"ue5Project", c.ue5Project},
 				{"ue5Pack", c.ue5Pack},
 				{"ue5Key", c.ue5Key},
+				{"ue5Preset", c.ue5Preset},
+				{"ue5ExposureMatch", c.ue5ExposureMatch},
 			};
 		}
 	}

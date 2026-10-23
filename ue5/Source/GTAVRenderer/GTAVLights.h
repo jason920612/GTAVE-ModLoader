@@ -21,8 +21,7 @@ public:
 	// Game thread, each frame: Owner gets the components; Camera in Unreal's space; Hour 0-23.
 	void Update(AActor* Owner, const FVector& Camera, int32 Hour);
 
-	float NearRadius = 12000.0f;  // cm: real lights within
-	int32 MaxNear = 128;
+	float NearRadius = 12000.0f;  // cm: real lights within (gtav.Lights of them, the nearest)
 	float FarRadius = 500000.0f;  // cm: glowing points within
 
 private:

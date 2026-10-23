@@ -44,6 +44,7 @@ namespace loader::graphics::bridge
 		std::vector<std::string> g_groups; // map data group names (the pack's groups.txt)
 		uint32_t g_tick = 0;
 		std::filesystem::file_time_type g_consoleStamp{};
+		std::string g_presetSent; // the preset the renderer has
 		uint32_t g_key = VK_F7;
 
 		// Render threads: the picture shown, the size DLSS gives, the renderer's texture and fence on the game's device.
@@ -242,7 +243,7 @@ namespace loader::graphics::bridge
 			const bool stalled = tick - g_lastProgress > 500;
 			queue->Wait(g_fence, !stalled && t_sequence > newest ? t_sequence : newest);
 			// (the game's peds and vehicles kept; a plain copy when that cannot be done)
-			if (composite::Record(frame, g_texture))
+			if (composite::Record(frame, g_texture, std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f)))
 				return;
 			auto* list = static_cast<ID3D12GraphicsCommandList*>(commandList);
 			D3D12_RESOURCE_BARRIER barrier{};
@@ -322,6 +323,31 @@ namespace loader::graphics::bridge
 			return true;
 		}
 
+		// A quality preset as the renderer's console commands: the share of the output resolution it renders (the
+		// engine's upscaler does the rest), the engine's scalability groups (0 low .. 4 cinematic), how far the map's
+		// distances reach (gtav.LodScale) and how many of the map's lights near the camera are real lights.
+		std::string PresetCommands(const std::string& preset)
+		{
+			struct Level
+			{
+				const char* name;
+				int resolution, scalability;
+				float distance;
+				int lights;
+			};
+			static constexpr Level kLevels[] = {
+				{"low", 50, 0, 0.8f, 32}, {"medium", 67, 1, 1.0f, 64}, {"high", 80, 2, 1.25f, 128}, {"ultra", 100, 3, 1.5f, 256}, {"cinematic", 100, 4, 2.0f, 512}};
+			const Level* l = &kLevels[2];
+			for (const Level& k : kLevels)
+				if (preset == k.name)
+					l = &k;
+			std::string out = std::format("r.ScreenPercentage {}\n", l->resolution);
+			for (const char* group : {"ViewDistance", "Shadow", "GlobalIllumination", "Reflection", "PostProcess", "Texture", "Effects", "Foliage", "Shading"})
+				out += std::format("sg.{}Quality {}\n", group, l->scalability);
+			out += std::format("gtav.LodScale {}\ngtav.Lights {}\n", l->distance, l->lights);
+			return out;
+		}
+
 		// The view and the world's state, from the game.
 		void Write()
 		{
@@ -349,17 +375,24 @@ namespace loader::graphics::bridge
 					    (g_tick - lastTick) * 1000.0 / (now - lastPace));
 				lastPace = now, lastFrames = frames, lastTick = g_tick;
 			}
-			// Console commands for the renderer (tuning while it runs): ModLoader/ue5console.txt when it changes.
+			// Console commands for the renderer: the preset's, then ModLoader/ue5console.txt (tuning while it runs),
+			// again when either changes.
 			if (g_tick % 60 == 0)
 			{
 				std::error_code ec;
 				const auto file = paths::Get().root / L"ue5console.txt";
 				const auto stamp = std::filesystem::last_write_time(file, ec);
-				if (!ec && stamp != g_consoleStamp)
+				const std::string& preset = config::Get().ue5Preset;
+				if ((!ec && stamp != g_consoleStamp) || preset != g_presetSent)
 				{
-					g_consoleStamp = stamp;
-					std::ifstream in(file);
-					std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+					g_consoleStamp = ec ? std::filesystem::file_time_type{} : stamp;
+					g_presetSent = preset;
+					std::string text = PresetCommands(preset);
+					if (!ec)
+					{
+						std::ifstream in(file);
+						text.append((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+					}
 					text.resize(std::min(text.size(), sizeof(s.console) - 1));
 					std::memset(s.console, 0, sizeof(s.console));
 					std::memcpy(s.console, text.data(), text.size());

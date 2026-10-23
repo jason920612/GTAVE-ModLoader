@@ -5,10 +5,12 @@
 #include "Components/SpotLightComponent.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
 #include "Materials/MaterialInterface.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarLights(TEXT("gtav.Lights"), 128, TEXT("How many of the map's lights near the camera are real lights (the presets)."));
 	constexpr float kCell = 25600.0f;
 	// The game's intensity byte -> candela (a street light, 170: about 3000 cd, some 40 lux on the road 8 m below).
 	constexpr float kCandela = 4500.0f;
@@ -100,9 +102,10 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 	TArray<TPair<float, int32>> Near;
 	Gather(Camera, NearRadius, Hour, Near);
 	Near.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
-	if (Near.Num() > MaxNear)
+	const int32 Most = FMath::Max(CVarLights.GetValueOnGameThread(), 0);
+	if (Near.Num() > Most)
 	{
-		Near.SetNum(MaxNear);
+		Near.SetNum(Most);
 	}
 	int32 UsedPoints = 0, UsedSpots = 0;
 	for (const TPair<float, int32>& N : Near)
