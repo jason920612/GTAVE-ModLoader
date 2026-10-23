@@ -12,6 +12,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -72,6 +73,26 @@ UGTAVImportCommandlet::UGTAVImportCommandlet()
 int32 UGTAVImportCommandlet::Main(const FString& Params)
 {
 	FString Export, Area = TEXT("legion");
+	if (FParse::Param(*Params, TEXT("masters")))
+	{
+		// The master materials only, made anew (the renderer's run-time materials are their instances).
+		for (const TCHAR* Name : {TEXT("M_GTAV_Opaque"), TEXT("M_GTAV_Translucent"), TEXT("M_GTAV_Cutout"), TEXT("M_GTAV_Terrain4"), TEXT("M_GTAV_Water")})
+		{
+			IFileManager::Get().Delete(*FPackageName::LongPackageNameToFilename(FString(TEXT("/Game/GTAV/Materials/")) + Name, FPackageName::GetAssetPackageExtension()));
+		}
+		FGTAVMaterials Materials(TEXT(""));
+		for (const int32 Kind : {0, 1, 3, 4, 6})
+		{
+			Materials.Master(Kind);
+		}
+		int32 Saved = 0;
+		for (UPackage* Package : Materials.Dirty)
+		{
+			Saved += Save(Package, Package->FindAssetInPackage(), FPackageName::GetAssetPackageExtension());
+		}
+		UE_LOG(LogGTAVImport, Display, TEXT("%d master material packages saved"), Saved);
+		return Saved == Materials.Dirty.Num() ? 0 : 1;
+	}
 	if (!FParse::Value(*Params, TEXT("-export="), Export))
 	{
 		UE_LOG(LogGTAVImport, Error, TEXT("usage: -run=GTAVImport -export=<ue5export's folder> [-area=<name>] [-inverse]"));

@@ -24,6 +24,9 @@ namespace ue5export
 		size_t entities = 0, models = 0, textures = 0, missingModels = 0, missingTextures = 0;
 	};
 
+	// The entity's bounds reach into the area.
+	bool InArea(const mapdata::Archetype& archetype, const mapdata::Entity& entity, const Area& area);
+
 	ExportStats ExportArea(const GameFiles& files, const mapdata::Map& map, const Area& area, const std::filesystem::path& out,
 	    std::vector<std::string>& warnings);
 }

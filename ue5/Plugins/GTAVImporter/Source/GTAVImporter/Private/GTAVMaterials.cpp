@@ -9,7 +9,6 @@
 #include "Materials/MaterialExpressionDivide.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
-#include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
@@ -229,11 +228,11 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	Tinted->A.Connect(0, Diffuse);
 	Tinted->B.Connect(0, Palette);
 	Add(Tinted);
-	auto* UseTint = NewObject<UMaterialExpressionStaticSwitchParameter>(M);
-	UseTint->ParameterName = TEXT("UseTint");
-	UseTint->DefaultValue = false;
-	UseTint->A.Connect(0, Tinted);
-	UseTint->B.Connect(0, Diffuse);
+	// (a scalar, not a static switch: the renderer's materials are made at run time, where switches cannot change)
+	auto* UseTint = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	UseTint->A.Connect(0, Diffuse);
+	UseTint->B.Connect(0, Tinted);
+	UseTint->Alpha.Connect(0, Scalar(TEXT("UseTint"), 0.0f));
 	Add(UseTint);
 	Inputs->BaseColor.Connect(0, UseTint);
 	Inputs->Normal.Connect(0, Bump);
@@ -405,7 +404,7 @@ UMaterialInterface* FGTAVMaterials::Get(const TSharedPtr<FJsonObject>& Material,
 		MI->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(Parameter), T);
 		if (bPalette)
 		{
-			MI->SetStaticSwitchParameterValueEditorOnly(FMaterialParameterInfo(TEXT("UseTint")), true);
+			MI->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("UseTint")), 1.0f);
 			MI->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("TintPaletteWidth")), T->Source.GetSizeX());
 			MI->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("TintPaletteHeight")), T->Source.GetSizeY());
 			MI->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("TintRow")), TintRow);

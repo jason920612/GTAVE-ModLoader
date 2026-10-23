@@ -7,6 +7,7 @@
 //   ue5export extract --out <dir> --game <dir> --file <index path>   one file, plain: <out>\files\<name>
 //   ue5export map --out <dir> --game <dir>         the map as story mode sees it: archetypes and entities
 //   ue5export area --out <dir> --game <dir> --area x0,y0,x1,y1 --name <n>   an area's models, textures, entities (<out>\export)
+//   ue5export pack --out <dir> --game <dir> [--pack <name>] [--area x0,y0,x1,y1]   the renderer's pack files (<out>\<name>)
 #include <Windows.h>
 
 #include <algorithm>
@@ -27,6 +28,7 @@
 #include "mapdata.hpp"
 #include "meta.hpp"
 #include "ng.hpp"
+#include "pack.hpp"
 
 namespace fs = std::filesystem;
 using loader::convert::Archive;
@@ -206,6 +208,35 @@ namespace
 		return 0;
 	}
 
+	// The renderer's pack files: --pack <name> (default "pack"), --area x0,y0,x1,y1 for a test area.
+	int Pack(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::PackOptions options;
+		options.dir = fs::path(g_options["out"]) / (g_options.contains("pack") ? g_options["pack"] : "pack");
+		if (g_options.contains("area"))
+		{
+			ue5export::Area area;
+			if (sscanf_s(g_options["area"].c_str(), "%f,%f,%f,%f", &area.bounds[0], &area.bounds[1], &area.bounds[2], &area.bounds[3]) != 4)
+				return Fail("--area x0,y0,x1,y1");
+			options.area = area;
+		}
+		ue5export::GameFiles files;
+		std::string error;
+		const auto start = std::chrono::steady_clock::now();
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto map = ue5export::mapdata::Read(files);
+		std::vector<std::string> warnings;
+		const auto stats = ue5export::WritePack(files, map, options, warnings);
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		std::printf("%s: %zu models (%zu missing, %.1f MB), %zu textures (%.1f MB, %zu references missing), %zu placements in %.1f s\n",
+		    options.dir.string().c_str(), stats.models, stats.missingModels, stats.modelBytes / 1048576.0, stats.textures, stats.textureBytes / 1048576.0,
+		    stats.missingTextures, stats.placements, seconds);
+		for (const auto& w : warnings)
+			std::printf("warning: %s\n", w.c_str());
+		return 0;
+	}
+
 	// Texture formats over every --step'th texture dictionary of the map (DXGI format -> textures).
 	int TextureStats(const loader::convert::Decryptor& decrypt)
 	{
@@ -296,6 +327,8 @@ int main(int argc, char** argv)
 		return Map(decrypt);
 	if (command == "area")
 		return ExportArea(decrypt);
+	if (command == "pack")
+		return Pack(decrypt);
 	if (command == "texstats")
 		return TextureStats(decrypt);
 	if (command == "extract")
