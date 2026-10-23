@@ -15,4 +15,8 @@ namespace GTAVSky
 	void SetWind(const FVector2f& Way, float Speed);
 	// The camera is inside a building's rooms: no sunlit haze or ground fog in the air there.
 	void SetIndoors(bool bIndoors);
+	// The game's date (month 1-12): the moon's phase and the stars' turn.
+	void SetDate(int32 Year, int32 Month, int32 Day);
+	// The game's moon and starfield textures (globals.gpk), once the pack is open.
+	void SetSkyTextures(class UTexture2D* Moon, class UTexture2D* Stars);
 }

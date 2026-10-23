@@ -333,6 +333,10 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	{
 		GTAVSky::SetWind(FVector2f(Shared->wind[0], -Shared->wind[1]), Shared->windSpeed);
 	}
+	if (Shared->year > 0 && Shared->month > 0 && Shared->day > 0)
+	{
+		GTAVSky::SetDate(int32(Shared->year), int32(Shared->month), int32(Shared->day));
+	}
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
 
 	// The world: the hour (timed archetypes, groups by the hour) and the map data groups the game has on.

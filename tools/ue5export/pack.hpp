@@ -34,4 +34,6 @@ namespace ue5export
 	};
 
 	PackStats WritePack(const GameFiles& files, const mapdata::Map& map, const PackOptions& options, std::vector<std::string>& warnings);
+	// globals.gpk alone (the renderer's textures from the game's shared dictionaries), into dir.
+	void WriteGlobals(const GameFiles& files, const std::filesystem::path& dir, std::vector<std::string>& warnings);
 }

@@ -16,14 +16,20 @@ namespace loader::graphics::composite
 		// those are, blended by how much of the bilinear footprint in the render-size stencil they cover.
 		// The renderer's picture is scaled to the game's brightness first: Measure sums the log luminance of both
 		// pictures over a sparse grid (not the sky: depth 0, reversed; not peds and vehicles), Update moves the scale a
-		// little towards their ratio each frame, Composite applies it. The game's own exposure and tone mapping come
-		// after, as for its own scene.
+		// little towards their ratio each frame, Composite applies it. A view of nothing but sky goes by the skies
+		// instead (else the game's eye adaptation would brighten a night sky it cannot see the ground of). The game's own exposure and tone mapping come
+		// after, as for its own scene. The renderer's highlights saturate as a camera's sensor does (from 7 stops over
+		// the game's mean luminance, never past 10): physical light (the moon's 2,500 nits over a night city's few) is
+		// beyond what the game's own picture ever holds, and its lens effects then streak across the screen. Not a
+		// number (a shader's 0/0) is black, not a blot the upscaler and the bloom spread.
 		constexpr char kShader[] = R"(
 Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
 Texture2D<float> Depth : register(t2);
 RWTexture2D<float4> Output : register(u0);
-RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float)
+RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float),
+                                             // 16 the game's mean log2 luminance (float); the sky's: 20 game sum,
+                                             // 24 renderer sum, 28 count
 cbuffer Sizes : register(b0) { uint2 OutSize; uint2 RenderSize; float Adapt; float Match; };
 
 bool Dynamic(uint s)
@@ -50,37 +56,44 @@ groupshared int g_count[64];
 void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 {
 	uint2 p = id * 8 + 4;
-	int game = 0, renderer = 0, count = 0;
+	int game = 0, renderer = 0, count = 0, sky = 0;
 	if (all(p < OutSize))
 	{
 		int2 q = RenderPixel(p);
-		if (Depth.Load(int3(q, 0)) > 0 && !Dynamic(Stencil.Load(int3(q, 0)).y))
+		if (!Dynamic(Stencil.Load(int3(q, 0)).y))
 		{
 			game = int(clamp(log2(max(Luminance(Output[p].rgb), 1e-4)), -14.0, 14.0) * 64);
 			renderer = int(clamp(log2(max(Luminance(Picture.Load(int3(p, 0)).rgb), 1e-4)), -14.0, 14.0) * 64);
 			count = 1;
+			sky = Depth.Load(int3(q, 0)) > 0 ? 0 : 1;
 		}
 	}
-	g_game[index] = game;
-	g_renderer[index] = renderer;
-	g_count[index] = count;
-	GroupMemoryBarrierWithGroupSync();
-	[unroll] for (uint step = 32; step > 0; step >>= 1)
+	// (the ground's in 0..63 of the group's slots, the sky's in a second pass)
+	[unroll] for (uint part = 0; part < 2; ++part)
 	{
-		if (index < step)
+		int take = (count > 0 && uint(sky) == part) ? 1 : 0;
+		g_game[index] = game * take;
+		g_renderer[index] = renderer * take;
+		g_count[index] = take;
+		GroupMemoryBarrierWithGroupSync();
+		[unroll] for (uint step = 32; step > 0; step >>= 1)
 		{
-			g_game[index] += g_game[index + step];
-			g_renderer[index] += g_renderer[index + step];
-			g_count[index] += g_count[index + step];
+			if (index < step)
+			{
+				g_game[index] += g_game[index + step];
+				g_renderer[index] += g_renderer[index + step];
+				g_count[index] += g_count[index + step];
+			}
+			GroupMemoryBarrierWithGroupSync();
+		}
+		if (index == 0 && g_count[0] > 0)
+		{
+			uint ignored;
+			Exposure.InterlockedAdd(part * 20 + 0, uint(g_game[0]), ignored);
+			Exposure.InterlockedAdd(part * 20 + 4, uint(g_renderer[0]), ignored);
+			Exposure.InterlockedAdd(part * 20 + 8, uint(g_count[0]), ignored);
 		}
 		GroupMemoryBarrierWithGroupSync();
-	}
-	if (index == 0 && g_count[0] > 0)
-	{
-		uint ignored;
-		Exposure.InterlockedAdd(0, uint(g_game[0]), ignored);
-		Exposure.InterlockedAdd(4, uint(g_renderer[0]), ignored);
-		Exposure.InterlockedAdd(8, uint(g_count[0]), ignored);
 	}
 }
 
@@ -88,14 +101,23 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 void Update()
 {
 	int game = int(Exposure.Load(0)), renderer = int(Exposure.Load(4)), count = int(Exposure.Load(8));
+	if (count <= 64) // (nothing but sky)
+	{
+		game = int(Exposure.Load(20)), renderer = int(Exposure.Load(24)), count = int(Exposure.Load(28));
+	}
 	float scale = asfloat(Exposure.Load(12));
+	float key = asfloat(Exposure.Load(16));
+	if (!(abs(key) < 20.0)) // (the buffer's first contents)
+		key = count > 64 ? float(game) / (64.0 * count) : 0.0;
 	if (count > 64)
 	{
 		float target = clamp((float(game) - float(renderer)) / (64.0 * count), -6.0, 6.0) * Match; // log2 of the ratio
 		float current = scale > 0 ? log2(scale) : target;
 		scale = exp2(lerp(current, target, Adapt));
+		key = lerp(key, float(game) / (64.0 * count), Adapt);
 	}
 	Exposure.Store4(0, uint4(0, 0, 0, asuint(scale > 0 ? scale : 1.0)));
+	Exposure.Store4(16, uint4(asuint(key), 0, 0, 0));
 }
 
 [numthreads(8, 8, 1)]
@@ -115,6 +137,15 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	}
 	float scale = asfloat(Exposure.Load(12));
 	float4 picture = Picture.Load(int3(id, 0)) * float4(scale.xxx, 1);
+	if (any(isnan(picture.rgb)) || any(isinf(picture.rgb)))
+		picture.rgb = 0;
+	float key = asfloat(Exposure.Load(16));
+	float knee = exp2(key + 7.0), top = exp2(key + 10.0), l = Luminance(picture.rgb);
+	if (l > knee)
+	{
+		float over = l - knee;
+		picture.rgb *= (knee + over / (1.0 + over / (top - knee))) / l;
+	}
 	if (covered <= 0.001)
 		Output[id] = picture;
 	else if (covered < 0.999)

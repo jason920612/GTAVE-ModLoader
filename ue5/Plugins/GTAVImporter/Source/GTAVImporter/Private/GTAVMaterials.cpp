@@ -36,6 +36,7 @@
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionViewProperty.h"
+#include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
@@ -743,6 +744,155 @@ UMaterial* FGTAVMaterials::Glow()
 	return Masters.Add(kGlow, M);
 }
 
+// The moon (M_GTAV_Moon): a sphere far off in the sky, unlit, its face the game's moon texture (a full moon's disc)
+// seen as from the camera, lit by the sun as a sphere is (its phase): albedo x 100,000 lux / pi x cos(sun), about
+// 2,500 nits full (the moon's surface; MoonTex's mean scaled to the moon's albedo, 0.12). The sun's direction from
+// the collection (SunX/Y/Z, towards it).
+UMaterial* FGTAVMaterials::Moon()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Moon");
+	if (UMaterial** Found = Masters.Find(kMoon))
+	{
+		return *Found;
+	}
+	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
+	{
+		return Masters.Add(kMoon, Existing);
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterial* M = NewObject<UMaterial>(Package, TEXT("M_GTAV_Moon"), RF_Public | RF_Standalone);
+	M->SetShadingModel(MSM_Unlit);
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	UMaterialParameterCollection* C = Collection();
+	const auto Global = [&](const TCHAR* Name) {
+		auto* E = NewObject<UMaterialExpressionCollectionParameter>(M);
+		E->Collection = C;
+		E->ParameterName = Name;
+		E->ParameterId = C->GetParameterId(Name);
+		return Add(E);
+	};
+	auto* Here = Add(NewObject<UMaterialExpressionWorldPosition>(M));
+	auto* Centre = Add(NewObject<UMaterialExpressionObjectPositionWS>(M));
+	auto* Eye = Add(NewObject<UMaterialExpressionCameraPositionWS>(M));
+	const auto Custom = [&](const TCHAR* Description, ECustomMaterialOutputType Type, const TCHAR* Code,
+							std::initializer_list<TPair<const TCHAR*, UMaterialExpression*>> Ins) {
+		auto* E = NewObject<UMaterialExpressionCustom>(M);
+		E->Description = Description;
+		E->OutputType = Type;
+		E->Code = Code;
+		E->Inputs.Reset();
+		for (const TPair<const TCHAR*, UMaterialExpression*>& I : Ins)
+		{
+			FCustomInput& In = E->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Key;
+			In.Input.Connect(0, I.Value);
+		}
+		return Add(E);
+	};
+	auto* Uv = Custom(TEXT("Moon face"), CMOT_Float2, TEXT(R"HLSL(// The face as seen from the camera, upright (the world's up), on the texture's disc.
+float3 F = normalize(Centre - Eye);
+float3 P = normalize(Here - Centre);
+float3 R = normalize(cross(float3(0, 0, 1), F));
+float3 U = cross(F, R);
+return float2(dot(P, R), dot(P, U)) * float2(0.5, -0.5) + 0.5;
+)HLSL"), {{TEXT("Here"), Here}, {TEXT("Centre"), Centre}, {TEXT("Eye"), Eye}});
+	auto* Face = NewObject<UMaterialExpressionTextureSampleParameter2D>(M);
+	Face->ParameterName = TEXT("MoonTex");
+	Face->Texture = EngineTexture(TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+	Face->SamplerType = SAMPLERTYPE_Color;
+	Face->Coordinates.Connect(0, Uv);
+	Add(Face);
+	auto* Lit = Custom(TEXT("Moon light"), CMOT_Float3, TEXT(R"HLSL(// Sunlit as a sphere: albedo (the texture's mean, about 0.24 linear, as the moon's 0.12) x E / pi x cos.
+float3 P = normalize(Here - Centre);
+float3 S = normalize(float3(SunX, SunY, SunZ));
+return Face * (0.12 / 0.24) * (100000.0 / 3.14159265) * saturate(dot(P, S));
+)HLSL"), {{TEXT("Here"), Here}, {TEXT("Centre"), Centre}, {TEXT("Face"), Face}, {TEXT("SunX"), Global(TEXT("SunX"))},
+		 {TEXT("SunY"), Global(TEXT("SunY"))}, {TEXT("SunZ"), Global(TEXT("SunZ"))}});
+	Inputs->EmissiveColor.Connect(0, Lit);
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return Masters.Add(kMoon, M);
+}
+
+// The stars (M_GTAV_Stars): the game's starfield over a sphere far off around the camera (turned by the hour about the
+// celestial pole), added to the sky: a texel's value t as a star of magnitude 6 - 7.5 t (the brightest about -1),
+// its light over the texel's solid angle (nits). The city's glowing sky drowns all but the brightest, as it does.
+UMaterial* FGTAVMaterials::Stars()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Stars");
+	if (UMaterial** Found = Masters.Find(kStars))
+	{
+		return *Found;
+	}
+	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
+	{
+		return Masters.Add(kStars, Existing);
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterial* M = NewObject<UMaterial>(Package, TEXT("M_GTAV_Stars"), RF_Public | RF_Standalone);
+	M->BlendMode = BLEND_Additive;
+	M->SetShadingModel(MSM_Unlit);
+	M->TwoSided = true;
+	M->bUseTranslucencyVertexFog = true; // (the air between: haze and the horizon's extinction)
+	M->bComputeFogPerPixel = true;
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	auto* Local = Add(NewObject<UMaterialExpressionLocalPosition>(M));
+	auto* Uv = NewObject<UMaterialExpressionCustom>(M);
+	Uv->Description = TEXT("Star map");
+	Uv->OutputType = CMOT_Float2;
+	Uv->Code = TEXT(R"HLSL(// Longitude, latitude over the texture, 12 x 6 times (a texel about 0.06 degrees: a star a pixel or two).
+float3 D = normalize(Local);
+return float2(atan2(D.y, D.x) / 6.2831853 * 12.0, acos(clamp(D.z, -1, 1)) / 3.14159265 * 6.0);
+)HLSL");
+	Uv->Inputs.Reset();
+	{
+		FCustomInput& In = Uv->Inputs.AddDefaulted_GetRef();
+		In.InputName = TEXT("Local");
+		In.Input.Connect(0, Local);
+	}
+	Add(Uv);
+	auto* Field = NewObject<UMaterialExpressionTextureSampleParameter2D>(M);
+	Field->ParameterName = TEXT("StarTex");
+	Field->Texture = EngineTexture(TEXT("/Engine/EngineResources/Black.Black"));
+	Field->SamplerType = SAMPLERTYPE_Color;
+	Field->MipValueMode = TMVM_MipLevel; // (the longitude's seam would pick the smallest mip)
+	Field->ConstMipValue = 0;
+	Field->Coordinates.Connect(0, Uv);
+	Add(Field);
+	auto* Light = NewObject<UMaterialExpressionCustom>(M);
+	Light->Description = TEXT("Star light");
+	Light->OutputType = CMOT_Float3;
+	Light->Code = TEXT(R"HLSL(float t = max(Star.r, max(Star.g, Star.b));
+if (t < 0.04) return 0;
+float m = 6.0 - 7.5 * t;                        // magnitude
+float E = pow(10.0, -0.4 * (m + 14.18));        // lux
+return Star / t * E / 1.05e-6;                  // over the texel's solid angle (sr)
+)HLSL");
+	Light->Inputs.Reset();
+	{
+		FCustomInput& In = Light->Inputs.AddDefaulted_GetRef();
+		In.InputName = TEXT("Star");
+		In.Input.Connect(0, Field);
+	}
+	Add(Light);
+	Inputs->EmissiveColor.Connect(0, Light);
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return Masters.Add(kStars, M);
+}
+
 // Falling rain (M_GTAV_Rain): streaks on cylinders around the camera, lit by the scene's lights (rain shows under a
 // street light), the layer's Radius (m) per instance.
 UMaterial* FGTAVMaterials::Rain()
@@ -852,7 +1002,7 @@ UMaterialParameterCollection* FGTAVMaterials::Collection()
 	UPackage* Package = CreatePackage(PackageName);
 	UMaterialParameterCollection* C = NewObject<UMaterialParameterCollection>(Package, TEXT("MPC_GTAV"), RF_Public | RF_Standalone);
 	for (const TPair<const TCHAR*, float>& P : {TPair<const TCHAR*, float>(TEXT("Wetness"), 0.0f), {TEXT("WindX"), 1.0f}, {TEXT("WindY"), 0.0f},
-			 {TEXT("WindSpeed"), 4.0f}, {TEXT("RainRate"), 0.0f}})
+			 {TEXT("WindSpeed"), 4.0f}, {TEXT("RainRate"), 0.0f}, {TEXT("SunX"), 0.0f}, {TEXT("SunY"), 0.5f}, {TEXT("SunZ"), 0.866f}})
 	{
 		FCollectionScalarParameter Parameter;
 		Parameter.ParameterName = P.Key;

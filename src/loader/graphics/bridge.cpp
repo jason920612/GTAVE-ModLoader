@@ -34,7 +34,8 @@ namespace loader::graphics::bridge
 		constexpr uint64_t kGetClockHours = 0x25223CA6B4D20B7F,
 		                   kGetClockMinutes = 0x13D2B8ADD79640F2, kGetClockSeconds = 0x494E97C2EF27C470,
 		                   kGetCurrWeatherState = 0xF3BBE884A14BB413, kIsIplActive = 0x88A741E44A2B3495,
-		                   kGetWindSpeed = 0xA8CF1CC0AFCD3F12, kGetWindDirection = 0x1F400FEF721170DA;
+		                   kGetWindSpeed = 0xA8CF1CC0AFCD3F12, kGetWindDirection = 0x1F400FEF721170DA,
+		                   kGetClockYear = 0x961777E64BDAF717, kGetClockMonth = 0xBBC72712E80257A1, kGetClockDayOfMonth = 0x3D10BC92A4DB1D35;
 
 		// Game thread.
 		HANDLE g_mapping = nullptr;
@@ -496,6 +497,9 @@ namespace loader::graphics::bridge
 			const auto wind = natives::Invoke<natives::ScrVector>(kGetWindDirection);
 			s.wind[0] = wind.x, s.wind[1] = wind.y, s.wind[2] = wind.z;
 			s.windSpeed = natives::Invoke<float>(kGetWindSpeed);
+			s.year = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockYear));
+			s.month = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockMonth) + 1); // (the game's from 0)
+			s.day = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockDayOfMonth));
 			s.width = g_width, s.height = g_height;
 			// Pace, every 10 s: the renderer's new frames against the game's.
 			static ULONGLONG lastPace = 0;

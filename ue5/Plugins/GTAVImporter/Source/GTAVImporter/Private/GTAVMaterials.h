@@ -34,6 +34,9 @@ public:
 	UMaterial* Rain();
 	// Glowing gas (neon tubes and the like): additive, unlit.
 	UMaterial* Glow();
+	// The moon (lit by the sun: its phase) and the stars.
+	UMaterial* Moon();
+	UMaterial* Stars();
 
 private:
 	FString ExportRoot;
@@ -42,7 +45,7 @@ private:
 	TMap<FString, UMaterialInterface*> Instances;
 	TMap<FString, UTexture2D*> Textures;
 
-	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9, kRain = 10, kGlow = 11;
+	static constexpr int32 kTerrain = 4, kWater = 6, kOcean = 7, kCorona = 8, kOceanFar = 9, kRain = 10, kGlow = 11, kMoon = 12, kStars = 13;
 	UTexture2D* BlackMask();
 	UMaterialParameterCollection* Collection();
 	void Wetten(UMaterial* M);

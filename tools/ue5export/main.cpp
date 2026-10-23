@@ -365,6 +365,21 @@ namespace
 		return 0;
 	}
 
+	// globals.gpk again, into the pack (--pack <name>, default "pack"): the renderer's textures from the game's shared
+	// dictionaries.
+	int Globals(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		std::vector<std::string> warnings;
+		ue5export::WriteGlobals(files, fs::path(g_options["out"]) / (g_options.contains("pack") ? g_options["pack"] : "pack"), warnings);
+		for (const auto& w : warnings)
+			std::printf("warning: %s\n", w.c_str());
+		return 0;
+	}
+
 	// The light attributes of a drawable as they are (0xA8 bytes each, as floats): --file <name.ydr|ydd|yft>.
 	int LightDump(const loader::convert::Decryptor& decrypt)
 	{
@@ -576,6 +591,8 @@ int main(int argc, char** argv)
 		return g_options.contains("file") ? TextureList(decrypt) : Fail("--file <name.ytd> is needed");
 	if (command == "metadump")
 		return g_options.contains("file") ? MetaDump(decrypt) : Fail("--file <name> is needed");
+	if (command == "globals")
+		return Globals(decrypt);
 	if (command == "lightdump")
 		return g_options.contains("file") ? LightDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")

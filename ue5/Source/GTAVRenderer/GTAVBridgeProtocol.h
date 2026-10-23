@@ -59,6 +59,8 @@ namespace GTAVBridge
 		// The game's wind (GET_WIND_DIRECTION, GET_WIND_SPEED): the way it blows (the game's space), m/s.
 		float wind[3];
 		float windSpeed;
-		uint32_t reserved[4];
+		// The game's date (GET_CLOCK_YEAR, _MONTH + 1, _DAY_OF_MONTH; 0: an older loader): the moon's phase.
+		uint32_t year, month, day;
+		uint32_t reserved;
 	};
 }

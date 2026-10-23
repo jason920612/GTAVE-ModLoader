@@ -785,8 +785,8 @@ namespace ue5export
 		};
 	}
 
-	// The renderer's own textures from the game's shared dictionaries (water, rain): globals.gpk, keyed by the
-	// joaat of their names.
+	// The renderer's own textures from the game's shared dictionaries (water, rain; the sky's moon and stars):
+	// globals.gpk, keyed by the joaat of their names.
 	void WriteGlobals(const GameFiles& files, const fs::path& dir, std::vector<std::string>& warnings)
 	{
 		PackFile out;
@@ -797,15 +797,18 @@ namespace ue5export
 			return;
 		}
 		Resolver resolver(files);
-		std::vector<std::string> names = {"waterbump", "waterbump2", "waternoise", "waterfoam", "caustic", "oceanwaves", "shorewaves", "waterfog",
-		    "puddle_layout"};
+		std::vector<std::pair<std::string, std::string>> names; // (dictionary, texture)
+		for (const char* name : {"waterbump", "waterbump2", "waternoise", "waterfoam", "caustic", "oceanwaves", "shorewaves", "waterfog", "puddle_layout"})
+			names.emplace_back("graphics", name);
 		for (int i = 0; i < 64; ++i)
-			names.push_back(std::format("puddlenormal_{:04}", i));
+			names.emplace_back("graphics", std::format("puddlenormal_{:04}", i));
+		names.emplace_back("skydome", "moon-new");
+		names.emplace_back("skydome", "starfield");
 		size_t written = 0;
-		for (const std::string& name : names)
+		for (const auto& [dictionary, name] : names)
 		{
 			Resolver::Texture t;
-			if (!resolver.Find("graphics", name, t))
+			if (!resolver.Find(dictionary, name, t))
 			{
 				warnings.push_back("globals: no " + name);
 				continue;

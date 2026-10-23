@@ -187,6 +187,7 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	RootComponent->RegisterComponent();
 	UpdateYmaps();
 	BuildWater();
+	GTAVSky::SetSkyTextures(Assets->GlobalTexture(TEXT("moon-new"), false), Assets->GlobalTexture(TEXT("starfield"), false));
 	const int32 LightCount = Data.LodLights.Num();
 	Lights.Load(MoveTemp(Data.LodLights));
 	UE_LOG(LogGTAVWorld, Display, TEXT("%d LOD lights"), LightCount);
