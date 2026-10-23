@@ -271,20 +271,13 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		constexpr double Distance = 10000000.0; // cm
 		Moon->SetWorldLocationAndRotation(Camera + MoonToward * Distance, FQuat::Identity);
 		Moon->SetWorldScale3D(FVector(Distance * FMath::Tan(FMath::DegreesToRadians(0.2575)) / 50.0));
-		static int32 LoggedHour = -1;
-		if (int32(Hours) != LoggedHour)
-		{
-			LoggedHour = int32(Hours);
-			UE_LOG(LogGTAVSky, Display, TEXT("%02d h: the moon at %s (towards %s), camera %s, visible %d registered %d, scale %s"), LoggedHour,
-				*Moon->GetComponentLocation().ToString(), *MoonToward.ToString(), *Camera.ToString(), Moon->IsVisible(), Moon->IsRegistered(),
-				*Moon->GetComponentScale().ToString());
-		}
 	}
 	if (UStaticMeshComponent* Stars = A.Stars.Get())
 	{
 		const double Turn = (GameDay / 365.2422 + Hours / 24.0) * 2.0 * PI; // (a sidereal day: the sun's plus one turn a year)
 		Stars->SetWorldLocationAndRotation(Camera, FQuat(kPole, FMath::Fmod(Turn, 2.0 * PI)));
 		Stars->SetWorldScale3D(FVector(20000000.0 / 50.0));
+		Stars->SetVisibility(Toward.Z < 0.05); // (a full-screen layer: not drawn by day, when no star shows)
 	}
 	if (ASkyLight* Sky = A.Sky.Get())
 	{
