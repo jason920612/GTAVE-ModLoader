@@ -160,8 +160,10 @@ private:
 					SceneColor.Texture->Desc.Extent.X, SceneColor.Texture->Desc.Extent.Y, SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height(),
 					SceneColor.ViewRect.Min.X, SceneColor.ViewRect.Min.Y);
 			}
-			const uint64 FrameValue = ++Value;
+			// (the fence counts the game's frames: the game waits for the frame of its own camera)
 			const uint32 FrameSequence = Sequence;
+			const uint64 FrameValue = FMath::Max<uint64>(FrameSequence, ++Value);
+			Value = FrameValue;
 			GTAVBridge::Shared* S = Shared;
 			ID3D12Fence* F = Fence;
 			// (after the graph, on the immediate list: behind the copy, on the same queue; the game waits for this value

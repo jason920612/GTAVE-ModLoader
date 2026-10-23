@@ -187,8 +187,14 @@ namespace loader::graphics::bridge
 			}).detach();
 		}
 
-		// Right after the game's DLSS pass: the renderer's newest frame over DLSS's output, once the game's queue has
-		// waited for it.
+		// The game's frame this render thread records (its camera's sequence number): the renderer's frame to wait for.
+		thread_local uint32_t t_sequence = 0;
+		uint64_t g_lastValue = 0;      // the renderer's newest frame seen, and when it last moved on
+		ULONGLONG g_lastProgress = 0;
+
+		// Right after the game's DLSS pass: the renderer's frame of this camera over DLSS's output, once the game's
+		// queue has waited for it (frame for frame, so that the game's peds and vehicles sit on the renderer's
+		// picture exactly; while the renderer stalls, its newest frame instead).
 		void AfterDlss(const streamline::DlssFrame& frame)
 		{
 			DumpDepth(frame);
@@ -229,7 +235,12 @@ namespace loader::graphics::bridge
 			}
 			g_warnedSize = false;
 			// (the game's queue runs this list later: the wait goes in first)
-			queue->Wait(g_fence, g_shared->frameValue);
+			const uint64_t newest = g_shared->frameValue;
+			const ULONGLONG tick = GetTickCount64();
+			if (newest != g_lastValue)
+				g_lastValue = newest, g_lastProgress = tick;
+			const bool stalled = tick - g_lastProgress > 500;
+			queue->Wait(g_fence, !stalled && t_sequence > newest ? t_sequence : newest);
 			// (the game's peds and vehicles kept; a plain copy when that cannot be done)
 			if (composite::Record(frame, g_texture))
 				return;
@@ -325,6 +336,19 @@ namespace loader::graphics::bridge
 			s.wind[0] = wind.x, s.wind[1] = wind.y, s.wind[2] = wind.z;
 			s.windSpeed = natives::Invoke<float>(kGetWindSpeed);
 			s.width = g_width, s.height = g_height;
+			// Pace, every 10 s: the renderer's new frames against the game's.
+			static ULONGLONG lastPace = 0;
+			static uint64_t lastFrames = 0;
+			static uint32_t lastTick = 0;
+			const ULONGLONG now = GetTickCount64();
+			if (now - lastPace >= 10000)
+			{
+				const uint64_t frames = s.frameValue;
+				if (lastPace && s.rendererState == 1)
+					log::Info("ue5 bridge: renderer {:.1f} frames/s, game {:.1f}", (frames - lastFrames) * 1000.0 / (now - lastPace),
+					    (g_tick - lastTick) * 1000.0 / (now - lastPace));
+				lastPace = now, lastFrames = frames, lastTick = g_tick;
+			}
 			// Console commands for the renderer (tuning while it runs): ModLoader/ue5console.txt when it changes.
 			if (g_tick % 60 == 0)
 			{
@@ -386,7 +410,7 @@ namespace loader::graphics::bridge
 			s->nearClip = camera.nearZ;
 			s->farClip = camera.farZ;
 			MemoryBarrier();
-			++s->gameSequence;
+			t_sequence = ++s->gameSequence;
 		}
 	}
 
