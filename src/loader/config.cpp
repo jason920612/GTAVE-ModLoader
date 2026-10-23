@@ -45,6 +45,11 @@ namespace loader::config
 			c.dlssUpgrade = j.value("dlssUpgrade", c.dlssUpgrade);
 			c.dlssPreset = j.value("dlssPreset", c.dlssPreset);
 			c.fourthCharacter = j.value("fourthCharacter", c.fourthCharacter);
+			c.ue5Renderer = j.value("ue5Renderer", c.ue5Renderer);
+			c.ue5Editor = j.value("ue5Editor", c.ue5Editor);
+			c.ue5Project = j.value("ue5Project", c.ue5Project);
+			c.ue5Pack = j.value("ue5Pack", c.ue5Pack);
+			c.ue5Key = j.value("ue5Key", c.ue5Key);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -70,6 +75,11 @@ namespace loader::config
 				{"dlssUpgrade", c.dlssUpgrade},
 				{"dlssPreset", c.dlssPreset},
 				{"fourthCharacter", c.fourthCharacter},
+				{"ue5Renderer", c.ue5Renderer},
+				{"ue5Editor", c.ue5Editor},
+				{"ue5Project", c.ue5Project},
+				{"ue5Pack", c.ue5Pack},
+				{"ue5Key", c.ue5Key},
 			};
 		}
 	}

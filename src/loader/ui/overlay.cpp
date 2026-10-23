@@ -29,6 +29,7 @@
 #include "../web/browser.hpp"
 #include "../web/textures.hpp"
 #include "../debug/remote.hpp"
+#include "../graphics/bridge.hpp"
 #include "dx12_hook.hpp"
 #include "menu.hpp"
 #include "notify.hpp"
@@ -610,7 +611,10 @@ namespace loader::ui
 			if (msg == debug::remote::kKeyMessage)
 			{
 				if (!g_capture && state::story && !state::online)
+				{
 					mods::OnKeyDown(static_cast<uint32_t>(wp));
+					graphics::bridge::OnKeyDown(static_cast<uint32_t>(wp));
+				}
 				return 0;
 			}
 			if (msg == WM_KEYDOWN && !(lp & (1 << 30)) && wp == MenuKey())
@@ -624,7 +628,10 @@ namespace loader::ui
 					return 0;
 				// Mod hotkeys: story mode only, and not while the loader UI owns the keyboard.
 				if (!g_capture && state::story && !state::online)
+				{
 					mods::OnKeyDown(static_cast<uint32_t>(wp));
+					graphics::bridge::OnKeyDown(static_cast<uint32_t>(wp));
+				}
 			}
 			// The web browser gets the page area's input (its toolbar is ImGui's).
 			if (!MenuOpen())

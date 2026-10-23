@@ -36,7 +36,11 @@ public:
 
 	// Map data groups on (by name hash); the hour (0-23) for timed archetypes and groups.
 	void SetGroup(uint32 Name, bool bOn);
+	// All the groups on at once (the game's state, from the bridge).
+	void SetGroupsOn(const TSet<uint32>& On);
 	void SetHour(int32 Hour);
+	// Checking: what is drawn near a point (the game's metres), to the log.
+	void DumpNear(const FVector& GamePoint, float Radius);
 
 private:
 	FGTAVPack Pack;
@@ -50,6 +54,8 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<AActor> Root;
+	UPROPERTY()
+	TObjectPtr<UStaticMeshComponent> Water;
 
 	// What is drawn: map entities by index; interior entities by (1 << 63 | placement << 32 | index into InteriorEntities).
 	TMap<uint64, TObjectPtr<UStaticMeshComponent>> Drawn;

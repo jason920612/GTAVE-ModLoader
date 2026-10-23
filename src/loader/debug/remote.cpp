@@ -30,6 +30,17 @@ namespace loader::debug::remote
 	namespace
 	{
 		constexpr uint64_t kSetControlValueNextFrame = 0xE8A25867FBA3B05E;
+		// A fixed camera for comparing pictures ("cam"): a scripted camera, the streaming focus there, noon, clear sky.
+		constexpr uint64_t kCreateCam = 0xC3981DCE61D9E13F, kSetCamCoord = 0x4D41783FB745E42E, kSetCamRot = 0x85973643155D0B07,
+		                   kSetCamFov = 0xB13C14F66A00D047, kSetCamActive = 0x026FB97D0A425F84, kRenderScriptCams = 0x07E5B515DB0636FC,
+		                   kDestroyCam = 0x865908C81A2C22E9, kSetFocusPosAndVel = 0xBB7454BAFF08FE25, kClearFocus = 0x31B73D1EA9F01DA2,
+		                   kSetClockTime = 0x47C3B5848C3E45D8, kPauseClock = 0x4055E40BD2DBEC1D, kSetWeatherTypeNowPersist = 0xED712CA327900C8A,
+		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5;
+		struct CamRequest
+		{
+			bool pending = false, on = false;
+			float x = 0, y = 0, z = 0, heading = 0, pitch = 0, fov = 50;
+		};
 		constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\gtave-modloader";
 
 		struct Held
@@ -39,6 +50,8 @@ namespace loader::debug::remote
 		};
 		std::mutex g_mutex;
 		std::map<int, Held> g_held; // control -> how long
+		CamRequest g_cam;            // (the game thread applies it)
+		int32_t g_camHandle = 0;
 
 		// Keys for the game itself, frontend menus included (they pause scripts, so controls cannot reach them). The
 		// game reads the keyboard through raw input: a WM_INPUT is posted whose handle is ours, and GetRawInputData
@@ -449,6 +462,25 @@ namespace loader::debug::remote
 				std::string error;
 				return ui::Capture(wpath, error) ? "ok" : "err " + error;
 			}
+			if (cmd == "cam")
+			{
+				// cam x y z heading pitch [fov]  |  cam off
+				CamRequest r;
+				std::string first;
+				in >> first;
+				r.pending = true;
+				r.on = first != "off";
+				if (r.on)
+				{
+					r.x = std::stof(first);
+					in >> r.y >> r.z >> r.heading >> r.pitch;
+					if (!(in >> r.fov))
+						r.fov = 50;
+				}
+				std::lock_guard lock(g_mutex);
+				g_cam = r;
+				return "ok";
+			}
 			if (cmd == "mute")
 			{
 				std::string how;
@@ -567,6 +599,36 @@ namespace loader::debug::remote
 			}
 			game::natives::Invoke<int>(kSetControlValueNextFrame, 0, it->first, it->second.value);
 			++it;
+		}
+		if (g_cam.pending)
+		{
+			namespace natives = game::natives;
+			g_cam.pending = false;
+			if (g_cam.on)
+			{
+				if (!g_camHandle)
+					g_camHandle = natives::Invoke<int32_t>(kCreateCam, "DEFAULT_SCRIPTED_CAMERA", 0);
+				natives::Invoke<void>(kSetCamCoord, g_camHandle, g_cam.x, g_cam.y, g_cam.z);
+				natives::Invoke<void>(kSetCamRot, g_camHandle, g_cam.pitch, 0.0f, g_cam.heading, 2);
+				natives::Invoke<void>(kSetCamFov, g_camHandle, g_cam.fov);
+				natives::Invoke<void>(kSetCamActive, g_camHandle, 1);
+				natives::Invoke<void>(kRenderScriptCams, 1, 0, 0, 1, 0, 0);
+				natives::Invoke<void>(kSetFocusPosAndVel, g_cam.x, g_cam.y, g_cam.z, 0.0f, 0.0f, 0.0f);
+				natives::Invoke<void>(kSetClockTime, 12, 0, 0);
+				natives::Invoke<void>(kPauseClock, 1);
+				natives::Invoke<void>(kSetWeatherTypeNowPersist, "EXTRASUNNY");
+				log::Info("remote: camera at {:.1f} {:.1f} {:.1f} heading {:.1f} pitch {:.1f} fov {:.1f}", g_cam.x, g_cam.y, g_cam.z, g_cam.heading, g_cam.pitch,
+				    g_cam.fov);
+			}
+			else if (g_camHandle)
+			{
+				natives::Invoke<void>(kRenderScriptCams, 0, 0, 0, 1, 0, 0);
+				natives::Invoke<void>(kDestroyCam, g_camHandle, 0);
+				natives::Invoke<void>(kClearFocus);
+				natives::Invoke<void>(kPauseClock, 0);
+				natives::Invoke<void>(kClearWeatherTypePersist);
+				g_camHandle = 0;
+			}
 		}
 	}
 }

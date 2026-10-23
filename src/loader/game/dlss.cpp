@@ -24,6 +24,7 @@
 #include <MinHook.h>
 
 #include "../config.hpp"
+#include "../graphics/streamline.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 
@@ -722,6 +723,7 @@ namespace loader::game::dlss
 		{
 			if (!interposer || g_interposerHooked.exchange(true))
 				return;
+			graphics::streamline::Hook(interposer, g_trace);
 			void* target = reinterpret_cast<void*>(GetProcAddress(interposer, "slGetFeatureFunction"));
 			if (!target || MH_CreateHook(target, reinterpret_cast<void*>(&GetFeatureFunction), reinterpret_cast<void**>(&g_getFeatureFunction)) != MH_OK ||
 			    MH_EnableHook(target) != MH_OK)

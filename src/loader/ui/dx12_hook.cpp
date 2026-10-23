@@ -26,6 +26,7 @@ namespace loader::ui::dx12
 		using ResizeBuffers1Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*, UINT, UINT, UINT, DXGI_FORMAT, UINT, const UINT*, IUnknown* const*);
 
 		Callbacks g_callbacks{};
+		std::atomic<ID3D12CommandQueue*> g_presentQueue = nullptr;
 		size_t g_queueOffset = 0;
 		PresentFn g_origPresent = nullptr;
 		Present1Fn g_origPresent1 = nullptr;
@@ -107,7 +108,10 @@ namespace loader::ui::dx12
 				return;
 			t_inHook = true;
 			if (ID3D12CommandQueue* queue = QueueOf(swapChain))
+			{
+				g_presentQueue.store(queue, std::memory_order_relaxed);
 				g_callbacks.onPresent(swapChain, queue);
+			}
 			t_inHook = false;
 		}
 
@@ -334,5 +338,10 @@ namespace loader::ui::dx12
 			DestroyWindow(hwnd);
 		UnregisterClassW(wc.lpszClassName, wc.hInstance);
 		return ok;
+	}
+
+	ID3D12CommandQueue* PresentQueue()
+	{
+		return g_presentQueue.load(std::memory_order_relaxed);
 	}
 }

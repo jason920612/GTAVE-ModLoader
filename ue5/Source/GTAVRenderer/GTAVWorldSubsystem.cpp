@@ -13,6 +13,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "StaticMeshResources.h"
 
@@ -26,6 +27,49 @@ namespace
 
 	FVector Position(const float* P) { return FVector(P[0], P[1], P[2]); }
 	FQuat Rotation(const float* Q) { return FQuat(Q[0], Q[1], Q[2], Q[3]); }
+
+	// Checking while it runs (console, or ModLoader/ue5console.txt through the bridge).
+	TAutoConsoleVariable<int32> CVarGrass(TEXT("gtav.Grass"), 1, TEXT("Grass batches drawn (0: none)."));
+	TAutoConsoleVariable<int32> CVarWater(TEXT("gtav.Water"), 1, TEXT("The sea and the water quads drawn (0: hidden)."));
+	TAutoConsoleVariable<float> CVarLodScale(TEXT("gtav.LodScale"), 0.0f, TEXT("Every distance scaled by this (0: -gtavlod, else 1: the game's)."));
+	FAutoConsoleCommandWithWorldAndArgs DumpCommand(TEXT("gtav.Dump"), TEXT("gtav.Dump x y z [radius]: what is drawn near a point (the game's metres)."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World) {
+			if (UGTAVWorldSubsystem* S = World ? World->GetSubsystem<UGTAVWorldSubsystem>() : nullptr; S && Args.Num() >= 3)
+			{
+				S->DumpNear(FVector(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atof(*Args[2])), Args.Num() > 3 ? FCString::Atof(*Args[3]) : 20.0f);
+			}
+		}));
+}
+
+void UGTAVWorldSubsystem::DumpNear(const FVector& GamePoint, float Radius)
+{
+	const FVector P(GamePoint.X * 100, -GamePoint.Y * 100, GamePoint.Z * 100);
+	for (const TPair<uint64, TObjectPtr<UStaticMeshComponent>>& D : Drawn)
+	{
+		if (D.Key & kInteriorKey)
+		{
+			continue;
+		}
+		const uint32 I = uint32(D.Key);
+		if (Data.Distance(I, P) > Radius * 100)
+		{
+			continue;
+		}
+		const GTAVPack::Entity& E = Data.Entities[I];
+		UE_LOG(LogGTAVWorld, Display, TEXT("dump: entity %u archetype %08x lod %u ymap %u (%08x) parent %d lodDist %.0f at %.1f %.1f %.1f"), I, E.archetype, E.lodLevel,
+			E.ymap, Data.Ymaps[E.ymap].name, int32(E.parent), E.lodDist, E.position[0] / 100, -E.position[1] / 100, E.position[2] / 100);
+	}
+	for (const TPair<uint32, TObjectPtr<UInstancedStaticMeshComponent>>& G : DrawnGrass)
+	{
+		const GTAVPack::GrassBatch& B = Data.GrassBatches[G.Key];
+		const FBox Box(FVector(B.boundsMin[0], B.boundsMin[1], B.boundsMin[2]), FVector(B.boundsMax[0], B.boundsMax[1], B.boundsMax[2]));
+		if (Box.ComputeSquaredDistanceToPoint(GamePoint) > Radius * Radius)
+		{
+			continue;
+		}
+		UE_LOG(LogGTAVWorld, Display, TEXT("dump: grass %u archetype %08x %u instances, scale %.2f..%.2f, box %s"), G.Key, B.archetype, B.instanceCount,
+			B.scaleRange[0], B.scaleRange[1], *Box.ToString());
+	}
 }
 
 bool UGTAVWorldSubsystem::ShouldCreateSubsystem(UObject* Outer) const
@@ -158,12 +202,23 @@ void UGTAVWorldSubsystem::BuildWater()
 	C->SetCastShadow(false);
 	C->SetStaticMesh(Mesh);
 	C->RegisterComponent();
+	Water = C;
 }
 
 void UGTAVWorldSubsystem::SetGroup(uint32 Name, bool bOn)
 {
 	if (bOn ? (GroupsOn.Add(Name), true) : GroupsOn.Remove(Name) > 0)
 	{
+		UpdateYmaps();
+		LastUpdate = 0;
+	}
+}
+
+void UGTAVWorldSubsystem::SetGroupsOn(const TSet<uint32>& On)
+{
+	if (On.Num() != GroupsOn.Num() || !On.Includes(GroupsOn))
+	{
+		GroupsOn = On;
 		UpdateYmaps();
 		LastUpdate = 0;
 	}
@@ -240,6 +295,10 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		LastUpdate = Now;
 	}
 	Apply();
+	if (Water && Water->IsVisible() != (CVarWater.GetValueOnGameThread() != 0))
+	{
+		Water->SetVisibility(CVarWater.GetValueOnGameThread() != 0);
+	}
 	if (Now - LastEvict > 2.0)
 	{
 		LastEvict = Now;
@@ -253,22 +312,9 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		bDumped = true;
 		TArray<FString> V;
 		Dump.ParseIntoArray(V, TEXT(","));
-		const FVector P(FCString::Atof(*V[0]) * 100, -FCString::Atof(*V[1]) * 100, FCString::Atof(*V[2]) * 100);
-		const float Radius = V.Num() > 3 ? FCString::Atof(*V[3]) * 100 : 2000.0f;
-		for (const TPair<uint64, TObjectPtr<UStaticMeshComponent>>& D : Drawn)
+		if (V.Num() >= 3)
 		{
-			if (D.Key & kInteriorKey)
-			{
-				continue;
-			}
-			const uint32 I = uint32(D.Key);
-			if (Data.Distance(I, P) > Radius)
-			{
-				continue;
-			}
-			const GTAVPack::Entity& E = Data.Entities[I];
-			UE_LOG(LogGTAVWorld, Display, TEXT("dump: entity %u archetype %08x lod %u ymap %u (%08x) parent %d lodDist %.0f at %.1f %.1f %.1f"), I, E.archetype, E.lodLevel,
-				E.ymap, Data.Ymaps[E.ymap].name, int32(E.parent), E.lodDist, E.position[0] / 100, -E.position[1] / 100, E.position[2] / 100);
+			DumpNear(FVector(FCString::Atof(*V[0]), FCString::Atof(*V[1]), FCString::Atof(*V[2])), V.Num() > 3 ? FCString::Atof(*V[3]) : 20.0f);
 		}
 	}
 	static double Told = 0;
@@ -424,8 +470,16 @@ void UGTAVWorldSubsystem::Update(const FVector& Center)
 		Visit(R, Center, false);
 	}
 
+	if (const float Scale = CVarLodScale.GetValueOnGameThread(); Scale > 0)
+	{
+		DistanceScale = Scale;
+	}
 	// Grass: batches whose box is within their distance.
 	constexpr float GrassReach = 40000.0f;
+	if (!CVarGrass.GetValueOnGameThread())
+	{
+		return;
+	}
 	const FIntPoint GLo = FGTAVWorldData::CellOf(Center.X - GrassReach, Center.Y - GrassReach),
 					GHi = FGTAVWorldData::CellOf(Center.X + GrassReach, Center.Y + GrassReach);
 	for (int32 X = GLo.X; X <= GHi.X; ++X)

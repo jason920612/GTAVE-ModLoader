@@ -17,4 +17,7 @@ namespace loader::ui::dx12
 	// (using a throwaway device), then patches Present/ResizeBuffers in that vtable.
 	// Only data in dxgi.dll is modified; game code is never patched.
 	bool Install(const Callbacks& callbacks);
+
+	// The queue the game presents on (its direct queue), once it has presented.
+	ID3D12CommandQueue* PresentQueue();
 }

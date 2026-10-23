@@ -778,6 +778,19 @@ namespace ue5export
 		std::printf("  %zu global textures\n", written);
 	}
 
+	// groups.txt: the names of the map data groups the map has (their ymaps'): the game is asked by name which are on.
+	void WriteGroupNames(const mapdata::Map& map, const fs::path& dir)
+	{
+		std::ofstream out(dir / "groups.txt");
+		for (const auto& g : map.groups)
+			if (const auto y = map.ymapIndex.find(g.name); y != map.ymapIndex.end())
+			{
+				const std::string& file = map.ymaps[y->second].file;
+				const size_t slash = file.find_last_of('/') + 1, dot = file.rfind('.');
+				out << Lower(file.substr(slash, dot - slash)) << '\n';
+			}
+	}
+
 	PackStats WritePack(const GameFiles& files, const mapdata::Map& map, const PackOptions& options, std::vector<std::string>& warnings)
 	{
 		std::error_code ec;
@@ -807,6 +820,7 @@ namespace ue5export
 			if (!world.Open(options.dir / "world.gpk", GTAVPack::kWorld, error) || !writer.Write(world, error, entities))
 				warnings.push_back(error);
 			WriteGlobals(files, options.dir, warnings);
+			WriteGroupNames(map, options.dir);
 			sh.stats.entities = entities;
 			sh.stats.models = sh.converted.size();
 			sh.stats.worldBytes = world.Bytes();
@@ -851,6 +865,7 @@ namespace ue5export
 		if (!world.Open(options.dir / "world.gpk", GTAVPack::kWorld, error) || !writer.Write(world, error, entities))
 			warnings.push_back(error);
 		WriteGlobals(files, options.dir, warnings);
+		WriteGroupNames(map, options.dir);
 		sh.stats.entities = entities;
 		sh.stats.modelBytes = sh.models.Bytes();
 		sh.stats.textureBytes = sh.textures.Bytes();

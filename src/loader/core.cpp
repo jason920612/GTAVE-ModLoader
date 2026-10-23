@@ -31,6 +31,7 @@
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/pools.hpp"
+#include "graphics/bridge.hpp"
 #include "game/pose.hpp"
 #include "game/pausemenu.hpp"
 #include "game/text.hpp"
@@ -298,6 +299,7 @@ namespace loader::core
 				web::Tick();
 			else if (web::IsOpen())
 				web::Close();
+			graphics::bridge::Tick();
 		}
 	}
 

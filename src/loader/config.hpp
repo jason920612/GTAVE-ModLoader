@@ -47,6 +47,13 @@ namespace loader::config
 		// The fourth story character (game/char4.hpp): the loader's pack carries the game scripts rewritten for it.
 		// Without it a mod's own character (the police mod's officer) has no money, shops or activities of its own.
 		bool fourthCharacter = true;
+		// Graphics mod (research §58, §59): the game's 3D scene drawn by Unreal Engine 5 from the pack files
+		// tools/ue5export made (graphics/bridge.hpp). Needs the game's DLSS on. Takes effect at the next start.
+		bool ue5Renderer = false;
+		std::string ue5Editor;  // UnrealEditor.exe
+		std::string ue5Project; // GTAVRenderer.uproject (tools/ue5_setup.py)
+		std::string ue5Pack;    // the pack folder (ue5export pack)
+		std::string ue5Key = "F7"; // switches between UE5's picture and the game's
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.
