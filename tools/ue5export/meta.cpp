@@ -194,6 +194,29 @@ namespace ue5export::meta
 		return out;
 	}
 
+	std::vector<uint8_t> Ref::U8Array(uint32_t field) const
+	{
+		std::vector<uint8_t> out;
+		size_t data = 0;
+		uint16_t count = 0;
+		if (!ArrayData(*this, field, data, count) || data + count > meta->Size())
+			return out;
+		out.assign(meta->At(data), meta->At(data) + count);
+		return out;
+	}
+
+	std::vector<std::array<float, 3>> Ref::Float3Array(uint32_t field) const
+	{
+		std::vector<std::array<float, 3>> out;
+		size_t data = 0;
+		uint16_t count = 0;
+		if (!ArrayData(*this, field, data, count) || data + count * 12u > meta->Size())
+			return out;
+		out.resize(count);
+		std::memcpy(out.data(), meta->At(data), count * 12u);
+		return out;
+	}
+
 	std::vector<std::array<float, 4>> Ref::VectorArray(uint32_t field) const
 	{
 		std::vector<std::array<float, 4>> out;

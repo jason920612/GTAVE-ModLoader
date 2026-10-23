@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 
+#include "GTAVLights.h"
 #include "GTAVPack.h"
 #include "GTAVRuntimeAssets.h"
 #include "GTAVWorldData.h"
@@ -52,6 +53,7 @@ private:
 	uint32 OfflineWeather = 0; // -gtavweather
 	TSet<uint32> GroupsOn;
 	TArray<bool> YmapOn; // per ymap, from the groups
+	FGTAVLights Lights;
 
 	UPROPERTY()
 	TObjectPtr<AActor> Root;

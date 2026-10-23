@@ -160,6 +160,9 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	RootComponent->RegisterComponent();
 	UpdateYmaps();
 	BuildWater();
+	const int32 LightCount = Data.LodLights.Num();
+	Lights.Load(MoveTemp(Data.LodLights));
+	UE_LOG(LogGTAVWorld, Display, TEXT("%d LOD lights"), LightCount);
 	bLoaded = true;
 	int32 Roots = 0;
 	for (const TPair<FIntPoint, FGTAVWorldData::FCell>& Cell : Data.Grid)
@@ -314,16 +317,17 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	Assets->Tick(kAssetBudget);
-	if (OfflineWeather)
-	{
-		GTAVSky::Apply(GetWorld(), float(CurrentHour), OfflineWeather, OfflineWeather, 0.0f);
-	}
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	if (!PC || !PC->PlayerCameraManager)
 	{
 		return;
 	}
 	const FVector Center = PC->PlayerCameraManager->GetCameraLocation();
+	if (OfflineWeather)
+	{
+		GTAVSky::Apply(GetWorld(), Center, float(CurrentHour), OfflineWeather, OfflineWeather, 0.0f);
+	}
+	Lights.Update(Root, Center, CurrentHour);
 	const double Now = FPlatformTime::Seconds();
 	if (FVector::DistSquared(Center, LastCenter) > 100.0f * 100.0f || Now - LastUpdate > 0.25)
 	{

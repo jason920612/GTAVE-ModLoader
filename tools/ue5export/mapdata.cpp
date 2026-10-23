@@ -112,6 +112,41 @@ namespace ue5export::mapdata
 			map.archetypes[t.name] = std::move(t);
 		}
 
+		// The map's LOD lights: structures of arrays, one array per field.
+		void ReadLights(const meta::Ref& root, Ymap& y)
+		{
+			if (const meta::Ref l = root.Struct(Hash("LODLightsSOA"), Hash("CLODLight")))
+			{
+				const auto direction = l.Float3Array(Hash("direction"));
+				const auto falloff = l.U32Array(Hash("falloff")), exponent = l.U32Array(Hash("falloffExponent"));
+				const auto flags = l.U32Array(Hash("timeAndStateFlags")), hash = l.U32Array(Hash("hash"));
+				const auto inner = l.U8Array(Hash("coneInnerAngle")), outer = l.U8Array(Hash("coneOuterAngleOrCapExt"));
+				const auto corona = l.U8Array(Hash("coronaIntensity"));
+				const size_t n = direction.size();
+				if (falloff.size() == n && exponent.size() == n && flags.size() == n && hash.size() == n && inner.size() == n && outer.size() == n &&
+				    corona.size() == n)
+					for (size_t i = 0; i < n; ++i)
+					{
+						LodLightData d;
+						d.direction = {direction[i][0], direction[i][1], direction[i][2]};
+						std::memcpy(&d.falloff, &falloff[i], 4);
+						std::memcpy(&d.falloffExponent, &exponent[i], 4);
+						d.flags = flags[i], d.hash = hash[i];
+						d.coneInner = inner[i], d.coneOuter = outer[i], d.corona = corona[i];
+						y.lodLights.push_back(d);
+					}
+			}
+			if (const meta::Ref d = root.Struct(Hash("DistantLODLightsSOA"), Hash("CDistantLODLight")))
+			{
+				const auto position = d.Float3Array(Hash("position"));
+				const auto rgbi = d.U32Array(Hash("RGBI"));
+				if (rgbi.size() == position.size())
+					for (size_t i = 0; i < position.size(); ++i)
+						y.distantLights.push_back({{position[i][0], position[i][1], position[i][2]}, rgbi[i]});
+				y.lightCategory = d.Get<uint16_t>(Hash("category"));
+			}
+		}
+
 		void ReadGrass(const meta::Ref& root, Ymap& y)
 		{
 			const meta::Ref data = root.Struct(Hash("instancedData"), Hash("rage__fwInstancedMapData"));
@@ -233,6 +268,7 @@ namespace ue5export::mapdata
 			for (uint32_t i = 0; i < y.entityCount; ++i)
 				y.lodLevels |= 1u << (map.entities[y.firstEntity + i].lodLevel & 31);
 			ReadGrass(root, y);
+			ReadLights(root, y);
 			map.ymapIndex[y.name] = index;
 			map.ymaps.push_back(std::move(y));
 		}

@@ -31,6 +31,7 @@ bool FGTAVWorldData::Load(const FGTAVPackFile& World, FString& OutError)
 	}
 	FString Ignored;
 	Section(World, GTAVPack::kWaterQuads, WaterQuads, Ignored);
+	Section(World, GTAVPack::kLodLights, LodLights, Ignored);
 	for (int32 I = 0; I < Archetypes.Num(); ++I)
 	{
 		ArchetypeIndex.Add(Archetypes[I].name, I);

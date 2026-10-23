@@ -23,6 +23,10 @@
 #include "Materials/MaterialExpressionVertexColor.h"
 #include "Materials/MaterialExpressionVertexInterpolator.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
+#include "Materials/MaterialExpressionDistance.h"
+#include "Materials/MaterialExpressionObjectPositionWS.h"
+#include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
@@ -104,6 +108,9 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	if (Kind == 1 || Kind == kWater || Kind == kOcean)
 	{
 		M->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
+		// (fog and the air's haze per pixel: the sea's triangles are kilometres long)
+		M->bUseTranslucencyVertexFog = false;
+		M->bComputeFogPerPixel = true;
 	}
 	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
 	const auto Sample = [&](const TCHAR* Parameter, UTexture2D* Default, EMaterialSamplerType Type, int32 X, int32 Y) {
@@ -351,6 +358,92 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 	Package->MarkPackageDirty();
 	Dirty.Add(Package);
 	return Masters.Add(Kind, M);
+}
+
+// The map's distant lights at night: unlit, additive, the colour per instance (custom data 0..2), grown with the
+// distance so that a far light stays a few pixels wide.
+UMaterial* FGTAVMaterials::Corona()
+{
+	static const TCHAR* PackageName = TEXT("/Game/GTAV/Materials/M_GTAV_Corona");
+	if (UMaterial** Found = Masters.Find(kCorona))
+	{
+		return *Found;
+	}
+	if (UMaterial* Existing = LoadExisting<UMaterial>(PackageName))
+	{
+		return Masters.Add(kCorona, Existing);
+	}
+	UPackage* Package = CreatePackage(PackageName);
+	UMaterial* M = NewObject<UMaterial>(Package, TEXT("M_GTAV_Corona"), RF_Public | RF_Standalone);
+	M->BlendMode = BLEND_Additive;
+	M->SetShadingModel(MSM_Unlit);
+	M->bUsedWithInstancedStaticMeshes = true;
+	UMaterialEditorOnlyData* Inputs = M->GetEditorOnlyData();
+	const auto Add = [&](UMaterialExpression* E) {
+		M->GetExpressionCollection().AddExpression(E);
+		return E;
+	};
+	UMaterialExpressionPerInstanceCustomData* Channel[3];
+	for (int32 I = 0; I < 3; ++I)
+	{
+		Channel[I] = NewObject<UMaterialExpressionPerInstanceCustomData>(M);
+		Channel[I]->DataIndex = I;
+		Add(Channel[I]);
+	}
+	auto* RG = NewObject<UMaterialExpressionAppendVector>(M);
+	RG->A.Connect(0, Channel[0]);
+	RG->B.Connect(0, Channel[1]);
+	Add(RG);
+	auto* RGB = NewObject<UMaterialExpressionAppendVector>(M);
+	RGB->A.Connect(0, RG);
+	RGB->B.Connect(0, Channel[2]);
+	Add(RGB);
+	auto* Brightness = NewObject<UMaterialExpressionScalarParameter>(M);
+	Brightness->ParameterName = TEXT("Brightness");
+	Brightness->DefaultValue = 20.0f;
+	Add(Brightness);
+	auto* Glow = NewObject<UMaterialExpressionMultiply>(M);
+	Glow->A.Connect(0, RGB);
+	Glow->B.Connect(0, Brightness);
+	Add(Glow);
+	Inputs->EmissiveColor.Connect(0, Glow);
+	// Grown with the distance: (vertex - centre) * (max(distance / 30000, 1) - 1) (the mesh's radius is 30 cm).
+	auto* Centre = NewObject<UMaterialExpressionObjectPositionWS>(M);
+	Add(Centre);
+	auto* Eye = NewObject<UMaterialExpressionCameraPositionWS>(M);
+	Add(Eye);
+	auto* Far = NewObject<UMaterialExpressionDistance>(M);
+	Far->A.Connect(0, Eye);
+	Far->B.Connect(0, Centre);
+	Add(Far);
+	auto* Scaled = NewObject<UMaterialExpressionMultiply>(M);
+	Scaled->A.Connect(0, Far);
+	Scaled->ConstB = 1.0f / 30000.0f;
+	Add(Scaled);
+	auto* AtLeast = NewObject<UMaterialExpressionMax>(M);
+	AtLeast->A.Connect(0, Scaled);
+	AtLeast->ConstB = 1.0f;
+	Add(AtLeast);
+	auto* Grow = NewObject<UMaterialExpressionSubtract>(M);
+	Grow->A.Connect(0, AtLeast);
+	Grow->ConstB = 1.0f;
+	Add(Grow);
+	auto* Here = NewObject<UMaterialExpressionWorldPosition>(M);
+	Add(Here);
+	auto* FromCentre = NewObject<UMaterialExpressionSubtract>(M);
+	FromCentre->A.Connect(0, Here);
+	FromCentre->B.Connect(0, Centre);
+	Add(FromCentre);
+	auto* Offset = NewObject<UMaterialExpressionMultiply>(M);
+	Offset->A.Connect(0, FromCentre);
+	Offset->B.Connect(0, Grow);
+	Add(Offset);
+	Inputs->WorldPositionOffset.Connect(0, Offset);
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	Package->MarkPackageDirty();
+	Dirty.Add(Package);
+	return Masters.Add(kCorona, M);
 }
 
 // The renderer's global values for every material: Wetness (0..1, the weather's).

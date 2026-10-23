@@ -718,6 +718,29 @@ namespace ue5export
 					groups.push_back(x);
 				}
 
+				// LOD lights: a lodlights ymap's arrays line up with its parent distlodlights ymap's.
+				std::vector<GTAVPack::LodLight> lights;
+				for (const auto& y : map.ymaps)
+				{
+					if (y.lodLights.empty() || y.parent < 0)
+						continue;
+					const auto& parent = map.ymaps[static_cast<size_t>(y.parent)];
+					const size_t n = std::min(y.lodLights.size(), parent.distantLights.size());
+					for (size_t i = 0; i < n; ++i)
+					{
+						const auto& l = y.lodLights[i];
+						const auto& d = parent.distantLights[i];
+						GTAVPack::LodLight x{};
+						Point(d.position, x.position);
+						x.direction[0] = l.direction[0], x.direction[1] = -l.direction[1], x.direction[2] = l.direction[2];
+						x.falloff = l.falloff * 100, x.falloffExponent = l.falloffExponent;
+						x.rgbi = d.rgbi, x.flags = l.flags, x.hash = l.hash;
+						x.coneInner = l.coneInner, x.coneOuter = l.coneOuter, x.corona = l.corona;
+						x.category = static_cast<uint8_t>(parent.lightCategory);
+						lights.push_back(x);
+					}
+				}
+
 				world.Add(GTAVPack::kArchetypes, Bytes(archetypes));
 				world.Add(GTAVPack::kYmaps, Bytes(ymaps));
 				world.Add(GTAVPack::kEntities, Bytes(entities));
@@ -734,6 +757,8 @@ namespace ue5export
 				world.Add(GTAVPack::kWaterQuads, Bytes(water.quads));
 				world.Add(GTAVPack::kCalmingQuads, Bytes(water.calming));
 				world.Add(GTAVPack::kWaveQuads, Bytes(water.waves));
+				world.Add(GTAVPack::kLodLights, Bytes(lights));
+				std::printf("  %zu LOD lights\n", lights.size());
 				return world.Close(error);
 			}
 		};

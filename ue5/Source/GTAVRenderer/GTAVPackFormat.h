@@ -162,6 +162,7 @@ namespace GTAVPack
 		kWaterQuads = 15,      // WaterQuad[]: the sea, lakes, rivers (water.xml)
 		kCalmingQuads = 16,    // CalmingQuad[]
 		kWaveQuads = 17,       // WaveQuad[]
+		kLodLights = 18,       // LodLight[]: the map's lights as the game has them for the distance (lodlights ymaps)
 	};
 	constexpr uint32_t kNone = 0xFFFFFFFF;
 
@@ -330,6 +331,23 @@ namespace GTAVPack
 		uint8_t reserved[2];
 	};
 	static_assert(sizeof(WaterQuad) == 28);
+
+	// One of the map's LOD lights (street lights, windows, signs): what the game draws in the distance at night, and as
+	// light near them. The lodlights ymaps hold these, their parents (distlodlights) the positions and colours.
+	struct LodLight
+	{
+		float position[3];  // Unreal's space (cm)
+		float direction[3]; // unit, Unreal's space (spot lights)
+		float falloff;      // cm
+		float falloffExponent;
+		uint32_t rgbi;      // the game's RGBI
+		uint32_t flags;     // the game's timeAndStateFlags: bits 0-23 the hours it is on
+		uint32_t hash;
+		uint8_t coneInner, coneOuter; // the game's bytes
+		uint8_t corona;               // corona intensity
+		uint8_t category;             // the distant set's
+	};
+	static_assert(sizeof(LodLight) == 48);
 
 	struct CalmingQuad
 	{

@@ -116,6 +116,21 @@ namespace ue5export::mapdata
 		std::vector<GrassInstance> instances;
 	};
 
+	// A lodlights ymap's light (its position and colour are in the parent distlodlights ymap, same index).
+	struct LodLightData
+	{
+		Vec3 direction{};
+		float falloff = 0, falloffExponent = 0;
+		uint32_t flags = 0, hash = 0;
+		uint8_t coneInner = 0, coneOuter = 0, corona = 0;
+	};
+
+	struct DistantLightData
+	{
+		Vec3 position{};
+		uint32_t rgbi = 0;
+	};
+
 	struct Ymap
 	{
 		uint32_t name = 0, parentName = 0;
@@ -125,6 +140,9 @@ namespace ue5export::mapdata
 		uint32_t firstEntity = 0, entityCount = 0;
 		uint32_t lodLevels = 0; // a bit per lodLevel its entities have
 		std::vector<GrassBatch> grass;
+		std::vector<LodLightData> lodLights;         // LODLightsSOA
+		std::vector<DistantLightData> distantLights; // DistantLODLightsSOA
+		uint32_t lightCategory = 0;
 		int32_t group = -1; // index into Map::groups
 		std::string file;
 	};

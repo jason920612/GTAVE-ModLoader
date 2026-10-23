@@ -53,6 +53,9 @@ namespace ue5export::meta
 		// The elements of an array of basic values: 4-byte ones (u32, hashes), or vectors (16 bytes each).
 		std::vector<uint32_t> U32Array(uint32_t field) const;
 		std::vector<std::array<float, 4>> VectorArray(uint32_t field) const;
+		// Arrays of bytes, and of three floats (FloatXYZ, 12 bytes each).
+		std::vector<uint8_t> U8Array(uint32_t field) const;
+		std::vector<std::array<float, 3>> Float3Array(uint32_t field) const;
 	};
 
 	class Meta
