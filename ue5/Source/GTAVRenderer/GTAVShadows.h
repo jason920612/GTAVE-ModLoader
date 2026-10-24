@@ -13,6 +13,7 @@ class UWorld;
 // on lights the road: two headlamps at the front corners of its bounds, two tail lamps at the back.
 namespace GTAVShadows
 {
-	// Each frame the bridge has them (the game's space).
-	void Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32 Count);
+	// Each frame the bridge has them (the game's space); bGameLights: the game's own lights light the scene (its
+	// vehicles' lamps among them), so no lamps of these.
+	void Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32 Count, bool bGameLights);
 }

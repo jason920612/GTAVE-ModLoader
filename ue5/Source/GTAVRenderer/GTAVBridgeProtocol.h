@@ -15,11 +15,13 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 8;
+	constexpr uint32_t kVersion = 10;
 	constexpr uint32_t kMaxGroups = 1024;
 	constexpr uint32_t kMaxProxies = 64;
 	constexpr uint32_t kTextures = 3; // the renderer's frame for game frame s is in texture s % kTextures
 	constexpr uint32_t kViews = 8;
+	constexpr uint32_t kMaxGameLights = 1024; // (as many as the game's own list holds)
+	constexpr uint32_t kLightLists = 4;
 
 	// A ped or vehicle near the player: the game's picture shows it, the renderer casts its shadow on its own ground
 	// (and a vehicle's lamps light it).
@@ -41,6 +43,34 @@ namespace GTAVBridge
 		float fov;                       // vertical, degrees
 		float aspect;
 		float nearClip, farClip;
+		uint32_t lights;                 // the game's newest light list then (lightLists[lights % kLightLists]; 0: none)
+		int64_t time;                    // when the game set it (QueryPerformanceCounter: the same clock in both processes)
+	};
+
+	// A light the game drew in a frame (its scene lights: what is on and how bright, after its own switching by the
+	// hour, by scripts, its fades and flicker; a vehicle's lamps among them).
+	struct GameLight
+	{
+		float position[3];          // the game's space (metres)
+		uint32_t type;              // the game's: 1 point, 2 spot, 4 capsule
+		float direction[3];         // unit: where a spot shines
+		float intensity;            // the game's, as it drew it
+		float tangent[3];           // unit: a capsule's axis
+		float radius;               // metres: its reach
+		float color[3];             // 0..1
+		float falloffExponent;      // the game's
+		float coneInner, coneOuter; // degrees from the axis (spots)
+		float length;               // metres (capsules)
+		uint32_t flags;             // the game's
+	};
+	static_assert(sizeof(GameLight) == 80);
+
+	// One frame's lights (sequence 0 while it is being written).
+	struct LightList
+	{
+		volatile uint32_t sequence;
+		uint32_t count;
+		GameLight lights[kMaxGameLights];
 	};
 
 	// Names: shared memory, and the renderer's textures and fences (NT handles by name; <pid> is the game's process id).
@@ -93,5 +123,9 @@ namespace GTAVBridge
 		// The peds and vehicles near the player (their shadow casters), each frame.
 		uint32_t proxyCount;
 		Proxy proxies[kMaxProxies];
+		// The game's lights, a list a frame: the newest complete one is lightLists[lightSequence % kLightLists] (0: the
+		// loader could not get them; the renderer then lights by the map's data alone).
+		volatile uint32_t lightSequence;
+		LightList lightLists[kLightLists];
 	};
 }

@@ -53,8 +53,10 @@ public:
 	}
 
 	// Game thread: the game frame drawn next and its camera (Unreal's space; horizontal field of view, degrees).
-	void SetView(uint32 InSequence, const FVector& Location, const FRotator& Rotation, float Fov, float Aspect)
+	void SetView(uint32 InSequence, const FVector& Location, const FRotator& Rotation, float Fov, float Aspect, int64 CameraTime)
 	{
+		CameraTimes[InSequence % GTAVBridge::kViews] = CameraTime;
+		PickTimes[InSequence % GTAVBridge::kViews] = FPlatformTime::Cycles64();
 		ViewSequence = InSequence;
 		ViewLocation = Location;
 		ViewRotation = Rotation;
@@ -79,7 +81,11 @@ public:
 	{
 		// (ahead of this family's rendering on the render thread)
 		const uint32 S = ViewSequence;
-		ENQUEUE_RENDER_COMMAND(GTAVBridgeFrame)([this, S](FRHICommandListImmediate&) { RenderSequence = S; });
+		BeginTimes[S % GTAVBridge::kViews] = FPlatformTime::Cycles64();
+		ENQUEUE_RENDER_COMMAND(GTAVBridgeFrame)([this, S](FRHICommandListImmediate&) {
+			RenderSequence = S;
+			RenderStart = FPlatformTime::Cycles64();
+		});
 	}
 
 	virtual void SubscribeToPostProcessingPass(EPostProcessingPass Pass, const FSceneView& InView, FPostProcessingPassDelegateArray& InOutPassCallbacks,
@@ -202,10 +208,35 @@ private:
 	// Render thread: the game frame of the frame being rendered, and of the last one given to the game.
 	uint32 RenderSequence = 0, LastWritten = 0;
 
+public:
+	// Timing (the log every 10 s): each frame's stages, ms after the game set its camera (one clock in both processes):
+	// picked up, its family begun (game thread), its rendering begun (render thread), its graph built and executed,
+	// its fence signalled (the RHI thread, as it gets there).
+	struct FTimes
+	{
+		double Picked = 0, Begun = 0, Rendering = 0, Built = 0, Executed = 0, Signalled = 0;
+		int32 Frames = 0;
+	};
+	FTimes TakeTimes()
+	{
+		FScopeLock Lock(&TimesLock);
+		const FTimes Out = Times;
+		Times = {};
+		return Out;
+	}
+
+private:
+	FCriticalSection TimesLock;
+	FTimes Times;
+	int64 CameraTimes[GTAVBridge::kViews] = {}; // (game thread; by sequence)
+	uint64 PickTimes[GTAVBridge::kViews] = {}, BeginTimes[GTAVBridge::kViews] = {};
+	uint64 RenderStart = 0; // (render thread)
+
 	FScreenPassTexture AfterMotionBlur(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 	{
 		const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(GraphBuilder, Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
 		const uint32 FrameSequence = RenderSequence;
+		const uint64 Built = FPlatformTime::Cycles64();
 		// (once per game frame: a frame drawn again while no new view came is not the game's)
 		if (Target[GTAVBridge::kTextures - 1] && Fence && bEnabled && FrameSequence && FrameSequence != LastWritten && SceneColor.IsValid() &&
 			SceneColor.ViewRect.Width() == int32(Shared->textureWidth) && SceneColor.ViewRect.Height() == int32(Shared->textureHeight) &&
@@ -240,14 +271,27 @@ private:
 			ID3D12Fence* F = Fence;
 			// (after the graph, on the immediate list: behind the drawing, on the same queue; the game waits for this value
 			// before using the texture)
-			GraphBuilder.AddPostExecuteCallback([S, F, FrameSequence, Slot] {
+			const int32 V = int32(FrameSequence % GTAVBridge::kViews);
+			const int64 Camera = CameraTimes[V];
+			const uint64 Picked = PickTimes[V], Begun = BeginTimes[V], Rendering = RenderStart;
+			GraphBuilder.AddPostExecuteCallback([this, S, F, FrameSequence, Slot, Camera, Picked, Begun, Rendering, Built] {
+				const uint64 Executed = FPlatformTime::Cycles64();
 				// (as the engine does it: while the RHI thread translates the list, where a command context is active)
-				FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([S, F, FrameSequence, Slot](FRHICommandList& RHICmdList) {
-					GetID3D12DynamicRHI()->RHISignalManualFence(RHICmdList, F, FrameSequence);
-					S->frameSequences[Slot] = FrameSequence;
-					FPlatformMisc::MemoryBarrier();
-					S->frameValue = FrameSequence;
-				});
+				FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda(
+					[this, S, F, FrameSequence, Slot, Camera, Picked, Begun, Rendering, Built, Executed](FRHICommandList& RHICmdList) {
+						GetID3D12DynamicRHI()->RHISignalManualFence(RHICmdList, F, FrameSequence);
+						S->frameSequences[Slot] = FrameSequence;
+						FPlatformMisc::MemoryBarrier();
+						S->frameValue = FrameSequence;
+						if (Camera)
+						{
+							const auto Ms = [Camera](uint64 T) { return double(int64(T) - Camera) * FPlatformTime::GetSecondsPerCycle64() * 1000.0; };
+							FScopeLock Lock(&TimesLock);
+							Times.Picked += Ms(Picked), Times.Begun += Ms(Begun), Times.Rendering += Ms(Rendering), Times.Built += Ms(Built);
+							Times.Executed += Ms(Executed), Times.Signalled += Ms(FPlatformTime::Cycles64());
+							++Times.Frames;
+						}
+					});
 			});
 		}
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
@@ -388,7 +432,7 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	const FVector Location(View.position[0] * 100, -View.position[1] * 100, View.position[2] * 100);
 	const float Aspect = View.aspect > 0 ? View.aspect : Shared->height ? float(Shared->width) / Shared->height : 16.0f / 9.0f;
 	const float Fov = FMath::RadiansToDegrees(2 * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(View.fov) / 2) * Aspect));
-	Extension->SetView(Sequence, Location, Rotation, Fov, Aspect);
+	Extension->SetView(Sequence, Location, Rotation, Fov, Aspect, View.time);
 	Camera->SetActorLocationAndRotation(Location, Rotation);
 	Camera->GetCameraComponent()->SetFieldOfView(Fov);
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
@@ -401,6 +445,17 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 		if (PC->PlayerCameraManager)
 		{
 			PC->PlayerCameraManager->SetFOV(Camera->GetCameraComponent()->FieldOfView);
+		}
+	}
+	static double Timed = 0;
+	if (FPlatformTime::Seconds() - Timed > 10)
+	{
+		Timed = FPlatformTime::Seconds();
+		const FGTAVBridgeViewExtension::FTimes T = Extension->TakeTimes();
+		if (const double N = FMath::Max(T.Frames, 1))
+		{
+			UE_LOG(LogGTAVBridge, Display, TEXT("latency: %d frames, ms after the game's camera: picked up %.1f, begun %.1f, rendering %.1f, graph built %.1f, executed %.1f, signalled %.1f"),
+				T.Frames, T.Picked / N, T.Begun / N, T.Rendering / N, T.Built / N, T.Executed / N, T.Signalled / N);
 		}
 	}
 	static double Told = 0;
@@ -440,7 +495,35 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	GTAVSky::SetIndoors(Shared->interior != 0, true);
 	GTAVSky::SetLightning(Shared->lightning);
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
-	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount);
+	// The game's lights this frame: the list that was the newest when its camera came (a newer one when that was
+	// written over meanwhile).
+	bool bGameLights = false;
+	if (UGTAVWorldSubsystem* World = GetWorld()->GetSubsystem<UGTAVWorldSubsystem>())
+	{
+		const auto Take = [&](uint32 Wanted) {
+			if (!Wanted)
+			{
+				return false;
+			}
+			const GTAVBridge::LightList& List = Shared->lightLists[Wanted % GTAVBridge::kLightLists];
+			if (List.sequence != Wanted)
+			{
+				return false;
+			}
+			FPlatformMisc::MemoryBarrier();
+			const uint32 Count = FMath::Min(List.count, GTAVBridge::kMaxGameLights);
+			GameLights.SetNumUninitialized(int32(Count));
+			FMemory::Memcpy(GameLights.GetData(), List.lights, Count * sizeof(GTAVBridge::GameLight));
+			FPlatformMisc::MemoryBarrier();
+			return List.sequence == Wanted;
+		};
+		if (Take(View.lights) || Take(Shared->lightSequence))
+		{
+			World->SetGameLights(GameLights, Shared->interior != 0);
+		}
+		bGameLights = World->UsingGameLights();
+	}
+	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount, bGameLights);
 
 	// The world: the hour (timed archetypes, groups by the hour) and the map data groups the game has on.
 	if (UGTAVWorldSubsystem* World = GetWorld()->GetSubsystem<UGTAVWorldSubsystem>())

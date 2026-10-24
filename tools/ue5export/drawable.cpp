@@ -169,7 +169,7 @@ namespace ue5export::drawable
 		// The rest pose of a drawable's bones in the model, by bone tag. The skeleton (drawable +0x18): +0x20 the bones,
 		// +0x5E their count; a bone (0x50 bytes): +0x00 rotation, +0x10 translation (both from its parent), +0x32
 		// parent index, +0x44 tag.
-		std::map<uint16_t, Pose> Bones(const View& view, uint64_t drawable)
+		std::map<uint16_t, Pose> Bones(const View& view, uint64_t drawable, std::vector<Pose>* byIndex = nullptr)
 		{
 			std::map<uint16_t, Pose> out;
 			const uint64_t skeleton = view.Get<uint64_t>(drawable + 0x18);
@@ -198,6 +198,8 @@ namespace ue5export::drawable
 				model.push_back(p);
 				out[view.Get<uint16_t>(b + 0x44)] = p;
 			}
+			if (byIndex)
+				*byIndex = std::move(model);
 			return out;
 		}
 	}
@@ -338,6 +340,11 @@ namespace ue5export::drawable
 			}
 			out.materials.push_back(std::move(m));
 		}
+		// (a model's parts can each hang on a bone - a fragment's: a street light's arm and lamp, a traffic light's
+		// heads -, their vertices from that bone: the model's +0x28 has its index in the top byte, the rest 0 for such
+		// a rigid part)
+		std::vector<Pose> poses;
+		Bones(view, at, &poses);
 		// The levels of detail, most detailed first.
 		for (uint8_t lod = 0; lod < (allLods ? 4 : 1); ++lod)
 		{
@@ -352,6 +359,10 @@ namespace ue5export::drawable
 				const uint64_t model = view.Get<uint64_t>(models + 8u * mi);
 				const uint64_t geometries = view.Get<uint64_t>(model + 0x08), mapping = view.Get<uint64_t>(model + 0x20);
 				const uint16_t count = view.Get<uint16_t>(model + 0x10);
+				const uint32_t binding = view.Get<uint32_t>(model + 0x28);
+				const Pose* bone = (binding & 0xFFFFFF) == 0 && (binding >> 24) < poses.size() ? &poses[binding >> 24] : nullptr;
+				if (bone && bone->rotation == Quat{0, 0, 0, 1} && bone->translation == Vec{})
+					bone = nullptr;
 				for (uint16_t gi = 0; gi < count; ++gi)
 				{
 					const uint64_t g = view.Get<uint64_t>(geometries + 8u * gi);
@@ -423,6 +434,25 @@ namespace ue5export::drawable
 						uint32_t index = 0;
 						std::memcpy(&index, indexData + static_cast<size_t>(i) * indexSize, indexSize);
 						s.indices[i] = index < vertices ? index : 0;
+					}
+					if (bone)
+					{
+						for (size_t i = 0; i + 2 < s.position.size(); i += 3)
+						{
+							const Vec p = Rotate(bone->rotation, {s.position[i], s.position[i + 1], s.position[i + 2]});
+							for (int k = 0; k < 3; ++k)
+								s.position[i + k] = p[k] + bone->translation[k];
+						}
+						for (size_t i = 0; i + 2 < s.normal.size(); i += 3)
+						{
+							const Vec n = Rotate(bone->rotation, {s.normal[i], s.normal[i + 1], s.normal[i + 2]});
+							std::copy(n.begin(), n.end(), s.normal.begin() + static_cast<ptrdiff_t>(i));
+						}
+						for (size_t i = 0; i + 3 < s.tangent.size(); i += 4)
+						{
+							const Vec t = Rotate(bone->rotation, {s.tangent[i], s.tangent[i + 1], s.tangent[i + 2]});
+							std::copy(t.begin(), t.end(), s.tangent.begin() + static_cast<ptrdiff_t>(i));
+						}
 					}
 					out.sections.push_back(std::move(s));
 				}

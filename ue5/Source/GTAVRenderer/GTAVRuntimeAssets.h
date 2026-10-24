@@ -96,6 +96,7 @@ private:
 	double LastRound = 0;
 	float PendingTexels = -1.0f;
 	TArray<uint64> Retune;
+	bool WarnedWidth = false;
 
 	// What uses what (for eviction).
 	struct FMeshUse
@@ -146,6 +147,9 @@ private:
 	// The mips a texture of that width can leave off when Texels (across a UV unit) are needed (0: none; at least 64
 	// texels kept).
 	static int32 BiasFor(int32 Width, int32 Mips, float Texels);
+	// As much of Bias as the texture can take: a block-compressed one keeps a first mip of whole blocks (the engine
+	// leaves a texture without one out altogether).
+	static int32 UsableBias(const UTexture2D* T, int32 Bias);
 	static int64 ResidentBytes(const UTexture2D* T, int32 Bias);
 	void RetuneTextures(double Budget);
 	UMaterialInterface* Material(const GTAVPack::Material& M);

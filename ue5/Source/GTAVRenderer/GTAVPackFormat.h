@@ -90,6 +90,12 @@ namespace GTAVPack
 	};
 	static_assert(sizeof(ModelLight) == 72);
 
+	// Material::flags.
+	enum MaterialFlags : uint16_t
+	{
+		kScriptTarget = 1, // shows what a script draws (a TV's or a monitor's screen: a script_rt_* texture): off unless on
+	};
+
 	// What a material draws like (the renderer's master materials).
 	enum MaterialKind : uint8_t
 	{

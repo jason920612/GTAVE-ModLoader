@@ -32,6 +32,7 @@
 #include "game/fixes.hpp"
 #include "game/pools.hpp"
 #include "graphics/bridge.hpp"
+#include "graphics/gamelights.hpp"
 #include "game/pose.hpp"
 #include "game/pausemenu.hpp"
 #include "game/text.hpp"
@@ -332,6 +333,8 @@ namespace loader::core
 		if (config::Get().aiEnabled)
 			ai::SettingChanged(); // starts the model server in the background
 		game::fixes::InstallLoadingScreenDeadlockFix();
+		if (config::Get().ue5Renderer)
+			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())
 			game::pausemenu::InstallHooks();
 		if (config::Get().debugWatchBoot)

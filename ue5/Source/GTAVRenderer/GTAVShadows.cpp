@@ -7,10 +7,13 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarShowProxies(TEXT("gtav.ShowShadowProxies"), 0, TEXT("Checking: the peds' and vehicles' shadow shapes drawn (1)."));
+
 	struct FPool
 	{
 		TWeakObjectPtr<UWorld> World;
@@ -59,7 +62,7 @@ namespace
 	}
 }
 
-void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32 Count)
+void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32 Count, bool bGameLights)
 {
 	static FPool Pool;
 	if (Pool.World.Get() != World || !Pool.Owner.IsValid())
@@ -139,6 +142,10 @@ void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32
 			C->SetWorldLocationAndRotation(Centre, Rotation);
 			C->SetWorldScale3D(Size / 100.0);
 			C->SetVisibility(true);
+			if (const bool bHidden = CVarShowProxies.GetValueOnGameThread() == 0; C->bHiddenInGame != bHidden)
+			{
+				C->SetHiddenInGame(bHidden);
+			}
 		}
 	};
 	for (uint32 I = 0; I < FMath::Min(Count, GTAVBridge::kMaxProxies); ++I)
@@ -179,7 +186,7 @@ void GTAVShadows::Update(UWorld* World, const GTAVBridge::Proxy* Proxies, uint32
 			const FVector Cabin((Min.X + Max.X) * 0.5 - Extent.X * 0.05, (Min.Y + Max.Y) * 0.5, Min.Z + (Waist + Extent.Z) * 0.5);
 			Place(Pool.Boxes, UsedBoxes, Cube, At(Cabin), Rotation, FVector(Extent.X * 0.55, Extent.Y * 0.85, Extent.Z - Waist));
 			// Its lamps (just outside its bounds: the body's shape would shade them).
-			if ((P.lights & 1) && LitVehicles < kLitVehicles)
+			if (!bGameLights && (P.lights & 1) && LitVehicles < kLitVehicles)
 			{
 				++LitVehicles;
 				const bool bFull = (P.lights & 2) != 0;

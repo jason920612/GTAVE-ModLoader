@@ -34,6 +34,7 @@ namespace
 {
 	constexpr uint64 kInteriorKey = 1ull << 63;
 	constexpr double kAddBudget = 0.004;   // seconds per frame making components
+	constexpr int32 kRemovals = 400;       // components a frame takes away
 	constexpr double kAssetBudget = 0.006; // seconds per frame finishing models
 
 	FVector Position(const float* P) { return FVector(P[0], P[1], P[2]); }
@@ -393,14 +394,30 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	const double TickStart = FPlatformTime::Seconds();
+	const int32 BuiltBefore = Assets->MeshesBuilt, TexturesBefore = Assets->TexturesMade, DrawnBefore = Drawn.Num();
+	double AssetsSpent = 0, UpdateSpent = 0, ApplySpent = 0;
 	ON_SCOPE_EXIT
 	{
 		const double Spent = FPlatformTime::Seconds() - TickStart;
 		TickSeconds += Spent;
 		TickMax = FMath::Max(TickMax, Spent);
 		++Ticks;
+		const double Gpu = FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles(0)), Render = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+		GpuSeconds += Gpu / 1000.0;
+		RenderSeconds += Render / 1000.0;
+		// (checking: a frame of the renderer's own that took long, and what it did)
+		if (Spent > 0.02 || Render > 40.0 || Gpu > 40.0)
+		{
+			UE_LOG(LogGTAVWorld, Display, TEXT("slow: world %.1f ms (assets %.1f, update %.1f, apply %.1f; %d models, %d textures, %+d drawn), render thread %.1f ms, GPU %.1f ms"),
+				Spent * 1000.0, AssetsSpent * 1000.0, UpdateSpent * 1000.0, ApplySpent * 1000.0, Assets->MeshesBuilt - BuiltBefore,
+				Assets->TexturesMade - TexturesBefore, Drawn.Num() - DrawnBefore, Render, Gpu);
+		}
 	};
-	Assets->Tick(kAssetBudget);
+	{
+		const double Start = FPlatformTime::Seconds();
+		Assets->Tick(kAssetBudget);
+		AssetsSpent = FPlatformTime::Seconds() - Start;
+	}
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	if (!PC || !PC->PlayerCameraManager)
 	{
@@ -423,11 +440,17 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	const double Now = FPlatformTime::Seconds();
 	if (FVector::DistSquared(Center, LastCenter) > 100.0f * 100.0f || Now - LastUpdate > 0.25)
 	{
+		const double Start = FPlatformTime::Seconds();
 		Update(Center);
+		UpdateSpent = FPlatformTime::Seconds() - Start;
 		LastCenter = Center;
 		LastUpdate = Now;
 	}
-	Apply();
+	{
+		const double Start = FPlatformTime::Seconds();
+		Apply();
+		ApplySpent = FPlatformTime::Seconds() - Start;
+	}
 	for (UStaticMeshComponent* W : Water)
 	{
 		if (W && W->IsVisible() != (CVarWater.GetValueOnGameThread() != 0))
@@ -473,10 +496,19 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 		int64 Share = 0, Usage = 0;
 		GpuMemoryShare(Share, Usage);
 		UE_LOG(LogGTAVWorld, Display, TEXT("time: world %.2f ms a frame (slowest %.1f), render thread %.1f ms, GPU %.1f ms; %d components pooled, %d objects; %s; GPU memory %lld of %lld MB, assets' budget %lld MB"),
-			Ticks ? TickSeconds * 1000.0 / Ticks : 0.0, TickMax * 1000.0, FPlatformTime::ToMilliseconds(GRenderThreadTime),
-			FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles(0)), Pool.Num(), GUObjectArray.GetObjectArrayNumMinusAvailable(), *Lights.Counts(),
+			Ticks ? TickSeconds * 1000.0 / Ticks : 0.0, TickMax * 1000.0, Ticks ? RenderSeconds * 1000.0 / Ticks : 0.0,
+			Ticks ? GpuSeconds * 1000.0 / Ticks : 0.0, Pool.Num(), GUObjectArray.GetObjectArrayNumMinusAvailable(), *Lights.Counts(),
 			Usage >> 20, Share >> 20, AssetBudget >> 20);
-		TickSeconds = TickMax = 0;
+		// (checking, -gtavprofileheavy: a GPU profile of a heavy stretch into the log, once a minute at most)
+		static double LastProfile = 0;
+		if (Ticks && GpuSeconds * 1000.0 / Ticks > 25.0 && Now - LastProfile > 60.0 && FParse::Param(FCommandLine::Get(), TEXT("gtavprofileheavy")))
+		{
+			LastProfile = Now;
+			// (no window for it: one stays open and drawn each frame after)
+			GEngine->Exec(GetWorld(), TEXT("r.ProfileGPU.ShowUI 0"));
+			GEngine->Exec(GetWorld(), TEXT("ProfileGPU"));
+		}
+		TickSeconds = TickMax = GpuSeconds = RenderSeconds = 0;
 		Ticks = 0;
 	}
 }
@@ -810,10 +842,13 @@ void UGTAVWorldSubsystem::Apply()
 	{
 		return;
 	}
-	for (auto It = Drawn.CreateIterator(); It; ++It)
+	// (a few hundred a frame: thousands at once, after a long way, hold the render thread up for a tenth of a second)
+	int32 Removed = 0;
+	for (auto It = Drawn.CreateIterator(); It && Removed < kRemovals; ++It)
 	{
 		if (!Wanted.Contains(It.Key()))
 		{
+			++Removed;
 			It.Value()->UnregisterComponent();
 			Pool.Add(It.Value());
 			Lights.RemoveEntity(It.Key());

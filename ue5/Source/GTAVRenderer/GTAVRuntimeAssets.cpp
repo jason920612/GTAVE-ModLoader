@@ -595,6 +595,26 @@ int32 FGTAVRuntimeAssets::BiasFor(int32 Width, int32 Mips, float Texels)
 	return FMath::Clamp(int32(FMath::FloorToFloat(FMath::Log2(float(Width) / Wanted))), 0, Most);
 }
 
+int32 FGTAVRuntimeAssets::UsableBias(const UTexture2D* T, int32 Bias)
+{
+	const FTexturePlatformData* Platform = T ? T->GetPlatformData() : nullptr;
+	if (!Platform)
+	{
+		return 0;
+	}
+	const FPixelFormatInfo& Info = GPixelFormats[Platform->PixelFormat];
+	Bias = FMath::Clamp(Bias, 0, Platform->Mips.Num() - 1);
+	for (; Bias > 0; --Bias)
+	{
+		const FTexture2DMipMap& Mip = Platform->Mips[Bias];
+		if (Mip.SizeX % Info.BlockSizeX == 0 && Mip.SizeY % Info.BlockSizeY == 0)
+		{
+			break;
+		}
+	}
+	return Bias;
+}
+
 int64 FGTAVRuntimeAssets::ResidentBytes(const UTexture2D* T, int32 Bias)
 {
 	int64 Bytes = 0;
@@ -653,7 +673,7 @@ UTexture2D* FGTAVRuntimeAssets::MakeTexture(const TArray<uint8>& Data, EUsage Us
 		// (a lookup table: exact texels)
 		T->Filter = TF_Nearest;
 	}
-	T->LODBias = BiasFor(H.width, Platform->Mips.Num(), Usage == EUsage::Palette ? -1.0f : Texels);
+	T->LODBias = UsableBias(T, BiasFor(H.width, Platform->Mips.Num(), Usage == EUsage::Palette ? -1.0f : Texels));
 	TextureBytes += ResidentBytes(T, T->LODBias);
 	T->UpdateResource();
 	return T;
@@ -783,7 +803,25 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 			}
 		}
 	}
-	if (M.emissive > 0)
+	// A screen a script draws into (a TV, a monitor): off, a dark glass, as it is until a script turns it on (its texture
+	// in the archives is a stand-in).
+	if (M.flags & GTAVPack::kScriptTarget)
+	{
+		static UTexture2D* Black = [] {
+			UTexture2D* T = UTexture2D::CreateTransient(4, 4, PF_B8G8R8A8);
+			FColor* Pixels = static_cast<FColor*>(T->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+			for (int32 I = 0; I < 16; ++I)
+			{
+				Pixels[I] = FColor(3, 3, 4, 255);
+			}
+			T->GetPlatformData()->Mips[0].BulkData.Unlock();
+			T->AddToRoot();
+			T->UpdateResource();
+			return T;
+		}();
+		MI->SetTextureParameterValue(TEXT("DiffuseTex"), Black);
+	}
+	else if (M.emissive > 0)
 	{
 		MI->SetScalarParameterValue(TEXT("EmissiveMultiplier"), M.emissive);
 	}
@@ -997,10 +1035,16 @@ void FGTAVRuntimeAssets::RetuneTextures(double Budget)
 		{
 			continue;
 		}
-		const int32 Want = BiasFor(TU->Width, TU->Mips, TU->Need);
-		if (Want == TU->Bias)
+		const int32 Want = UsableBias(*T, BiasFor(TU->Width, TU->Mips, TU->Need));
+		if (Want == TU->Bias || Want == (*T)->LODBias)
 		{
+			TU->Bias = Want;
 			continue;
+		}
+		if ((*T)->GetSizeX() != TU->Width && !WarnedWidth)
+		{
+			UE_LOG(LogGTAVAssets, Warning, TEXT("texture %s: %d texels wide, noted as %d"), *(*T)->GetName(), (*T)->GetSizeX(), TU->Width);
+			WarnedWidth = true;
 		}
 		(*T)->LODBias = Want;
 		(*T)->UpdateResource();

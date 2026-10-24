@@ -549,16 +549,24 @@ namespace loader::debug::remote
 						const char* text = call->strings.back().c_str();
 						std::memcpy(&slot, &text, sizeof(text));
 					}
-					else if (w.find('.') != std::string::npos)
-					{
-						const float f = std::stof(w);
-						std::memcpy(&slot, &f, sizeof(f));
-					}
 					else
-					{
-						const int64_t i = std::stoll(w, nullptr, 0);
-						std::memcpy(&slot, &i, sizeof(i));
-					}
+						try
+						{
+							if (w.find('.') != std::string::npos)
+							{
+								const float f = std::stof(w);
+								std::memcpy(&slot, &f, sizeof(f));
+							}
+							else
+							{
+								const int64_t i = std::stoll(w, nullptr, 0);
+								std::memcpy(&slot, &i, sizeof(i));
+							}
+						}
+						catch (...)
+						{
+							return "err argument " + w;
+						}
 					call->args.push_back(slot);
 				}
 				std::unique_lock lock(g_mutex);
@@ -712,7 +720,16 @@ namespace loader::debug::remote
 						line.pop_back();
 					if (line.empty())
 						continue;
-					const std::string reply = Run(line) + "\n";
+					// (a malformed number anywhere is the tester's mistake, not the game's end)
+					std::string reply;
+					try
+					{
+						reply = Run(line) + "\n";
+					}
+					catch (const std::exception& e)
+					{
+						reply = std::string("err ") + e.what() + "\n";
+					}
 					DWORD put = 0;
 					WriteFile(pipe, reply.data(), static_cast<DWORD>(reply.size()), &put, nullptr);
 				}

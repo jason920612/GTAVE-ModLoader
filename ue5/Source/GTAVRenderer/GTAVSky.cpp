@@ -29,6 +29,8 @@ namespace
 	// Tuning (and the presets): a cloud cover in place of the weather's (-1: the weather's), the haze scaled.
 	TAutoConsoleVariable<float> CVarCloudCoverage(TEXT("gtav.CloudCoverage"), -1.0f, TEXT("Cloud cover 0..1 (-1: by the weather)."));
 	TAutoConsoleVariable<float> CVarHaze(TEXT("gtav.Haze"), 1.0f, TEXT("The air's aerosols, scaled (1: by the weather and the place)."));
+	TAutoConsoleVariable<int32> CVarMoonShadows(TEXT("gtav.MoonShadows"), 1, TEXT("Moonlight casts shadows (0: not)."));
+	TAutoConsoleVariable<float> CVarSunStep(TEXT("gtav.SunStep"), 0.2f, TEXT("The sun (or moon) turns in steps of this many degrees (0: each frame; its shadow map is drawn anew each step)."));
 
 	// What a weather type looks like: the sun's and the sky's light (1 = clear), cloud cover, the air's haze (aerosols,
 	// 1 = an ordinary day in the city), ground fog density, wet ground.
@@ -192,6 +194,7 @@ namespace
 		TWeakObjectPtr<AActor> Rain; // the rain's layers around the camera
 		TWeakObjectPtr<UStaticMeshComponent> Moon, Stars;
 		bool bSkyMade = false; // (tried once)
+		FVector Shining = FVector::ZeroVector; // the way the sun (or the moon) was last turned
 	};
 
 	void Find(UWorld* World, FActors& A)
@@ -312,9 +315,18 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	{
 		const bool bDay = Toward.Z > -0.05f;
 		const bool bFlash = FlashLux > (bDay ? 100000.0f * L.Sun : MoonLux);
-		Sun->SetActorRotation((bFlash ? -LightningWay : bDay ? -Toward : -MoonToward).Rotation());
+		// (turned in steps of a fifth of a degree - every second and a half or so as the clock runs: a shadow map's
+		// pages stay as they were drawn until the light turns, and turned a little each frame they were all drawn
+		// anew each frame; a shadow's end moves a few centimetres a step)
+		const FVector Way = (bFlash ? -LightningWay : bDay ? -Toward : -MoonToward).GetSafeNormal();
+		if ((Way | A.Shining) < FMath::Cos(FMath::DegreesToRadians(FMath::Max(CVarSunStep.GetValueOnGameThread(), 0.0f))) || CVarSunStep.GetValueOnGameThread() <= 0)
+		{
+			A.Shining = Way;
+			Sun->SetActorRotation(Way.Rotation());
+		}
 		ULightComponent* Light = Sun->GetLightComponent();
 		Light->SetIntensity(bFlash ? FlashLux : bDay ? 100000.0f * L.Sun : MoonLux * FMath::Max(L.Sun, 0.2f));
+		Light->SetCastShadows(bDay || bFlash || CVarMoonShadows.GetValueOnGameThread() != 0);
 		// The sun shines as a 5,778 K black body (the air reddens it further, low down: the sky atmosphere's
 		// transmittance); white, as it was, is D65's 6,500 K, a cooler light than sunlight. Moonlight bluish: what an
 		// eye sees by night (its rods), the reflected sunlight itself being warmer still.

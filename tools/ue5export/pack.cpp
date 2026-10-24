@@ -306,6 +306,10 @@ namespace ue5export
 				for (const auto& [param, t] : m.textures[i])
 					if (const auto slot = Slots().find(param); slot != Slots().end())
 						mat.textures[slot->second] = Texture(sh, t);
+				// (a screen a script draws into: its texture in the archives is only a stand-in)
+				for (const auto& [param, name] : src.textures)
+					if (name.rfind("script_rt", 0) == 0)
+						mat.flags |= GTAVPack::kScriptTarget;
 				switch (src.drawBucket)
 				{
 				case 0: mat.kind = GTAVPack::kOpaque; break;

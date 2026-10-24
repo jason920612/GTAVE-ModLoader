@@ -145,17 +145,23 @@ def look_about(g, seconds, stop):
 
 
 def gpu_memory():
+    """GPU memory by process and the adapter's (MB); the 3D engine's busy share by process (%, over 2 s)."""
     ps = ("Get-Counter -Counter '\\GPU Process Memory(*)\\Dedicated Usage','\\GPU Adapter Memory(*)\\Dedicated Usage' "
-          "-ErrorAction SilentlyContinue | % { $_.CounterSamples } | % { $_.Path + '=' + $_.CookedValue }")
+          "-ErrorAction SilentlyContinue | % { $_.CounterSamples } | % { $_.Path + '=' + $_.CookedValue }; "
+          "Get-Counter -Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage' -SampleInterval 1 -MaxSamples 2 "
+          "-ErrorAction SilentlyContinue | % { $_.CounterSamples } | % { 'busy ' + $_.InstanceName + '=' + $_.CookedValue }")
     out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True).stdout
-    by_pid, adapter = {}, 0.0
+    by_pid, adapter, busy = {}, 0.0, {}
     for line in out.splitlines():
         m = re.search(r"pid_(\d+)_.*=(\d+(\.\d+)?)", line)
-        if m:
+        if line.startswith("busy "):
+            if m:
+                busy[int(m.group(1))] = busy.get(int(m.group(1)), 0) + float(m.group(2)) / 2
+        elif m:
             by_pid[int(m.group(1))] = by_pid.get(int(m.group(1)), 0) + float(m.group(2)) / 2**20
         elif "gpu adapter memory" in line.lower():
             adapter = max(adapter, float(line.rsplit("=", 1)[1]) / 2**20)
-    return by_pid, adapter
+    return by_pid, adapter, busy
 
 
 def pids():
@@ -184,7 +190,8 @@ def monitor(out_dir, stop, state):
     with open(os.path.join(out_dir, "soak.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["t", "doing", "fps", "slowest_ms", "renderer_fps", "game_mb", "renderer_mb", "adapter_mb", "world_ms", "render_ms", "gpu_ms",
-                    "objects", "drawn", "textures_mb", "meshes_mb", "evicted"])
+                    "objects", "drawn", "textures_mb", "meshes_mb", "evicted", "game_busy", "renderer_busy", "x", "y", "z", "hours", "weather",
+                    "interior"])
         start = time.time()
         while not stop.wait(15):
             text, loader_at = tail(LOADER_LOG, loader_at)
@@ -194,12 +201,15 @@ def monitor(out_dir, stop, state):
             times = re.findall(r"time: world ([\d.]+) ms a frame \(slowest [\d.]+\), render thread ([\d.]+) ms, GPU ([\d.]+) ms; \d+ components pooled, (\d+) objects", rtext)
             drawn = re.findall(r"drawn (\d+) .*?textures \d+ \(([\d.]+) MB, \d+ failed\), meshes ([\d.]+) MB, (\d+) evicted", rtext)
             game, renderer = pids()
-            by_pid, adapter = gpu_memory()
+            by_pid, adapter, busy = gpu_memory()
+            camera = re.findall(r"game camera ([-\d.]+) ([-\d.]+) ([-\d.]+) .*?hours ([\d.]+); weather \w+ -> (\w+) [\d.]+; interior (\d+)", rtext)
             row = [round(time.time() - start), state.get("doing", ""),
                    round(sum(a for a, _ in fps) / len(fps), 1) if fps else "", max((b for _, b in fps), default=""),
                    pace[-1] if pace else "", round(by_pid.get(game, 0)), round(by_pid.get(renderer, 0)), round(adapter)]
             row += list(times[-1]) if times else ["", "", "", ""]
             row += list(drawn[-1]) if drawn else ["", "", "", ""]
+            row += [round(busy.get(game, 0)), round(busy.get(renderer, 0))]
+            row += list(camera[-1]) if camera else ["", "", "", "", "", ""]
             w.writerow(row)
             f.flush()
 
@@ -301,7 +311,13 @@ def summary(path):
         fps = sum(float(r["fps"]) for r in part) / len(part)
         slow = max(float(r["slowest_ms"]) for r in part)
         out.append(f"{int(part[0]['t']) // 60:>3} min: {fps:5.1f} fps, slowest {slow:5.1f} ms, GPU memory {part[-1]['adapter_mb']} MB "
-                   f"(game {part[-1]['game_mb']}, renderer {part[-1]['renderer_mb']}), render thread {part[-1]['render_ms']} ms, GPU {part[-1]['gpu_ms']} ms")
+                   f"(game {part[-1]['game_mb']}, renderer {part[-1]['renderer_mb']}), render thread {part[-1]['render_ms']} ms, GPU {part[-1]['gpu_ms']} ms"
+                   + (f", busy {part[-1]['game_busy']}+{part[-1]['renderer_busy']}%, {part[-1]['weather']} {part[-1]['hours']} h" if part[-1].get("weather") else ""))
+    # (the slowest places: where to go back to)
+    slow = sorted((r for r in rows if r["fps"] and r.get("x")), key=lambda r: float(r["fps"]))[:5]
+    for r in slow:
+        out.append(f"  slow: {r['fps']} fps {r['doing']} at {r['x']} {r['y']} {r['z']}, {r['weather']} {r['hours']} h, interior {r['interior']}, "
+                   f"GPU {r['gpu_ms']} ms, render thread {r['render_ms']} ms, busy {r['game_busy']}+{r['renderer_busy']}%")
     return "\n".join(out)
 
 

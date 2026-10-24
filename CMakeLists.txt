@@ -62,6 +62,7 @@ add_library(loader SHARED
     src/loader/graphics/streamline.cpp
     src/loader/graphics/bridge.cpp
     src/loader/graphics/composite.cpp
+    src/loader/graphics/gamelights.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/recorder.cpp

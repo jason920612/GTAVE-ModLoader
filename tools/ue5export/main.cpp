@@ -9,6 +9,8 @@
 //   ue5export area --out <dir> --game <dir> --area x0,y0,x1,y1 --name <n>   an area's models, textures, entities (<out>\export)
 //   ue5export pack --out <dir> --game <dir> [--pack <name>] [--area x0,y0,x1,y1]   the renderer's pack files (<out>\<name>)
 //   ue5export lightdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's light attributes, raw
+//   ue5export resdump --out <dir> --game <dir> --file <name>   a resource's blocks as they are in memory:
+//                                                  <out>\<name>.virtual (at 0x50000000), <name>.physical (0x60000000)
 #include <Windows.h>
 
 #include <algorithm>
@@ -414,6 +416,29 @@ namespace
 		return 0;
 	}
 
+	// A resource's two blocks, decompressed, to files (research: its layout).
+	int ResDump(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto* f = files.Find(g_options["file"]);
+		loader::convert::Bytes data;
+		loader::convert::Resource resource;
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
+			return Fail(f ? error : "not found");
+		const std::string name = g_options["file"].substr(g_options["file"].rfind('/') + 1);
+		for (const auto& [ext, block] : {std::pair{".virtual", &resource.virtualBlock}, std::pair{".physical", &resource.physicalBlock}})
+		{
+			std::ofstream out(fs::path(g_options["out"]) / (name + ext), std::ios::binary);
+			out.write(reinterpret_cast<const char*>(block->data()), static_cast<std::streamsize>(block->size()));
+		}
+		std::printf("%s: version %u, virtual %zu bytes, physical %zu bytes\n", name.c_str(), resource.version, resource.virtualBlock.size(),
+		    resource.physicalBlock.size());
+		return 0;
+	}
+
 	// Where textures are: --names <file> (one name a line); every texture dictionary is searched, the dictionaries that
 	// have any of them printed with the names found.
 	int TextureFind(const loader::convert::Decryptor& decrypt)
@@ -593,6 +618,8 @@ int main(int argc, char** argv)
 		return g_options.contains("file") ? MetaDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "globals")
 		return Globals(decrypt);
+	if (command == "resdump")
+		return g_options.contains("file") ? ResDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "lightdump")
 		return g_options.contains("file") ? LightDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")

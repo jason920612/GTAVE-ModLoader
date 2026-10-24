@@ -3,11 +3,12 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 
+#include "GTAVBridgeProtocol.h"
+
 #include "GTAVBridgeSubsystem.generated.h"
 
 class ACameraActor;
 class FGTAVBridgeViewExtension;
-namespace GTAVBridge { struct Shared; }
 
 // The renderer's side of the bridge to the game (GTAVBridgeProtocol.h, research/phase0.md §59.5), with
 // -gtavbridge=<game process id>: each game frame, the game's camera, hour and map data groups; the picture goes back
@@ -30,6 +31,7 @@ private:
 	uint32 GamePid = 0;
 	uint32 NextSequence = 0, LastSequence = 0, Skipped = 0, LastGroups = 0, LastConsole = 0;
 	TSharedPtr<FGTAVBridgeViewExtension, ESPMode::ThreadSafe> Extension;
+	TArray<GTAVBridge::GameLight> GameLights; // (this frame's, copied out)
 
 	UPROPERTY()
 	TObjectPtr<ACameraActor> Camera;

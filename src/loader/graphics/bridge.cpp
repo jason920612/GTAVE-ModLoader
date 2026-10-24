@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -25,6 +27,7 @@
 #include "../ui/recorder.hpp"
 #include "GTAVBridgeProtocol.h"
 #include "composite.hpp"
+#include "gamelights.hpp"
 #include "streamline.hpp"
 
 namespace loader::graphics::bridge
@@ -70,6 +73,79 @@ namespace loader::graphics::bridge
 		uint32_t g_openedSequence = 0;
 		std::vector<std::pair<std::chrono::steady_clock::time_point, IUnknown*>> g_retired; // released a while later
 		bool g_warnedSize = false;
+
+		// Timing (the pace line every 10 s): for each frame composed, when the game's queue came to its wait for the
+		// renderer's frame (a fence of ours signalled just before it) and when that frame was done, both on the GPU as a
+		// waiting thread sees them, and when the frame's camera came.
+		struct Timing
+		{
+			uint64_t arrive, value;
+			int64_t camera;      // (QueryPerformanceCounter)
+			ID3D12Fence* frame;  // (a reference: the renderer may make its fence anew)
+		};
+		ID3D12Fence* g_arrive = nullptr;
+		uint64_t g_arriveValue = 0;
+		std::mutex g_timingMutex;
+		std::condition_variable g_timingWake;
+		std::deque<Timing> g_timing;
+		int64_t g_cameraTime[GTAVBridge::kViews] = {}; // (by sequence % kViews)
+		struct Totals
+		{
+			double waited = 0, latency = 0, toWait = 0;
+			uint32_t frames = 0, stalled = 0;
+		};
+		Totals g_totals; // (g_timingMutex)
+
+		int64_t Now()
+		{
+			LARGE_INTEGER t;
+			QueryPerformanceCounter(&t);
+			return t.QuadPart;
+		}
+
+		double Milliseconds(int64_t ticks)
+		{
+			static const double perMs = [] {
+				LARGE_INTEGER f;
+				QueryPerformanceFrequency(&f);
+				return static_cast<double>(f.QuadPart) / 1000.0;
+			}();
+			return static_cast<double>(ticks) / perMs;
+		}
+
+		void TimingThread()
+		{
+			const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+			for (;;)
+			{
+				Timing t;
+				{
+					std::unique_lock lock(g_timingMutex);
+					g_timingWake.wait(lock, [] { return !g_timing.empty(); });
+					t = g_timing.front();
+					g_timing.pop_front();
+				}
+				if (SUCCEEDED(g_arrive->SetEventOnCompletion(t.arrive, event)) && WaitForSingleObject(event, 2000) == WAIT_OBJECT_0)
+				{
+					const int64_t arrived = Now();
+					if (SUCCEEDED(t.frame->SetEventOnCompletion(t.value, event)) && WaitForSingleObject(event, 2000) == WAIT_OBJECT_0)
+					{
+						const int64_t done = Now();
+						std::lock_guard lock(g_timingMutex);
+						const double waited = Milliseconds(done - arrived);
+						g_totals.waited += waited;
+						g_totals.stalled += waited > 1.0;
+						if (t.camera)
+						{
+							g_totals.latency += Milliseconds(done - t.camera);
+							g_totals.toWait += Milliseconds(arrived - t.camera);
+						}
+						++g_totals.frames;
+					}
+				}
+				t.frame->Release();
+			}
+		}
 
 		std::filesystem::path Path(const std::string& utf8)
 		{
@@ -393,6 +469,28 @@ namespace loader::graphics::bridge
 				g_lastValue = newest, g_lastProgress = tick;
 			const bool stalled = tick - g_lastProgress > 500;
 			const uint64_t value = stalled || !t_sequence ? newest : t_sequence;
+			// (timing: our fence just before the wait)
+			if (!g_arrive)
+			{
+				if (ID3D12Device* d = nullptr; SUCCEEDED(target->GetDevice(IID_PPV_ARGS(&d))))
+				{
+					if (SUCCEEDED(d->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_arrive))))
+						std::thread(TimingThread).detach();
+					d->Release();
+				}
+			}
+			if (g_arrive && SUCCEEDED(queue->Signal(g_arrive, ++g_arriveValue)))
+			{
+				g_fence->AddRef();
+				std::lock_guard timingLock(g_timingMutex);
+				g_timing.push_back({g_arriveValue, value, g_cameraTime[value % GTAVBridge::kViews], g_fence});
+				while (g_timing.size() > 16)
+				{
+					g_timing.front().frame->Release();
+					g_timing.pop_front();
+				}
+				g_timingWake.notify_one();
+			}
 			queue->Wait(g_fence, value);
 			ID3D12Resource* picture = g_texture[value % GTAVBridge::kTextures];
 			ui::recorder::SetFrameInfo(t_sequence, static_cast<uint32_t>(value), static_cast<uint32_t>(newest),
@@ -439,6 +537,7 @@ namespace loader::graphics::bridge
 			std::memset(g_shared, 0, sizeof(GTAVBridge::Shared));
 			g_shared->magic = GTAVBridge::kMagic;
 			g_shared->version = GTAVBridge::kVersion;
+			gamelights::SetTarget(g_shared);
 			return true;
 		}
 
@@ -468,6 +567,10 @@ namespace loader::graphics::bridge
 			                                   L"-gtavpack=\"{}\" -gtavbridge={} -ResX={} -ResY={} -log -abslog=\"{}\"",
 			    Path(c.ue5Editor).wstring(), Path(c.ue5Project).wstring(), Path(c.ue5Pack).wstring(),
 			    GetCurrentProcessId(), g_width.load(), g_height.load(), log);
+			// (checking: more of the renderer's switches, from ModLoader/ue5args.txt)
+			if (std::ifstream extra(paths::Get().root / L"ue5args.txt"); extra)
+				for (std::string word; extra >> word;)
+					command += L" " + std::wstring(word.begin(), word.end());
 			STARTUPINFOW si{sizeof(si)};
 			PROCESS_INFORMATION pi{};
 			if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS, nullptr,
@@ -519,6 +622,11 @@ namespace loader::graphics::bridge
 				out += std::format("sg.{}Quality {}\n", group, l->scalability);
 			out += std::format("gtav.LodScale {}\ngtav.Lights {}\ngtav.LightRadius {}\nr.MegaLights.EnableForProject {}\ngtav.LightShadows {}\n", l->distance,
 			    l->lights, l->lightRadius, l->megaLights ? 1 : 0, l->lightShadows ? 1 : 0);
+			// (with MegaLights the sun and the moon too, their shadows ray traced: a shadow map of the city for them was
+			// thousands of draws a frame and the longest part of the renderer's frame; measured 44 -> 60 fps by night)
+			// (without it the moon casts none: by night its shadow map costs as much as the sun's, for shadows street lights
+			// wash out)
+			out += std::format("r.Forward.LightBuffer.Mode {0}\nr.MegaLights.DirectionalLights {0}\ngtav.MoonShadows {0}\n", l->megaLights ? 1 : 0);
 			return out;
 		}
 
@@ -611,8 +719,18 @@ namespace loader::graphics::bridge
 			{
 				const uint64_t frames = s.frameValue;
 				if (lastPace && s.rendererState == 1)
-					log::Info("ue5 bridge: renderer {:.1f} frames/s, game {:.1f}", (frames - lastFrames) * 1000.0 / (now - lastPace),
-					    (g_tick - lastTick) * 1000.0 / (now - lastPace));
+				{
+					Totals t;
+					{
+						std::lock_guard lock(g_timingMutex);
+						std::swap(t, g_totals);
+					}
+					const double n = std::max(t.frames, 1u);
+					log::Info("ue5 bridge: renderer {:.1f} frames/s, game {:.1f}; the game's queue waited {:.1f} ms a frame for the renderer ({:.0f}% of "
+					          "frames), came to the wait {:.1f} ms after the camera, the renderer's frame done {:.1f} ms after it",
+					    (frames - lastFrames) * 1000.0 / (now - lastPace), (g_tick - lastTick) * 1000.0 / (now - lastPace), t.waited / n,
+					    100.0 * t.stalled / n, t.toWait / n, t.latency / n);
+				}
 				lastPace = now, lastFrames = frames, lastTick = g_tick;
 			}
 			// Console commands for the renderer: the preset's, then ModLoader/ue5console.txt (tuning while it runs),
@@ -685,6 +803,8 @@ namespace loader::graphics::bridge
 			v.aspect = camera.aspect;
 			v.nearClip = camera.nearZ;
 			v.farClip = camera.farZ;
+			v.lights = s->lightSequence;
+			g_cameraTime[sequence % GTAVBridge::kViews] = v.time = Now();
 			MemoryBarrier();
 			s->gameSequence = sequence;
 			t_sequence = sequence;

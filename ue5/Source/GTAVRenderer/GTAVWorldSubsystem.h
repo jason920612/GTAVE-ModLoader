@@ -40,6 +40,9 @@ public:
 	// All the groups on at once (the game's state, from the bridge).
 	void SetGroupsOn(const TSet<uint32>& On);
 	void SetHour(int32 Hour);
+	// The game's own lights this frame (the bridge's, the game's space): near the camera they light the scene.
+	void SetGameLights(const TArray<GTAVBridge::GameLight>& InLights, bool bInside) { Lights.SetGameLights(InLights, bInside); }
+	bool UsingGameLights() const { return Lights.UsingGameLights(); }
 	// Checking: what is drawn near a point (the game's metres), to the log.
 	void DumpNear(const FVector& GamePoint, float Radius);
 	// A point (Unreal's space) inside one of the rooms of an interior near the camera.
@@ -72,7 +75,8 @@ private:
 	FVector LastCenter = FVector(1e30);
 	double LastUpdate = 0;
 	double LastEvict = 0;
-	double TickSeconds = 0, TickMax = 0; // (checking: this subsystem's own time per frame, since the last report)
+	double TickSeconds = 0, TickMax = 0; // (checking: this subsystem's own time per frame, since the last report;
+	double GpuSeconds = 0, RenderSeconds = 0; // the GPU's and the render thread's, summed)
 	int64 AssetBudget = 0;
 	int32 Ticks = 0;
 	int64 BudgetBytes = 0; // textures and meshes (-gtavbudget=<MB>)

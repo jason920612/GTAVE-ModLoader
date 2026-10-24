@@ -328,7 +328,17 @@ namespace loader::ui
 			QueryPerformanceCounter(&t);
 			static int64_t prev = 0;
 			if (prev)
-				worst = std::max(worst, static_cast<double>(t.QuadPart - prev) * 1000.0 / static_cast<double>(freq.QuadPart));
+			{
+				const double ms = static_cast<double>(t.QuadPart - prev) * 1000.0 / static_cast<double>(freq.QuadPart);
+				worst = std::max(worst, ms);
+				// (a long frame, with the time of day: to line up with the renderer's log)
+				if (ms > 100.0 && windowStart)
+				{
+					SYSTEMTIME now{};
+					GetLocalTime(&now);
+					log::Info("fps: a {:.0f} ms frame at {:02}:{:02}:{:02}.{:03}", ms, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+				}
+			}
 			prev = t.QuadPart;
 			if (!windowStart)
 			{
