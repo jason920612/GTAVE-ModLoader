@@ -110,6 +110,16 @@ namespace ue5export
 		std::set<uint32_t> archetypes;
 		for (const auto& e : map.entities)
 		{
+			if (e.interior && area.interiors)
+			{
+				// (an interior's models: what is in its rooms)
+				const auto a = map.archetypes.find(e.archetype);
+				if (a != map.archetypes.end() && a->second.interior >= 0 && InArea(a->second, e, area))
+					for (const auto& inside : map.interiors[a->second.interior].entities)
+						if (const auto b = map.archetypes.find(inside.archetype); b != map.archetypes.end() && b->second.assetType != mapdata::AssetType::Assetless)
+							archetypes.insert(inside.archetype);
+				continue;
+			}
 			if ((e.lodLevel != mapdata::kHd && e.lodLevel != mapdata::kOrphanHd) || e.interior)
 				continue;
 			const auto a = map.archetypes.find(e.archetype);

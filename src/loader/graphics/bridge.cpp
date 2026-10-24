@@ -513,6 +513,11 @@ namespace loader::graphics::bridge
 				ReadBack(list, layer.before, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".before", frame.renderWidth, frame.renderHeight);
 				ReadBack(list, layer.after, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".after", frame.renderWidth, frame.renderHeight);
 			}
+			if (layer.decalBefore && layer.decalAfter)
+			{
+				ReadBack(list, layer.decalBefore, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".decalbefore", frame.renderWidth, frame.renderHeight);
+				ReadBack(list, layer.decalAfter, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".decalafter", frame.renderWidth, frame.renderHeight);
+			}
 		}
 
 		// The game's frame this render thread records (its camera's sequence number): the renderer's frame to wait for;

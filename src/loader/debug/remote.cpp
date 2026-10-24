@@ -657,6 +657,14 @@ namespace loader::debug::remote
 				g_spinLast = 0;
 				return "ok";
 			}
+			if (cmd == "decals")
+			{
+				// decals 0|1: the game's decals over the renderer's picture or not
+				int on = 1;
+				in >> on;
+				graphics::particles::SetDecals(on != 0);
+				return "ok";
+			}
 			if (cmd == "ptfxtrace")
 			{
 				std::string path;

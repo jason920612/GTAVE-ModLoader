@@ -52,6 +52,9 @@ namespace loader::graphics::composite
 		// least hiding that explains it - an additive particle (fire, sparks) hides nothing and adds its light, smoke hides
 		// as much of what is behind as it darkens it (a, from the channel darkened most) and adds what is left (c). The
 		// renderer's pixel then takes the same: picture (1 - a) + c. Measured samples skip them.
+		// Its decals (bullet holes, blood, scorch marks: research §60.17) are on its surfaces: the G-buffer's surface colour
+		// copied before and after them gives, per pixel and channel, how much they darkened or tinted it (after / before);
+		// the renderer's pixel takes the same where its surface is the game's (no ped or vehicle there, the two depths alike).
 		constexpr char kShader[] = R"(
 Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
@@ -59,6 +62,8 @@ Texture2D<float> Depth : register(t2);
 Texture2D<float4> Input : register(t3); // the game's picture before DLSS (the render size)
 Texture2D<float4> Before : register(t4); // the scene colour before and after the game's particles (the render size)
 Texture2D<float4> After : register(t5);
+Texture2D<float4> DecalBefore : register(t6); // the G-buffer's surface colour before and after the game's decals
+Texture2D<float4> DecalAfter : register(t7);
 RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float),
                                              // 16 the game's mean log2 luminance (float); the sky's: 20 game sum,
@@ -77,6 +82,7 @@ cbuffer Sizes : register(b0)
 	float ContrastMatch; // how far the renderer's spread of brightness is brought down to the game's (0..1)
 	uint Storm; // 1: the game's weather can flash (lightning)
 	uint Particles; // 1: Before and After hold this frame's particles
+	uint Decals; // 1: DecalBefore and DecalAfter hold this frame's decals, linear; 2: sRGB-encoded
 };
 
 // Metres along the view at a depth of the game's (0, the sky: very far).
@@ -140,6 +146,40 @@ void ParticlesAt(float2 p, out float a, out float3 c)
 			c += tc * w;
 		}
 	}
+}
+
+float3 Linear(float3 c)
+{
+	c = saturate(c);
+	return Decals == 2 ? (c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)) : c;
+}
+
+// How the game's decals changed the colour of its surface at a pixel of the render size, per channel (1: not at all) -
+// where the renderer's surface there is the game's: no ped or vehicle (theirs come with them), the renderer's depth (near,
+// metres) the game's.
+float3 DecalAt(int2 q, float near)
+{
+	float3 before = DecalBefore.Load(int3(q, 0)).rgb, after = DecalAfter.Load(int3(q, 0)).rgb;
+	if (all(abs(after - before) < 1.5 / 255.0) || any(isnan(after)) || any(isnan(before)))
+		return 1;
+	if (Dynamic(Stencil.Load(int3(q, 0)).y))
+		return 1;
+	float far = GameMetres(Depth.Load(int3(q, 0)));
+	if (abs(near - far) > 0.3 + 0.03 * far)
+		return 1;
+	return clamp(Linear(after) / max(Linear(before), 0.004), 0.0, 2.0);
+}
+
+// The same at a point of the render size between pixels (bilinear).
+float3 DecalsAt(float2 p, float near)
+{
+	int2 b = int2(floor(p));
+	float2 f = p - float2(b);
+	float3 ratio = 0;
+	[unroll] for (int y = 0; y <= 1; ++y)
+		[unroll] for (int x = 0; x <= 1; ++x)
+			ratio += DecalAt(clamp(b + int2(x, y), int2(0, 0), int2(RenderSize) - 1), near) * (x ? f.x : 1 - f.x) * (y ? f.y : 1 - f.y);
+	return ratio;
 }
 
 // Whether the game's particles touched a pixel of the render size (more than a little).
@@ -481,6 +521,8 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		float over = l - knee;
 		picture.rgb *= (knee + over / (1.0 + over / (top - knee))) / l;
 	}
+	if (Decals)
+		picture.rgb *= DecalsAt(p, near);
 	if (Particles)
 	{
 		float a;
@@ -513,7 +555,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	Output[id] = float4(lerp(picture.rgb, ped, alpha), game.a);
 }
 )";
-		constexpr UINT kViews = 8;  // per frame: picture, stencil, depth, input, before and after the particles, output, exposure
+		constexpr UINT kViews = 10; // per frame: picture, stencil, depth, input, before and after the particles and the decals, output, exposure
 		constexpr UINT kSlots = 64; // frames in the ring (frames in flight are far fewer)
 		constexpr float kAdapt = 0.03f; // of the way to the measured ratio each frame (about a second)
 		constexpr UINT kFlashSlots = 4;  // the flash's read-back ring (frames in flight are three at most)
@@ -558,13 +600,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		{
 			D3D12_DESCRIPTOR_RANGE ranges[2]{};
 			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-			ranges[0].NumDescriptors = 6;
+			ranges[0].NumDescriptors = 8;
 			ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 			ranges[1].NumDescriptors = 2;
-			ranges[1].OffsetInDescriptorsFromTableStart = 6;
+			ranges[1].OffsetInDescriptorsFromTableStart = 8;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 14;
+			parameters[0].Constants.Num32BitValues = 15;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -629,7 +671,12 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			case DXGI_FORMAT_R32G32B32A32_TYPELESS:
 				return DXGI_FORMAT_R32G32B32A32_FLOAT;
 			case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+			case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: // (read as stored: the shader decodes)
 				return DXGI_FORMAT_R8G8B8A8_UNORM;
+			case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+			case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+			case DXGI_FORMAT_B8G8R8A8_UNORM:
+				return DXGI_FORMAT_B8G8R8A8_UNORM;
 			case DXGI_FORMAT_R10G10B10A2_TYPELESS:
 				return DXGI_FORMAT_R10G10B10A2_UNORM;
 			case DXGI_FORMAT_R16G16B16A16_FLOAT:
@@ -683,6 +730,14 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		const bool matte = inputFormat != DXGI_FORMAT_UNKNOWN && (frame.inputState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 		const DXGI_FORMAT layerFormat = layer.before && layer.after ? ColorView(layer.before->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
 		const bool particles = layerFormat != DXGI_FORMAT_UNKNOWN;
+		const DXGI_FORMAT decalFormat = layer.decalBefore && layer.decalAfter ? ColorView(layer.decalBefore->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
+		const bool decals = decalFormat != DXGI_FORMAT_UNKNOWN;
+		if (static bool told = false; !told && layer.decalBefore)
+		{
+			told = true;
+			log::Info("ue5 composite: the game's decals {} (format {}{})", decals ? "over the picture" : "cannot be read", static_cast<int>(layer.decalBefore->GetDesc().Format),
+			    layer.decalSrgb ? ", sRGB-encoded" : "");
+		}
 		if (static bool told = false; !told)
 		{
 			told = true;
@@ -729,6 +784,11 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		cpu.ptr += g_increment;
 		g_device->CreateShaderResourceView(particles ? layer.after : nullptr, &view, cpu);
 		cpu.ptr += g_increment;
+		view.Format = decals ? decalFormat : DXGI_FORMAT_R8G8B8A8_UNORM;
+		g_device->CreateShaderResourceView(decals ? layer.decalBefore : nullptr, &view, cpu);
+		cpu.ptr += g_increment;
+		g_device->CreateShaderResourceView(decals ? layer.decalAfter : nullptr, &view, cpu);
+		cpu.ptr += g_increment;
 		D3D12_UNORDERED_ACCESS_VIEW_DESC write{};
 		write.Format = outputDesc.Format;
 		write.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -751,13 +811,14 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
 		const float floats[6] = {kAdapt, settings.match, settings.grade, settings.depthNumerator, settings.depthScale, settings.depthOffset};
-		UINT constants[14] = {width, height, frame.renderWidth, frame.renderHeight};
+		UINT constants[15] = {width, height, frame.renderWidth, frame.renderHeight};
 		std::memcpy(&constants[4], floats, sizeof(floats));
 		constants[10] = matte ? 1 : 0;
 		std::memcpy(&constants[11], &settings.contrast, sizeof(float));
 		constants[12] = settings.storm ? 1 : 0;
 		constants[13] = particles ? 1 : 0;
-		list->SetComputeRoot32BitConstants(0, 14, constants, 0);
+		constants[14] = decals ? (layer.decalSrgb ? 2 : 1) : 0;
+		list->SetComputeRoot32BitConstants(0, 15, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);

@@ -17,6 +17,7 @@ namespace ue5export
 	{
 		std::string name;
 		std::array<float, 4> bounds{}; // x0 y0 x1 y1
+		bool interiors = false;        // the models of the interiors placed in it too (not their entities)
 	};
 
 	struct ExportStats

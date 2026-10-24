@@ -292,8 +292,12 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		// (the game's decals that add no colour of their own - a normal map's wear on an edge, a darker corner, a shadow,
 		// a shine - drawn as colour come out as the textures themselves: blue-purple strips along door frames)
 		// (and a tree's shadow proxy: the game draws it into its shadows alone; seen, it was a second canopy)
+		// (and a polished floor's mirror_decal: a see-through sheet over the floor the game draws its planar reflection
+		// of the room into, its only texture the floor's normal map - drawn, whole floors were a glowing blue-purple; the
+		// floor beneath shines and reflects here of itself)
 		static const TSet<uint32> NoColour = {GTAVHash(TEXTVIEW("decal_normal_only")), GTAVHash(TEXTVIEW("decal_shadow_only")),
-			GTAVHash(TEXTVIEW("decal_amb_only")), GTAVHash(TEXTVIEW("decal_spec_only")), GTAVHash(TEXTVIEW("trees_shadow_proxy"))};
+			GTAVHash(TEXTVIEW("decal_amb_only")), GTAVHash(TEXTVIEW("decal_spec_only")), GTAVHash(TEXTVIEW("trees_shadow_proxy")),
+			GTAVHash(TEXTVIEW("mirror_decal"))};
 		if (SkipEffects.Contains(Mat.effect) || NoColour.Contains(Mat.effect))
 		{
 			continue;

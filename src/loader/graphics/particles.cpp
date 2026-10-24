@@ -30,6 +30,17 @@ namespace loader::graphics::particles
 		constexpr Digest kParticleShaders[] = {
 #include "particle_shaders.inc"
 		};
+		// Its decals' (bullet holes, blood, scorch marks: the deferred ones, drawn into the G-buffer).
+		constexpr Digest kDecalShaders[] = {
+#include "decal_shaders.inc"
+		};
+		// What a pipeline draws (the marks in the table below).
+		enum Kind : uint8_t
+		{
+			kOther = 0,
+			kParticle = 1,
+			kDecal = 2,
+		};
 
 		// vtable slots (d3d12.h's C interface): ID3D12Device2, ID3D12PipelineLibrary1, ID3D12GraphicsCommandList4,
 		// ID3D12CommandQueue.
@@ -73,8 +84,8 @@ namespace loader::graphics::particles
 		ExecuteCommandListsFn g_executeCommandLists = nullptr;
 		std::vector<void*> g_traceHooks; // (render passes: hooked while tracing only)
 
-		// The pipelines made with a particle pixel shader: an open-addressing table of pipeline pointers (a pointer
-		// reused for another pipeline is marked again when that one is made), read without a lock on every
+		// The pipelines made with a particle or a decal pixel shader: an open-addressing table of pipeline pointers (a
+		// pointer reused for another pipeline is marked again when that one is made), read without a lock on every
 		// SetPipelineState.
 		constexpr size_t kTableBits = 14, kTableSize = size_t{1} << kTableBits;
 		std::atomic<uintptr_t> g_keys[kTableSize];
@@ -87,18 +98,18 @@ namespace loader::graphics::particles
 			return static_cast<size_t>(((key >> 4) * 0x9E3779B97F4A7C15ull) >> (64 - kTableBits));
 		}
 
-		bool IsParticle(const void* pipeline)
+		uint8_t KindOf(const void* pipeline)
 		{
 			const auto key = reinterpret_cast<uintptr_t>(pipeline);
 			for (size_t i = Slot(key), n = 0; key && n < kTableSize; i = (i + 1) & (kTableSize - 1), ++n)
 			{
 				const uintptr_t k = g_keys[i].load(std::memory_order_acquire);
 				if (k == key)
-					return g_marks[i].load(std::memory_order_relaxed) != 0;
+					return g_marks[i].load(std::memory_order_relaxed);
 				if (k == 0)
-					return false;
+					return kOther;
 			}
-			return false;
+			return kOther;
 		}
 
 		void Note(const void* pipeline, const D3D12_SHADER_BYTECODE* ps)
@@ -108,8 +119,10 @@ namespace loader::graphics::particles
 			Digest digest{};
 			if (ps && ps->pShaderBytecode && ps->BytecodeLength >= 20)
 				std::memcpy(&digest, static_cast<const uint8_t*>(ps->pShaderBytecode) + 4, sizeof(digest));
-			const bool particle = std::any_of(std::begin(kParticleShaders), std::end(kParticleShaders),
-			    [&](const Digest& d) { return d.low == digest.low && d.high == digest.high; });
+			const auto known = [&](const auto& digests) {
+				return std::any_of(std::begin(digests), std::end(digests), [&](const Digest& d) { return d.low == digest.low && d.high == digest.high; });
+			};
+			const uint8_t kind = known(kParticleShaders) ? kParticle : known(kDecalShaders) ? kDecal : kOther;
 			const auto key = reinterpret_cast<uintptr_t>(pipeline);
 			std::lock_guard lock(g_tableMutex);
 			g_shaderOf[key] = static_cast<uint32_t>(digest.low);
@@ -118,14 +131,14 @@ namespace loader::graphics::particles
 				const uintptr_t k = g_keys[i].load(std::memory_order_relaxed);
 				if (k == key)
 				{
-					g_marks[i].store(particle ? 1 : 0, std::memory_order_relaxed);
+					g_marks[i].store(kind, std::memory_order_relaxed);
 					return;
 				}
 				if (k == 0)
 				{
-					if (particle) // (only particles are kept)
+					if (kind != kOther) // (only particles and decals are kept)
 					{
-						g_marks[i].store(1, std::memory_order_relaxed);
+						g_marks[i].store(kind, std::memory_order_relaxed);
 						g_keys[i].store(key, std::memory_order_release);
 					}
 					return;
@@ -191,6 +204,7 @@ namespace loader::graphics::particles
 		// without a lock on every OMSetRenderTargets).
 		std::mutex g_viewMutex;
 		std::unordered_map<SIZE_T, ID3D12Resource*> g_views;
+		std::unordered_map<SIZE_T, DXGI_FORMAT> g_viewFormats; // (the views' own formats)
 		constexpr size_t kSceneViews = 8;
 		std::atomic<SIZE_T> g_sceneViews[kSceneViews];
 		std::atomic<ID3D12Resource*> g_scene = nullptr;
@@ -223,41 +237,68 @@ namespace loader::graphics::particles
 		// in among the game's as it submits them (research §60.15: copies recorded inside the game's own lists - a barrier
 		// on its scene colour in the midst of its drawing, a predicate on the copy - hung the GPU twice in night soaks):
 		// one before the first list that drew particles in a frame, one after each such list (the last to run is left).
+		// The decals the same, of the G-buffer's first target (the surfaces' colour) about the lists that drew them (the
+		// game draws them in a list of their own, after its opaque surfaces: research §60.17).
 		std::mutex g_copyMutex; // (making them; our lists)
 		ID3D12Resource* g_before = nullptr;
 		ID3D12Resource* g_after = nullptr;
-		std::atomic<uint32_t> g_drawn = 0; // lists that drew particles, recorded since the last frame was taken
-		std::atomic<uint32_t> g_frame = 0; // frames taken
+		ID3D12Resource* g_decalBefore = nullptr;
+		ID3D12Resource* g_decalAfter = nullptr;
+		std::atomic<uint32_t> g_drawn = 0;      // lists that drew particles, recorded since the last frame was taken
+		std::atomic<uint32_t> g_decalDrawn = 0; // lists that drew decals, the same
+		std::atomic<uint32_t> g_frame = 0;      // frames taken
+		// the G-buffer target the decals go into (learnt from them), and whether the colours in it are sRGB-encoded
+		std::atomic<ID3D12Resource*> g_decalTarget = nullptr;
+		std::atomic<bool> g_decalSrgb = false;
+		std::atomic<bool> g_decalsOn = true;
 
-		// A list's particles, as its own thread records it (in this frame: one left from an earlier frame is of a list
-		// closed or reset on another thread since, and is let go).
+		// A resource's state at a list's start and end, from the barriers on it there (a render target throughout, where
+		// none says else).
+		struct Span
+		{
+			bool barrier = false; // a barrier on it was recorded
+			bool odd = false;     // one not followed here (split, or a part of it)
+			D3D12_RESOURCE_STATES first = D3D12_RESOURCE_STATE_RENDER_TARGET, last = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+			void Note(const D3D12_RESOURCE_BARRIER& b)
+			{
+				if (b.Flags != D3D12_RESOURCE_BARRIER_FLAG_NONE || (b.Transition.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES && b.Transition.Subresource != 0))
+					odd = true;
+				if (!barrier)
+					first = b.Transition.StateBefore, barrier = true;
+				last = b.Transition.StateAfter;
+			}
+		};
+
+		// A list's particles and decals, as its own thread records it (in this frame: one left from an earlier frame is of
+		// a list closed or reset on another thread since, and is let go).
 		struct ListState
 		{
 			ID3D12GraphicsCommandList* list = nullptr;
 			uint32_t frame = 0;
-			bool particle = false; // the pipeline set last draws particles
+			uint8_t kind = kOther; // what the pipeline set last draws
 			bool scene = false;    // the first render target bound last is the scene colour
+			SIZE_T target = 0;     // the first render target bound last (a view)
 			bool drew = false;     // particles were drawn into the scene colour
-			bool barrier = false;  // a barrier on the scene colour was recorded
-			bool odd = false;      // one not followed here (split, or a part of it)
-			// the scene colour's state at the list's start and end (a render target throughout, where no barrier says else)
-			D3D12_RESOURCE_STATES first = D3D12_RESOURCE_STATE_RENDER_TARGET, last = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			bool decals = false;   // decals were drawn
+			Span sceneSpan, decalSpan;
 			uint32_t age = 0;
 		};
 		thread_local ListState t_lists[4];
 		thread_local uint32_t t_age = 0;
 		thread_local bool t_busy = false; // (our own commands: the hooks pass them on)
 
-		// The lists that drew particles, closed and not yet submitted.
+		// The lists that drew particles or decals, closed and not yet submitted.
 		struct Drawn
 		{
 			D3D12_RESOURCE_STATES first, last;
 			uint32_t frame;
 		};
 		std::mutex g_drawnMutex;
-		std::unordered_map<const void*, Drawn> g_drawnLists;
+		std::unordered_map<const void*, Drawn> g_drawnLists, g_decalLists;
 		std::atomic<const void*> g_frameEnd = nullptr; // the list DLSS was recorded on: submitted, the frame's particles are past
 		bool g_beforeTaken = false;                    // (g_copyMutex) the copy before them, in the frame being submitted
+		bool g_decalBeforeTaken = false;               // (g_copyMutex) the same for the decals
 
 		// Our lists: a ring, each reused once the queue is past it (else that copy is left out).
 		struct CopyList
@@ -272,9 +313,16 @@ namespace loader::graphics::particles
 		ID3D12Fence* g_copyFence = nullptr;
 		uint64_t g_copyValue = 0;
 
-		bool MakeTexture(ID3D12Device* device, ID3D12Resource* scene, ID3D12Resource*& texture)
+		bool MakeTexture(ID3D12Device* device, ID3D12Resource* scene, ID3D12Resource*& texture, const char* what)
 		{
 			D3D12_RESOURCE_DESC desc = scene->GetDesc();
+			if (desc.SampleDesc.Count != 1)
+			{
+				static std::atomic_bool told = false;
+				if (!told.exchange(true))
+					log::Info("ue5 particles: {} multisampled ({} samples): not copied", what, desc.SampleDesc.Count);
+				return false;
+			}
 			if (texture)
 			{
 				const D3D12_RESOURCE_DESC had = texture->GetDesc();
@@ -299,7 +347,7 @@ namespace loader::graphics::particles
 				texture = nullptr;
 				return false;
 			}
-			log::Info("ue5 particles: copies of the scene colour around its particles ({}x{}, format {})", desc.Width, desc.Height, static_cast<int>(desc.Format));
+			log::Info("ue5 particles: copies of {} ({}x{}, format {})", what, desc.Width, desc.Height, static_cast<int>(desc.Format));
 			return true;
 		}
 
@@ -395,14 +443,45 @@ namespace loader::graphics::particles
 					st = ListState{};
 		}
 
-		// Before a draw: particles into the scene colour, noted.
+		// Before a draw: particles into the scene colour, decals into the G-buffer, noted.
 		void BeforeDraw(ID3D12GraphicsCommandList* list)
 		{
 			if (t_busy)
 				return;
 			ListState& st = StateOf(list);
-			if (st.particle && st.scene)
+			if (st.kind == kParticle && st.scene)
 				st.drew = true;
+			else if (st.kind == kDecal && !st.decals)
+			{
+				st.decals = true;
+				// (the target they go into, learnt from the first; a list where it is new had its barriers on it unseen,
+				// and is not copied about)
+				ID3D12Resource* target = nullptr;
+				DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+				{
+					std::lock_guard lock(g_viewMutex);
+					if (const auto found = g_views.find(st.target); found != g_views.end())
+						target = found->second, format = g_viewFormats[st.target];
+				}
+				if (!target)
+					st.decalSpan.odd = true;
+				else if (ID3D12Resource* was = g_decalTarget.exchange(target); was != target)
+				{
+					st.decalSpan.odd = true;
+					// (8 bits a channel hold a colour sRGB-encoded - linear, the darks would band: the game's B8G8R8A8_UNORM
+					// does, measured - a decal's darkening on the screen is its ratio in the target to the power 2.2)
+					const DXGI_FORMAT stored = target->GetDesc().Format;
+					const auto eight = [](DXGI_FORMAT f) {
+						return f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || f == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+						       f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+					};
+					g_decalSrgb = eight(format) || eight(stored);
+					static std::atomic<int> told = 0;
+					if (told.fetch_add(1) < 4)
+						log::Info("ue5 particles: the game's decals go into {} (format {}, its view's {})", static_cast<const void*>(target), static_cast<int>(stored),
+						    static_cast<int>(format));
+				}
+			}
 		}
 
 		// ---- research: one frame's calls (Trace) ----
@@ -471,8 +550,9 @@ namespace loader::graphics::particles
 				case 'S':
 				{
 					const auto found = shaders.find(static_cast<uintptr_t>(e.value));
+					const uint8_t kind = KindOf(reinterpret_cast<const void*>(e.value));
 					what = std::format("pipeline {:#x} ps {:08x}{}", e.value, found == shaders.end() ? 0u : found->second,
-					    IsParticle(reinterpret_cast<const void*>(e.value)) ? " particle" : "");
+					    kind == kParticle ? " particle" : kind == kDecal ? " decal" : "");
 					break;
 				}
 				case 'R':
@@ -534,6 +614,7 @@ namespace loader::graphics::particles
 			{
 				std::lock_guard lock(g_viewMutex);
 				g_views[view.ptr] = resource;
+				g_viewFormats[view.ptr] = desc ? desc->Format : resource ? resource->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
 				SetSceneView(view.ptr, resource && resource == g_scene.load(std::memory_order_relaxed));
 			}
 			g_createRenderTargetView(device, resource, desc, view);
@@ -546,11 +627,19 @@ namespace loader::graphics::particles
 				for (ListState& st : t_lists)
 					if (st.list == list)
 					{
-						if (st.drew && !st.odd && st.frame == g_frame.load(std::memory_order_relaxed))
+						if (st.frame == g_frame.load(std::memory_order_relaxed) && ((st.drew && !st.sceneSpan.odd) || (st.decals && !st.decalSpan.odd)))
 						{
 							std::lock_guard lock(g_drawnMutex);
-							g_drawnLists[list] = {st.first, st.last, st.frame};
-							++g_drawn;
+							if (st.drew && !st.sceneSpan.odd)
+							{
+								g_drawnLists[list] = {st.sceneSpan.first, st.sceneSpan.last, st.frame};
+								++g_drawn;
+							}
+							if (st.decals && !st.decalSpan.odd)
+							{
+								g_decalLists[list] = {st.decalSpan.first, st.decalSpan.last, st.frame};
+								++g_decalDrawn;
+							}
 						}
 						st = ListState{};
 					}
@@ -563,8 +652,9 @@ namespace loader::graphics::particles
 			Forget(list);
 			Record(list, 'Z', 0);
 			const HRESULT hr = g_reset(list, allocator, pipeline);
-			if (!t_busy && pipeline && IsParticle(pipeline))
-				StateOf(list).particle = true;
+			if (!t_busy && pipeline)
+				if (const uint8_t kind = KindOf(pipeline); kind != kOther)
+					StateOf(list).kind = kind;
 			return hr;
 		}
 
@@ -572,7 +662,7 @@ namespace loader::graphics::particles
 		{
 			Record(list, 'S', reinterpret_cast<uintptr_t>(pipeline));
 			if (!t_busy)
-				StateOf(list).particle = IsParticle(pipeline);
+				StateOf(list).kind = KindOf(pipeline);
 			g_setPipelineState(list, pipeline);
 		}
 
@@ -582,7 +672,11 @@ namespace loader::graphics::particles
 			const SIZE_T first = count && targets ? targets[0].ptr : 0;
 			Record(list, 'R', first);
 			if (!t_busy)
-				StateOf(list).scene = IsSceneView(first);
+			{
+				ListState& st = StateOf(list);
+				st.scene = IsSceneView(first);
+				st.target = first;
+			}
 			g_omSetRenderTargets(list, count, targets, range, depth);
 		}
 
@@ -590,21 +684,19 @@ namespace loader::graphics::particles
 		{
 			if (!t_busy && barriers)
 			{
-				// (the scene colour's state at the list's start and end, for the copies around it)
+				// (the scene colour's and the decals' target's states at the list's start and end, for the copies around it)
 				ID3D12Resource* scene = g_scene.load(std::memory_order_relaxed);
+				ID3D12Resource* decal = g_decalTarget.load(std::memory_order_relaxed);
 				ListState* st = nullptr;
-				for (UINT i = 0; scene && i < count; ++i)
+				for (UINT i = 0; (scene || decal) && i < count; ++i)
 				{
 					const D3D12_RESOURCE_BARRIER& b = barriers[i];
-					if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || b.Transition.pResource != scene)
+					if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.pResource ||
+					    (b.Transition.pResource != scene && b.Transition.pResource != decal))
 						continue;
 					if (!st)
 						st = &StateOf(list);
-					if (b.Flags != D3D12_RESOURCE_BARRIER_FLAG_NONE || (b.Transition.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES && b.Transition.Subresource != 0))
-						st->odd = true;
-					if (!st->barrier)
-						st->first = b.Transition.StateBefore, st->barrier = true;
-					st->last = b.Transition.StateAfter;
+					(b.Transition.pResource == scene ? st->sceneSpan : st->decalSpan).Note(b);
 				}
 			}
 			g_resourceBarrier(list, count, barriers);
@@ -643,10 +735,12 @@ namespace loader::graphics::particles
 			for (UINT i = 0; i < count; ++i)
 				Record(lists[i], 'X', reinterpret_cast<uintptr_t>(queue));
 			ID3D12Resource* scene = g_scene.load(std::memory_order_acquire);
-			if (t_busy || !scene || !count || !lists)
+			ID3D12Resource* decal = g_decalsOn ? g_decalTarget.load(std::memory_order_acquire) : nullptr;
+			if (t_busy || (!scene && !decal) || !count || !lists)
 				return g_executeCommandLists(queue, count, lists);
-			// The lists that drew particles in this submission, and the state of the scene colour about each.
-			std::vector<std::pair<UINT, Drawn>> drawn;
+			// The lists that drew particles (decals) in this submission, and the state of the scene colour (the decals'
+			// target) about each.
+			std::vector<std::pair<UINT, Drawn>> drawn, decals;
 			const void* frameEnd = g_frameEnd.load(std::memory_order_acquire);
 			bool ends = false;
 			{
@@ -654,41 +748,57 @@ namespace loader::graphics::particles
 				for (UINT i = 0; i < count; ++i)
 				{
 					ends = ends || lists[i] == frameEnd;
-					if (g_drawnLists.empty())
-						continue;
 					if (const auto found = g_drawnLists.find(lists[i]); found != g_drawnLists.end())
 					{
 						drawn.emplace_back(i, found->second);
 						g_drawnLists.erase(found);
 					}
+					if (const auto found = g_decalLists.find(lists[i]); found != g_decalLists.end())
+					{
+						decals.emplace_back(i, found->second);
+						g_decalLists.erase(found);
+					}
 				}
 			}
-			if (drawn.empty() && !ends)
+			if (drawn.empty() && decals.empty() && !ends)
 				return g_executeCommandLists(queue, count, lists);
 			std::lock_guard lock(g_copyMutex);
 			std::vector<ID3D12CommandList*> out;
 			std::vector<int> used;
 			ID3D12Device* device = nullptr;
 			const bool direct = queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
-			if (!drawn.empty() && direct && SUCCEEDED(scene->GetDevice(IID_PPV_ARGS(&device))))
+			if ((!drawn.empty() || !decals.empty()) && direct && SUCCEEDED((scene ? scene : decal)->GetDevice(IID_PPV_ARGS(&device))))
 			{
-				const bool made = MakeTexture(device, scene, g_before) && MakeTexture(device, scene, g_after);
-				size_t next = 0;
+				const bool made = !drawn.empty() && scene && MakeTexture(device, scene, g_before, "the scene colour about its particles") &&
+				                  MakeTexture(device, scene, g_after, "the scene colour about its particles");
+				const bool madeDecals = !decals.empty() && decal && MakeTexture(device, decal, g_decalBefore, "the G-buffer about its decals") &&
+				                        MakeTexture(device, decal, g_decalAfter, "the G-buffer about its decals");
+				const auto copy = [&](ID3D12Resource* from, D3D12_RESOURCE_STATES state, ID3D12Resource* to) {
+					if (const int slot = CopyScene(device, from, state, to); slot >= 0)
+						out.push_back(g_copyLists[slot].list), used.push_back(slot);
+				};
+				size_t next = 0, nextDecal = 0;
 				for (UINT i = 0; i < count; ++i)
 				{
 					const Drawn* d = next < drawn.size() && drawn[next].first == i ? &drawn[next++].second : nullptr;
+					const Drawn* e = nextDecal < decals.size() && decals[nextDecal].first == i ? &decals[nextDecal++].second : nullptr;
+					if (e && madeDecals && !g_decalBeforeTaken)
+					{
+						g_decalBeforeTaken = true;
+						copy(decal, e->first, g_decalBefore);
+					}
 					if (d && made && !g_beforeTaken)
 					{
 						g_beforeTaken = true;
-						if (const int slot = CopyScene(device, scene, d->first, g_before); slot >= 0)
-							out.push_back(g_copyLists[slot].list), used.push_back(slot);
+						copy(scene, d->first, g_before);
 					}
 					out.push_back(lists[i]);
+					if (e && madeDecals)
+						copy(decal, e->last, g_decalAfter);
 					if (d && made)
-						if (const int slot = CopyScene(device, scene, d->last, g_after); slot >= 0)
-							out.push_back(g_copyLists[slot].list), used.push_back(slot);
+						copy(scene, d->last, g_after);
 					if (lists[i] == frameEnd)
-						g_beforeTaken = false;
+						g_beforeTaken = g_decalBeforeTaken = false;
 				}
 				device->Release();
 			}
@@ -696,7 +806,7 @@ namespace loader::graphics::particles
 			{
 				out.assign(lists, lists + count);
 				if (ends)
-					g_beforeTaken = false;
+					g_beforeTaken = g_decalBeforeTaken = false;
 			}
 			const uint64_t value = g_copyValue + 1;
 			for (const int slot : used)
@@ -775,7 +885,8 @@ namespace loader::graphics::particles
 				if (object)
 					object->Release();
 			if (ok)
-				log::Info("ue5 particles: D3D12 hooked ({} particle shaders known{})", std::size(kParticleShaders), libraryHooked ? "" : "; no pipeline library");
+				log::Info("ue5 particles: D3D12 hooked ({} particle and {} decal shaders known{})", std::size(kParticleShaders), std::size(kDecalShaders),
+				    libraryHooked ? "" : "; no pipeline library");
 			else
 				log::Warn("ue5 particles: D3D12 could not be hooked; the game's particles are not shown over the renderer's picture");
 		}
@@ -836,16 +947,20 @@ namespace loader::graphics::particles
 		Layer layer;
 		const uint32_t frame = g_frame.fetch_add(1, std::memory_order_relaxed);
 		g_frameEnd.store(list, std::memory_order_release);
-		if (g_drawn.exchange(0) > 0)
+		const bool particles = g_drawn.exchange(0) > 0, decals = g_decalDrawn.exchange(0) > 0;
+		if (particles || decals)
 		{
 			std::lock_guard lock(g_copyMutex);
-			if (g_before && g_after)
-				layer = {g_before, g_after};
+			if (particles && g_before && g_after)
+				layer.before = g_before, layer.after = g_after;
+			if (decals && g_decalsOn && g_decalBefore && g_decalAfter)
+				layer.decalBefore = g_decalBefore, layer.decalAfter = g_decalAfter, layer.decalSrgb = g_decalSrgb;
 		}
 		{
-			// (lists that drew particles but were never submitted)
+			// (lists that drew particles or decals but were never submitted)
 			std::lock_guard lock(g_drawnMutex);
 			std::erase_if(g_drawnLists, [&](const auto& d) { return d.second.frame + 8 < frame; });
+			std::erase_if(g_decalLists, [&](const auto& d) { return d.second.frame + 8 < frame; });
 		}
 		const int tracing = g_tracing.load(std::memory_order_relaxed);
 		if (tracing == 2)
@@ -871,6 +986,12 @@ namespace loader::graphics::particles
 			Record(nullptr, 'T', 0);
 		}
 		return layer;
+	}
+
+	void SetDecals(bool on)
+	{
+		g_decalsOn = on;
+		log::Info("ue5 particles: the game's decals {}", on ? "over the renderer's picture" : "left out");
 	}
 
 	void Trace(const std::wstring& path)

@@ -224,6 +224,7 @@ namespace
 	{
 		ue5export::Area area;
 		area.name = g_options.contains("name") ? g_options["name"] : "area";
+		area.interiors = g_options.contains("interiors");
 		if (sscanf_s(g_options["area"].c_str(), "%f,%f,%f,%f", &area.bounds[0], &area.bounds[1], &area.bounds[2], &area.bounds[3]) != 4)
 			return Fail("--area x0,y0,x1,y1 is needed");
 		ue5export::GameFiles files;
