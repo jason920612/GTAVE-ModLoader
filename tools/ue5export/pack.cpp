@@ -398,6 +398,8 @@ namespace ue5export
 					x.timeFlags = l.timeFlags, x.flags = l.flags;
 					x.tangent[0] = l.tangent[0], x.tangent[1] = -l.tangent[1], x.tangent[2] = l.tangent[2];
 					x.length = l.length * 100;
+					x.coronaSize = l.coronaSize * 100;
+					x.coronaIntensity = l.coronaIntensity;
 					Put(out, x);
 				}
 			}

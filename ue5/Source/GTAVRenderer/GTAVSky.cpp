@@ -141,6 +141,8 @@ namespace
 	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
 	bool bInside = false, bInsideByRooms = false;
 	float Lightning = 0;          // (stops)
+	float GameWetness = -1.0f;
+	double GameWetnessTime = 0;
 	FVector LightningWay = FVector(0.3, 0.2, 1.0).GetSafeNormal(); // where the flash comes from (a new way each flash)
 	double GameIndoorsTime = -1e9;
 	float Indoors = 0; // (eased)
@@ -244,6 +246,12 @@ void GTAVSky::SetIndoors(bool bIndoors, bool bFromGame)
 	{
 		bInsideByRooms = bIndoors;
 	}
+}
+
+void GTAVSky::SetWetness(float Wetness)
+{
+	GameWetness = Wetness;
+	GameWetnessTime = FPlatformTime::Seconds();
 }
 
 void GTAVSky::SetLightning(float Stops)
@@ -489,8 +497,10 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	{
 		if (UMaterialParameterCollectionInstance* Instance = World->GetParameterCollectionInstance(Collection))
 		{
-			// (indoors the floors are dry: what is seen from in there is mostly in there)
-			Instance->SetScalarParameterValue(TEXT("Wetness"), L.Wet * (1.0f - Indoors));
+			// (indoors the floors are dry: what is seen from in there is mostly in there; outdoors as wet as the game has
+			// the ground - after the rain it dries over an hour of game time - else by the weather)
+			const bool bGameWet = GameWetness >= 0 && FPlatformTime::Seconds() - GameWetnessTime < 2.0;
+			Instance->SetScalarParameterValue(TEXT("Wetness"), (bGameWet ? FMath::Clamp(GameWetness, 0.0f, 1.0f) : L.Wet) * (1.0f - Indoors));
 			// The wind: the game's while the bridge sends it, else the weather's from the west (the sea breeze).
 			const bool bGame = FPlatformTime::Seconds() - GameWindTime < 2.0;
 			const FVector2f Way = bGame && !GameWind.IsNearlyZero() ? GameWind.GetSafeNormal() : FVector2f(1, 0);

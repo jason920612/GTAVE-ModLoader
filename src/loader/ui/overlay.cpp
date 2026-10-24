@@ -334,9 +334,9 @@ namespace loader::ui
 				// (a long frame, with the time of day: to line up with the renderer's log)
 				if (ms > 100.0 && windowStart)
 				{
-					SYSTEMTIME now{};
-					GetLocalTime(&now);
-					log::Info("fps: a {:.0f} ms frame at {:02}:{:02}:{:02}.{:03}", ms, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+					SYSTEMTIME local{};
+					GetLocalTime(&local);
+					log::Info("fps: a {:.0f} ms frame at {:02}:{:02}:{:02}.{:03}", ms, local.wHour, local.wMinute, local.wSecond, local.wMilliseconds);
 				}
 			}
 			prev = t.QuadPart;

@@ -28,6 +28,9 @@ usage:
                                    clear sky ("keep": the clock and weather left as they are; while a scripted camera
                                    is on, the game keeps its shadows' sun where it was when the camera came on),
                                    tp x y z: the player there, depthdump <file>: the next DLSS pass's depth and stencil,
+                                   colordump <file>: its scene colour (linear HDR, the game's own lighting),
+                                   every <seconds> <hash> [args] | every off: a native called each frame that long (the
+                                   DRAW_* natives draw for one frame),
                                    spin <degrees a second> <seconds>: the gameplay camera turned round the player,
                                    native <hash> [args]: a native called on the game thread (integers, floats with a
                                    '.', s:text) -> "ok <int> <float> <x> <y> <z>" (tools/ue5soak.py drives with it),

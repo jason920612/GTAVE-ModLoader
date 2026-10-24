@@ -48,9 +48,11 @@ namespace ue5export
 		bool OpenFile(const fs::path& file, const loader::convert::Decryptor& decrypt, std::shared_ptr<Archive>& out, std::string& error)
 		{
 			const auto in = std::make_shared<std::ifstream>(file, std::ios::binary);
+			if (!*in)
+				return error = std::format("cannot open it (errno {})", errno), false;
 			std::error_code ec;
 			out = std::make_shared<Archive>();
-			return *in && out->Open(in, 0, fs::file_size(file, ec), file.filename().string(), &decrypt, error);
+			return out->Open(in, 0, fs::file_size(file, ec), file.filename().string(), &decrypt, error);
 		}
 
 		// A node by path ("x64/levels/a.rpf") from the root of an archive.

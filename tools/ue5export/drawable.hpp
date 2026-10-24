@@ -71,6 +71,7 @@ namespace ue5export::drawable
 		uint16_t bone = 0;
 		float intensity = 0, falloff = 0, falloffExponent = 0, coneInner = 0, coneOuter = 0;
 		float length = 0; // a capsule's (m), along the tangent
+		float coronaSize = 0, coronaIntensity = 0; // (m; 0: none)
 		uint32_t timeFlags = 0, flags = 0;
 	};
 

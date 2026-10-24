@@ -412,6 +412,75 @@ namespace loader::graphics::bridge
 			}).detach();
 		}
 
+		// Research: the game's own scene colour going into DLSS (linear HDR, its render resolution) to a file (header: width,
+		// rows, row pitch, DXGI format, the size in use; then the rows), for measuring its lights against the renderer's.
+		std::wstring g_colorPath;
+
+		void DumpColor(const streamline::DlssFrame& frame)
+		{
+			std::wstring path;
+			{
+				std::lock_guard lock(g_dumpMutex);
+				if (g_colorPath.empty() || !frame.input)
+					return;
+				path = std::move(g_colorPath);
+				g_colorPath.clear();
+			}
+			auto* input = static_cast<ID3D12Resource*>(frame.input);
+			ID3D12Device* device = nullptr;
+			if (FAILED(input->GetDevice(IID_PPV_ARGS(&device))))
+				return;
+			const D3D12_RESOURCE_DESC desc = input->GetDesc();
+			D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+			UINT rows = 0;
+			UINT64 rowBytes = 0, total = 0;
+			device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &rowBytes, &total);
+			D3D12_HEAP_PROPERTIES heap{};
+			heap.Type = D3D12_HEAP_TYPE_READBACK;
+			D3D12_RESOURCE_DESC buffer{};
+			buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			buffer.Width = total;
+			buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+			buffer.SampleDesc.Count = 1;
+			buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			ID3D12Resource* readback = nullptr;
+			const bool made = SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback)));
+			device->Release();
+			if (!made)
+				return;
+			auto* list = static_cast<ID3D12GraphicsCommandList*>(frame.commandList);
+			D3D12_RESOURCE_BARRIER barrier{};
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = input;
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barrier.Transition.StateBefore = static_cast<D3D12_RESOURCE_STATES>(frame.inputState);
+			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			list->ResourceBarrier(1, &barrier);
+			D3D12_TEXTURE_COPY_LOCATION to{readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+			to.PlacedFootprint = footprint;
+			D3D12_TEXTURE_COPY_LOCATION from{input, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+			from.SubresourceIndex = 0;
+			list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+			list->ResourceBarrier(1, &barrier);
+			std::thread([readback, footprint, rows, path, width = frame.renderWidth, height = frame.renderHeight] {
+				Sleep(2000);
+				void* data = nullptr;
+				if (SUCCEEDED(readback->Map(0, nullptr, &data)))
+				{
+					std::ofstream out(std::filesystem::path(path), std::ios::binary);
+					const uint32_t header[6] = {footprint.Footprint.Width, rows, footprint.Footprint.RowPitch, static_cast<uint32_t>(footprint.Footprint.Format),
+					    width, height};
+					out.write(reinterpret_cast<const char*>(header), sizeof(header));
+					out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size_t{footprint.Footprint.RowPitch} * rows));
+					readback->Unmap(0, nullptr);
+					log::Info("ue5 bridge: the game's scene colour written ({}x{}, format {}, in use {}x{})", footprint.Footprint.Width, rows,
+					    static_cast<int>(footprint.Footprint.Format), width, height);
+				}
+				readback->Release();
+			}).detach();
+		}
+
 		// The game's frame this render thread records (its camera's sequence number): the renderer's frame to wait for;
 		// and its camera (the depth's projection).
 		thread_local uint32_t t_sequence = 0;
@@ -426,6 +495,7 @@ namespace loader::graphics::bridge
 		void AfterDlss(const streamline::DlssFrame& frame)
 		{
 			DumpDepth(frame);
+			DumpColor(frame);
 			void* commandList = frame.commandList;
 			const uint32_t outputState = frame.outputState;
 			auto* target = static_cast<ID3D12Resource*>(frame.output);
@@ -684,6 +754,20 @@ namespace loader::graphics::bridge
 			s.proxyCount = n;
 		}
 
+		// The game's wet ground (0 dry - 1 soaked: it rises in the rain and dries linearly over about an hour of game time
+		// after it, measured), next to its rain level - which GET_RAIN_LEVEL returns: its code, past the obfuscation's
+		// jumps, is movss xmm0, [rip + x]; the wetness is 0x24 after that. Null when the code is not as known.
+		const float* FindWetness()
+		{
+			const auto* p = reinterpret_cast<const uint8_t*>(natives::FindHandler(0x96695E368AD855F3));
+			for (int hops = 0; p && hops < 4 && p[0] == 0xE9; ++hops)
+				p += 5 + *reinterpret_cast<const int32_t*>(p + 1);
+			if (!p || p[0] != 0xF3 || p[1] != 0x0F || p[2] != 0x10 || p[3] != 0x05)
+				return nullptr;
+			const auto* rain = reinterpret_cast<const float*>(p + 8 + *reinterpret_cast<const int32_t*>(p + 4));
+			return rain + 9;
+		}
+
 		// The view and the world's state, from the game.
 		void Write()
 		{
@@ -703,6 +787,12 @@ namespace loader::graphics::bridge
 			s.interior = natives::Invoke<int32_t>(kGetInteriorFromPrimaryView);
 			s.room = s.interior ? natives::Invoke<uint32_t>(kGetRoomKeyForGameViewport) : 0;
 			s.lightning = composite::Flash();
+			static const float* wetness = [] {
+				const float* w = FindWetness();
+				log::Info("ue5 bridge: the game's wet ground {}", w ? std::format("at +{:#x}", reinterpret_cast<uintptr_t>(w) - reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))) : std::string("not found (wet by the weather)"));
+				return w;
+			}();
+			s.wetness = wetness && *wetness >= 0.0f && *wetness <= 1.0f ? *wetness : -1.0f;
 			if (static int32_t told = -1; s.interior != told)
 			{
 				told = s.interior;
@@ -938,5 +1028,11 @@ namespace loader::graphics::bridge
 	{
 		std::lock_guard lock(g_dumpMutex);
 		g_dumpPath = path;
+	}
+
+	void DumpColor(const std::wstring& path)
+	{
+		std::lock_guard lock(g_dumpMutex);
+		g_colorPath = path;
 	}
 }

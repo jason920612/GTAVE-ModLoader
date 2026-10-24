@@ -494,6 +494,7 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 	}
 	GTAVSky::SetIndoors(Shared->interior != 0, true);
 	GTAVSky::SetLightning(Shared->lightning);
+	GTAVSky::SetWetness(Shared->wetness);
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
 	// The game's lights this frame: the list that was the newest when its camera came (a newer one when that was
 	// written over meanwhile).

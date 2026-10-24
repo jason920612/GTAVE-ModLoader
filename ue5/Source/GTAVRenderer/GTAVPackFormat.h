@@ -8,7 +8,7 @@
 
 namespace GTAVPack
 {
-	constexpr uint32_t kVersion = 4;
+	constexpr uint32_t kVersion = 5;
 
 	enum Kind : uint32_t
 	{
@@ -87,8 +87,10 @@ namespace GTAVPack
 		uint32_t flags;
 		float tangent[3]; // unit, Unreal's space: a capsule's axis
 		float length;     // a capsule's (a neon or fluorescent tube, a strip light), cm
+		float coronaSize; // cm: the glow the game draws where the light is (0: none; a street light's 3 m, a signal's 2 m)
+		float coronaIntensity;
 	};
-	static_assert(sizeof(ModelLight) == 72);
+	static_assert(sizeof(ModelLight) == 80);
 
 	// Material::flags.
 	enum MaterialFlags : uint16_t

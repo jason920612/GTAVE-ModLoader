@@ -25,4 +25,6 @@ namespace loader::graphics::bridge
 	// Research: the depth and stencil of the next DLSS pass to a file (header: plane widths, rows, row pitches, offsets;
 	// the size in use; then the planes).
 	void DumpDepth(const std::wstring& path);
+	// Research: the game's scene colour going into the next DLSS pass (linear HDR) to a file.
+	void DumpColor(const std::wstring& path);
 }

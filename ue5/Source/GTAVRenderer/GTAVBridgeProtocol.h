@@ -15,7 +15,7 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 10;
+	constexpr uint32_t kVersion = 11;
 	constexpr uint32_t kMaxGroups = 1024;
 	constexpr uint32_t kMaxProxies = 64;
 	constexpr uint32_t kTextures = 3; // the renderer's frame for game frame s is in texture s % kTextures
@@ -127,5 +127,8 @@ namespace GTAVBridge
 		// loader could not get them; the renderer then lights by the map's data alone).
 		volatile uint32_t lightSequence;
 		LightList lightLists[kLightLists];
+		// The game's wet ground: 0 dry - 1 soaked (rises in the rain, dries over about an hour of game time after it);
+		// negative when the loader could not find it.
+		float wetness;
 	};
 }

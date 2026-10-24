@@ -586,6 +586,9 @@ namespace
 
 int main(int argc, char** argv)
 {
+	// (every worker opens every archive, some 150 of them: past the C runtime's 512 streams the opens failed without a
+	// word, and that worker's models in the packs it could not open were "not found")
+	_setmaxstdio(8192);
 	if (argc < 2)
 		return Fail("usage: ue5export keys|index --out <dir> [--game <dir>] [--dump <image>]");
 	for (int i = 2; i + 1 < argc; i += 2)

@@ -52,7 +52,19 @@ private:
 		float Length = 0;
 		FVector3f Axis = FVector3f::ZeroVector;
 		bool bInterior = false; // (a room's: casts shadows always, else it lights the next room through the wall)
+		float CoronaSize = 0, CoronaIntensity = 0, Intensity = 0; // (the model's: its glow, cm; its light's intensity)
 	};
+	// Where the drawn entities' lights with a glow are (10 cm cells): a game light there shows its lamp lit.
+	struct FCorona
+	{
+		float Size = 0, Intensity = 0, LightIntensity = 0;
+		uint64 Entity = 0;
+	};
+	TMap<FIntVector, FCorona> Coronas;
+	TSet<FIntVector> LodSpots; // where the LOD lights are, to a metre (their far glow is there already)
+	TWeakObjectPtr<UInstancedStaticMeshComponent> NearGlow;
+	TArray<float> NearGlowData; // (what it shows: rebuilt when that changes)
+	void UpdateNearGlow(AActor* Owner);
 
 	TArray<GTAVPack::LodLight> Lights;
 	TMap<FIntPoint, TArray<int32>> Grid; // 256 m cells

@@ -238,6 +238,12 @@ namespace ue5export::drawable
 			l.coneInner = view.Get<float>(at + 0x8C);
 			l.coneOuter = view.Get<float>(at + 0x90);
 			l.length = l.type == 4 ? view.Get<float>(at + 0x94) : 0.0f;
+			// (+0x5C the glow's size in metres, 0 for none: a street light's 3, a traffic signal's 2, a shaded lamp's 0;
+			// +0x6C its intensity)
+			l.coronaSize = view.Get<float>(at + 0x5C);
+			l.coronaIntensity = view.Get<float>(at + 0x6C);
+			if (!(l.coronaSize >= 0 && l.coronaSize < 100 && l.coronaIntensity >= 0 && l.coronaIntensity < 1000))
+				l.coronaSize = l.coronaIntensity = 0;
 			if (!(l.length >= 0 && l.length < 500))
 				l.length = 0;
 			const bool sane = (l.type == 1 || l.type == 2 || l.type == 4) && l.falloff > 0 && l.falloff < 500 && l.intensity >= 0 && l.intensity < 10000;

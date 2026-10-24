@@ -80,6 +80,7 @@ namespace loader::debug::remote
 			bool done = false, ok = false;
 		};
 		std::deque<std::shared_ptr<NativeCall>> g_calls;
+		std::vector<std::pair<std::shared_ptr<NativeCall>, ULONGLONG>> g_repeats; // ("every": until then, each frame)
 		std::condition_variable g_callDone;
 		int32_t g_camHandle = 0;
 
@@ -521,11 +522,25 @@ namespace loader::debug::remote
 				std::string error;
 				return ui::recorder::Start(wpath, seconds, fps, scale, error) ? "ok" : "err " + error;
 			}
-			if (cmd == "native")
+			if (cmd == "native" || cmd == "every")
 			{
 				// native <hash> [args]: the result as an integer, as a float, and as a vector (x y z)
+				// every <seconds> <hash> [args] | every off: called each frame that long (the DRAW_* natives draw one frame)
 				auto call = std::make_shared<NativeCall>();
 				std::string word;
+				double seconds = 0;
+				if (cmd == "every")
+				{
+					if (!(in >> word))
+						return "err every <seconds> <hash> [args] | every off";
+					if (word == "off")
+					{
+						std::lock_guard lock(g_mutex);
+						g_repeats.clear();
+						return "ok";
+					}
+					seconds = std::clamp(std::stod(word), 0.0, 600.0);
+				}
 				if (!(in >> word))
 					return "err native <hash> [args]";
 				try
@@ -570,6 +585,11 @@ namespace loader::debug::remote
 					call->args.push_back(slot);
 				}
 				std::unique_lock lock(g_mutex);
+				if (cmd == "every")
+				{
+					g_repeats.emplace_back(call, GetTickCount64() + static_cast<ULONGLONG>(seconds * 1000.0));
+					return "ok";
+				}
 				g_calls.push_back(call);
 				if (!g_callDone.wait_for(lock, std::chrono::seconds(5), [&] { return call->done; }))
 					return "err the game thread did not run it";
@@ -611,7 +631,7 @@ namespace loader::debug::remote
 				g_spinLast = 0;
 				return "ok";
 			}
-			if (cmd == "depthdump")
+			if (cmd == "depthdump" || cmd == "colordump")
 			{
 				std::string path;
 				std::getline(in >> std::ws, path);
@@ -619,7 +639,7 @@ namespace loader::debug::remote
 				std::wstring wpath(static_cast<size_t>(wide), L'\0');
 				MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
 				wpath.resize(wcslen(wpath.c_str()));
-				graphics::bridge::DumpDepth(wpath);
+				(cmd == "depthdump" ? graphics::bridge::DumpDepth : graphics::bridge::DumpColor)(wpath);
 				return "ok";
 			}
 			if (cmd == "tp")
@@ -830,6 +850,15 @@ namespace loader::debug::remote
 			call->result[0] = inv.result[0], call->result[1] = inv.result[1], call->result[2] = inv.result[2];
 			call->done = true;
 			g_callDone.notify_all();
+		}
+		std::erase_if(g_repeats, [&](const auto& r) { return now >= r.second; });
+		for (const auto& [call, until] : g_repeats)
+		{
+			game::natives::Invocation inv;
+			inv.Begin(call->hash);
+			for (const uint64_t a : call->args)
+				inv.Push(a);
+			game::natives::Call(inv);
 		}
 		if (now < g_spinUntil)
 		{

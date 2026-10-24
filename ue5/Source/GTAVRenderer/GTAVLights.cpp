@@ -25,6 +25,15 @@ namespace
 	// The game's intensity -> lux within its reach: as its LOD lights' byte (a lit window's 8 is about 42 there), see kLux.
 	constexpr float kLuxPerGameUnit = 5.33f / 255.0f;
 
+	// Where a light is, to 10 cm (Unreal's space).
+	FIntVector Spot10(const float* Position)
+	{
+		return FIntVector(FMath::RoundToInt32(Position[0] / 10.0f), FMath::RoundToInt32(Position[1] / 10.0f), FMath::RoundToInt32(Position[2] / 10.0f));
+	}
+	// A lamp's lit lens as the game shows it (its corona): a disk of this radius (cm) giving this many candela per unit
+	// of the model's corona intensity x its size squared (m): a traffic signal's 0.2 x 2^2 some 300 cd, as real ones.
+	constexpr float kLensRadius = 10.0f, kLensCandela = 400.0f;
+
 	// Where a light is, to a metre (Unreal's space).
 	FIntVector Spot100(const float* Position)
 	{
@@ -114,10 +123,12 @@ void FGTAVLights::Load(TArray<GTAVPack::LodLight>&& InLights)
 {
 	Lights = MoveTemp(InLights);
 	Grid.Reset();
+	LodSpots.Reset();
 	for (int32 I = 0; I < Lights.Num(); ++I)
 	{
 		const GTAVPack::LodLight& L = Lights[I];
 		Grid.FindOrAdd(CellOf(FVector(L.position[0], L.position[1], L.position[2]))).Add(I);
+		LodSpots.Add(Spot100(L.position));
 	}
 }
 
@@ -156,6 +167,9 @@ void FGTAVLights::AddEntity(uint64 Key, const FTransform& Transform, const TArra
 		FEntityLight& E = Out.AddDefaulted_GetRef();
 		E.bInterior = (Key >> 63) != 0; // (UGTAVWorldSubsystem's keys of an interior's entities)
 		E.Length = M.type == 4 ? M.length * float(Transform.GetScale3D().X) : 0.0f;
+		E.CoronaSize = M.coronaSize * float(Transform.GetScale3D().X);
+		E.CoronaIntensity = M.coronaIntensity;
+		E.Intensity = M.intensity;
 		E.Axis = FVector3f(Transform.TransformVectorNoScale(FVector(M.tangent[0], M.tangent[1], M.tangent[2])).GetSafeNormal());
 		GTAVPack::LodLight& L = E.Light;
 		const FVector P = Transform.TransformPosition(FVector(M.position[0], M.position[1], M.position[2]));
@@ -171,6 +185,10 @@ void FGTAVLights::AddEntity(uint64 Key, const FTransform& Transform, const TArra
 		L.flags = (M.timeFlags & 0xFFFFFF) | ((bSpot ? kSpot : M.type == 4 ? kCapsule : kPoint) << 24);
 		L.coneInner = uint8(FMath::Clamp(M.coneInner / kConeDegrees, 0.0f, 127.0f));
 		L.coneOuter = uint8(bSpot ? FMath::Clamp(M.coneOuter / kConeDegrees, 1.0f, 127.0f) : 127.0f);
+		if (E.CoronaSize > 0 && E.CoronaIntensity > 0)
+		{
+			Coronas.Add(Spot10(L.position), {E.CoronaSize, E.CoronaIntensity, E.Intensity, Key});
+		}
 	}
 	LastNearTime = 0; // (at the next update)
 }
@@ -226,8 +244,16 @@ void FGTAVLights::Dump(const FVector& Point, float Radius) const
 
 void FGTAVLights::RemoveEntity(uint64 Key)
 {
-	if (EntityLights.Remove(Key))
+	if (const TArray<FEntityLight>* Gone = EntityLights.Find(Key))
 	{
+		for (const FEntityLight& E : *Gone)
+		{
+			if (const FCorona* C = Coronas.Find(Spot10(E.Light.position)); C && C->Entity == Key)
+			{
+				Coronas.Remove(Spot10(E.Light.position));
+			}
+		}
+		EntityLights.Remove(Key);
 		LastNearTime = 0;
 	}
 }
@@ -258,6 +284,12 @@ void FGTAVLights::Update(AActor* Owner, const FVector& Camera, int32 Hour)
 			ReleaseLight(G.Component.Get());
 		}
 		GameActive.Reset();
+		if (UInstancedStaticMeshComponent* G = NearGlow.Get())
+		{
+			G->ClearInstances();
+			G->MarkRenderStateDirty();
+		}
+		NearGlowData.Reset();
 	}
 	if (Hour != LastHour || FVector::DistSquared(Camera, LastNear) > FMath::Square(1000.0) || Now - LastNearTime > 1.0)
 	{
@@ -427,6 +459,12 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 			{
 				P->SetSourceLength(0.0f);
 			}
+		}
+		// (a spot lights its reach evenly, see kLux; a game light's component before may have been inverse squared)
+		if (UPointLightComponent* P = Cast<UPointLightComponent>(C); P && P->bUseInverseSquaredFalloff == bSpot)
+		{
+			P->SetUseInverseSquaredFalloff(!bSpot);
+			P->SetLightFalloffExponent(1.0f);
 		}
 		C->SetWorldLocation(FVector(L.position[0], L.position[1], L.position[2]));
 		C->SetLightColor(ColorOf(L));
@@ -633,18 +671,29 @@ void FGTAVLights::UpdateGame(AActor* Owner, const FVector& Camera)
 				Bulb->SetSourceLength(bTube ? Length : 0.0f);
 			}
 		}
-		if (!Was || Differs(Was->intensity, L.intensity) || Differs(Was->radius, L.radius) || Was->length != L.length)
+		if (!Was || Differs(Was->intensity, L.intensity) || Differs(Was->radius, L.radius) || Was->length != L.length ||
+			Was->falloffExponent != L.falloffExponent)
 		{
-			// (a spot: lux within its reach; a bulb as bright as that at half its reach, a tube more: as the LOD lights)
-			C->SetIntensity(bSpot ? Lux : Lux * FMath::Square(L.radius / 200.0f) * (1.0f + 2.0f * Length / FMath::Max(L.radius, 1.0f)));
+			// Measured on the game's own picture (a scripted spot over flat ground, its linear scene colour): the game's
+			// lights, spots too, fall off with the square of the distance, and the steeper its falloff exponent the
+			// dimmer a light is past the first part of its reach - at half its reach about half as bright from an
+			// exponent of 16 on as with 1. So: as bright as the game's level at half the reach, times that.
+			const float Steep = 0.5f + 0.5f * FMath::Exp(-(FMath::Max(L.falloffExponent, 1.0f) - 1.0f) / 6.0f);
+			C->SetIntensity(Lux * Steep * FMath::Square(L.radius / 200.0f) * (1.0f + 2.0f * Length / FMath::Max(L.radius, 1.0f)));
 			C->SetAttenuationRadius(FMath::Max(L.radius, 100.0f));
+		}
+		// (the LOD lights' spots light their reach evenly instead: the shared components switch)
+		if (UPointLightComponent* Light = Cast<UPointLightComponent>(C); Light && !Light->bUseInverseSquaredFalloff)
+		{
+			Light->SetUseInverseSquaredFalloff(true);
 		}
 		if (!Was || Was->color[0] != L.color[0] || Was->color[1] != L.color[1] || Was->color[2] != L.color[2])
 		{
 			C->SetLightColor(FLinearColor(L.color[0], L.color[1], L.color[2]));
 		}
-		// (near ones cast shadows: a lamp outside lights no room through its wall)
-		const bool bCast = bAllShadows || FVector::DistSquared(Camera, P) < ShadowReach2;
+		// (near ones cast shadows: a lamp outside lights no room through its wall; but not the big outdoor ones - a street
+		// light's bulb sits in its housing, which would shade it all, and the game's own street lights cast none)
+		const bool bCast = bAllShadows || (FVector::DistSquared(Camera, P) < ShadowReach2 && L.radius <= 1000.0f);
 		if (C->CastShadows != bCast)
 		{
 			C->SetCastShadows(bCast);
@@ -656,6 +705,95 @@ void FGTAVLights::UpdateGame(AActor* Owner, const FVector& Camera)
 		Next.Add({L, C});
 	}
 	GameActive = MoveTemp(Next);
+	UpdateNearGlow(Owner);
+}
+
+void FGTAVLights::UpdateNearGlow(AActor* Owner)
+{
+	// The lamps the game has lit that show a glow (a traffic signal's lens: red, amber or green as the game has it),
+	// where no LOD light's far glow is already.
+	TArray<float> Data; // (x, y, z, r, g, b) each
+	for (const GTAVBridge::GameLight& L : GameLights)
+	{
+		const FIntVector P = Spot10(L.position);
+		const FCorona* C = nullptr;
+		for (int32 X = -1; X <= 1 && !C; ++X)
+		{
+			for (int32 Y = -1; Y <= 1 && !C; ++Y)
+			{
+				for (int32 Z = -1; Z <= 1 && !C; ++Z)
+				{
+					C = Coronas.Find(P + FIntVector(X, Y, Z));
+				}
+			}
+		}
+		// (only the lamps of the game's movable objects - its flags' top bit: a traffic signal, whose lens is plain
+		// material and lit only by the game's glow; a candle's, a lamp's in a house: the model's own lit geometry)
+		if (!C || L.intensity <= 0 || !(L.flags & 0x80000000u))
+		{
+			continue;
+		}
+		const FIntVector M = Spot100(L.position);
+		bool bLod = false;
+		for (int32 X = -1; X <= 1 && !bLod; ++X)
+		{
+			for (int32 Y = -1; Y <= 1 && !bLod; ++Y)
+			{
+				for (int32 Z = -1; Z <= 1 && !bLod; ++Z)
+				{
+					bLod = LodSpots.Contains(M + FIntVector(X, Y, Z));
+				}
+			}
+		}
+		if (bLod)
+		{
+			continue;
+		}
+		// (as bright as the game has the light now against the model's own: dimmed, flickering, off)
+		const float Now = C->LightIntensity > 0 ? FMath::Clamp(L.intensity / C->LightIntensity, 0.0f, 2.0f) : 1.0f;
+		const float Candela = kLensCandela * C->Intensity * FMath::Square(C->Size / 100.0f) * Now;
+		const float Scale = Candela / kCoronaCandela;
+		Data.Append({L.position[0], L.position[1], L.position[2], L.color[0] * Scale, L.color[1] * Scale, L.color[2] * Scale});
+	}
+	if (Data == NearGlowData && NearGlow.IsValid())
+	{
+		return;
+	}
+	NearGlowData = Data;
+	UInstancedStaticMeshComponent* G = NearGlow.Get();
+	if (!G)
+	{
+		UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Corona.M_GTAV_Corona"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!Sphere || !Material)
+		{
+			return;
+		}
+		G = NewObject<UInstancedStaticMeshComponent>(Owner);
+		G->SetMobility(EComponentMobility::Movable);
+		G->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		G->SetCastShadow(false);
+		G->SetStaticMesh(Sphere);
+		G->SetMaterial(0, Material);
+		G->NumCustomDataFloats = 3;
+		G->RegisterComponent();
+		NearGlow = G;
+	}
+	G->ClearInstances();
+	const int32 Count = Data.Num() / 6;
+	TArray<FTransform> Transforms;
+	Transforms.Reserve(Count);
+	for (int32 I = 0; I < Count; ++I)
+	{
+		// (the engine's sphere is 100 cm across)
+		Transforms.Emplace(FQuat::Identity, FVector(Data[6 * I], Data[6 * I + 1], Data[6 * I + 2]), FVector(kLensRadius / 50.0f));
+	}
+	G->AddInstances(Transforms, false, false);
+	for (int32 I = 0; I < Count; ++I)
+	{
+		G->SetCustomData(I, MakeArrayView(&Data[6 * I + 3], 3), false);
+	}
+	G->MarkRenderStateDirty();
 }
 
 void FGTAVLights::UpdateFar(AActor* Owner, const FVector& Camera, int32 Hour)

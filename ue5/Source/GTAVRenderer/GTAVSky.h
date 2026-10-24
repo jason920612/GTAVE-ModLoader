@@ -19,6 +19,9 @@ namespace GTAVSky
 	void SetIndoors(bool bIndoors, bool bFromGame);
 	// The game's lightning this moment (stops over its sky's usual brightness; the bridge's).
 	void SetLightning(float Stops);
+	// The game's wet ground (0 dry - 1 soaked; it dries over an hour of game time after the rain), each frame the bridge
+	// has it; negative: not known (then by the weather).
+	void SetWetness(float Wetness);
 	// The game's date (month 1-12): the moon's phase and the stars' turn.
 	void SetDate(int32 Year, int32 Month, int32 Day);
 	// The game's moon and starfield textures (globals.gpk), once the pack is open.
