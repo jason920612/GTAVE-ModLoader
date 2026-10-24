@@ -36,7 +36,7 @@ namespace loader::graphics::particles
 		constexpr size_t kCreateGraphicsPipelineState = 10, kCreateRenderTargetView = 20, kCreatePipelineLibrary = 44, kCreatePipelineState = 47;
 		constexpr size_t kLoadGraphicsPipeline = 9, kLoadPipeline = 13;
 		constexpr size_t kClose = 9, kReset = 10, kDrawInstanced = 12, kDrawIndexedInstanced = 13, kSetPipelineState = 25, kResourceBarrier = 26,
-		                 kOMSetRenderTargets = 46, kSetPredication = 55, kExecuteIndirect = 59, kBeginRenderPass = 68;
+		                 kOMSetRenderTargets = 46, kExecuteIndirect = 59, kBeginRenderPass = 68;
 		constexpr size_t kExecuteCommandLists = 10;
 
 		using CreateGraphicsPipelineStateFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_GRAPHICS_PIPELINE_STATE_DESC*, REFIID, void**);
@@ -51,7 +51,6 @@ namespace loader::graphics::particles
 		using SetPipelineStateFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
 		using ResourceBarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
 		using OMSetRenderTargetsFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, BOOL, const D3D12_CPU_DESCRIPTOR_HANDLE*);
-		using SetPredicationFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12Resource*, UINT64, D3D12_PREDICATION_OP);
 		using ExecuteIndirectFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12CommandSignature*, UINT, ID3D12Resource*, UINT64, ID3D12Resource*, UINT64);
 		using BeginRenderPassFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList4*, UINT, const D3D12_RENDER_PASS_RENDER_TARGET_DESC*,
 		    const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC*, D3D12_RENDER_PASS_FLAGS);
@@ -69,11 +68,10 @@ namespace loader::graphics::particles
 		SetPipelineStateFn g_setPipelineState = nullptr;
 		ResourceBarrierFn g_resourceBarrier = nullptr;
 		OMSetRenderTargetsFn g_omSetRenderTargets = nullptr;
-		SetPredicationFn g_setPredication = nullptr;
 		ExecuteIndirectFn g_executeIndirect = nullptr;
 		BeginRenderPassFn g_beginRenderPass = nullptr;
 		ExecuteCommandListsFn g_executeCommandLists = nullptr;
-		std::vector<void*> g_traceHooks; // (render passes and submissions: hooked while tracing only)
+		std::vector<void*> g_traceHooks; // (render passes: hooked while tracing only)
 
 		// The pipelines made with a particle pixel shader: an open-addressing table of pipeline pointers (a pointer
 		// reused for another pipeline is marked again when that one is made), read without a lock on every
@@ -221,14 +219,14 @@ namespace loader::graphics::particles
 						return;
 		}
 
-		// The copies before and after the particles, and the predicate: a 64-bit word, 0 until the first copy before them
-		// in the frame ran (each list's copy before them is skipped where it is not 0), set back to 0 after DLSS. All three
-		// at rest in their states between uses: the copies NON_PIXEL_SHADER_RESOURCE, the predicate COMMON.
-		std::mutex g_copyMutex; // (making them)
+		// The copies before and after the particles (NON_PIXEL_SHADER_RESOURCE at rest), made by small lists of our own put
+		// in among the game's as it submits them (research §60.15: copies recorded inside the game's own lists - a barrier
+		// on its scene colour in the midst of its drawing, a predicate on the copy - hung the GPU twice in night soaks):
+		// one before the first list that drew particles in a frame, one after each such list (the last to run is left).
+		std::mutex g_copyMutex; // (making them; our lists)
 		ID3D12Resource* g_before = nullptr;
 		ID3D12Resource* g_after = nullptr;
-		ID3D12Resource* g_predicate = nullptr;
-		std::atomic<uint32_t> g_runs = 0;  // runs of particles recorded since the last frame was taken
+		std::atomic<uint32_t> g_drawn = 0; // lists that drew particles, recorded since the last frame was taken
 		std::atomic<uint32_t> g_frame = 0; // frames taken
 
 		// A list's particles, as its own thread records it (in this frame: one left from an earlier frame is of a list
@@ -239,18 +237,42 @@ namespace loader::graphics::particles
 			uint32_t frame = 0;
 			bool particle = false; // the pipeline set last draws particles
 			bool scene = false;    // the first render target bound last is the scene colour
-			bool copied = false;   // its (predicated) copy before the particles is recorded
-			bool run = false;      // particles drawn since the last copy after them
-			ID3D12Resource* predicate = nullptr; // the game's own predication on the list, set again after ours
-			UINT64 predicateOffset = 0;
-			D3D12_PREDICATION_OP predicateOp = D3D12_PREDICATION_OP_EQUAL_ZERO;
+			bool drew = false;     // particles were drawn into the scene colour
+			bool barrier = false;  // a barrier on the scene colour was recorded
+			bool odd = false;      // one not followed here (split, or a part of it)
+			// the scene colour's state at the list's start and end (a render target throughout, where no barrier says else)
+			D3D12_RESOURCE_STATES first = D3D12_RESOURCE_STATE_RENDER_TARGET, last = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			uint32_t age = 0;
 		};
 		thread_local ListState t_lists[4];
 		thread_local uint32_t t_age = 0;
 		thread_local bool t_busy = false; // (our own commands: the hooks pass them on)
 
-		bool MakeTexture(ID3D12Resource* scene, ID3D12Resource*& texture)
+		// The lists that drew particles, closed and not yet submitted.
+		struct Drawn
+		{
+			D3D12_RESOURCE_STATES first, last;
+			uint32_t frame;
+		};
+		std::mutex g_drawnMutex;
+		std::unordered_map<const void*, Drawn> g_drawnLists;
+		std::atomic<const void*> g_frameEnd = nullptr; // the list DLSS was recorded on: submitted, the frame's particles are past
+		bool g_beforeTaken = false;                    // (g_copyMutex) the copy before them, in the frame being submitted
+
+		// Our lists: a ring, each reused once the queue is past it (else that copy is left out).
+		struct CopyList
+		{
+			ID3D12CommandAllocator* allocator = nullptr;
+			ID3D12GraphicsCommandList* list = nullptr;
+			uint64_t done = 0; // the value of g_copyFence once the queue is past it
+		};
+		constexpr size_t kCopyLists = 32;
+		CopyList g_copyLists[kCopyLists];
+		size_t g_nextCopyList = 0;
+		ID3D12Fence* g_copyFence = nullptr;
+		uint64_t g_copyValue = 0;
+
+		bool MakeTexture(ID3D12Device* device, ID3D12Resource* scene, ID3D12Resource*& texture)
 		{
 			D3D12_RESOURCE_DESC desc = scene->GetDesc();
 			if (texture)
@@ -265,35 +287,20 @@ namespace loader::graphics::particles
 				}).detach();
 				texture = nullptr;
 			}
-			ID3D12Device* device = nullptr;
-			if (FAILED(scene->GetDevice(IID_PPV_ARGS(&device))))
-				return false;
 			D3D12_HEAP_PROPERTIES heap{};
 			heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 			desc.Alignment = 0;
 			desc.MipLevels = 1;
 			desc.DepthOrArraySize = 1;
 			desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-			bool made = SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-			    nullptr, IID_PPV_ARGS(&texture)));
-			if (made && !g_predicate)
+			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+			        IID_PPV_ARGS(&texture))))
 			{
-				// (zeroed as it is made: no copy before the particles has run)
-				D3D12_RESOURCE_DESC buffer{};
-				buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-				buffer.Width = 256;
-				buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
-				buffer.SampleDesc.Count = 1;
-				buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-				made = SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_predicate)));
-			}
-			device->Release();
-			if (!made && texture)
-			{
-				texture->Release();
 				texture = nullptr;
+				return false;
 			}
-			return made;
+			log::Info("ue5 particles: copies of the scene colour around its particles ({}x{}, format {})", desc.Width, desc.Height, static_cast<int>(desc.Format));
+			return true;
 		}
 
 		D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
@@ -304,117 +311,76 @@ namespace loader::graphics::particles
 			return b;
 		}
 
-		// The predicate set to a value (the list's own, after what it recorded so far).
-		void SetPredicate(ID3D12GraphicsCommandList* list, uint32_t value)
+		// One of our lists copying the scene colour (in `state` where it goes in the queue) into `to`; its ring slot, or
+		// -1 when none is free. (g_copyMutex held)
+		int CopyScene(ID3D12Device* device, ID3D12Resource* scene, D3D12_RESOURCE_STATES state, ID3D12Resource* to)
 		{
-			ID3D12GraphicsCommandList2* list2 = nullptr;
-			if (FAILED(list->QueryInterface(IID_PPV_ARGS(&list2))))
-				return;
-			D3D12_RESOURCE_BARRIER b = Transition(g_predicate, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-			list->ResourceBarrier(1, &b);
-			const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER write{g_predicate->GetGPUVirtualAddress(), value};
-			list2->WriteBufferImmediate(1, &write, nullptr);
-			std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
-			list->ResourceBarrier(1, &b);
-			list2->Release();
-		}
-
-		// The scene colour copied (the scene bound to draw into: in RENDER_TARGET state); predicated: skipped where the
-		// predicate is set already, and then set.
-		void Copy(ID3D12GraphicsCommandList* list, ListState& s, ID3D12Resource* scene, ID3D12Resource* to, bool predicated)
-		{
-			t_busy = true;
-			D3D12_RESOURCE_BARRIER barriers[2] = {Transition(scene, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
-			    Transition(to, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)};
-			list->ResourceBarrier(2, barriers);
-			if (predicated)
+			if (!g_copyFence && FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_copyFence))))
 			{
-				// (the predicate is promoted from COMMON to PREDICATION as it is read)
-				D3D12_RESOURCE_BARRIER b = Transition(g_predicate, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PREDICATION);
-				list->ResourceBarrier(1, &b);
-				list->SetPredication(g_predicate, 0, D3D12_PREDICATION_OP_NOT_EQUAL_ZERO);
+				g_copyFence = nullptr;
+				return -1;
 			}
-			else if (s.predicate)
-				list->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO); // (not the game's own predicate)
+			const size_t slot = g_nextCopyList % kCopyLists;
+			CopyList& c = g_copyLists[slot];
+			if (c.done > g_copyFence->GetCompletedValue())
+			{
+				static std::atomic_bool told = false;
+				if (!told.exchange(true))
+					log::Info("ue5 particles: our copy lists all in flight; a copy left out");
+				return -1;
+			}
+			t_busy = true;
+			if (!c.allocator)
+			{
+				if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&c.allocator))) ||
+				    FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, c.allocator, nullptr, IID_PPV_ARGS(&c.list))))
+				{
+					if (c.allocator)
+						c.allocator->Release();
+					c = CopyList{};
+					t_busy = false;
+					return -1;
+				}
+				c.list->Close();
+			}
+			c.allocator->Reset();
+			c.list->Reset(c.allocator, nullptr);
+			// (a state the copy can read from as it is needs no barrier)
+			const bool readable = (state & D3D12_RESOURCE_STATE_COPY_SOURCE) != 0;
+			D3D12_RESOURCE_BARRIER barriers[2] = {Transition(to, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
+			    Transition(scene, state, D3D12_RESOURCE_STATE_COPY_SOURCE)};
+			c.list->ResourceBarrier(readable ? 1 : 2, barriers);
 			D3D12_TEXTURE_COPY_LOCATION dst{to, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX}, src{scene, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
 			dst.SubresourceIndex = src.SubresourceIndex = 0;
-			list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-			if (!predicated && s.predicate)
-				list->SetPredication(s.predicate, s.predicateOffset, s.predicateOp);
-			if (predicated)
-			{
-				list->SetPredication(s.predicate, s.predicateOffset, s.predicateOp);
-				D3D12_RESOURCE_BARRIER b = Transition(g_predicate, D3D12_RESOURCE_STATE_PREDICATION, D3D12_RESOURCE_STATE_COMMON);
-				list->ResourceBarrier(1, &b);
-				SetPredicate(list, 1);
-			}
+			c.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 			std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
 			std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
-			list->ResourceBarrier(2, barriers);
+			c.list->ResourceBarrier(readable ? 1 : 2, barriers);
+			const bool closed = SUCCEEDED(c.list->Close());
 			t_busy = false;
-		}
-
-		void Record(const void* list, char kind, uint64_t value);
-
-		// The first particle of a run about to be drawn: at the list's first, the copy before the particles (if it runs
-		// first of the frame's).
-		void StartRun(ID3D12GraphicsCommandList* list, ListState& s)
-		{
-			ID3D12Resource* scene = g_scene.load(std::memory_order_acquire);
-			if (!scene || list->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
-				return;
-			{
-				std::lock_guard lock(g_copyMutex);
-				const bool first = !g_before;
-				if (!MakeTexture(scene, g_before) || !MakeTexture(scene, g_after))
-					return;
-				if (first)
-				{
-					const D3D12_RESOURCE_DESC desc = scene->GetDesc();
-					log::Info("ue5 particles: copies of the scene colour around its particles ({}x{}, format {})", desc.Width, desc.Height, static_cast<int>(desc.Format));
-				}
-			}
-			if (!s.copied)
-			{
-				s.copied = true;
-				Copy(list, s, scene, g_before, true);
-				Record(list, 'C', 0);
-			}
-			s.run = true;
-			++g_runs;
-		}
-
-		// After a run of particles (before what comes next touches the scene colour): the copy after them (the last to
-		// run is the one left).
-		void EndRun(ID3D12GraphicsCommandList* list, ListState& s)
-		{
-			s.run = false;
-			ID3D12Resource* scene = g_scene.load(std::memory_order_acquire);
-			if (!scene || !g_after)
-				return;
-			Copy(list, s, scene, g_after, false);
-			Record(list, 'A', 0);
+			if (!closed)
+				return -1;
+			++g_nextCopyList;
+			return static_cast<int>(slot);
 		}
 
 		ListState& StateOf(ID3D12GraphicsCommandList* list)
 		{
 			const uint32_t frame = g_frame.load(std::memory_order_relaxed);
 			ListState* oldest = &t_lists[0];
-			for (ListState& s : t_lists)
+			for (ListState& st : t_lists)
 			{
-				if (s.list == list && s.frame == frame)
+				if (st.list == list && st.frame == frame)
 				{
-					s.age = ++t_age;
-					return s;
+					st.age = ++t_age;
+					return st;
 				}
-				if (s.age < oldest->age)
-					oldest = &s;
+				if (st.age < oldest->age)
+					oldest = &st;
 			}
-			// (a list not seen on this thread in this frame: the least recent one's place - that one is not recorded
-			// into again from here: it may be closed by now)
-			for (ListState& s : t_lists)
-				if (s.list == list)
-					s = ListState{};
+			for (ListState& st : t_lists)
+				if (st.list == list)
+					st = ListState{};
 			*oldest = ListState{};
 			oldest->list = list;
 			oldest->frame = frame;
@@ -424,22 +390,19 @@ namespace loader::graphics::particles
 
 		void Forget(ID3D12GraphicsCommandList* list)
 		{
-			for (ListState& s : t_lists)
-				if (s.list == list)
-					s = ListState{};
+			for (ListState& st : t_lists)
+				if (st.list == list)
+					st = ListState{};
 		}
 
-		// Before a draw: a run of particles starts or ends.
+		// Before a draw: particles into the scene colour, noted.
 		void BeforeDraw(ID3D12GraphicsCommandList* list)
 		{
 			if (t_busy)
 				return;
-			ListState& s = StateOf(list);
-			const bool particles = s.particle && s.scene;
-			if (particles && !s.run)
-				StartRun(list, s);
-			else if (!particles && s.run)
-				EndRun(list, s);
+			ListState& st = StateOf(list);
+			if (st.particle && st.scene)
+				st.drew = true;
 		}
 
 		// ---- research: one frame's calls (Trace) ----
@@ -580,12 +543,16 @@ namespace loader::graphics::particles
 		{
 			if (!t_busy)
 			{
-				for (ListState& s : t_lists)
-					if (s.list == list)
+				for (ListState& st : t_lists)
+					if (st.list == list)
 					{
-						if (s.run)
-							EndRun(list, s);
-						s = ListState{};
+						if (st.drew && !st.odd && st.frame == g_frame.load(std::memory_order_relaxed))
+						{
+							std::lock_guard lock(g_drawnMutex);
+							g_drawnLists[list] = {st.first, st.last, st.frame};
+							++g_drawn;
+						}
+						st = ListState{};
 					}
 			}
 			return g_close(list);
@@ -621,19 +588,24 @@ namespace loader::graphics::particles
 
 		void STDMETHODCALLTYPE ResourceBarrier(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers)
 		{
-			if (!t_busy)
+			if (!t_busy && barriers)
 			{
-				// (the scene colour changing state: the copy after the particles first, while it is a render target still)
+				// (the scene colour's state at the list's start and end, for the copies around it)
 				ID3D12Resource* scene = g_scene.load(std::memory_order_relaxed);
-				for (ListState& s : t_lists)
-					if (s.list == list && s.run)
-						for (UINT i = 0; i < count; ++i)
-							if (barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ? barriers[i].Transition.pResource == scene
-							                                                                : barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
-							{
-								EndRun(list, s);
-								break;
-							}
+				ListState* st = nullptr;
+				for (UINT i = 0; scene && i < count; ++i)
+				{
+					const D3D12_RESOURCE_BARRIER& b = barriers[i];
+					if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || b.Transition.pResource != scene)
+						continue;
+					if (!st)
+						st = &StateOf(list);
+					if (b.Flags != D3D12_RESOURCE_BARRIER_FLAG_NONE || (b.Transition.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES && b.Transition.Subresource != 0))
+						st->odd = true;
+					if (!st->barrier)
+						st->first = b.Transition.StateBefore, st->barrier = true;
+					st->last = b.Transition.StateAfter;
+				}
 			}
 			g_resourceBarrier(list, count, barriers);
 		}
@@ -650,19 +622,6 @@ namespace loader::graphics::particles
 			BeforeDraw(list);
 			CountDraw(list);
 			g_drawIndexedInstanced(list, a, b, c, d, e);
-		}
-
-		void STDMETHODCALLTYPE SetPredication(ID3D12GraphicsCommandList* list, ID3D12Resource* buffer, UINT64 offset, D3D12_PREDICATION_OP op)
-		{
-			if (!t_busy)
-			{
-				ListState& s = StateOf(list);
-				s.predicate = buffer, s.predicateOffset = offset, s.predicateOp = op;
-				static std::atomic_bool told = false;
-				if (buffer && !told.exchange(true))
-					log::Info("ue5 particles: the game predicates its own commands too (set again after the copies')");
-			}
-			g_setPredication(list, buffer, offset, op);
 		}
 
 		void STDMETHODCALLTYPE ExecuteIndirect(ID3D12GraphicsCommandList* list, ID3D12CommandSignature* signature, UINT most, ID3D12Resource* arguments,
@@ -683,7 +642,70 @@ namespace loader::graphics::particles
 		{
 			for (UINT i = 0; i < count; ++i)
 				Record(lists[i], 'X', reinterpret_cast<uintptr_t>(queue));
-			g_executeCommandLists(queue, count, lists);
+			ID3D12Resource* scene = g_scene.load(std::memory_order_acquire);
+			if (t_busy || !scene || !count || !lists)
+				return g_executeCommandLists(queue, count, lists);
+			// The lists that drew particles in this submission, and the state of the scene colour about each.
+			std::vector<std::pair<UINT, Drawn>> drawn;
+			const void* frameEnd = g_frameEnd.load(std::memory_order_acquire);
+			bool ends = false;
+			{
+				std::lock_guard lock(g_drawnMutex);
+				for (UINT i = 0; i < count; ++i)
+				{
+					ends = ends || lists[i] == frameEnd;
+					if (g_drawnLists.empty())
+						continue;
+					if (const auto found = g_drawnLists.find(lists[i]); found != g_drawnLists.end())
+					{
+						drawn.emplace_back(i, found->second);
+						g_drawnLists.erase(found);
+					}
+				}
+			}
+			if (drawn.empty() && !ends)
+				return g_executeCommandLists(queue, count, lists);
+			std::lock_guard lock(g_copyMutex);
+			std::vector<ID3D12CommandList*> out;
+			std::vector<int> used;
+			ID3D12Device* device = nullptr;
+			const bool direct = queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
+			if (!drawn.empty() && direct && SUCCEEDED(scene->GetDevice(IID_PPV_ARGS(&device))))
+			{
+				const bool made = MakeTexture(device, scene, g_before) && MakeTexture(device, scene, g_after);
+				size_t next = 0;
+				for (UINT i = 0; i < count; ++i)
+				{
+					const Drawn* d = next < drawn.size() && drawn[next].first == i ? &drawn[next++].second : nullptr;
+					if (d && made && !g_beforeTaken)
+					{
+						g_beforeTaken = true;
+						if (const int slot = CopyScene(device, scene, d->first, g_before); slot >= 0)
+							out.push_back(g_copyLists[slot].list), used.push_back(slot);
+					}
+					out.push_back(lists[i]);
+					if (d && made)
+						if (const int slot = CopyScene(device, scene, d->last, g_after); slot >= 0)
+							out.push_back(g_copyLists[slot].list), used.push_back(slot);
+					if (lists[i] == frameEnd)
+						g_beforeTaken = false;
+				}
+				device->Release();
+			}
+			else
+			{
+				out.assign(lists, lists + count);
+				if (ends)
+					g_beforeTaken = false;
+			}
+			const uint64_t value = g_copyValue + 1;
+			for (const int slot : used)
+				g_copyLists[slot].done = value;
+			t_busy = true; // (whatever runs the lists may submit too)
+			g_executeCommandLists(queue, static_cast<UINT>(out.size()), out.data());
+			t_busy = false;
+			if (!used.empty() && SUCCEEDED(queue->Signal(g_copyFence, value)))
+				g_copyValue = value;
 		}
 
 		template <typename Fn>
@@ -743,11 +765,11 @@ namespace loader::graphics::particles
 				ok = ok && Hook(l, kClose, &Close, g_close) && Hook(l, kReset, &Reset, g_reset) && Hook(l, kSetPipelineState, &SetPipelineState, g_setPipelineState) &&
 				     Hook(l, kResourceBarrier, &ResourceBarrier, g_resourceBarrier) && Hook(l, kOMSetRenderTargets, &OMSetRenderTargets, g_omSetRenderTargets) &&
 				     Hook(l, kDrawInstanced, &DrawInstanced, g_drawInstanced) && Hook(l, kDrawIndexedInstanced, &DrawIndexedInstanced, g_drawIndexedInstanced) &&
-				     Hook(l, kExecuteIndirect, &ExecuteIndirect, g_executeIndirect) && Hook(l, kSetPredication, &SetPredication, g_setPredication);
+				     Hook(l, kExecuteIndirect, &ExecuteIndirect, g_executeIndirect);
+				ok = ok && Hook(Vtable(queue), kExecuteCommandLists, &ExecuteCommandLists, g_executeCommandLists);
 				// (for the trace: enabled while tracing)
 				if (SUCCEEDED(list->QueryInterface(IID_PPV_ARGS(&list4))))
 					Hook(Vtable(list4), kBeginRenderPass, &BeginRenderPass, g_beginRenderPass, false);
-				Hook(Vtable(queue), kExecuteCommandLists, &ExecuteCommandLists, g_executeCommandLists, false);
 			} while (false);
 			for (IUnknown* object : std::initializer_list<IUnknown*>{list4, list, allocator, queue, library, device1, device2, device})
 				if (object)
@@ -812,18 +834,18 @@ namespace loader::graphics::particles
 	Layer TakeLayer(ID3D12GraphicsCommandList* list)
 	{
 		Layer layer;
-		g_frame.fetch_add(1, std::memory_order_relaxed);
-		if (g_runs.exchange(0) > 0 && list)
+		const uint32_t frame = g_frame.fetch_add(1, std::memory_order_relaxed);
+		g_frameEnd.store(list, std::memory_order_release);
+		if (g_drawn.exchange(0) > 0)
 		{
 			std::lock_guard lock(g_copyMutex);
-			if (g_before && g_after && g_predicate)
-			{
+			if (g_before && g_after)
 				layer = {g_before, g_after};
-				// (the next frame's first copy before the particles is to run again)
-				t_busy = true;
-				SetPredicate(list, 0);
-				t_busy = false;
-			}
+		}
+		{
+			// (lists that drew particles but were never submitted)
+			std::lock_guard lock(g_drawnMutex);
+			std::erase_if(g_drawnLists, [&](const auto& d) { return d.second.frame + 8 < frame; });
 		}
 		const int tracing = g_tracing.load(std::memory_order_relaxed);
 		if (tracing == 2)

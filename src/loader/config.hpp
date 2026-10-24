@@ -63,6 +63,9 @@ namespace loader::config
 		// How far its colour balance follows the game's grading (the timecycle's light colours and tints; 0: the
 		// renderer's own physical colour).
 		float ue5GradeMatch = 1.0f;
+		// The game's particles (fire, smoke, explosions, rain) over the renderer's picture (graphics/particles.cpp: D3D12
+		// hooked from the start; takes effect when the game starts).
+		bool ue5Particles = true;
 		// While UE5 draws the world the game's own 3D picture only carries its peds and vehicles: the DLSS mode the
 		// game renders for then ("game": its own setting; "quality", "balanced", "performance"), which sets the game's
 		// internal resolution. Takes effect when the game starts. (Measured at Legion Square, high preset: the game's

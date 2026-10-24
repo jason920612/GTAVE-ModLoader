@@ -55,6 +55,7 @@ namespace loader::config
 			c.ue5Preset = j.value("ue5Preset", c.ue5Preset);
 			c.ue5ExposureMatch = j.value("ue5ExposureMatch", c.ue5ExposureMatch);
 			c.ue5GradeMatch = j.value("ue5GradeMatch", c.ue5GradeMatch);
+			c.ue5Particles = j.value("ue5Particles", c.ue5Particles);
 			c.ue5GameResolution = j.value("ue5GameResolution", c.ue5GameResolution);
 			c.ue5GameDetail = j.value("ue5GameDetail", c.ue5GameDetail);
 		}
@@ -90,6 +91,7 @@ namespace loader::config
 				{"ue5Preset", c.ue5Preset},
 				{"ue5ExposureMatch", c.ue5ExposureMatch},
 				{"ue5GradeMatch", c.ue5GradeMatch},
+				{"ue5Particles", c.ue5Particles},
 				{"ue5GameResolution", c.ue5GameResolution},
 				{"ue5GameDetail", c.ue5GameDetail},
 			};

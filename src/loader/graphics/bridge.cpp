@@ -996,7 +996,10 @@ namespace loader::graphics::bridge
 		g_showing = true;
 		streamline::SetAfterDlss(&AfterDlss);
 		streamline::SetOnCamera(&OnCamera);
-		particles::Start();
+		if (config::Get().ue5Particles)
+			particles::Start();
+		else
+			log::Info("ue5 particles: off (ue5Particles)");
 		log::Info("ue5 bridge: on (needs the game's DLSS on; {} switches pictures)", config::Get().ue5Key);
 	}
 
