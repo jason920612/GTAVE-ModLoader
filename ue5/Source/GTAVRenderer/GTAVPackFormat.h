@@ -144,7 +144,7 @@ namespace GTAVPack
 		float emissive;                // emissiveMultiplier
 		float bumpiness;
 		float specularIntensity;
-		float color[4];  // water: its colour
+		float color[4];  // water: its colour; decal_dirt: its dirtDecalMask (the texture's channels that are the dirt)
 		float detail[4]; // detailSettings
 		float alphaTest;
 		float reserved[3];
@@ -255,6 +255,23 @@ namespace GTAVPack
 		uint16_t numChildren;
 	};
 	static_assert(sizeof(Entity) == 72);
+
+	// Entity::flags and InteriorEntity::flags are the map's own (its entity definitions'); the bits known here, from the
+	// map itself (research §60.22: of its 750,000 entities, those with the first two are the ones named as proxies).
+	enum EntityFlags : uint32_t
+	{
+		kInteriorUsual = 1u << 24,          // two in three of the interiors' things, none of their proxies
+		kOnlyInReflections = 1u << 25,      // a room's or a tunnel's copy for the game's reflections ("..._reflect")
+		kOnlyInWaterReflections = 1u << 27, // a copy for the water's reflections (a tree's, "..._reflproxy", "..._water_proxy")
+		kMirrored = 1u << 29,               // without kInteriorUsual: a copy for a mirror's reflection ("..._mirrorproxy",
+		                                    // "..._emissive_mirroronly"); with it, an interior's lamp or prop as any other
+	};
+	// Whether the game draws such an entity in its view of the world (else only into its reflections: here the renderer
+	// reflects the world itself, and a room's copy drawn covered its floor and windows, a mirror's copy shaded the room).
+	inline bool InMainView(uint32_t Flags)
+	{
+		return !(Flags & (kOnlyInReflections | kOnlyInWaterReflections)) && (Flags & (kMirrored | kInteriorUsual)) != kMirrored;
+	}
 
 	struct Group
 	{

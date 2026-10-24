@@ -864,6 +864,16 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	{
 		MI->SetScalarParameterValue(TEXT("UseVertexColour"), 1.0f);
 	}
+	// A decal_dirt: the dirt's colour is the vertex colour, its texture the mask (the channels in its dirtDecalMask: a
+	// pack without it, the red) - research §60.22.
+	static const uint32 DecalDirt = GTAVHash(TEXTVIEW("decal_dirt"));
+	if (M.effect == DecalDirt)
+	{
+		const bool bMask = M.color[0] != 0 || M.color[1] != 0 || M.color[2] != 0;
+		MI->SetVectorParameterValue(TEXT("DirtMask"), bMask ? FLinearColor(M.color[0], M.color[1], M.color[2], 0.0f) : FLinearColor(1.0f, 0.0f, 0.0f, 0.0f));
+		MI->SetScalarParameterValue(TEXT("UseDirt"), 1.0f);
+		MI->SetScalarParameterValue(TEXT("UseVertexColour"), 1.0f);
+	}
 	// A screen a script draws into (a TV, a monitor): off, a dark glass, as it is until a script turns it on (its texture
 	// in the archives is a stand-in).
 	if (M.flags & GTAVPack::kScriptTarget)

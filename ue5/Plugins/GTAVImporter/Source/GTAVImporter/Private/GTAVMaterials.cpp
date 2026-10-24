@@ -645,12 +645,19 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		Add(E);
 		return E;
 	};
-	// The vertex colour as the game has it: red = natural ambient occlusion, blue = the tint palette column.
+	// The vertex colour as the game has it: red = how much of the sky's ambient light reaches (natural), green = how much
+	// of an interior's own (artificial), blue = the tint palette column. The occlusion is the larger: outdoors the green
+	// is about nothing and the red is it; indoors the red is low throughout (no sky in a room: a kitchen's 0.19) and was
+	// all of the room's bounced light gone, the cream cabinets olive with the walls' green - research §60.22.
 	auto* Vertex = NewObject<UMaterialExpressionVertexColor>(M);
 	Add(Vertex);
 	auto* UseVertexColour = Scalar(TEXT("UseVertexColour"), 0.0f); // (cpv_only: below)
+	auto* Ambient = NewObject<UMaterialExpressionMax>(M);
+	Ambient->A.Connect(1, Vertex);
+	Ambient->B.Connect(2, Vertex);
+	Add(Ambient);
 	auto* Occlusion = NewObject<UMaterialExpressionLinearInterpolate>(M); // (a colour's red is no occlusion)
-	Occlusion->A.Connect(1, Vertex);
+	Occlusion->A.Connect(0, Ambient);
 	Occlusion->ConstB = 1.0f;
 	Occlusion->Alpha.Connect(0, UseVertexColour);
 	Add(Occlusion);
@@ -799,8 +806,29 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	if (Kind == 1)
 	{
 		// (decals fade with the vertex alpha; many have no alpha in their texture)
+		// A decal_dirt's texture is the dirt's mask, not its colour (where UseDirt is 1): the game's pixel shader takes
+		// dot(its rgb, dirtDecalMask) for how much shows (DirtMask, read as stored: the sampler decodes sRGB) and the
+		// vertex colour for its colour (UseVertexColour) - research §60.22; drawn as colour it was white streaks.
+		auto* DirtMask = NewObject<UMaterialExpressionVectorParameter>(M);
+		DirtMask->ParameterName = TEXT("DirtMask");
+		DirtMask->DefaultValue = FLinearColor(1.0f, 0.0f, 0.0f, 0.0f);
+		Add(DirtMask);
+		auto* Shows = NewObject<UMaterialExpressionCustom>(M);
+		Shows->Description = TEXT("Decal alpha");
+		Shows->OutputType = CMOT_Float1;
+		Shows->Code = TEXT("return lerp(Alpha, dot(pow(saturate(Rgb), 1.0 / 2.2), Mask.rgb), UseDirt);");
+		Shows->Inputs.Reset();
+		for (const TTuple<const TCHAR*, UMaterialExpression*, int32>& I : {MakeTuple(TEXT("Rgb"), (UMaterialExpression*)Diffuse, 0),
+				 MakeTuple(TEXT("Alpha"), (UMaterialExpression*)Diffuse, 4), MakeTuple(TEXT("Mask"), (UMaterialExpression*)DirtMask, 0),
+				 MakeTuple(TEXT("UseDirt"), (UMaterialExpression*)Scalar(TEXT("UseDirt"), 0.0f), 0)})
+		{
+			FCustomInput& In = Shows->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Get<0>();
+			In.Input.Connect(I.Get<2>(), I.Get<1>());
+		}
+		Add(Shows);
 		auto* Opacity = NewObject<UMaterialExpressionMultiply>(M);
-		Opacity->A.Connect(4, Diffuse);
+		Opacity->A.Connect(0, Shows);
 		Opacity->B.Connect(4, Vertex);
 		Add(Opacity);
 		Inputs->Opacity.Connect(0, Opacity);

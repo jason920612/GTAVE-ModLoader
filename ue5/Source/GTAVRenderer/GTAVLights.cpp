@@ -24,6 +24,11 @@ namespace
 	constexpr float kIndoorLodClear = 3000.0f;
 	// The game's intensity -> lux within its reach: as its LOD lights' byte (a lit window's 8 is about 42 there), see kLux.
 	constexpr float kLuxPerGameUnit = 5.33f / 255.0f;
+	// A light's flag (the game's and its models'): one standing in for the sun coming in at a window - on by day only,
+	// its strength and colour the sun's (a kitchen's: 3.2 at seven, 12.8 at one, gone at night; research §60.22). Here the
+	// sun comes in itself and lights the room on (Lumen); with it, a room had the sun twice, and the light sat on the
+	// glass as a blinding ball (falling off with the square of the distance from a point at the pane).
+	constexpr uint32 kFromSun = 0x200;
 
 	// Where a light is, to 10 cm (Unreal's space).
 	FIntVector Spot10(const float* Position)
@@ -164,6 +169,10 @@ void FGTAVLights::AddEntity(uint64 Key, const FTransform& Transform, const TArra
 	Out.Reset();
 	for (const GTAVPack::ModelLight& M : Model)
 	{
+		if (M.flags & kFromSun)
+		{
+			continue;
+		}
 		FEntityLight& E = Out.AddDefaulted_GetRef();
 		E.bInterior = (Key >> 63) != 0; // (UGTAVWorldSubsystem's keys of an interior's entities)
 		E.Length = M.type == 4 ? M.length * float(Transform.GetScale3D().X) : 0.0f;
@@ -538,6 +547,10 @@ void FGTAVLights::SetGameLights(const TArray<GTAVBridge::GameLight>& InLights, b
 	GameSpots.Reset();
 	for (const GTAVBridge::GameLight& In : InLights)
 	{
+		if (In.flags & kFromSun)
+		{
+			continue;
+		}
 		GTAVBridge::GameLight& L = GameLights.Add_GetRef(In);
 		L.position[0] = In.position[0] * 100.0f, L.position[1] = -In.position[1] * 100.0f, L.position[2] = In.position[2] * 100.0f;
 		L.direction[1] = -In.direction[1];

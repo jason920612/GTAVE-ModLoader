@@ -11,6 +11,7 @@
 //                                                  files (<out>\<name>); --streams: rivers to add (tools/ue5export/streams.json,
 //                                                  tools/ue5hydrology.py's: the Alamo Sea's inflows)
 //   ue5export lightdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's light attributes, raw
+//   ue5export matdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's materials: shaders, textures by name
 //   ue5export resdump --out <dir> --game <dir> --file <name>   a resource's blocks as they are in memory:
 //                                                  <out>\<name>.virtual (at 0x50000000), <name>.physical (0x60000000)
 #include <Windows.h>
@@ -419,6 +420,42 @@ namespace
 		return 0;
 	}
 
+	// A drawable's materials: each one's shader and its textures by name (and the textures it holds itself).
+	int MaterialDump(const loader::convert::Decryptor& decrypt)
+	{
+		ue5export::GameFiles files;
+		std::string error;
+		if (!files.Open(g_options["game"], decrypt, error))
+			return Fail(error);
+		const auto* f = files.Find(g_options["file"]);
+		loader::convert::Bytes data;
+		loader::convert::Resource resource;
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
+			return Fail(f ? error : "not found");
+		const ue5export::drawable::View view(resource);
+		const std::string ext = g_options["file"].substr(g_options["file"].rfind('.') + 1);
+		for (const auto& [hash, offset] : ue5export::drawable::Drawables(view, ext))
+		{
+			ue5export::drawable::Model model;
+			if (!ue5export::drawable::Read(view, offset, model, error))
+			{
+				std::printf("drawable %08x: %s\n", hash, error.c_str());
+				continue;
+			}
+			std::printf("drawable %08x: %zu materials, %zu textures of its own\n", hash, model.materials.size(), model.embedded.size());
+			for (size_t i = 0; i < model.materials.size(); ++i)
+			{
+				const auto& m = model.materials[i];
+				std::printf("  material %zu: shader %08x bucket %u\n", i, m.effect, m.drawBucket);
+				for (const auto& [param, name] : m.textures)
+					std::printf("    %08x %s\n", param, name.c_str());
+			}
+			for (const auto& t : model.embedded)
+				std::printf("  own texture %s\n", t.name.c_str());
+		}
+		return 0;
+	}
+
 	// A resource's two blocks, decompressed, to files (research: its layout).
 	int ResDump(const loader::convert::Decryptor& decrypt)
 	{
@@ -630,6 +667,8 @@ int main(int argc, char** argv)
 		return g_options.contains("file") ? ResDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "lightdump")
 		return g_options.contains("file") ? LightDump(decrypt) : Fail("--file <name> is needed");
+	if (command == "matdump")
+		return g_options.contains("file") ? MaterialDump(decrypt) : Fail("--file <name> is needed");
 	if (command == "texstats")
 		return TextureStats(decrypt);
 	if (command == "texfind")

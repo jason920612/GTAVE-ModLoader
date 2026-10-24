@@ -597,7 +597,7 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 bool UGTAVWorldSubsystem::Ready(uint32 Entity, const FVector& Center)
 {
 	const GTAVPack::Entity& E = Data.Entities[Entity];
-	if (!YmapOn[E.ymap] || E.interiorPlacement != GTAVPack::kNone || !Shown(E.archetype))
+	if (!YmapOn[E.ymap] || E.interiorPlacement != GTAVPack::kNone || !Shown(E.archetype) || !GTAVPack::InMainView(E.flags))
 	{
 		return true;
 	}
@@ -670,7 +670,10 @@ void UGTAVWorldSubsystem::Visit(uint32 Entity, const FVector& Center, bool bForc
 		WantInterior(Entity, Center);
 		return;
 	}
-	Want(Entity, E.archetype, D);
+	if (GTAVPack::InMainView(E.flags))
+	{
+		Want(Entity, E.archetype, D);
+	}
 }
 
 void UGTAVWorldSubsystem::SetGameInteriorSets(const GTAVBridge::InteriorSets* Interiors, uint32 Count)
@@ -699,6 +702,10 @@ void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 	NearInteriors.AddUnique(Entity);
 	const auto Add = [&](uint32 Index) {
 		const GTAVPack::InteriorEntity& X = Data.InteriorEntities[Index];
+		if (!GTAVPack::InMainView(X.flags))
+		{
+			return;
+		}
 		const float Range = (X.lodDist > 0 ? X.lodDist : 100.0f) * 100.0f * DistanceScale;
 		// (to its box: a tunnel's pieces are long)
 		const FTransform Local(Rotation(X.rotation), Position(X.position), FVector(X.scaleXY, X.scaleXY, X.scaleZ));

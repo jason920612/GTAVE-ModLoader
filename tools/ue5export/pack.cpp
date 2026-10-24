@@ -462,6 +462,10 @@ namespace ue5export
 							target[k] = it->second[k];
 				};
 				copy(0xe9c969fb, mat.color); // (the water's colour)
+				// (a decal_dirt's: which of its texture's channels are the dirt - its colour is the vertex colour's, research
+				// §60.22)
+				if (src.effect == Joaat("decal_dirt"))
+					copy(Joaat("dirtDecalMask"), mat.color);
 				copy(Joaat("detailSettings"), mat.detail);
 				Put(out, mat);
 			}
