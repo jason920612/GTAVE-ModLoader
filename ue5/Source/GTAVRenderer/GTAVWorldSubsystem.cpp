@@ -105,6 +105,22 @@ void UGTAVWorldSubsystem::DumpNear(const FVector& GamePoint, float Radius)
 {
 	const FVector P(GamePoint.X * 100, -GamePoint.Y * 100, GamePoint.Z * 100);
 	Lights.Dump(P, Radius * 100);
+	// (an interior's entities: wanted, drawn or not)
+	for (const TPair<uint64, uint32>& W : Wanted)
+	{
+		if (!(W.Key & kInteriorKey))
+		{
+			continue;
+		}
+		const FVector At = EntityTransform(W.Key).GetLocation();
+		if (FVector::Dist(At, P) > Radius * 100)
+		{
+			continue;
+		}
+		const UStaticMeshComponent* C = Drawn.FindRef(W.Key);
+		UE_LOG(LogGTAVWorld, Display, TEXT("dump: interior entity %llx archetype %08x at %.2f %.2f %.2f: %s"), W.Key, W.Value, At.X / 100, -At.Y / 100, At.Z / 100,
+			!C ? TEXT("not drawn") : C->IsVisible() ? TEXT("drawn") : TEXT("drawn, hidden"));
+	}
 	for (const TPair<uint64, TObjectPtr<UStaticMeshComponent>>& D : Drawn)
 	{
 		if (D.Key & kInteriorKey)
@@ -512,6 +528,7 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	{
 		const double Start = FPlatformTime::Seconds();
 		Apply();
+		ApplyObjects(Center);
 		ApplySpent = FPlatformTime::Seconds() - Start;
 	}
 	for (UStaticMeshComponent* W : Water)
@@ -815,6 +832,144 @@ void UGTAVWorldSubsystem::Update(const FVector& Center)
 	}
 }
 
+namespace
+{
+	// A game object's place in Unreal's space: the models and the map are mirrored in y (y negated), so its axes are
+	// too (the matrix M R M, M = diag(1, -1, 1)): x = M right, y = -M forward, z = M up; their lengths its scale.
+	FTransform ObjectTransform(const GTAVBridge::GameObject& O)
+	{
+		const FVector X(O.right[0], -O.right[1], O.right[2]);
+		const FVector Y(-O.forward[0], O.forward[1], -O.forward[2]);
+		const FVector Z(O.up[0], -O.up[1], O.up[2]);
+		const FVector P(O.position[0] * 100.0, -O.position[1] * 100.0, O.position[2] * 100.0);
+		return FTransform(FMatrix(FPlane(X, 0.0), FPlane(Y, 0.0), FPlane(Z, 0.0), FPlane(P, 1.0)));
+	}
+}
+
+// The map entity drawn with this model where the map placed a game object (within 30 cm), or 0.
+uint64 UGTAVWorldSubsystem::FindPlaced(uint32 Model, const FVector& Placed) const
+{
+	for (const TPair<uint64, uint32>& W : Wanted)
+	{
+		if (W.Value == Model && Drawn.Contains(W.Key) && FVector::DistSquared(EntityTransform(W.Key).GetLocation(), Placed) < 30.0 * 30.0)
+		{
+			return W.Key;
+		}
+	}
+	return 0;
+}
+
+void UGTAVWorldSubsystem::ApplyObjects(const FVector& Center)
+{
+	const double Now = FPlatformTime::Seconds();
+	TSet<uint32> Seen;
+	TSet<uint64> Hide;
+	for (const GTAVBridge::GameObject& O : GameObjects)
+	{
+		Seen.Add(O.id);
+		FObjectState& S = ObjectStates.FindOrAdd(O.id);
+		if (S.Model != O.model)
+		{
+			S = FObjectState();
+			S.Model = O.model;
+		}
+		// The map's copy of it (looked for once a second until found: it may not be drawn yet).
+		if (!FMath::IsNaN(O.placed[0]))
+		{
+			if (!S.Hides && Now - S.LastLook > 1.0)
+			{
+				S.LastLook = Now;
+				S.Hides = FindPlaced(O.model, FVector(O.placed[0] * 100.0, -O.placed[1] * 100.0, O.placed[2] * 100.0));
+			}
+			if (S.Hides)
+			{
+				Hide.Add(S.Hides);
+			}
+		}
+		UStaticMeshComponent* C = ObjectComponents.FindRef(O.id);
+		if (!(O.flags & GTAVBridge::kObjectVisible) || !Shown(O.model))
+		{
+			if (C)
+			{
+				C->SetVisibility(false);
+			}
+			continue;
+		}
+		const FTransform Transform = ObjectTransform(O);
+		if (Assets->Request(O.model, float(FVector::Dist(Transform.GetLocation(), Center))) != FGTAVRuntimeAssets::EState::Ready)
+		{
+			continue;
+		}
+		UStaticMesh* Mesh = Assets->Get(O.model);
+		if (!Mesh)
+		{
+			continue;
+		}
+		if (!C)
+		{
+			C = NewObject<UStaticMeshComponent>(Root);
+			C->SetMobility(EComponentMobility::Movable);
+			C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			C->SetGenerateOverlapEvents(false);
+			C->SetStaticMesh(Mesh);
+			C->SetWorldTransform(Transform);
+			// (the tint of the entity it stands in for)
+			C->SetCustomPrimitiveDataFloat(0, S.Hides ? float(EntityTint(S.Hides)) : 0.0f);
+			C->RegisterComponent();
+			ObjectComponents.Add(O.id, C);
+		}
+		else
+		{
+			if (C->GetStaticMesh() != Mesh)
+			{
+				C->SetStaticMesh(Mesh);
+			}
+			if (!C->GetComponentTransform().Equals(Transform, 0.01))
+			{
+				C->SetWorldTransform(Transform);
+			}
+		}
+		if (!C->IsVisible())
+		{
+			C->SetVisibility(true);
+		}
+	}
+	// Objects gone: their components, and the map's copies they stood in for back.
+	for (auto It = ObjectComponents.CreateIterator(); It; ++It)
+	{
+		if (!Seen.Contains(It.Key()))
+		{
+			It.Value()->DestroyComponent();
+			It.RemoveCurrent();
+		}
+	}
+	for (auto It = ObjectStates.CreateIterator(); It; ++It)
+	{
+		if (!Seen.Contains(It.Key()))
+		{
+			It.RemoveCurrent();
+		}
+	}
+	for (const uint64 K : HiddenByObjects)
+	{
+		if (!Hide.Contains(K))
+		{
+			if (UStaticMeshComponent* D = Drawn.FindRef(K))
+			{
+				D->SetVisibility(true);
+			}
+		}
+	}
+	for (const uint64 K : Hide)
+	{
+		if (UStaticMeshComponent* D = Drawn.FindRef(K); D && D->IsVisible())
+		{
+			D->SetVisibility(false);
+		}
+	}
+	HiddenByObjects = MoveTemp(Hide);
+}
+
 uint32 UGTAVWorldSubsystem::EntityTint(uint64 Key) const
 {
 	if (Key & kInteriorKey)
@@ -869,6 +1024,8 @@ void UGTAVWorldSubsystem::Apply()
 		C->SetStaticMesh(Mesh);
 		const FTransform Transform = EntityTransform(W.Key);
 		C->SetWorldTransform(Transform);
+		// (a pooled component may come hidden: a game object stood in for its last entity)
+		C->SetVisibility(!HiddenByObjects.Contains(W.Key));
 		// (the entity's tint: the palette row its tinted materials take; see EntityRow in the masters)
 		C->SetCustomPrimitiveDataFloat(0, float(EntityTint(W.Key)));
 		C->RegisterComponent();

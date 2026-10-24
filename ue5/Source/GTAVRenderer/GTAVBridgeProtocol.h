@@ -15,7 +15,7 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 12;
+	constexpr uint32_t kVersion = 13;
 	constexpr uint32_t kMaxGroups = 1024;
 	constexpr uint32_t kMaxProxies = 64;
 	constexpr uint32_t kTextures = 3; // the renderer's frame for game frame s is in texture s % kTextures
@@ -24,6 +24,8 @@ namespace GTAVBridge
 	constexpr uint32_t kLightLists = 4;
 	constexpr uint32_t kMaxInteriors = 24;      // interiors whose entity sets are passed (the nearest)
 	constexpr uint32_t kMaxInteriorSets = 48;   // entity sets on, per interior
+	constexpr uint32_t kMaxObjects = 512;       // the game's objects passed (the nearest)
+	constexpr uint32_t kObjectLists = 4;
 
 	// A ped or vehicle near the player: the game's picture shows it, the renderer casts its shadow on its own ground
 	// (and a vehicle's lamps light it).
@@ -75,6 +77,28 @@ namespace GTAVBridge
 		uint32_t name;     // its MLO archetype's name hash
 		uint32_t count;
 		uint32_t sets[kMaxInteriorSets]; // name hashes of its entity sets on
+	};
+
+	// An object of the game's (its CObject pool) near its camera that is not as the map placed it: moved - a door swung,
+	// a bin knocked over, a buoy on the waves - hidden, or not the map's at all (a script's, a mission's).
+	struct GameObject
+	{
+		uint32_t id;                         // the pool slot and its generation: the same object from frame to frame
+		uint32_t model;                      // its archetype's name hash
+		float position[3];                   // the game's space (metres)
+		float right[3], forward[3], up[3];   // its axes (their lengths its scale)
+		float placed[3];                     // where the map placed it (the dummy it was made from); NaN: not the map's
+		uint32_t flags;                      // kObjectVisible
+	};
+	static_assert(sizeof(GameObject) == 72);
+	constexpr uint32_t kObjectVisible = 1;
+
+	// One frame's objects (sequence 0 while it is being written).
+	struct ObjectList
+	{
+		volatile uint32_t sequence;
+		uint32_t count;
+		GameObject objects[kMaxObjects];
 	};
 
 	// One frame's lights (sequence 0 while it is being written).
@@ -147,5 +171,9 @@ namespace GTAVBridge
 		volatile uint32_t interiorSequence;
 		uint32_t interiorCount;
 		InteriorSets interiors[kMaxInteriors];
+		// The game's objects near its camera not as the map placed them, a list a frame: the newest complete one is
+		// objectLists[objectSequence % kObjectLists] (0: the loader cannot read them; the renderer draws the map as placed).
+		volatile uint32_t objectSequence;
+		ObjectList objectLists[kObjectLists];
 	};
 }

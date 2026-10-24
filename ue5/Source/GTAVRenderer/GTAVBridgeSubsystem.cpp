@@ -548,6 +548,24 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 				World->SetGameInteriorSets(Copy.GetData(), uint32(Copy.Num()));
 			}
 		}
+		// The game's objects not as the map placed them (the newest whole list).
+		if (const uint32 Update = Shared->objectSequence; Update && Update != ObjectSequence)
+		{
+			const GTAVBridge::ObjectList& List = Shared->objectLists[Update % GTAVBridge::kObjectLists];
+			FPlatformMisc::MemoryBarrier();
+			if (List.sequence == Update)
+			{
+				const uint32 Count = FMath::Min(List.count, GTAVBridge::kMaxObjects);
+				GameObjects.Reset();
+				GameObjects.Append(List.objects, int32(Count));
+				FPlatformMisc::MemoryBarrier();
+				if (List.sequence == Update)
+				{
+					ObjectSequence = Update;
+					World->SetGameObjects(GameObjects.GetData(), uint32(GameObjects.Num()));
+				}
+			}
+		}
 	}
 	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount, bGameLights);
 

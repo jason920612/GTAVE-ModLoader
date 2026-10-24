@@ -46,6 +46,9 @@ public:
 	// The game's interiors near its camera and the entity sets it has on in each (the bridge's): an interior listed
 	// shows those sets, one not listed its default ones.
 	void SetGameInteriorSets(const GTAVBridge::InteriorSets* Interiors, uint32 Count);
+	// The game's objects near its camera that are not as the map placed them (the bridge's, the game's space): each is
+	// drawn where the game has it, and the map's own copy of a moved one is hidden (research/phase0.md §60.20).
+	void SetGameObjects(const GTAVBridge::GameObject* Objects, uint32 Count) { GameObjects = TArray<GTAVBridge::GameObject>(Objects, int32(Count)); }
 	// Checking: what is drawn near a point (the game's metres), to the log.
 	void DumpNear(const FVector& GamePoint, float Radius);
 	// A point (Unreal's space) inside one of the rooms of an interior near the camera.
@@ -77,6 +80,22 @@ private:
 	TArray<TObjectPtr<UStaticMeshComponent>> Pool;
 	TMap<uint64, uint32> Wanted; // key -> archetype
 	TSet<uint32> WantedGrass;
+	// The game's objects (see SetGameObjects): the newest list, a component each (by the object's id), the map entity
+	// each stands in for (found by its model where the map placed it; 0 none yet, retried a second later), and the map
+	// entities hidden for them.
+	TArray<GTAVBridge::GameObject> GameObjects;
+	UPROPERTY()
+	TMap<uint32, TObjectPtr<UStaticMeshComponent>> ObjectComponents;
+	struct FObjectState
+	{
+		uint32 Model = 0;
+		uint64 Hides = 0;
+		double LastLook = -1e9;
+	};
+	TMap<uint32, FObjectState> ObjectStates;
+	TSet<uint64> HiddenByObjects;
+	void ApplyObjects(const FVector& Center);
+	uint64 FindPlaced(uint32 Model, const FVector& Placed) const;
 	FVector LastCenter = FVector(1e30);
 	double LastUpdate = 0;
 	double LastEvict = 0;

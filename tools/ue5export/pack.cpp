@@ -805,7 +805,10 @@ namespace ue5export
 				GTAVPack::InteriorEntity x{};
 				x.archetype = e.archetype;
 				Point(e.position, x.position);
-				Rotation(e.rotation, x.rotation, false);
+				// (stored inverted as a ymap's entities are - measured against the running game's own objects, research
+				// §60.20: taken as it is, every piece of furniture at an angle was mirrored, one at a right angle turned
+				// half round: a double door's leaves swung into the wall)
+				Rotation(e.rotation, x.rotation, true);
 				x.scaleXY = e.scaleXY, x.scaleZ = e.scaleZ;
 				x.lodDist = e.lodDist;
 				x.flags = e.flags;

@@ -29,6 +29,7 @@
 #include "GTAVBridgeProtocol.h"
 #include "composite.hpp"
 #include "gamelights.hpp"
+#include "gameobjects.hpp"
 #include "interiorsets.hpp"
 #include "particles.hpp"
 #include "streamline.hpp"
@@ -867,6 +868,22 @@ namespace loader::graphics::bridge
 				s.interiorCount = static_cast<uint32_t>(interiorsets::Near(at, 300.0f, s.interiors, GTAVBridge::kMaxInteriors));
 				MemoryBarrier();
 				s.interiorSequence = ++sequence ? sequence : ++sequence;
+			}
+			// The game's objects near the camera not as the map placed them (each frame: a door swinging, a buoy on the
+			// waves), into the next list of the ring.
+			if (gameobjects::Install())
+			{
+				const auto camera = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
+				const float at[3] = {camera.x, camera.y, camera.z};
+				static uint32_t sequence = 0;
+				const uint32_t next = ++sequence ? sequence : ++sequence;
+				GTAVBridge::ObjectList& list = s.objectLists[next % GTAVBridge::kObjectLists];
+				list.sequence = 0;
+				MemoryBarrier();
+				list.count = static_cast<uint32_t>(gameobjects::Near(at, 150.0f, list.objects, GTAVBridge::kMaxObjects));
+				MemoryBarrier();
+				list.sequence = next;
+				s.objectSequence = next;
 			}
 			s.width = g_width, s.height = g_height;
 			// Pace, every 10 s: the renderer's new frames against the game's.
