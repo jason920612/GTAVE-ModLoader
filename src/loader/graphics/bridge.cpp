@@ -395,7 +395,8 @@ namespace loader::graphics::bridge
 			const uint64_t value = stalled || !t_sequence ? newest : t_sequence;
 			queue->Wait(g_fence, value);
 			ID3D12Resource* picture = g_texture[value % GTAVBridge::kTextures];
-			ui::recorder::SetFrameInfo(t_sequence, static_cast<uint32_t>(value), static_cast<uint32_t>(newest), stalled ? 1 : 0);
+			ui::recorder::SetFrameInfo(t_sequence, static_cast<uint32_t>(value), static_cast<uint32_t>(newest),
+			    (stalled ? 1u : 0u) | static_cast<uint32_t>(composite::Flash() * 100.0f) << 8);
 			g_composed.push_back(value);
 			if (g_composed.size() > 8)
 				g_composed.erase(g_composed.begin());
@@ -593,6 +594,7 @@ namespace loader::graphics::bridge
 			s.day = static_cast<uint32_t>(natives::Invoke<int32_t>(kGetClockDayOfMonth));
 			s.interior = natives::Invoke<int32_t>(kGetInteriorFromPrimaryView);
 			s.room = s.interior ? natives::Invoke<uint32_t>(kGetRoomKeyForGameViewport) : 0;
+			s.lightning = composite::Flash();
 			if (static int32_t told = -1; s.interior != told)
 			{
 				told = s.interior;

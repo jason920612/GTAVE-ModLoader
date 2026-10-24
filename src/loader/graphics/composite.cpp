@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <d3dcompiler.h>
 
+#include <atomic>
 #include <cstring>
 
 #include "../log.hpp"
@@ -41,6 +42,11 @@ namespace loader::graphics::composite
 		// included, by the same samples: 64 bins of 1/4 stop from 2 under its mean): the game's bloom and lens effects are
 		// made for what its own picture holds, and a lamp physically a few thousand nits, ten stops over a dim room, spread
 		// over the whole screen.
+		// A lightning flash: Update keeps a baseline of the game's sky's mean log luminance and of its whole picture's
+		// (followed but while a stop or more above it: a flash does not raise it), and the flash is how far above them this
+		// frame is (a stop or more: a flash); the
+		// figure is copied out to a small ring the CPU reads two frames later (Flash()) for the renderer's sky. Nothing
+		// is matched to the game's picture while it flashes.
 		constexpr char kShader[] = R"(
 Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
@@ -50,8 +56,10 @@ RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float),
                                              // 16 the game's mean log2 luminance (float); the sky's: 20 game sum,
                                              // 24 renderer sum, 28 count; 32, 36 the colour balance (log2 red / green,
-                                             // blue / green, floats); 40 the game's brightest (log2, float); 64.. the
-                                             // red bins, 320.. the blue bins, 576.. the luminance bins
+                                             // blue / green, floats); 40 the game's brightest (log2, float); 44 the
+                                             // flash (stops), 48, 52 its baselines (sky, picture), 56 the scale before
+                                             // it, 60 flashing (uint); 64.. the red bins,
+                                             // 320.. the blue bins, 576.. the luminance bins
 cbuffer Sizes : register(b0)
 {
 	uint2 OutSize; uint2 RenderSize; float Adapt; float Match; float Grade;
@@ -188,6 +196,31 @@ float Median(uint base, out uint total)
 void Update()
 {
 	int game = int(Exposure.Load(0)), renderer = int(Exposure.Load(4)), count = int(Exposure.Load(8));
+	{
+		int skyGame = int(Exposure.Load(20)), skyCount = int(Exposure.Load(28));
+		float skyBase = asfloat(Exposure.Load(48)), pictureBase = asfloat(Exposure.Load(52)), flash = 0;
+		if (skyCount > 64)
+		{
+			float sky = float(skyGame) / (64.0 * skyCount);
+			skyBase = abs(skyBase) < 40.0 ? skyBase : sky;
+			flash = sky - skyBase;
+			skyBase = lerp(skyBase, sky, sky > skyBase + 1.0 ? 0.002 : 0.05);
+		}
+		if (count > 64)
+		{
+			float picture = float(game) / (64.0 * count);
+			pictureBase = abs(pictureBase) < 40.0 ? pictureBase : picture;
+			if (skyCount <= 64)
+				flash = picture - pictureBase;
+			pictureBase = lerp(pictureBase, picture, picture > pictureBase + 1.0 ? 0.002 : 0.05);
+		}
+		Exposure.Store3(44, asuint(float3(clamp(flash, 0.0, 8.0), skyBase, pictureBase)));
+	}
+	// (while it flashes the brightness is matched at once, frame by frame - the renderer's own flash comes a few frames
+	// late and is not the game's strength - and the scale before it comes back after it; nothing else follows a flash)
+	bool flashing = asfloat(Exposure.Load(44)) > 1.0;
+	bool wasFlashing = Exposure.Load(60) != 0;
+	float steady = asfloat(Exposure.Load(56));
 	if (count <= 64) // (nothing but sky)
 	{
 		game = int(Exposure.Load(20)), renderer = int(Exposure.Load(24)), count = int(Exposure.Load(28));
@@ -196,13 +229,24 @@ void Update()
 	float key = asfloat(Exposure.Load(16));
 	if (!(abs(key) < 20.0)) // (the buffer's first contents)
 		key = count > 64 ? float(game) / (64.0 * count) : 0.0;
+	if (flashing && !wasFlashing)
+		steady = scale;
+	if (!flashing && wasFlashing && steady > 0)
+		scale = steady;
 	if (count > 64)
 	{
 		float target = clamp((float(game) - float(renderer)) / (64.0 * count), -6.0, 6.0) * Match; // log2 of the ratio
 		float current = scale > 0 ? log2(scale) : target;
-		scale = exp2(lerp(current, target, Adapt));
-		key = lerp(key, float(game) / (64.0 * count), Adapt);
+		// (the renderer's sum is of its picture as it comes, before the scale)
+		if (flashing)
+			scale = exp2(target);
+		else
+		{
+			scale = exp2(lerp(current, target, Adapt));
+			key = lerp(key, float(game) / (64.0 * count), Adapt);
+		}
 	}
+	Exposure.Store2(56, uint2(asuint(steady), flashing ? 1u : 0u));
 	// (the game's brightest: the 99.5th percentile of its picture, eased like the rest; before any, 7 stops over the mean)
 	uint lit = 0;
 	[loop] for (uint i = 0; i < 64; ++i)
@@ -210,7 +254,7 @@ void Update()
 	float top = asfloat(Exposure.Load(40));
 	if (!(abs(top) < 40.0))
 		top = key + 7.0;
-	if (lit > 64)
+	if (lit > 64 && !flashing)
 	{
 		uint above = 0;
 		float found = 61.0;
@@ -235,7 +279,7 @@ void Update()
 		balance = 0;
 	uint red, blue;
 	float2 target = float2(Median(0, red), Median(64, blue));
-	if (red > 64 && blue > 64)
+	if (red > 64 && blue > 64 && !flashing)
 		balance = lerp(balance, clamp(target, -1.5, 1.5) * Grade, Adapt);
 	Exposure.Store2(32, asuint(balance));
 }
@@ -327,6 +371,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		constexpr UINT kViews = 6;  // per frame: picture, stencil, depth, input, output, exposure
 		constexpr UINT kSlots = 64; // frames in the ring (frames in flight are far fewer)
 		constexpr float kAdapt = 0.03f; // of the way to the measured ratio each frame (about a second)
+		constexpr UINT kFlashSlots = 4;  // the flash's read-back ring (frames in flight are three at most)
 
 		ID3D12Device* g_device = nullptr; // (the objects below belong to it)
 		ID3D12RootSignature* g_root = nullptr;
@@ -335,6 +380,10 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		ID3D12PipelineState* g_composite = nullptr;
 		ID3D12DescriptorHeap* g_heap = nullptr;
 		ID3D12Resource* g_exposure = nullptr;
+		ID3D12Resource* g_flashBuffer = nullptr; // (read back: kFlashSlots floats)
+		const float* g_flashMapped = nullptr;
+		std::atomic<float> g_flash = 0;
+		UINT g_flashNext = 0;
 		UINT g_increment = 0, g_next = 0;
 		bool g_failed = false;
 
@@ -405,6 +454,14 @@ void Composite(uint2 id : SV_DispatchThreadID)
 				buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 				buffer.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 				ok = SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_exposure)));
+				heap.Type = D3D12_HEAP_TYPE_READBACK;
+				buffer.Width = kFlashSlots * 4;
+				buffer.Flags = D3D12_RESOURCE_FLAG_NONE;
+				void* mapped = nullptr;
+				ok = ok && SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+				               IID_PPV_ARGS(&g_flashBuffer))) &&
+				     SUCCEEDED(g_flashBuffer->Map(0, nullptr, &mapped));
+				g_flashMapped = static_cast<const float*>(mapped);
 			}
 			if (!ok)
 			{
@@ -458,6 +515,11 @@ void Composite(uint2 id : SV_DispatchThreadID)
 				return false;
 			}
 		}
+	}
+
+	float Flash()
+	{
+		return g_flash;
 	}
 
 	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, const Settings& settings)
@@ -548,6 +610,21 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetPipelineState(g_update);
 		list->Dispatch(1, 1, 1);
 		list->ResourceBarrier(1, &barriers[1]);
+		// (the flash out to the read-back ring; the slot two frames back is done by now, or nearly: a flash is short)
+		{
+			const UINT slot = g_flashNext++ % kFlashSlots;
+			g_flash = g_flashMapped[(slot + 2) % kFlashSlots];
+			D3D12_RESOURCE_BARRIER copy{};
+			copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			copy.Transition.pResource = g_exposure;
+			copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			list->ResourceBarrier(1, &copy);
+			list->CopyBufferRegion(g_flashBuffer, slot * 4, g_exposure, 44, 4);
+			std::swap(copy.Transition.StateBefore, copy.Transition.StateAfter);
+			list->ResourceBarrier(1, &copy);
+		}
 		list->SetPipelineState(g_composite);
 		list->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 		list->ResourceBarrier(1, barriers);

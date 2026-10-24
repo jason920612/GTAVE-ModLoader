@@ -16,6 +16,8 @@ namespace loader::graphics::composite
 		// The game's depth d (its projection, reversed) to metres along the view: numerator / (d scale - offset).
 		float depthNumerator = 0.1f, depthScale = -1, depthOffset = 0;
 	};
+	// A lightning flash of the game's lately (stops over its sky's usual brightness; 0: none), a few frames late.
+	float Flash();
 	// Records the pass; picture: the renderer's frame (DLSS's output size and format, its depth in metres in alpha).
 	// False when it cannot (an unknown depth format, no device objects): the caller copies the picture instead.
 	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, const Settings& settings);

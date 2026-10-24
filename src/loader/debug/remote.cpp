@@ -573,6 +573,24 @@ namespace loader::debug::remote
 					std::memcpy(&v[k], &call->result[k], 4);
 				return std::format("ok {} {} {} {} {}", static_cast<int64_t>(call->result[0]), f, v[0], v[1], v[2]);
 			}
+			if (cmd == "handler")
+			{
+				// handler <hash>: where a native's code is (research: what it reads and writes)
+				std::string word;
+				in >> word;
+				uint64_t hash = 0;
+				try
+				{
+					hash = std::stoull(word, nullptr, 0);
+				}
+				catch (...)
+				{
+					return "err handler <hash>";
+				}
+				const auto handler = reinterpret_cast<uintptr_t>(game::natives::FindHandler(hash));
+				const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+				return handler ? std::format("ok {:#x} rva {:#x}", handler, handler - base) : "err unknown native";
+			}
 			if (cmd == "spin")
 			{
 				// spin <degrees a second> <seconds>: the gameplay camera turned round the player

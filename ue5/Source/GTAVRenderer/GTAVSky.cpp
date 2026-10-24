@@ -138,6 +138,8 @@ namespace
 
 	// The game's wind when the bridge has it (Unreal's space, m/s), and when it came.
 	bool bInside = false, bInsideByRooms = false;
+	float Lightning = 0;          // (stops)
+	FVector LightningWay = FVector(0.3, 0.2, 1.0).GetSafeNormal(); // where the flash comes from (a new way each flash)
 	double GameIndoorsTime = -1e9;
 	float Indoors = 0; // (eased)
 	FVector2f GameWind = FVector2f::ZeroVector;
@@ -241,6 +243,17 @@ void GTAVSky::SetIndoors(bool bIndoors, bool bFromGame)
 	}
 }
 
+void GTAVSky::SetLightning(float Stops)
+{
+	// (each flash from somewhere else in the clouds overhead)
+	if (Stops > 1.0f && Lightning <= 1.0f)
+	{
+		const float Azimuth = FMath::FRandRange(0.0f, 2.0f * PI), Elevation = FMath::FRandRange(0.6f, 1.3f);
+		LightningWay = FVector(FMath::Cos(Azimuth) * FMath::Cos(Elevation), FMath::Sin(Azimuth) * FMath::Cos(Elevation), FMath::Sin(Elevation));
+	}
+	Lightning = Stops;
+}
+
 void GTAVSky::SetDate(int32 Year, int32 Month, int32 Day)
 {
 	GameDay = DaysOf(Year, FMath::Clamp(Month, 1, 12), FMath::Clamp(Day, 1, 31));
@@ -289,18 +302,25 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	const float MoonLux = 0.25f * FMath::Pow(10.0f, -0.4f * (0.026f * Phase + 4.0e-9f * FMath::Pow(Phase, 4.0f))) *
 		FMath::SmoothStep(-0.03f, 0.05f, float(MoonToward.Z));
+	// A lightning flash (the game's, while it thunders): the clouds lit from inside for a moment, a cold white (about
+	// 8,000 K) of up to a few thousand lux on the ground nearby, the sky light with it. The game says how much brighter
+	// its own sky got (stops); a flash a stop over is some 200 lux here, each stop more doubles it (the game's people
+	// and cars are lit by its own flash: the world about them has to brighten as much).
+	const float Flash = L.Rain >= 15.0f && Lightning > 1.0f ? FMath::Min(Lightning, 6.0f) : 0.0f;
+	const float FlashLux = Flash > 0 ? FMath::Min(200.0f * (FMath::Exp2(Flash) - 1.0f), 5000.0f) : 0.0f;
 	if (ADirectionalLight* Sun = A.Sun.Get())
 	{
 		const bool bDay = Toward.Z > -0.05f;
-		Sun->SetActorRotation((bDay ? -Toward : -MoonToward).Rotation());
+		const bool bFlash = FlashLux > (bDay ? 100000.0f * L.Sun : MoonLux);
+		Sun->SetActorRotation((bFlash ? -LightningWay : bDay ? -Toward : -MoonToward).Rotation());
 		ULightComponent* Light = Sun->GetLightComponent();
-		Light->SetIntensity(bDay ? 100000.0f * L.Sun : MoonLux * FMath::Max(L.Sun, 0.2f));
+		Light->SetIntensity(bFlash ? FlashLux : bDay ? 100000.0f * L.Sun : MoonLux * FMath::Max(L.Sun, 0.2f));
 		// The sun shines as a 5,778 K black body (the air reddens it further, low down: the sky atmosphere's
 		// transmittance); white, as it was, is D65's 6,500 K, a cooler light than sunlight. Moonlight bluish: what an
 		// eye sees by night (its rods), the reflected sunlight itself being warmer still.
-		Light->SetUseTemperature(bDay);
-		Light->SetTemperature(5778.0f);
-		Light->SetLightColor(bDay ? FLinearColor::White : FLinearColor(0.6f, 0.7f, 1.0f));
+		Light->SetUseTemperature(bDay || bFlash);
+		Light->SetTemperature(bFlash ? 8000.0f : 5778.0f);
+		Light->SetLightColor(bDay || bFlash ? FLinearColor::White : FLinearColor(0.6f, 0.7f, 1.0f));
 	}
 	// The moon itself, 100 km off (as big as it looks: 0.52 degrees; the engine's sphere is 50 cm across its
 	// radius), and the stars 200 km off, turned about the pole by the hour and the day (a sidereal day).
@@ -362,7 +382,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	}
 	if (ASkyLight* Sky = A.Sky.Get())
 	{
-		Sky->GetLightComponent()->SetIntensity(L.Sky);
+		Sky->GetLightComponent()->SetIntensity(L.Sky * FMath::Exp2(Flash));
 	}
 	const float CoverOverride = CVarCloudCoverage.GetValueOnGameThread();
 	const float Cover = FMath::Clamp(CoverOverride >= 0 ? CoverOverride : L.Clouds, 0.0f, 1.0f);

@@ -15,7 +15,7 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 7;
+	constexpr uint32_t kVersion = 8;
 	constexpr uint32_t kMaxGroups = 1024;
 	constexpr uint32_t kMaxProxies = 64;
 	constexpr uint32_t kTextures = 3; // the renderer's frame for game frame s is in texture s % kTextures
@@ -87,6 +87,9 @@ namespace GTAVBridge
 		// (GET_ROOM_KEY_FOR_GAME_VIEWPORT): no rain, no wet floors, no outdoor haze in there.
 		int32_t interior;
 		uint32_t room;
+		// A lightning flash: how much brighter than of late the game's own sky (or, with none in view, its picture) is
+		// this moment, in stops (0: none; a few frames late: measured on the game's GPU, read back).
+		float lightning;
 		// The peds and vehicles near the player (their shadow casters), each frame.
 		uint32_t proxyCount;
 		Proxy proxies[kMaxProxies];

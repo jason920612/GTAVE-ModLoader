@@ -438,6 +438,7 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 		GTAVSky::SetDate(int32(Shared->year), int32(Shared->month), int32(Shared->day));
 	}
 	GTAVSky::SetIndoors(Shared->interior != 0, true);
+	GTAVSky::SetLightning(Shared->lightning);
 	GTAVSky::Apply(GetWorld(), Camera->GetActorLocation(), Shared->hours, Shared->weatherFrom, Shared->weatherTo, Shared->weatherBlend);
 	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount);
 
