@@ -593,7 +593,19 @@ void UGTAVWorldSubsystem::Visit(uint32 Entity, const FVector& Center, bool bForc
 	Want(Entity, E.archetype, D);
 }
 
-// An interior's entities and its entity sets on by default, near enough.
+void UGTAVWorldSubsystem::SetGameInteriorSets(const GTAVBridge::InteriorSets* Interiors, uint32 Count)
+{
+	GameInteriorSets.SetNum(int32(FMath::Min(Count, GTAVBridge::kMaxInteriors)));
+	for (int32 I = 0; I < GameInteriorSets.Num(); ++I)
+	{
+		GameInteriorSets[I] = Interiors[I];
+		GameInteriorSets[I].position[0] = Interiors[I].position[0] * 100.0f; // (to Unreal's space: centimetres, y mirrored)
+		GameInteriorSets[I].position[1] = -Interiors[I].position[1] * 100.0f;
+		GameInteriorSets[I].position[2] = Interiors[I].position[2] * 100.0f;
+	}
+}
+
+// An interior's entities and its entity sets on (the game's, where it says; else the default ones), near enough.
 void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 {
 	const GTAVPack::Entity& E = Data.Entities[Entity];
@@ -624,9 +636,18 @@ void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 	{
 		Add(In.firstEntity + I);
 	}
-	for (uint32 S = 0; S < P.defaultSetCount; ++S)
+	// (the game's sets for this interior: its archetype's name, placed within 5 m of here)
+	const GTAVBridge::InteriorSets* Game = nullptr;
+	const FVector Here = Position(E.position);
+	for (const GTAVBridge::InteriorSets& G : GameInteriorSets)
 	{
-		const uint32 Name = Data.Lists[P.firstDefaultSet + S];
+		if (G.name == In.archetype && FVector::DistSquared(FVector(G.position[0], G.position[1], G.position[2]), Here) < FMath::Square(500.0))
+		{
+			Game = &G;
+			break;
+		}
+	}
+	const auto On = [&](uint32 Name) {
 		for (uint32 K = 0; K < In.setCount; ++K)
 		{
 			const GTAVPack::EntitySet& Set = Data.EntitySets[In.firstSet + K];
@@ -637,6 +658,20 @@ void UGTAVWorldSubsystem::WantInterior(uint32 Entity, const FVector& Center)
 					Add(Set.firstEntity + I);
 				}
 			}
+		}
+	};
+	if (Game)
+	{
+		for (uint32 S = 0; S < FMath::Min(Game->count, GTAVBridge::kMaxInteriorSets); ++S)
+		{
+			On(Game->sets[S]);
+		}
+	}
+	else
+	{
+		for (uint32 S = 0; S < P.defaultSetCount; ++S)
+		{
+			On(Data.Lists[P.firstDefaultSet + S]);
 		}
 	}
 }

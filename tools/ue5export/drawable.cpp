@@ -363,6 +363,11 @@ namespace ue5export::drawable
 			for (uint16_t mi = 0; mi < modelCount; ++mi)
 			{
 				const uint64_t model = view.Get<uint64_t>(models + 8u * mi);
+				// (+0x2C: the passes the model is drawn in, a bit each; bit 0 the view, bit 1 the shadows: a bush's
+				// shadow proxy and its yellow cpv_only blob are 0xE2, drawn into shadows alone - seen, they were a
+				// second canopy and white blobs - its leaves 0xFD, everything else 0xFF)
+				if ((view.Get<uint8_t>(model + 0x2C) & 1) == 0)
+					continue;
 				const uint64_t geometries = view.Get<uint64_t>(model + 0x08), mapping = view.Get<uint64_t>(model + 0x20);
 				const uint16_t count = view.Get<uint16_t>(model + 0x10);
 				const uint32_t binding = view.Get<uint32_t>(model + 0x28);

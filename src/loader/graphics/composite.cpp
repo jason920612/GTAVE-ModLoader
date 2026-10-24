@@ -59,12 +59,14 @@ RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2
                                              // blue / green, floats); 40 the game's brightest (log2, float); 44 the
                                              // flash (stops), 48, 52 its baselines (sky, picture), 56 the scale before
                                              // it, 60 flashing (uint); 64.. the red bins,
-                                             // 320.. the blue bins, 576.. the luminance bins
+                                             // 320.. the blue bins, 576.. the luminance bins; 832.., 1088.. the game's
+                                             // and the renderer's lit luminance bins; 1344 the contrast (float)
 cbuffer Sizes : register(b0)
 {
 	uint2 OutSize; uint2 RenderSize; float Adapt; float Match; float Grade;
 	float DepthNumerator; float DepthScale; float DepthOffset; // the game's depth d to metres: n / (d s - o)
 	uint Matte; // 1: Input can be read (edges unmixed), 0: blended by the stencil's footprint alone
+	float ContrastMatch; // how far the renderer's spread of brightness is brought down to the game's (0..1)
 };
 
 // Metres along the view at a depth of the game's (0, the sky: very far).
@@ -93,7 +95,7 @@ int2 RenderPixel(uint2 p)
 groupshared int g_game[64];
 groupshared int g_renderer[64];
 groupshared int g_count[64];
-groupshared uint g_bins[192];
+groupshared uint g_bins[320];
 
 [numthreads(8, 8, 1)]
 void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
@@ -101,6 +103,8 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 	g_bins[index] = 0;
 	g_bins[index + 64] = 0;
 	g_bins[index + 128] = 0;
+	g_bins[index + 192] = 0;
+	g_bins[index + 256] = 0;
 	GroupMemoryBarrierWithGroupSync();
 	uint2 p = id * 8 + 4;
 	int game = 0, renderer = 0, count = 0, sky = 0;
@@ -121,6 +125,12 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 			{
 				uint ignored;
 				InterlockedAdd(g_bins[128 + uint(clamp(floor((gl - key + 2.0) * 4.0), 0.0, 63.0))], 1, ignored);
+				// (both pictures' spread of brightness, the ground's: 1/4 stop bins from 10 under the mean)
+				if (!sky)
+				{
+					InterlockedAdd(g_bins[192 + uint(clamp(floor((gl - key + 10.0) * 4.0), 0.0, 63.0))], 1, ignored);
+					InterlockedAdd(g_bins[256 + uint(clamp(floor((rl - key + 10.0) * 4.0), 0.0, 63.0))], 1, ignored);
+				}
 			}
 			if (!sky && abs(key) < 20.0 && gl > key - 4.0 && gl < key + 6.0 && rl > key - 4.0 && rl < key + 6.0)
 			{
@@ -167,6 +177,32 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 		Exposure.InterlockedAdd(320 + index * 4, g_bins[index + 64], ignored);
 	if (g_bins[index + 128] > 0)
 		Exposure.InterlockedAdd(576 + index * 4, g_bins[index + 128], ignored);
+	if (g_bins[index + 192] > 0)
+		Exposure.InterlockedAdd(832 + index * 4, g_bins[index + 192], ignored);
+	if (g_bins[index + 256] > 0)
+		Exposure.InterlockedAdd(1088 + index * 4, g_bins[index + 256], ignored);
+}
+
+// The fraction p's point of 64 bins at offset (log2 from the mean - 10, 1/4 stops), and how many.
+float Percentile(uint offset, float p, out uint total)
+{
+	total = 0;
+	[loop] for (uint i = 0; i < 64; ++i)
+		total += Exposure.Load(offset + i * 4);
+	float value = 0;
+	uint below = 0;
+	bool found = false;
+	[loop] for (uint j = 0; j < 64; ++j)
+	{
+		uint n = Exposure.Load(offset + j * 4);
+		if (!found && n > 0 && float(below + n) >= p * total)
+		{
+			value = (float(j) + (p * total - below) / n) / 4.0 - 10.0;
+			found = true;
+		}
+		below += n;
+	}
+	return value;
 }
 
 // The median of 64 bins at 64 + base * 4 (log2, from -2 in 1/16 stops), and how many; the bins emptied.
@@ -282,6 +318,21 @@ void Update()
 	if (red > 64 && blue > 64 && !flashing)
 		balance = lerp(balance, clamp(target, -1.5, 1.5) * Grade, Adapt);
 	Exposure.Store2(32, asuint(balance));
+	// The spread of brightness (the 10th to the 90th percentile, in stops) brought to the game's where the renderer's is
+	// wider: indoors its lamps lit physically and its corners in their own shade spread three to five stops wider than
+	// the game's rooms (research §60.7). A camera's sensor holds it all; an eye adapts from place to place and sees a room
+	// as the game draws it, and the game's people and cars are lit for that room. Only ever narrowed, at most to 0.6.
+	uint gameCount, rendererCount;
+	float g10 = Percentile(832, 0.1, gameCount), g90 = Percentile(832, 0.9, gameCount);
+	float r10 = Percentile(1088, 0.1, rendererCount), r90 = Percentile(1088, 0.9, rendererCount);
+	[loop] for (uint m = 0; m < 128; ++m)
+		Exposure.Store(832 + m * 4, 0);
+	float contrast = asfloat(Exposure.Load(1344));
+	if (!(contrast >= 0.5 && contrast <= 1.0))
+		contrast = 1.0;
+	if (gameCount > 64 && rendererCount > 64 && !flashing && r90 - r10 > 0.5)
+		contrast = lerp(contrast, lerp(1.0, clamp((g90 - g10) / (r90 - r10), 0.6, 1.0), ContrastMatch), Adapt);
+	Exposure.Store(1344, asuint(contrast));
 }
 
 [numthreads(8, 8, 1)]
@@ -336,6 +387,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		picture.rgb *= after > 0 ? before / after : 0;
 	}
 	float key = asfloat(Exposure.Load(16)), brightest = asfloat(Exposure.Load(40));
+	float spread = asfloat(Exposure.Load(1344)); // (the brightness's spread, narrowed about the mean)
+	if (spread >= 0.5 && spread < 0.999 && abs(key) < 20.0)
+	{
+		float l = Luminance(picture.rgb);
+		if (l > 0)
+			picture.rgb *= exp2((log2(l) - key) * (spread - 1.0));
+	}
 	brightest = abs(brightest) < 40.0 ? brightest : key + 7.0;
 	float knee = exp2(min(key + 7.0, brightest - 0.5)), top = exp2(min(key + 10.0, brightest + 1.0)), l = Luminance(picture.rgb);
 	if (l > knee)
@@ -419,7 +477,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			ranges[1].OffsetInDescriptorsFromTableStart = 4;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 11;
+			parameters[0].Constants.Num32BitValues = 12;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -448,7 +506,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 				heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 				D3D12_RESOURCE_DESC buffer{};
 				buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-				buffer.Width = 1024;
+				buffer.Width = 2048;
 				buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
 				buffer.SampleDesc.Count = 1;
 				buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -585,7 +643,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		D3D12_UNORDERED_ACCESS_VIEW_DESC raw{};
 		raw.Format = DXGI_FORMAT_R32_TYPELESS;
 		raw.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-		raw.Buffer.NumElements = 256;
+		raw.Buffer.NumElements = 512;
 		raw.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
 		g_device->CreateUnorderedAccessView(g_exposure, nullptr, &raw, cpu);
 
@@ -599,10 +657,11 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
 		const float floats[6] = {kAdapt, settings.match, settings.grade, settings.depthNumerator, settings.depthScale, settings.depthOffset};
-		UINT constants[11] = {width, height, frame.renderWidth, frame.renderHeight};
+		UINT constants[12] = {width, height, frame.renderWidth, frame.renderHeight};
 		std::memcpy(&constants[4], floats, sizeof(floats));
 		constants[10] = matte ? 1 : 0;
-		list->SetComputeRoot32BitConstants(0, 11, constants, 0);
+		std::memcpy(&constants[11], &settings.contrast, sizeof(float));
+		list->SetComputeRoot32BitConstants(0, 12, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);

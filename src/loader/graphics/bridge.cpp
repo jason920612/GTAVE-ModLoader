@@ -28,6 +28,7 @@
 #include "GTAVBridgeProtocol.h"
 #include "composite.hpp"
 #include "gamelights.hpp"
+#include "interiorsets.hpp"
 #include "streamline.hpp"
 
 namespace loader::graphics::bridge
@@ -47,7 +48,7 @@ namespace loader::graphics::bridge
 		                   kIsEntityVisible = 0x47D6F43D77935C75, kGetEntityMatrix = 0xECB2FC7235A7D137,
 		                   kGetEntityModel = 0x9F47B058362C84B5, kGetModelDimensions = 0x03E8D3D5F549087A,
 		                   kGetInteriorFromPrimaryView = 0xE7D267EC6CA966C3, kGetRoomKeyForGameViewport = 0xA6575914D2A0B450,
-		                   kGetVehicleLightsState = 0xB91B4C20085BD12F;
+		                   kGetVehicleLightsState = 0xB91B4C20085BD12F, kGetFinalRenderedCamCoord = 0xA200EB1EE790F448;
 
 		// Game thread.
 		HANDLE g_mapping = nullptr;
@@ -172,7 +173,10 @@ namespace loader::graphics::bridge
 		//   <dlssQuality value="..."/> (0 Performance, 1 Balanced, 2 Quality, 3 DLAA, measured);
 		// - its world's detail (config ue5GameDetail "lean"): of the game's picture only the peds and vehicles are
 		//   shown, so what only draws the world it need not (grass, water, tessellation, volumetric fog, ray traced
-		//   trees, the farther levels of detail); the peds' and vehicles' own (their shadows, reflections) stay.
+		//   trees, the farther levels of detail, its ray tracing: its shadow maps shade the peds and vehicles as well;
+		//   in a storm it cost the shared GPU some 4 ms a frame, research §60.6); the peds' and vehicles' own (their
+		//   shadows, reflections) stay, and what acts on the whole picture after the renderer's goes in (depth of
+		//   field, motion blur).
 		std::filesystem::path g_settingsFile;
 		bool g_settingsRestored = true;
 
@@ -258,7 +262,8 @@ namespace loader::graphics::bridge
 				wanted.emplace_back("dlssQuality", r == "performance" ? "0" : r == "balanced" ? "1" : "2");
 			static constexpr std::pair<const char*, const char*> kLean[] = {{"GrassQuality", "0"}, {"WaterQuality", "0"}, {"Tessellation", "0"},
 			    {"LodScale", "0.600000"}, {"MaxLodScale", "0.000000"}, {"Lighting_FogVolumes", "false"}, {"Shadow_LongShadows", "false"},
-			    {"Raytracing_TreeBvhEnabled", "false"}, {"Raytracing_GrassBvhEnabled", "false"}};
+			    {"Raytracing_TreeBvhEnabled", "false"}, {"Raytracing_GrassBvhEnabled", "false"}, {"Raytracing_Enabled", "false"},
+			    {"RTShadows_Enabled", "false"}};
 			if (c.ue5GameDetail == "lean")
 				for (const auto& [name, value] : kLean)
 					wanted.emplace_back(name, value);
@@ -573,6 +578,9 @@ namespace loader::graphics::bridge
 			composite::Settings settings;
 			settings.match = std::clamp(config::Get().ue5ExposureMatch, 0.0f, 1.0f);
 			settings.grade = std::clamp(config::Get().ue5GradeMatch, 0.0f, 1.0f);
+			// (part of following the game's grading, indoors: outdoors the renderer's own ground - its grass, their
+			// shadows - is wider in brightness than the game's lean one, and narrowed to it the whole scene went flat)
+			settings.contrast = g_shared && g_shared->interior != 0 ? settings.grade : 0.0f;
 			// (the game's depth to metres: its viewToClip for row vectors gives depth = (z m10 + m14) / (z m11), so
 			// z = m14 / (depth m11 - m10); for column vectors m11 and m14 trade places: w comes from z by the -1)
 			const float* m = t_camera.viewToClip;
@@ -799,6 +807,18 @@ namespace loader::graphics::bridge
 				log::Info("ue5 bridge: the camera is {} (room {:#x})", s.interior ? std::format("in interior {}", s.interior) : std::string("outside"), s.room);
 			}
 			WriteProxies(s);
+			// The interiors near the camera with their entity sets on (every tenth frame).
+			if (g_tick % 10 == 0 && interiorsets::Install())
+			{
+				const auto camera = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
+				const float at[3] = {camera.x, camera.y, camera.z};
+				static uint32_t sequence = 0;
+				s.interiorSequence = 0;
+				MemoryBarrier();
+				s.interiorCount = static_cast<uint32_t>(interiorsets::Near(at, 300.0f, s.interiors, GTAVBridge::kMaxInteriors));
+				MemoryBarrier();
+				s.interiorSequence = ++sequence ? sequence : ++sequence;
+			}
 			s.width = g_width, s.height = g_height;
 			// Pace, every 10 s: the renderer's new frames against the game's.
 			static ULONGLONG lastPace = 0;

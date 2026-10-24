@@ -40,6 +40,7 @@
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionFrac.h"
 #include "Materials/MaterialExpressionAbs.h"
+#include "Materials/MaterialExpressionPower.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
@@ -463,9 +464,27 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		auto* DistantClamped = NewObject<UMaterialExpressionSaturate>(M);
 		DistantClamped->Input.Connect(0, Distant);
 		Add(DistantClamped);
+		// (as much as the water is thick there: water a hand deep at a stream's or a lake's edge shows its bed even
+		// from afar - opaque at its edge, a shallow stream was a band of paint with hard edges)
+		auto* Thick = NewObject<UMaterialExpressionCustom>(M);
+		Thick->OutputType = CMOT_Float1;
+		Thick->Description = TEXT("Water thickness");
+		Thick->Code = TEXT("return saturate(max(Scene - Pixel, 0) / 100.0);");
+		Thick->Inputs.Reset();
+		for (const TPair<const TCHAR*, UMaterialExpression*>& I : {TPair<const TCHAR*, UMaterialExpression*>(TEXT("Scene"), Scene), {TEXT("Pixel"), Here}})
+		{
+			FCustomInput& In = Thick->Inputs.AddDefaulted_GetRef();
+			In.InputName = I.Key;
+			In.Input.Connect(0, I.Value);
+		}
+		Add(Thick);
+		auto* DistantThick = NewObject<UMaterialExpressionMultiply>(M);
+		DistantThick->A.Connect(0, DistantClamped);
+		DistantThick->B.Connect(0, Thick);
+		Add(DistantThick);
 		auto* Opacity = NewObject<UMaterialExpressionMax>(M);
 		Opacity->A.Connect(0, AtLeast);
-		Opacity->B.Connect(0, DistantClamped);
+		Opacity->B.Connect(0, DistantThick);
 		Add(Opacity);
 		Inputs->Opacity.Connect(0, Opacity);
 		M->PreEditChange(nullptr);
@@ -629,7 +648,13 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	// The vertex colour as the game has it: red = natural ambient occlusion, blue = the tint palette column.
 	auto* Vertex = NewObject<UMaterialExpressionVertexColor>(M);
 	Add(Vertex);
-	Inputs->AmbientOcclusion.Connect(1, Vertex);
+	auto* UseVertexColour = Scalar(TEXT("UseVertexColour"), 0.0f); // (cpv_only: below)
+	auto* Occlusion = NewObject<UMaterialExpressionLinearInterpolate>(M); // (a colour's red is no occlusion)
+	Occlusion->A.Connect(1, Vertex);
+	Occlusion->ConstB = 1.0f;
+	Occlusion->Alpha.Connect(0, UseVertexColour);
+	Add(Occlusion);
+	Inputs->AmbientOcclusion.Connect(0, Occlusion);
 	// Tint (the game's *_tnt shaders): a grey diffuse times the palette's colour, column = vertex blue, row = the
 	// entity's tint (see EntityRow), else TintRow (the material's tintPaletteSelector).
 	auto* Palette = Sample(TEXT("TintPaletteTex"), White, SAMPLERTYPE_Color, -900, -500);
@@ -678,7 +703,23 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	UseTint->B.Connect(0, Tinted);
 	UseTint->Alpha.Connect(0, Scalar(TEXT("UseTint"), 0.0f));
 	Add(UseTint);
-	Inputs->BaseColor.Connect(0, UseTint);
+	// The game's cpv_only (colour per vertex, no texture: a tree's inner canopy, simple props): the vertex colour
+	// itself, sRGB as stored (with the white default texture they were white blobs in the trees).
+	auto* VertexRgb = NewObject<UMaterialExpressionComponentMask>(M);
+	VertexRgb->Input.Connect(0, Vertex);
+	VertexRgb->R = VertexRgb->G = VertexRgb->B = 1;
+	VertexRgb->A = 0;
+	Add(VertexRgb);
+	auto* VertexLinear = NewObject<UMaterialExpressionPower>(M);
+	VertexLinear->Base.Connect(0, VertexRgb);
+	VertexLinear->ConstExponent = 2.2f;
+	Add(VertexLinear);
+	auto* Coloured = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	Coloured->A.Connect(0, UseTint);
+	Coloured->B.Connect(0, VertexLinear);
+	Coloured->Alpha.Connect(0, UseVertexColour);
+	Add(Coloured);
+	Inputs->BaseColor.Connect(0, Coloured);
 	if (Kind == 3)
 	{
 		// Grass instances carry the ground's colour (custom data 0..2, linear; 1 for everything not instanced): the
@@ -700,7 +741,7 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		RGB->B.Connect(0, Channel[2]);
 		Add(RGB);
 		auto* Ground = NewObject<UMaterialExpressionMultiply>(M);
-		Ground->A.Connect(0, UseTint);
+		Ground->A.Connect(0, Coloured);
 		Ground->B.Connect(0, RGB);
 		Add(Ground);
 		Inputs->BaseColor.Connect(0, Ground);
@@ -731,7 +772,7 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	// shines with 150-650 nits, a lit window at 1-4 with 40-160; by day such light is lost in the sun's, at night
 	// it is what one sees).
 	auto* Glow = NewObject<UMaterialExpressionMultiply>(M);
-	Glow->A.Connect(0, UseTint);
+	Glow->A.Connect(0, Coloured);
 	Glow->B.Connect(0, Scalar(TEXT("EmissiveMultiplier"), 0.0f));
 	Add(Glow);
 	auto* Nits = NewObject<UMaterialExpressionMultiply>(M);

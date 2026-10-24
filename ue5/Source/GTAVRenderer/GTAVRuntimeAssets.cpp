@@ -291,8 +291,9 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		}();
 		// (the game's decals that add no colour of their own - a normal map's wear on an edge, a darker corner, a shadow,
 		// a shine - drawn as colour come out as the textures themselves: blue-purple strips along door frames)
+		// (and a tree's shadow proxy: the game draws it into its shadows alone; seen, it was a second canopy)
 		static const TSet<uint32> NoColour = {GTAVHash(TEXTVIEW("decal_normal_only")), GTAVHash(TEXTVIEW("decal_shadow_only")),
-			GTAVHash(TEXTVIEW("decal_amb_only")), GTAVHash(TEXTVIEW("decal_spec_only"))};
+			GTAVHash(TEXTVIEW("decal_amb_only")), GTAVHash(TEXTVIEW("decal_spec_only")), GTAVHash(TEXTVIEW("trees_shadow_proxy"))};
 		if (SkipEffects.Contains(Mat.effect) || NoColour.Contains(Mat.effect))
 		{
 			continue;
@@ -818,6 +819,12 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 			}
 		}
 	}
+	// The game's cpv_only: its colour is the vertex colour (no texture).
+	static const uint32 CpvOnly = GTAVHash(TEXTVIEW("cpv_only"));
+	if (M.effect == CpvOnly)
+	{
+		MI->SetScalarParameterValue(TEXT("UseVertexColour"), 1.0f);
+	}
 	// A screen a script draws into (a TV, a monitor): off, a dark glass, as it is until a script turns it on (its texture
 	// in the archives is a stand-in).
 	if (M.flags & GTAVPack::kScriptTarget)
@@ -855,6 +862,9 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 		static const uint32 Rivers[] = {GTAVHash(TEXTVIEW("water_river")), GTAVHash(TEXTVIEW("water_rivershallow")),
 			GTAVHash(TEXTVIEW("water_riverlod")), GTAVHash(TEXTVIEW("water_riverocean")), GTAVHash(TEXTVIEW("water_riverfoam"))};
 		static const uint32 Pools[] = {GTAVHash(TEXTVIEW("water_fountain")), GTAVHash(TEXTVIEW("water_poolenv"))};
+		// (the export's own streams, the Alamo Sea's inflows: desert streams over gravel, some silt, a shallow bed
+		// showing through: about 1.2 per metre, a pale olive)
+		static const uint32 OwnStream = GTAVHash(TEXTVIEW("gtave_stream"));
 		bool bRiver = false, bPool = false;
 		for (const uint32 H : Rivers)
 		{
@@ -864,7 +874,12 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 		{
 			bPool |= M.effect == H;
 		}
-		if (bRiver)
+		if (M.effect == OwnStream)
+		{
+			MI->SetScalarParameterValue(TEXT("Sigma"), 1.2f);
+			MI->SetVectorParameterValue(TEXT("WaterColor"), FLinearColor(0.42f, 0.45f, 0.36f));
+		}
+		else if (bRiver)
 		{
 			MI->SetScalarParameterValue(TEXT("Sigma"), 2.5f);
 			MI->SetVectorParameterValue(TEXT("WaterColor"), FLinearColor(0.35f, 0.38f, 0.26f));

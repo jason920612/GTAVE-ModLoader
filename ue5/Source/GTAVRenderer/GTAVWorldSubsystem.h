@@ -43,6 +43,9 @@ public:
 	// The game's own lights this frame (the bridge's, the game's space): near the camera they light the scene.
 	void SetGameLights(const TArray<GTAVBridge::GameLight>& InLights, bool bInside) { Lights.SetGameLights(InLights, bInside); }
 	bool UsingGameLights() const { return Lights.UsingGameLights(); }
+	// The game's interiors near its camera and the entity sets it has on in each (the bridge's): an interior listed
+	// shows those sets, one not listed its default ones.
+	void SetGameInteriorSets(const GTAVBridge::InteriorSets* Interiors, uint32 Count);
 	// Checking: what is drawn near a point (the game's metres), to the log.
 	void DumpNear(const FVector& GamePoint, float Radius);
 	// A point (Unreal's space) inside one of the rooms of an interior near the camera.
@@ -60,6 +63,7 @@ private:
 	TArray<bool> YmapOn; // per ymap, from the groups
 	FGTAVLights Lights;
 	TArray<uint32> NearInteriors; // the placing entities of the interiors wanted at the last update
+	TArray<GTAVBridge::InteriorSets> GameInteriorSets; // (the game's, positions in Unreal's space)
 
 	UPROPERTY()
 	TObjectPtr<AActor> Root;

@@ -32,6 +32,7 @@ private:
 	uint32 NextSequence = 0, LastSequence = 0, Skipped = 0, LastGroups = 0, LastConsole = 0;
 	TSharedPtr<FGTAVBridgeViewExtension, ESPMode::ThreadSafe> Extension;
 	TArray<GTAVBridge::GameLight> GameLights; // (this frame's, copied out)
+	uint32 InteriorSequence = 0; // (the game's interior sets taken last)
 
 	UPROPERTY()
 	TObjectPtr<ACameraActor> Camera;

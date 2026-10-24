@@ -523,6 +523,20 @@ void UGTAVBridgeSubsystem::Tick(float DeltaTime)
 			World->SetGameLights(GameLights, Shared->interior != 0);
 		}
 		bGameLights = World->UsingGameLights();
+		// The game's interiors near it and their entity sets on (when a whole update of them is there to copy).
+		if (const uint32 Update = Shared->interiorSequence; Update && Update != InteriorSequence)
+		{
+			FPlatformMisc::MemoryBarrier();
+			const uint32 Count = FMath::Min(Shared->interiorCount, GTAVBridge::kMaxInteriors);
+			TArray<GTAVBridge::InteriorSets, TInlineAllocator<GTAVBridge::kMaxInteriors>> Copy;
+			Copy.Append(Shared->interiors, int32(Count));
+			FPlatformMisc::MemoryBarrier();
+			if (Shared->interiorSequence == Update)
+			{
+				InteriorSequence = Update;
+				World->SetGameInteriorSets(Copy.GetData(), uint32(Copy.Num()));
+			}
+		}
 	}
 	GTAVShadows::Update(GetWorld(), Shared->proxies, Shared->proxyCount, bGameLights);
 

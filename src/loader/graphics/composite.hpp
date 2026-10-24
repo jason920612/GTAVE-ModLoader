@@ -13,6 +13,7 @@ namespace loader::graphics::composite
 	struct Settings
 	{
 		float match = 1, grade = 1; // how far the brightness and the colour balance are brought to the game's (0..1)
+		float contrast = 1;         // how far a wider spread of brightness than the game's is narrowed to it (0..1)
 		// The game's depth d (its projection, reversed) to metres along the view: numerator / (d scale - offset).
 		float depthNumerator = 0.1f, depthScale = -1, depthOffset = 0;
 	};

@@ -15,13 +15,15 @@
 namespace GTAVBridge
 {
 	constexpr uint32_t kMagic = 0x31425547; // "GUB1"
-	constexpr uint32_t kVersion = 11;
+	constexpr uint32_t kVersion = 12;
 	constexpr uint32_t kMaxGroups = 1024;
 	constexpr uint32_t kMaxProxies = 64;
 	constexpr uint32_t kTextures = 3; // the renderer's frame for game frame s is in texture s % kTextures
 	constexpr uint32_t kViews = 8;
 	constexpr uint32_t kMaxGameLights = 1024; // (as many as the game's own list holds)
 	constexpr uint32_t kLightLists = 4;
+	constexpr uint32_t kMaxInteriors = 24;      // interiors whose entity sets are passed (the nearest)
+	constexpr uint32_t kMaxInteriorSets = 48;   // entity sets on, per interior
 
 	// A ped or vehicle near the player: the game's picture shows it, the renderer casts its shadow on its own ground
 	// (and a vehicle's lamps light it).
@@ -64,6 +66,16 @@ namespace GTAVBridge
 		uint32_t flags;             // the game's
 	};
 	static_assert(sizeof(GameLight) == 80);
+
+	// An interior of the game's near its camera, and the entity sets the game has on in it (scripts switch them: the
+	// rooms of Michael's house as the story goes - none of its 17 is on by default - a shop's stock, an office's look).
+	struct InteriorSets
+	{
+		float position[3]; // where the interior is placed (the game's space, metres)
+		uint32_t name;     // its MLO archetype's name hash
+		uint32_t count;
+		uint32_t sets[kMaxInteriorSets]; // name hashes of its entity sets on
+	};
 
 	// One frame's lights (sequence 0 while it is being written).
 	struct LightList
@@ -130,5 +142,10 @@ namespace GTAVBridge
 		// The game's wet ground: 0 dry - 1 soaked (rises in the rain, dries over about an hour of game time after it);
 		// negative when the loader could not find it.
 		float wetness;
+		// The game's interiors near its camera with their entity sets on, a few times a second (sequence bumped after
+		// each update; 0: the loader cannot read them, the renderer then shows an interior's default sets).
+		volatile uint32_t interiorSequence;
+		uint32_t interiorCount;
+		InteriorSets interiors[kMaxInteriors];
 	};
 }
