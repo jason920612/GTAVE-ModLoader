@@ -7,8 +7,11 @@ minutes some seconds are recorded as video; all along, the frame rate and the sl
 renderer's own timings are logged.
 
 usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>] [--hour <h>] [--weather <first weather>]
+                  [--profile-over <GPU ms>]
        (the game running with test control: gtactl.py launch)
-Writes <out>/soak.csv (every 15 s), <out>/events.txt, <out>/v###_<what>.mp4, and prints a summary.
+Writes <out>/soak.csv (every 15 s), <out>/events.txt, <out>/v###_<what>.mp4, and prints a summary. With --profile-over,
+where the renderer's GPU time (its 10 s average) comes to that many ms, a GPU profile of a frame there (at most one in
+two minutes): <out>/profile_<t>.txt, its passes of 0.3 ms or more.
 """
 import csv, math, os, random, re, subprocess, sys, threading, time
 
@@ -17,6 +20,7 @@ import gtactl  # noqa: E402
 
 LOADER_LOG = os.path.join(gtactl.GAME, "ModLoader", "loader.log")
 RENDERER_LOG = os.path.join(gtactl.GAME, "ModLoader", "ue5renderer.log")
+RENDERER_CONSOLE = os.path.join(gtactl.GAME, "ModLoader", "ue5console.txt")  # (console commands for the renderer)
 
 PLAYER_PED_ID, PLAYER_ID = 0xD80958FC74E988A6, 0x4F8644AF03D0E0D6
 REQUEST_MODEL, HAS_MODEL_LOADED, CREATE_VEHICLE = 0x963D27A58DF860AC, 0x98A4EB5D89A0C952, 0xAF35D0D2583051B0
@@ -199,10 +203,32 @@ def tail(path, since):
         return "", since
 
 
-def monitor(out_dir, stop, state):
-    """Every 15 s: frame rate (the loader's 5 s windows), the renderer's timings, GPU memory."""
+def profile_tree(text, least=0.3, deepest=8):
+    """The passes of the last GPU profile (ProfileGPU) in some of the renderer's log, of at least `least` ms, to a depth."""
+    if "GPU Profile for Frame" not in text:
+        return []
+    row = re.compile(r"┃(.*?)┃(.*?)┃\s{4}(\s*)(\S.*?)\s*┃")
+    out = []
+    for line in text.split("GPU Profile for Frame")[-1].splitlines():
+        m = row.search(line)
+        if not m:
+            continue
+        try:
+            ms = float(m.group(2).split("│")[-1].replace("ms", "").strip())
+        except ValueError:
+            continue
+        depth = len(m.group(3)) // 2
+        if ms >= least and depth <= deepest:
+            out.append(f"{ms:7.2f}  {'  ' * depth}{m.group(4)[:100]}")
+    return out
+
+
+def monitor(out_dir, stop, state, profile_over=None):
+    """Every 15 s: frame rate (the loader's 5 s windows), the renderer's timings, GPU memory; a GPU profile where the
+    renderer's GPU time comes to `profile_over` ms."""
     loader_at = os.path.getsize(LOADER_LOG) if os.path.exists(LOADER_LOG) else 0
     renderer_at = os.path.getsize(RENDERER_LOG) if os.path.exists(RENDERER_LOG) else 0
+    profiled, profiling = 0.0, ""  # (when the last was asked for; what it is of, until it came)
     with open(os.path.join(out_dir, "soak.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["t", "doing", "fps", "slowest_ms", "renderer_fps", "game_mb", "renderer_mb", "adapter_mb", "world_ms", "render_ms", "gpu_ms",
@@ -228,6 +254,16 @@ def monitor(out_dir, stop, state):
             row += list(camera[-1]) if camera else ["", "", "", "", "", ""]
             w.writerow(row)
             f.flush()
+            if profile_over and profiling and "GPU Profile for Frame" in rtext:
+                with open(os.path.join(out_dir, f"profile_{row[0]}.txt"), "w", encoding="utf-8") as p:
+                    p.write(profiling + "\n" + "\n".join(profile_tree(rtext)) + "\n")
+                profiling = ""
+            elif profile_over and times and float(times[-1][2]) >= profile_over and time.time() - profiled > 120:
+                with open(RENDERER_CONSOLE, "w") as c:
+                    c.write("r.ProfileGPU.ShowUI 0\nProfileGPU\n")
+                profiled = time.time()
+                profiling = f"GPU {times[-1][2]} ms, {state.get('doing', '')}" + (
+                    f" at {' '.join(camera[-1][:3])}, {camera[-1][3]} h, weather {camera[-1][4]}, interior {camera[-1][5]}" if camera else "")
 
 
 def main(args):
@@ -237,12 +273,13 @@ def main(args):
     random.seed(int(args[args.index("--seed") + 1]) if "--seed" in args else 1)
     hour = int(args[args.index("--hour") + 1]) if "--hour" in args else 7
     first_weather = args[args.index("--weather") + 1] if "--weather" in args else None
+    profile_over = float(args[args.index("--profile-over") + 1]) if "--profile-over" in args else None
     os.makedirs(out_dir, exist_ok=True)
     events = open(os.path.join(out_dir, "events.txt"), "a", encoding="utf-8")
     g = Game(events)
     stop = threading.Event()
     state = {}
-    threading.Thread(target=monitor, args=(out_dir, stop, state), daemon=True).start()
+    threading.Thread(target=monitor, args=(out_dir, stop, state, profile_over), daemon=True).start()
     calm(g)
     g.send(f"time {hour} 0 run")
     g.send(f"weather {first_weather or random.choice(WEATHERS[:3])}")
