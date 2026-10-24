@@ -31,6 +31,16 @@ namespace
 	TAutoConsoleVariable<float> CVarHaze(TEXT("gtav.Haze"), 1.0f, TEXT("The air's aerosols, scaled (1: by the weather and the place)."));
 	TAutoConsoleVariable<int32> CVarMoonShadows(TEXT("gtav.MoonShadows"), 1, TEXT("Moonlight casts shadows (0: not)."));
 	TAutoConsoleVariable<float> CVarSunStep(TEXT("gtav.SunStep"), 0.2f, TEXT("The sun (or moon) turns in steps of this many degrees (0: each frame; its shadow map is drawn anew each step)."));
+	// The volumetric clouds' cost (research §60.12): once any cloud shows, the engine's defaults took some 7 ms of an
+	// 8 GB card's frame at the high preset - the view's clouds 3.4 ms at a quarter of the resolution, their shadow map
+	// (which also shades the clouds themselves) 3.6 ms. Half the samples and rays stopped once 5% of the light comes
+	// through look the same for 2 ms (the presets set them; these are the high preset's).
+	TAutoConsoleVariable<float> CVarCloudSamples(TEXT("gtav.CloudSamples"), 0.5f, TEXT("The clouds' samples along a view ray, scaled (the engine's: 1)."));
+	TAutoConsoleVariable<float> CVarCloudShadowMap(TEXT("gtav.CloudShadowMap"), 0.5f, TEXT("The clouds' shadow map, its resolution and samples scaled (0.25 .. ; the engine's: 1)."));
+	TAutoConsoleVariable<float> CVarCloudBase(TEXT("gtav.CloudBase"), 5.0f, TEXT("The cloud layer's base, km above the ground (the engine's: 5)."));
+	TAutoConsoleVariable<float> CVarCloudLayer(TEXT("gtav.CloudLayer"), 10.0f, TEXT("The cloud layer's thickness, km (the engine's: 10)."));
+	TAutoConsoleVariable<int32> CVarRain(TEXT("gtav.Rain"), 1, TEXT("The renderer's own falling rain around the camera (0: none; the game's own rain particles come over the picture)."));
+	TAutoConsoleVariable<float> CVarCloudStop(TEXT("gtav.CloudStop"), 0.05f, TEXT("A view ray through the clouds stops once this little light comes through (the engine's: 0.005)."));
 
 	// What a weather type looks like: the sun's and the sky's light (1 = clear), cloud cover, the air's haze (aerosols,
 	// 1 = an ordinary day in the city), ground fog density, wet ground.
@@ -333,6 +343,16 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 			Sun->SetActorRotation(Way.Rotation());
 		}
 		ULightComponent* Light = Sun->GetLightComponent();
+		if (UDirectionalLightComponent* D = Cast<UDirectionalLightComponent>(Light))
+		{
+			const float Map = FMath::Max(CVarCloudShadowMap.GetValueOnGameThread(), 0.25f);
+			if (D->CloudShadowMapResolutionScale != Map || D->CloudShadowRaySampleCountScale != Map)
+			{
+				D->CloudShadowMapResolutionScale = Map;
+				D->CloudShadowRaySampleCountScale = Map;
+				D->MarkRenderStateDirty();
+			}
+		}
 		Light->SetIntensity(bFlash ? FlashLux : bDay ? 100000.0f * L.Sun : MoonLux * FMath::Max(L.Sun, 0.2f));
 		Light->SetCastShadows(bDay || bFlash || CVarMoonShadows.GetValueOnGameThread() != 0);
 		// The sun shines as a 5,778 K black body (the air reddens it further, low down: the sky atmosphere's
@@ -413,6 +433,24 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 		if (UVolumetricCloudComponent* Layer = A.Clouds.Get())
 		{
 			Layer->SetVisibility(Cover >= 0.2f);
+			const float Samples = FMath::Max(CVarCloudSamples.GetValueOnGameThread(), 0.05f), Base = FMath::Max(CVarCloudBase.GetValueOnGameThread(), 0.0f),
+						Thickness = FMath::Max(CVarCloudLayer.GetValueOnGameThread(), 0.1f), Stop = FMath::Clamp(CVarCloudStop.GetValueOnGameThread(), 0.0f, 1.0f);
+			if (Layer->ViewSampleCountScale != Samples)
+			{
+				Layer->SetViewSampleCountScale(Samples);
+			}
+			if (Layer->LayerBottomAltitude != Base)
+			{
+				Layer->SetLayerBottomAltitude(Base);
+			}
+			if (Layer->LayerHeight != Thickness)
+			{
+				Layer->SetLayerHeight(Thickness);
+			}
+			if (Layer->StopTracingTransmittanceThreshold != Stop)
+			{
+				Layer->SetStopTracingTransmittanceThreshold(Stop);
+			}
 		}
 		Clouds->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Max(Cover - 0.2f, 0.0f) / 0.8f * 0.45f);
 	}
@@ -469,7 +507,7 @@ void GTAVSky::Apply(UWorld* World, const FVector& Camera, float Hours, uint32 We
 	if (AActor* Rain = A.Rain.Get())
 	{
 		Rain->SetActorLocation(Camera);
-		Rain->SetActorHiddenInGame(L.Rain <= 0.05f || Indoors > 0.5f);
+		Rain->SetActorHiddenInGame(L.Rain <= 0.05f || Indoors > 0.5f || CVarRain.GetValueOnGameThread() == 0);
 	}
 	if (AExponentialHeightFog* Fog = A.Fog.Get())
 	{

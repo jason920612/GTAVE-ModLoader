@@ -5,12 +5,15 @@ a u8 name length, the name, a u8 0x32, a u32 size, the DXBC container, then the 
 buffers and their variables, samplers, textures - up to the next program; the programs grouped by kind, then by effect).
 A particle shader is one whose names include a particle effect's constant buffers (ptfx_*, rmptfx_*, ptxgpu_*), and every
 pixel shader named as the particle effects name theirs (PS_RGB*, PS_none*, PS_proj*, ...) next to one in the container:
-some of an effect's shaders use none of its own constant buffers (PS_RGBA_litBM0, a lit sprite of smoke).
+some of an effect's shaders use none of its own constant buffers (PS_RGBA_litBM0, a lit sprite of smoke). Left out: the
+heat haze (refraction) shaders, which draw the game's own picture again, shifted - over the renderer's picture they framed
+a patch of the game's world around an explosion.
 usage: ptfx_shaders.py <sga_win32_60_final.awc> <out .inc>   (ue5export extract --file ...sga_win32_60_final.awc)"""
 import re, struct, sys
 
 MARKERS = (b"ptfx_", b"rmptfx_", b"ptxgpu_")
 NAMES = ("PS_RGB", "PS_none", "PS_proj", "PS_SoftnessHack", "PS_Draw", "PS_ptxgpu")
+HAZE = ("_refractBM", "_refract_", "HeatHaze")  # (not "waterrefract": splashes)
 
 
 def programs(data):
@@ -54,7 +57,7 @@ def main():
         if any(marked[i:j]):
             chosen.update(range(i, j))
         i = j
-    particle = sorted({(pixel[k][1], pixel[k][0]) for k in chosen})
+    particle = sorted({(pixel[k][1], pixel[k][0]) for k in chosen if not any(x in pixel[k][0] for x in HAZE)})
     digests = [d for d, _ in particle]
     if len(set(digests)) != len(digests) or any(d == bytes(16) for d in digests):
         raise SystemExit("digests not unique")

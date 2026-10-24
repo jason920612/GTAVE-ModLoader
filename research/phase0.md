@@ -2927,8 +2927,9 @@ BiasCurrentColorHint）在火與煙的時候是空的（只偶爾有一小條 0.
 - **粒子的 shader**：遊戲的 shader 全在 update2.rpf 的 sga_win32_60_final.awc（SGD2，§59），依種類、再依效果排列，每支程式後面
   是它用到的名稱（常數緩衝區、變數、取樣器、貼圖）。用到 ptfx_*、rmptfx_*、ptxgpu_* 常數緩衝區的是粒子的；但同一個效果裡有
   些程式一個自己的常數緩衝區都沒用（PS_RGBA_litBM0：受光的煙），所以「粒子式命名（PS_RGB*、PS_none*、PS_proj*、PS_Draw*、
-  PS_ptxgpu*…）且與前者相鄰成串」的整串都算：157 支像素 shader（`tools/ptfx_shaders.py` → `src/loader/graphics/particle_shaders.inc`，
-  以 DXBC 容器 4..20 位元組的雜湊辨認）。
+  PS_ptxgpu*…）且與前者相鄰成串」的整串都算：157 支像素 shader，扣掉熱浪（折射：PS_RGB_*refract*、PS_DrawHeatHaze，它們把遊戲
+  自己的畫面扭曲後再畫一次，疊到 UE 上就在爆炸周圍框出一塊遊戲的世界）剩 148 支（`tools/ptfx_shaders.py` →
+  `src/loader/graphics/particle_shaders.inc`，以 DXBC 容器 4..20 位元組的雜湊辨認）；水花（waterrefract）保留。
 - **D3D12 掛鉤**（`graphics/particles.cpp`）：d3d12.dll 一載入就用探測裝置的物件掛 D3D12 自己的函式（vtable 位置以 d3d12.h 的
   C 介面確認）：建立管線（含串流與 pipeline library）時看像素 shader 記下粒子管線；指令清單的 SetPipelineState、
   OMSetRenderTargets、Draw*／ExecuteIndirect、ResourceBarrier、Close、SetPredication。遊戲不用 render pass，也不自己用 predication。
@@ -2943,4 +2944,33 @@ BiasCurrentColorHint）在火與煙的時候是空的（只偶爾有一小條 0.
   （渲染解析度雙線性取樣）。粒子碰到的取樣點不參與亮度與色調的比對。夾在粒子中間畫的其他半透明物件（車窗在車上，本來就
   用遊戲的；纜線）也會一起帶過來，影響小。
 - 結果：汽油彈的火、煙霧彈的煙、汽車爆炸的火球、黑煙、飛起的碎片都出現在 UE 畫面；爆炸全程 59.8 fps、最慢 34.7 ms。
-  熱浪（折射粒子）在爆炸周圍框出一塊遊戲自己背景的區域，看得出一點。
+  熱浪不再帶過來（見上）。
+
+### 60.12 有雲的天氣掉到 45 fps（體積雲）
+
+長測（soak12，35 分鐘、含搗亂）：晴天 59–60 fps，天氣轉成霧霾（SMOG）後同一地點掉到 45–50 fps，UE 的 GPU 時間 7–11 →
+16–19 ms。霧霾、多雲、陰天、雨等的雲量 ≥ 0.2，體積雲才顯示。分開量（UE 自己每 10 秒的 GPU 時間，與長測同一指標；
+ProfileGPU 的整格時間因非同步運算重疊只看得到一部分）：藏起雲 6.4–8.4 ms；開雲 13–17 ms。ProfileGPU 的細項：主畫面的雲
+（CloudView，四分之一解析度 320×180）3.4 ms、雲的陰影貼圖（CloudShadow，也用來替雲本身打光）3.6 ms。降 r.VolumetricCloud 的
+各個上限都沒用（陰影貼圖的基準就是 512，取樣數也沒到上限）；有用的是元件與太陽光本身的比例：主畫面取樣 0.5
+（ViewSampleCountScale）、陰影貼圖解析度與取樣 0.5（CloudShadowMapResolutionScale、CloudShadowRaySampleCountScale）、光線剩
+5% 就停（StopTracingTransmittanceThreshold 0.05，引擎 0.005）：開雲 8.4–9.2 ms、60 fps 封頂；同一個固定鏡頭比較，雲的樣子與
+引擎預設看不出差別（主畫面取樣降到 0.25 才看得出雲變軟）。雲層高度（5 km 起、10 km 厚）改薄沒有再省。做成渲染器的
+gtav.CloudSamples／CloudShadowMap／CloudStop（另有 CloudBase、CloudLayer 供調整），畫質預設：低 0.35、中與高 0.5、極高 0.75、
+電影級引擎預設。
+
+長測其他：瞬移 3 km 後 UE 世界約 7 秒才出現，同時遊戲自己的車也還在往下掉（碰撞沒載好）——腳本瞬移的載入，遊戲自己的
+傳送有遮蔽；一次爆炸時有一格 UE 只畫出天空與海（像相機在別處），沒能重現，載入器加了一行記錄：遊戲給 DLSS 的相機一格內
+移動超過 100 m 時寫下前後位置。
+
+### 60.13 夜裡俯瞰城市掉到 34–42 fps（燈的光暈）
+
+長測（soak13）最慢的都是夜裡在葡萄藤山丘、天文台一帶俯瞰盆地：GPU 21–30 ms。固定鏡頭量：天氣（晴、放晴中、雨、雲）與
+真實燈光的數量（gtav.Lights 2048 → 64）都不影響（17 ms 上下）；關掉半透明（showflag.Translucency 0）就剩 7.7–9.2 ms。半透明
+裡一整段平行繪製 5.9 ms：遠處的光暈——5 km 內每盞 LOD 燈一個引擎的球體（/Engine/BasicShapes/Sphere，數百個三角形），
+盆地夜裡上萬盞，被樹擋住也照樣處理頂點。光暈材質只要「每個頂點離中心一樣遠」的封閉形體（像素大小時就是一個圓點）：
+改用執行時建的 80 面球（正二十面體每面分四、新角推到球面上；只用 20 面時近處燈的光暈看得出六角形）：同一鏡頭 17.3 →
+8.6–8.9 ms，天文台屋頂 8–9 ms，光暈約 1–2 ms。外觀相同（近處的燈仍是圓的）。
+
+雨：UE 自己的三層雨幕在街上開關 GPU 差不到 1 ms；遊戲自己的雨（ptxgpu 粒子）已經由粒子合成疊上來，兩份都在。加了
+gtav.Rain（0 只留遊戲的雨）供比較，預設不變。

@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -695,7 +696,10 @@ namespace loader::graphics::bridge
 
 		// A quality preset as the renderer's console commands: the share of the output resolution it renders (the
 		// engine's upscaler does the rest), the engine's scalability groups (0 low .. 4 cinematic), how far the map's
-		// distances reach (gtav.LodScale) and how many of the map's lights near the camera are real lights.
+		// distances reach (gtav.LodScale), how many of the map's lights near the camera are real lights, and the
+		// volumetric clouds' samples (their shadow map's too; research §60.12: the engine's own took some 7 ms of the high
+		// preset's frame in any weather with clouds, half of them and rays stopped once 5% of the light comes through look
+		// the same for 2).
 		std::string PresetCommands(const std::string& preset)
 		{
 			// (MegaLights from high up: every light of the map within reach lights the scene, at a near constant cost;
@@ -707,10 +711,11 @@ namespace loader::graphics::bridge
 				float distance;
 				int lights, lightRadius;
 				bool megaLights, lightShadows;
+				float clouds;
 			};
-			static constexpr Level kLevels[] = {{"low", 50, 0, 0.8f, 32, 150, false, false}, {"medium", 67, 1, 1.0f, 64, 200, false, false},
-			    {"high", 80, 2, 1.25f, 2048, 400, true, false}, {"ultra", 100, 3, 1.5f, 4096, 600, true, false},
-			    {"cinematic", 100, 4, 2.0f, 8192, 800, true, true}};
+			static constexpr Level kLevels[] = {{"low", 50, 0, 0.8f, 32, 150, false, false, 0.35f}, {"medium", 67, 1, 1.0f, 64, 200, false, false, 0.5f},
+			    {"high", 80, 2, 1.25f, 2048, 400, true, false, 0.5f}, {"ultra", 100, 3, 1.5f, 4096, 600, true, false, 0.75f},
+			    {"cinematic", 100, 4, 2.0f, 8192, 800, true, true, 1.0f}};
 			const Level* l = &kLevels[2];
 			for (const Level& k : kLevels)
 				if (preset == k.name)
@@ -725,6 +730,8 @@ namespace loader::graphics::bridge
 			// (without it the moon casts none: by night its shadow map costs as much as the sun's, for shadows street lights
 			// wash out)
 			out += std::format("r.Forward.LightBuffer.Mode {0}\nr.MegaLights.DirectionalLights {0}\ngtav.MoonShadows {0}\n", l->megaLights ? 1 : 0);
+			out += std::format("gtav.CloudSamples {0}\ngtav.CloudShadowMap {1}\ngtav.CloudStop {2}\n", l->clouds, std::max(l->clouds, 0.25f),
+			    l->clouds >= 1.0f ? 0.005f : 0.05f);
 			return out;
 		}
 
@@ -937,6 +944,20 @@ namespace loader::graphics::bridge
 			g_cameraTime[sequence % GTAVBridge::kViews] = v.time = Now();
 			MemoryBarrier();
 			s->gameSequence = sequence;
+			// (a camera far from the last: a teleport, or a view of somewhere else for a frame - the renderer then draws
+			// another place)
+			if (t_camera.valid)
+			{
+				const float dx = camera.position[0] - t_camera.position[0], dy = camera.position[1] - t_camera.position[1],
+				            dz = camera.position[2] - t_camera.position[2];
+				if (static ULONGLONG told = 0; dx * dx + dy * dy + dz * dz > 100.0f * 100.0f && GetTickCount64() - told > 1000)
+				{
+					told = GetTickCount64();
+					log::Info("ue5 bridge: the game's camera moved {:.0f} m in a frame ({:.1f} {:.1f} {:.1f} -> {:.1f} {:.1f} {:.1f}, frame {})",
+					    std::sqrt(dx * dx + dy * dy + dz * dz), t_camera.position[0], t_camera.position[1], t_camera.position[2], camera.position[0],
+					    camera.position[1], camera.position[2], camera.frame);
+				}
+			}
 			t_sequence = sequence;
 			t_camera = camera;
 			if (static bool told = false; !told)

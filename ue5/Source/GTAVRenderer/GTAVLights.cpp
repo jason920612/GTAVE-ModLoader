@@ -708,6 +708,15 @@ void FGTAVLights::UpdateGame(AActor* Owner, const FVector& Camera)
 	UpdateNearGlow(Owner);
 }
 
+UStaticMesh* FGTAVLights::GlowMesh() const
+{
+	if (UStaticMesh* Mesh = GlowShape.Get())
+	{
+		return Mesh;
+	}
+	return LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+}
+
 void FGTAVLights::UpdateNearGlow(AActor* Owner)
 {
 	// The lamps the game has lit that show a glow (a traffic signal's lens: red, amber or green as the game has it),
@@ -763,7 +772,7 @@ void FGTAVLights::UpdateNearGlow(AActor* Owner)
 	UInstancedStaticMeshComponent* G = NearGlow.Get();
 	if (!G)
 	{
-		UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		UStaticMesh* Sphere = GlowMesh();
 		UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Corona.M_GTAV_Corona"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		if (!Sphere || !Material)
 		{
@@ -801,7 +810,7 @@ void FGTAVLights::UpdateFar(AActor* Owner, const FVector& Camera, int32 Hour)
 	UInstancedStaticMeshComponent* G = Glow.Get();
 	if (!G)
 	{
-		UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		UStaticMesh* Sphere = GlowMesh();
 		UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Corona.M_GTAV_Corona"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		if (!Sphere || !Material)
 		{

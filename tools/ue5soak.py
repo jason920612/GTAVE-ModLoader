@@ -6,7 +6,7 @@ smoke, explosions about them: the game's particles); the clock runs and the weat
 minutes some seconds are recorded as video; all along, the frame rate and the slowest frames, GPU memory and the
 renderer's own timings are logged.
 
-usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>] [--hour <h>]
+usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>] [--hour <h>] [--weather <first weather>]
        (the game running with test control: gtactl.py launch)
 Writes <out>/soak.csv (every 15 s), <out>/events.txt, <out>/v###_<what>.mp4, and prints a summary.
 """
@@ -236,6 +236,7 @@ def main(args):
     video_every = float(args[args.index("--video-every") + 1]) if "--video-every" in args else 3
     random.seed(int(args[args.index("--seed") + 1]) if "--seed" in args else 1)
     hour = int(args[args.index("--hour") + 1]) if "--hour" in args else 7
+    first_weather = args[args.index("--weather") + 1] if "--weather" in args else None
     os.makedirs(out_dir, exist_ok=True)
     events = open(os.path.join(out_dir, "events.txt"), "a", encoding="utf-8")
     g = Game(events)
@@ -244,7 +245,7 @@ def main(args):
     threading.Thread(target=monitor, args=(out_dir, stop, state), daemon=True).start()
     calm(g)
     g.send(f"time {hour} 0 run")
-    g.send(f"weather {random.choice(WEATHERS[:3])}")
+    g.send(f"weather {first_weather or random.choice(WEATHERS[:3])}")
     start = time.time()
     next_video = start + 60
     next_weather = start + 8 * 60

@@ -62,6 +62,7 @@ private:
 	TSet<uint32> GroupsOn;
 	TArray<bool> YmapOn; // per ymap, from the groups
 	FGTAVLights Lights;
+	UStaticMesh* MakeGlowShape();
 	TArray<uint32> NearInteriors; // the placing entities of the interiors wanted at the last update
 	TArray<GTAVBridge::InteriorSets> GameInteriorSets; // (the game's, positions in Unreal's space)
 

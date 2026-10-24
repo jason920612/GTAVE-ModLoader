@@ -9,6 +9,7 @@ class AActor;
 class UInstancedStaticMeshComponent;
 class ULocalLightComponent;
 class UPointLightComponent;
+class UStaticMesh;
 class USpotLightComponent;
 
 // The map's lights at night (research/phase0.md §59.8): the LOD lights the game has for street lights, windows and
@@ -40,6 +41,9 @@ public:
 	void RemoveEntity(uint64 Key);
 	// (checking: the real lights near a point, to the log)
 	void Dump(const FVector& Point, float Radius) const;
+	// The shape the glows are drawn with (a closed shape 100 cm across, every corner as far from its centre; null: the
+	// engine's sphere).
+	void SetGlowShape(UStaticMesh* Mesh) { GlowShape = Mesh; }
 
 	float NearRadius = 40000.0f;  // cm: real lights within (gtav.Lights of them, those that matter most)
 	float FarRadius = 500000.0f;  // cm: glowing points within
@@ -73,6 +77,8 @@ private:
 	TArray<TWeakObjectPtr<ULocalLightComponent>> FreePoints, FreeSpots;
 	bool bLastShadows = false;
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Glow;
+	TWeakObjectPtr<UStaticMesh> GlowShape;
+	UStaticMesh* GlowMesh() const;
 	FVector LastNear = FVector(1e30), LastFar = FVector(1e30);
 	int32 LastHour = -1;
 	double LastNearTime = 0;
