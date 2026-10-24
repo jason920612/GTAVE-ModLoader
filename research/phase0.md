@@ -3036,3 +3036,15 @@ profile_<t>.txt。夜間起跑、40 分鐘、種子 14（soak18）：每 3 分�
 渲染器把它當半透明的顏色層畫，地板就蓋上了法線圖的顏色。和 decal_normal_only 等一樣不畫（地板本身是 normal_spec，會自己
 反光）。全包掃描（模型包 126,826 個模型）：mirror_decal 24 個材質都是這類；另有 normal_spec 65、normal 39、
 normal_spec_reflect 22（地鐵站）等少數材質的顏色貼圖也就是法線圖，遊戲自己畫出來大概也是那樣，待實地比對。
+
+### 60.19 草坪（毛皮草 grass_fur_mask）發白、蓋過小徑
+
+教堂（-317, 2810）旁的草坪在 UE 畫面上是一大片近乎發白的淡綠，連泥土小徑都蓋住，遊戲是綠草加小徑。那是遊戲的「毛皮草」
+cs6_08_fur_*（著色器 grass_fur_mask，全包 1,047 個材質，公園、高爾夫球場、豪宅前院都是），遊戲用 8 層殼
+（PS_FurDeferredTextured_Zero..Seven）畫出立體草。反組譯它的像素著色器（dxc -dumpbin，DXIL）：表面顏色 = 第 0 號貼圖
+（DiffuseTex，一張會重複鋪的淡灰綠 _hf，平均 sRGB (0.59, 0.64, 0.50)）× 第 20 號貼圖（草坪自己的顏色，參數雜湊 21183f1a，
+cs6_08_fur_area）× 層的遮蔽；第 19 號（遮罩，參數 17a8430b，cs6_08_fur_mask）× 頂點 alpha × 草葉圖低於門檻的地方丟棄——
+小徑、邊緣不長草。頂點著色器（VS_FurTransformD）：遮罩用第二組 UV，草坪顏色用第三組 UV（乘一個材質常數，看來是 1）。
+渲染器原本只畫了 DiffuseTex。改法：匯出時 grass_fur_mask 的這兩張放進它用不到的兩個槽（kDetail、kDirt），cutout 主材質加
+FurArea（第三組 UV，乘到顏色上）與 FurMask（第二組 UV 的紅 × 頂點 alpha，> 0.05 才畫），只對這種材質開（UseFur）。新包
+pack_v15（多 174 張貼圖）。結果：教堂草坪是綠的、有質感，小徑露出來，和遊戲一致（略亮）。

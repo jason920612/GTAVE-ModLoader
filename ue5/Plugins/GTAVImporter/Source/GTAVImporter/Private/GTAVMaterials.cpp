@@ -744,7 +744,48 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		Ground->A.Connect(0, Coloured);
 		Ground->B.Connect(0, RGB);
 		Add(Ground);
-		Inputs->BaseColor.Connect(0, Ground);
+		// A lawn's fur grass (the game's grass_fur_mask: research §60.19): the lawn's own colour (FurArea, on the third
+		// UV set) times the tiling grass - the game's shader multiplies the two - where UseFur is 1.
+		auto* AreaUv = NewObject<UMaterialExpressionTextureCoordinate>(M);
+		AreaUv->CoordinateIndex = 2;
+		Add(AreaUv);
+		auto* Area = Sample(TEXT("FurArea"), White, SAMPLERTYPE_Color, -1200, 600);
+		Area->Coordinates.Connect(0, AreaUv);
+		auto* UseFur = Scalar(TEXT("UseFur"), 0.0f);
+		auto* FurTint = NewObject<UMaterialExpressionLinearInterpolate>(M);
+		FurTint->ConstA = 1.0f;
+		FurTint->B.Connect(0, Area);
+		FurTint->Alpha.Connect(0, UseFur);
+		Add(FurTint);
+		auto* Lawn = NewObject<UMaterialExpressionMultiply>(M);
+		Lawn->A.Connect(0, Ground);
+		Lawn->B.Connect(0, FurTint);
+		Add(Lawn);
+		Inputs->BaseColor.Connect(0, Lawn);
+		// It grows where its mask (FurMask's red, on the second UV set) times the vertex alpha lets it, as the game
+		// draws its lowest shell: the paths and the edges bare.
+		auto* MaskUv = NewObject<UMaterialExpressionTextureCoordinate>(M);
+		MaskUv->CoordinateIndex = 1;
+		Add(MaskUv);
+		auto* Grows = Sample(TEXT("FurMask"), BlackMask(), SAMPLERTYPE_Masks, -1200, 900);
+		Grows->Coordinates.Connect(0, MaskUv);
+		auto* Growth = NewObject<UMaterialExpressionMultiply>(M);
+		Growth->A.Connect(1, Grows);
+		Growth->B.Connect(4, Vertex);
+		Add(Growth);
+		auto* Steep = NewObject<UMaterialExpressionMultiply>(M); // (bare below a tenth: the clip value 0.5 at 0.05)
+		Steep->A.Connect(0, Growth);
+		Steep->ConstB = 10.0f;
+		Add(Steep);
+		auto* Grown = NewObject<UMaterialExpressionSaturate>(M);
+		Grown->Input.Connect(0, Steep);
+		Add(Grown);
+		auto* Cutout = NewObject<UMaterialExpressionLinearInterpolate>(M);
+		Cutout->A.Connect(4, Diffuse);
+		Cutout->B.Connect(0, Grown);
+		Cutout->Alpha.Connect(0, UseFur);
+		Add(Cutout);
+		Inputs->OpacityMask.Connect(0, Cutout);
 	}
 	Inputs->Normal.Connect(0, Bump);
 	// Specular map: red = intensity. Rough where there is none, smoother where it shines.
@@ -755,11 +796,7 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	M->GetExpressionCollection().AddExpression(Rough);
 	Inputs->Roughness.Connect(0, Rough);
 	Inputs->Specular.Connect(1, Spec);
-	if (Kind == 3)
-	{
-		Inputs->OpacityMask.Connect(4, Diffuse);
-	}
-	else if (Kind == 1)
+	if (Kind == 1)
 	{
 		// (decals fade with the vertex alpha; many have no alpha in their texture)
 		auto* Opacity = NewObject<UMaterialExpressionMultiply>(M);

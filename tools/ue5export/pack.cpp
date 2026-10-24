@@ -421,6 +421,15 @@ namespace ue5export
 				for (const auto& [param, t] : m.textures[i])
 					if (const auto slot = Slots().find(param); slot != Slots().end())
 						mat.textures[slot->second] = Texture(sh, t);
+				// A lawn's fur grass (grass_fur_mask): the colour is the tiling DiffuseTex times the lawn's own colour
+				// over it (on the third UV set), and the lawn grows where its mask says (on the second: paths and
+				// edges bare) - the game's shader's, research §60.19. Those two in the slots the shader has no use for.
+				if (src.effect == Joaat("grass_fur_mask"))
+					for (const auto& [param, t] : m.textures[i])
+						if (param == 0x21183f1a)
+							mat.textures[GTAVPack::kDetail] = Texture(sh, t);
+						else if (param == 0x17a8430b)
+							mat.textures[GTAVPack::kDirt] = Texture(sh, t);
 				// (a screen a script draws into: its texture in the archives is only a stand-in)
 				for (const auto& [param, name] : src.textures)
 					if (name.rfind("script_rt", 0) == 0)

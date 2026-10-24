@@ -108,6 +108,20 @@ namespace
 		}
 	}
 
+	// A lawn's fur grass (grass_fur_mask): its own colour and where it grows, in two slots the shader has no other use
+	// for (research §60.19).
+	bool IsFurMask(uint32 Effect)
+	{
+		static const uint32 FurMask = GTAVHash(TEXTVIEW("grass_fur_mask"));
+		return Effect == FurMask;
+	}
+
+	// Whether a material samples the texture in a slot.
+	bool UsesSlot(const GTAVPack::Material& M, int32 Slot)
+	{
+		return SlotParameter(Slot) || (IsFurMask(M.effect) && (Slot == GTAVPack::kDetail || Slot == GTAVPack::kDirt));
+	}
+
 	constexpr int32 kPumps = 6; // worker loops preparing models
 }
 
@@ -453,7 +467,7 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		for (int32 Slot = 0; Slot < GTAVPack::kSlotCount; ++Slot)
 		{
 			const uint64 T = M.textures[Slot];
-			if (!T || !SlotParameter(Slot))
+			if (!T || !UsesSlot(M, Slot))
 			{
 				continue;
 			}
@@ -522,7 +536,7 @@ bool FGTAVRuntimeAssets::Finish(FPrepared& P)
 		for (int32 Slot = 0; Slot < GTAVPack::kSlotCount; ++Slot)
 		{
 			const uint64 T = M.textures[Slot];
-			if (!T || !SlotParameter(Slot) || Arrived.Contains(T))
+			if (!T || !UsesSlot(M, Slot) || Arrived.Contains(T))
 			{
 				continue;
 			}
@@ -821,6 +835,27 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 				MI->SetScalarParameterValue(TEXT("TintPaletteHeight"), Height);
 				MI->SetScalarParameterValue(TEXT("TintRow"), M.tintRow);
 			}
+		}
+	}
+	// A lawn's fur grass: the lawn's own colour over the tiling grass (the third UV set), and where it grows (the second:
+	// paths and edges bare). Drawn without them, whole lawns were a pale grey-green over their paths.
+	if (IsFurMask(M.effect) && M.textures[GTAVPack::kDetail] && M.textures[GTAVPack::kDirt])
+	{
+		UTexture2D* Area = Texture(M.textures[GTAVPack::kDetail], EUsage::Color, PendingTexels);
+		UTexture2D* Grows = Texture(M.textures[GTAVPack::kDirt], EUsage::Linear, PendingTexels);
+		if (Area && Grows)
+		{
+			for (const uint64 CacheKey : {M.textures[GTAVPack::kDetail] * 4 + uint64(EUsage::Color), M.textures[GTAVPack::kDirt] * 4 + uint64(EUsage::Linear)})
+			{
+				if (FTextureUse* TU = TextureUse.Find(CacheKey))
+				{
+					++TU->Refs;
+					Use.Textures.Add(CacheKey);
+				}
+			}
+			MI->SetTextureParameterValue(TEXT("FurArea"), Area);
+			MI->SetTextureParameterValue(TEXT("FurMask"), Grows);
+			MI->SetScalarParameterValue(TEXT("UseFur"), 1.0f);
 		}
 	}
 	// The game's cpv_only: its colour is the vertex colour (no texture).
