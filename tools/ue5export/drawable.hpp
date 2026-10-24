@@ -60,6 +60,7 @@ namespace ue5export::drawable
 		std::vector<uint8_t> color0, color1;          // RGBA8 per vertex, or empty
 		std::vector<std::vector<float>> uv;           // per set: 2 per vertex
 		std::vector<uint32_t> indices;
+		std::vector<float> flow; // a stream's own current at each vertex (x, y: the game's), when it has one
 	};
 
 	// A light attribute of a drawable (0xA8 bytes each; research/phase0.md §59.9), in the game's space (metres).

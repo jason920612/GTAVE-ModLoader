@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <nlohmann/json.hpp>
+
 #include "GTAVPackFormat.h"
 #include "resolve.hpp"
 
@@ -403,13 +405,18 @@ namespace ue5export
 			for (size_t i = 0; i < m.model.materials.size() && flowMap; ++i)
 				if (m.model.materials[i].drawBucket == 6)
 					flows[i] = &*flowMap;
+			// (a stream of the export's own: its sections carry their current)
+			std::vector<bool> ownFlow(m.model.materials.size(), false);
+			for (const auto& s : m.model.sections)
+				if (!s.flow.empty() && s.material < ownFlow.size())
+					ownFlow[s.material] = true;
 			for (size_t i = 0; i < m.model.materials.size(); ++i)
 			{
 				const drawable::Material& src = m.model.materials[i];
 				GTAVPack::Material mat{};
 				mat.effect = src.effect;
 				mat.bucket = src.drawBucket;
-				if (flows[i])
+				if (flows[i] || ownFlow[i])
 					mat.flags |= GTAVPack::kFlowUv;
 				for (const auto& [param, t] : m.textures[i])
 					if (const auto slot = Slots().find(param); slot != Slots().end())
@@ -457,9 +464,10 @@ namespace ue5export
 				                      (s.color0.empty() ? 0 : GTAVPack::kColor0) | (s.color1.empty() ? 0 : GTAVPack::kColor1) |
 				                      (wide ? GTAVPack::kIndex32 : 0);
 				const FlowMap* flow = s.material < flows.size() ? flows[s.material] : nullptr;
+				const bool own = s.flow.size() == 2 * static_cast<size_t>(s.vertices);
 				GTAVPack::SectionHeader sh2{};
 				sh2.material = static_cast<uint16_t>(s.material);
-				sh2.uvCount = static_cast<uint8_t>(s.uv.size() + (flow ? 1 : 0));
+				sh2.uvCount = static_cast<uint8_t>(s.uv.size() + (flow || own ? 1 : 0));
 				sh2.flags = flags;
 				sh2.vertexCount = v;
 				sh2.indexCount = static_cast<uint32_t>(s.indices.size());
@@ -482,7 +490,13 @@ namespace ue5export
 				PutAll(out, s.color1);
 				for (const auto& uv : s.uv)
 					PutAll(out, uv);
-				if (flow)
+				if (own)
+					for (uint32_t i = 0; i < v; ++i)
+					{
+						Put(out, s.flow[2 * i]);
+						Put(out, -s.flow[2 * i + 1]);
+					}
+				else if (flow)
 					for (uint32_t i = 0; i < v; ++i)
 					{
 						const auto f = flow->At(&s.position[3 * i], m.archetypeMin, m.archetypeMax);
@@ -665,12 +679,109 @@ namespace ue5export
 			return w;
 		}
 
+		// Streams the map lacks (tools/ue5hydrology.py, research/phase0.md §60.5): a water surface laid on the ground
+		// section by section (2 m apart, 5 points across), in pieces of 100 sections (a model and an entity each, the
+		// pieces sharing their end sections), each point carrying the current there.
+		struct StreamPiece
+		{
+			uint32_t archetype = 0;
+			mapdata::Vec3 origin{};
+			float lodDistance = 900;
+			Resolver::Model model;
+		};
+
+		std::vector<StreamPiece> StreamPieces(const fs::path& file, std::vector<std::string>& warnings)
+		{
+			std::vector<StreamPiece> out;
+			std::ifstream in(file);
+			if (!in)
+			{
+				warnings.push_back("no streams file " + file.string());
+				return out;
+			}
+			nlohmann::json j;
+			try
+			{
+				j = nlohmann::json::parse(in);
+			}
+			catch (const std::exception& e)
+			{
+				warnings.push_back(std::format("{}: {}", file.string(), e.what()));
+				return out;
+			}
+			constexpr size_t kPiece = 100;
+			constexpr float kUnit = 3.5f;                                    // m/s a unit of current (the water material's)
+			static constexpr float kAcross[5] = {0.3f, 0.8f, 1.0f, 0.8f, 0.3f}; // (slower by the banks)
+			for (const auto& stream : j.at("streams"))
+			{
+				const std::string name = stream.at("name");
+				const float lod = stream.value("lodDistance", 900.0f);
+				const auto& rows = stream.at("sections");
+				for (size_t first = 0, k = 0; first + 1 < rows.size(); first += kPiece, ++k)
+				{
+					const size_t last = std::min(first + kPiece, rows.size() - 1); // (inclusive: the next piece starts here)
+					StreamPiece p;
+					p.lodDistance = lod;
+					p.archetype = Joaat(std::format("gtave_{}_{:02}", name, k));
+					p.origin = {rows[first][0].get<float>(), rows[first][1].get<float>(), rows[first][5][2].get<float>()};
+					drawable::Material mat;
+					mat.effect = Joaat("gtave_stream"); // (the renderer's own kind of river water: GTAVRuntimeAssets)
+					mat.drawBucket = 6;
+					drawable::Section s;
+					s.material = 0;
+					s.uv.resize(1);
+					float along = 0;
+					std::array<float, 3> lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+					for (size_t r = first; r <= last; ++r)
+					{
+						const auto& row = rows[r];
+						const float x = row[0], y = row[1], tx = row[2], ty = row[3], speed = row[6];
+						if (r > first)
+							along += std::hypot(x - rows[r - 1][0].get<float>(), y - rows[r - 1][1].get<float>());
+						for (int c = 0; c < 5; ++c)
+						{
+							const float o = row[4][c], z = row[5][c];
+							const float px = x - ty * o - p.origin[0], py = y + tx * o - p.origin[1], pz = z - p.origin[2];
+							s.position.insert(s.position.end(), {px, py, pz});
+							s.normal.insert(s.normal.end(), {0.0f, 0.0f, 1.0f});
+							s.uv[0].insert(s.uv[0].end(), {along / 4.0f, o / 4.0f});
+							s.flow.insert(s.flow.end(), {tx * speed / kUnit * kAcross[c], ty * speed / kUnit * kAcross[c]});
+							const float q[3] = {px, py, pz};
+							for (int a = 0; a < 3; ++a)
+								lo[a] = std::min(lo[a], q[a]), hi[a] = std::max(hi[a], q[a]);
+						}
+					}
+					s.vertices = static_cast<uint32_t>(s.position.size() / 3);
+					// (counter-clockwise seen from above, as the game's own water)
+					for (uint32_t r = 0; r + 1 <= last - first; ++r)
+						for (uint32_t c = 0; c < 4; ++c)
+						{
+							const uint32_t a = r * 5 + c, b = a + 1, cc = a + 6, d = a + 5;
+							s.indices.insert(s.indices.end(), {a, b, cc, a, cc, d});
+						}
+					p.model.model.sections.push_back(std::move(s));
+					p.model.model.materials.push_back(mat);
+					p.model.model.bbMin = lo, p.model.model.bbMax = hi;
+					const float cx = (lo[0] + hi[0]) / 2, cy = (lo[1] + hi[1]) / 2, cz = (lo[2] + hi[2]) / 2;
+					p.model.model.sphere = {cx, cy, cz, std::hypot(hi[0] - cx, hi[1] - cy, hi[2] - cz)};
+					p.model.model.lodDistances = {lod, lod, lod, lod};
+					p.model.model.lodCount = 1;
+					p.model.textures.resize(1);
+					p.model.file = "streams/" + name;
+					p.model.archetypeMin = lo, p.model.archetypeMax = hi;
+					out.push_back(std::move(p));
+				}
+			}
+			return out;
+		}
+
 		// The map itself.
 		struct WorldWriter
 		{
 			const mapdata::Map& map;
 			const std::set<uint32_t>& converted;
 			const Water& water;
+			const std::vector<StreamPiece>& streams;
 			std::vector<uint32_t> lists;
 
 			uint32_t List(const std::vector<uint32_t>& values)
@@ -717,6 +828,19 @@ namespace ue5export
 					archetypes.push_back(x);
 					if (a.interior >= 0)
 						interiorArchetype[a.interior] = name;
+				}
+				for (const StreamPiece& p : streams)
+				{
+					GTAVPack::Archetype x{};
+					x.name = p.archetype;
+					x.lodDist = p.lodDistance;
+					Box(p.model.model.bbMin, p.model.model.bbMax, x.boundsMin, x.boundsMax);
+					Point({p.model.model.sphere[0], p.model.model.sphere[1], p.model.model.sphere[2]}, x.sphere);
+					x.sphere[3] = p.model.model.sphere[3] * 100;
+					x.interior = GTAVPack::kNone;
+					x.kind = GTAVPack::kBase;
+					x.hasModel = converted.contains(p.archetype);
+					archetypes.push_back(x);
 				}
 
 				// Interiors: their entities (then the entity sets' ones), rooms, portals, sets.
@@ -849,6 +973,39 @@ namespace ue5export
 						batches.push_back(g);
 					}
 					ymaps.push_back(x);
+				}
+				// (the streams: a ymap of their own, always there)
+				if (!streams.empty())
+				{
+					GTAVPack::Ymap y{};
+					y.name = Joaat("gtave_hydrology");
+					y.parent = GTAVPack::kNone;
+					y.firstEntity = static_cast<uint32_t>(entities.size());
+					y.entityCount = static_cast<uint32_t>(streams.size());
+					y.firstGrass = static_cast<uint32_t>(batches.size());
+					y.group = GTAVPack::kNone;
+					mapdata::Vec3 lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+					for (const StreamPiece& p : streams)
+					{
+						GTAVPack::Entity x{};
+						x.archetype = p.archetype;
+						x.ymap = static_cast<uint32_t>(ymaps.size());
+						Point(p.origin, x.position);
+						x.rotation[3] = 1.0f;
+						x.scaleXY = x.scaleZ = 1.0f;
+						x.lodDist = p.lodDistance;
+						x.parent = GTAVPack::kNone;
+						x.interiorPlacement = GTAVPack::kNone;
+						x.lodLevel = 5; // (an orphan HD entity: drawn within its own distance)
+						entities.push_back(x);
+						for (int a = 0; a < 3; ++a)
+							lo[a] = std::min(lo[a], p.origin[a] + p.model.model.bbMin[a]), hi[a] = std::max(hi[a], p.origin[a] + p.model.model.bbMax[a]);
+					}
+					Box(lo, hi, y.entitiesMin, y.entitiesMax);
+					const mapdata::Vec3 far{lo[0] - 1500, lo[1] - 1500, lo[2] - 500}, farHi{hi[0] + 1500, hi[1] + 1500, hi[2] + 500};
+					Box(far, farHi, y.streamingMin, y.streamingMax);
+					ymaps.push_back(y);
+					entityCount = entities.size();
 				}
 				std::vector<GTAVPack::Group> groups;
 				for (const auto& g : map.groups)
@@ -991,7 +1148,10 @@ namespace ue5export
 			PackFile world;
 			size_t entities = 0;
 			const Water water = ReadWater(files, warnings);
-			WorldWriter writer{map, sh.converted, water, {}};
+			const std::vector<StreamPiece> none;
+			if (!options.streams.empty())
+				warnings.push_back("--streams needs the models written too (not --world-only): no streams");
+			WorldWriter writer{map, sh.converted, water, none, {}};
 			if (!world.Open(options.dir / "world.gpk", GTAVPack::kWorld, error) || !writer.Write(world, error, entities))
 				warnings.push_back(error);
 			WriteGlobals(files, options.dir, warnings);
@@ -1040,11 +1200,22 @@ namespace ue5export
 		for (auto& t : threads)
 			t.join();
 
+		// The streams the export adds (their models now; their entities with the map's).
+		std::vector<StreamPiece> streams;
+		if (!options.streams.empty())
+		{
+			streams = StreamPieces(options.streams, warnings);
+			for (const StreamPiece& p : streams)
+				if (sh.models.Add(p.archetype, ModelBytes(sh, p.model)))
+					sh.converted.insert(p.archetype);
+			std::printf("  %zu stream pieces\n", streams.size());
+		}
+
 		// The map.
 		PackFile world;
 		size_t entities = 0;
 		const Water water = ReadWater(files, warnings);
-		WorldWriter writer{map, sh.converted, water, {}};
+		WorldWriter writer{map, sh.converted, water, streams, {}};
 		if (!world.Open(options.dir / "world.gpk", GTAVPack::kWorld, error) || !writer.Write(world, error, entities))
 			warnings.push_back(error);
 		WriteGlobals(files, options.dir, warnings);

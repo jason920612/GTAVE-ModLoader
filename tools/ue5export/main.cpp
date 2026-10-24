@@ -7,7 +7,9 @@
 //   ue5export extract --out <dir> --game <dir> --file <index path>   one file, plain: <out>\files\<name>
 //   ue5export map --out <dir> --game <dir>         the map as story mode sees it: archetypes and entities
 //   ue5export area --out <dir> --game <dir> --area x0,y0,x1,y1 --name <n>   an area's models, textures, entities (<out>\export)
-//   ue5export pack --out <dir> --game <dir> [--pack <name>] [--area x0,y0,x1,y1]   the renderer's pack files (<out>\<name>)
+//   ue5export pack --out <dir> --game <dir> [--pack <name>] [--area x0,y0,x1,y1] [--streams <file.json>]   the renderer's pack
+//                                                  files (<out>\<name>); --streams: rivers to add (tools/ue5export/streams.json,
+//                                                  tools/ue5hydrology.py's: the Alamo Sea's inflows)
 //   ue5export lightdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's light attributes, raw
 //   ue5export resdump --out <dir> --game <dir> --file <name>   a resource's blocks as they are in memory:
 //                                                  <out>\<name>.virtual (at 0x50000000), <name>.physical (0x60000000)
@@ -496,6 +498,8 @@ namespace
 		if (g_options.contains("workers"))
 			options.workers = std::stoul(g_options["workers"]);
 		options.worldOnly = g_options.contains("world-only") && g_options["world-only"] == "1";
+		if (g_options.contains("streams"))
+			options.streams = g_options["streams"];
 		if (g_options.contains("area"))
 		{
 			ue5export::Area area;

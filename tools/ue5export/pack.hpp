@@ -25,6 +25,7 @@ namespace ue5export
 		std::optional<Area> area;                    // a test area: only the models used there
 		unsigned workers = 0;                        // 0: one per core, less two
 		bool worldOnly = false;                      // world.gpk again; the models and textures as they are
+		std::filesystem::path streams;               // streams to add (tools/ue5hydrology.py's JSON), or none
 	};
 
 	struct PackStats
