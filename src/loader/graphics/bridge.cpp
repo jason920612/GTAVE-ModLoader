@@ -88,6 +88,7 @@ namespace loader::graphics::bridge
 		};
 		ID3D12Fence* g_arrive = nullptr;
 		uint64_t g_arriveValue = 0;
+		std::atomic<uint64_t> g_waitedMost = 0; // the newest renderer frame the game's queue was given to wait for
 		std::mutex g_timingMutex;
 		std::condition_variable g_timingWake;
 		std::deque<Timing> g_timing;
@@ -144,6 +145,19 @@ namespace loader::graphics::bridge
 							g_totals.toWait += Milliseconds(arrived - t.camera);
 						}
 						++g_totals.frames;
+					}
+					else if (t.frame->GetCompletedValue() < t.value)
+					{
+						// The game's queue came to its wait for this frame 2 s ago and the renderer has not drawn it (alive, but
+						// not drawing the game's frames): the queue is let go, up to the newest frame it was given to wait for -
+						// else the game waits on its GPU until its own watchdog ends it (research §60.14).
+						const uint64_t most = std::max<uint64_t>(t.value, g_waitedMost.load());
+						t.frame->Signal(most);
+						const GTAVBridge::Shared* s = g_shared;
+						log::Warn("ue5 bridge: the renderer did not draw game frame {} within 2 s (its newest {}, state {}, textures {}x{} for {}x{}); the game's "
+						          "queue let go up to {}",
+						    t.value, s ? s->frameValue : 0, s ? s->rendererState : 0, s ? s->textureWidth : 0, s ? s->textureHeight : 0, s ? s->width : 0,
+						    s ? s->height : 0, most);
 					}
 				}
 				t.frame->Release();
@@ -586,6 +600,9 @@ namespace loader::graphics::bridge
 				g_timingWake.notify_one();
 			}
 			queue->Wait(g_fence, value);
+			for (uint64_t most = g_waitedMost.load(); value > most && !g_waitedMost.compare_exchange_weak(most, value);)
+			{
+			}
 			ID3D12Resource* picture = g_texture[value % GTAVBridge::kTextures];
 			ui::recorder::SetFrameInfo(t_sequence, static_cast<uint32_t>(value), static_cast<uint32_t>(newest),
 			    (stalled ? 1u : 0u) | static_cast<uint32_t>(composite::Flash() * 100.0f) << 8);

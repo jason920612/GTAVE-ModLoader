@@ -238,8 +238,19 @@ private:
 		const uint32 FrameSequence = RenderSequence;
 		const uint64 Built = FPlatformTime::Cycles64();
 		// (once per game frame: a frame drawn again while no new view came is not the game's)
-		if (Target[GTAVBridge::kTextures - 1] && Fence && bEnabled && FrameSequence && FrameSequence != LastWritten && SceneColor.IsValid() &&
-			SceneColor.ViewRect.Width() == int32(Shared->textureWidth) && SceneColor.ViewRect.Height() == int32(Shared->textureHeight) &&
+		const bool bSize = SceneColor.IsValid() && SceneColor.ViewRect.Width() == int32(Shared->textureWidth) && SceneColor.ViewRect.Height() == int32(Shared->textureHeight);
+		if (Target[GTAVBridge::kTextures - 1] && Fence && bEnabled && FrameSequence && FrameSequence != LastWritten && SceneColor.IsValid() && !bSize)
+		{
+			// (the game's queue waits for this frame: not written, it waits until the loader lets it go)
+			static double Told = 0;
+			if (FPlatformTime::Seconds() - Told > 5)
+			{
+				Told = FPlatformTime::Seconds();
+				UE_LOG(LogGTAVBridge, Warning, TEXT("game frame %u not written: the view %dx%d, the shared textures %ux%u"), FrameSequence,
+					SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height(), Shared->textureWidth, Shared->textureHeight);
+			}
+		}
+		if (Target[GTAVBridge::kTextures - 1] && Fence && bEnabled && FrameSequence && FrameSequence != LastWritten && bSize &&
 			Inputs.SceneTextures.SceneTextures)
 		{
 			LastWritten = FrameSequence;
