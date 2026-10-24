@@ -1,7 +1,8 @@
 """A long run of the graphics mod played as a person plays it (research/phase0.md §59.12), for what only shows over time
 and in motion: the player drives about the map on their own (the game's AI at the wheel, wandering), gets out now and
 then and walks, looks about (the camera turned this way and that, the view modes changed), goes into buildings, now
-and then is somewhere else on the map (a long drive in a moment); the clock runs and the weather changes. Every few
+and then is somewhere else on the map (a long drive in a moment), now and then shoots and blows things up (fire,
+smoke, explosions about them: the game's particles); the clock runs and the weather changes. Every few
 minutes some seconds are recorded as video; all along, the frame rate and the slowest frames, GPU memory and the
 renderer's own timings are logged.
 
@@ -9,7 +10,7 @@ usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>] 
        (the game running with test control: gtactl.py launch)
 Writes <out>/soak.csv (every 15 s), <out>/events.txt, <out>/v###_<what>.mp4, and prints a summary.
 """
-import csv, os, random, re, subprocess, sys, threading, time
+import csv, math, os, random, re, subprocess, sys, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gtactl  # noqa: E402
@@ -28,6 +29,8 @@ SET_MAX_WANTED_LEVEL, SET_PLAYER_WANTED_LEVEL, SET_PLAYER_WANTED_LEVEL_NOW = 0xA
 SET_EVERYONE_IGNORE_PLAYER, SET_VEHICLE_ON_GROUND_PROPERLY = 0x8EEDA153AD141BA4, 0x49733E92263139D1
 SET_GAMEPLAY_CAM_RELATIVE_PITCH, SET_FOLLOW_PED_CAM_VIEW_MODE, SET_FOLLOW_VEHICLE_CAM_VIEW_MODE = 0x6D0858B8EDFD2B7D, 0x5A4F9EDF1673F704, 0xAC253D7842768F48
 SET_VEHICLE_ENGINE_ON = 0x2497C4717C8B881E
+ADD_EXPLOSION, START_SCRIPT_FIRE, REMOVE_SCRIPT_FIRE = 0xE3AD2BDBAEE269AC, 0x6B83617E04503888, 0x7FF548385680673F
+GIVE_WEAPON_TO_PED, TASK_SHOOT_AT_COORD = 0xBF0FD6E56C964FCB, 0x46A6CC01E0826106
 
 # Roads all over the map (x, y, z, heading): where a long drive would have taken the player.
 ROADS = [
@@ -43,6 +46,7 @@ ROOMS = [
     (-1047.9, -233.0, 39.0),
 ]
 WEATHERS = ["EXTRASUNNY", "CLEAR", "CLOUDS", "OVERCAST", "RAIN", "FOGGY", "THUNDER", "CLEARING", "SMOG"]
+EXPLOSIONS = [3, 3, 7, 9, 20, 22]  # molotov, a car's, a petrol pump's, a smoke grenade, a flare
 CARS = ["sultan", "buffalo", "tailgater", "baller", "felon", "oracle"]
 
 
@@ -274,6 +278,28 @@ def main(args):
                     g.native(TASK_LEAVE_VEHICLE, ped, state.get("car", 0), 0)
                     time.sleep(3)
                 g.native(TASK_WANDER_STANDARD, ped, 10.0, 10)
+                g.native(SET_FOLLOW_PED_CAM_VIEW_MODE, random.choice([1, 1, 2, 4]))
+            elif roll < 0.9:
+                what, seconds = "mayhem", random.uniform(25, 45)
+                # (on foot: shooting about, fires and explosions some metres off; nobody minds, nothing hurts the player)
+                ped = g.ped()
+                if g.native(IS_PED_IN_ANY_VEHICLE, ped, 0)[0]:
+                    g.native(TASK_LEAVE_VEHICLE, ped, state.get("car", 0), 0)
+                    time.sleep(3)
+                x, y, z = g.native(GET_ENTITY_COORDS, ped, 1)[2]
+                for _ in range(random.randint(2, 4)):
+                    a = random.uniform(0, 6.283)
+                    d = random.uniform(10, 25)
+                    g.native(ADD_EXPLOSION, x + d * math.cos(a), y + d * math.sin(a), z, random.choice(EXPLOSIONS), 1.0, 1, 0, 0.2, 1)
+                    time.sleep(random.uniform(0.5, 2))
+                fire = g.native(START_SCRIPT_FIRE, x + 8.0, y + 6.0, z - 0.8, 10, 0)
+                state.setdefault("fires", []).append(fire[0] if fire else 0)
+                for old in state["fires"][:-3]:
+                    g.native(REMOVE_SCRIPT_FIRE, old)
+                state["fires"] = state["fires"][-3:]
+                g.native(GIVE_WEAPON_TO_PED, ped, joaat("WEAPON_ASSAULTRIFLE"), 500, 0, 1)
+                a = random.uniform(0, 6.283)
+                g.native(TASK_SHOOT_AT_COORD, ped, x + 20 * math.cos(a), y + 20 * math.sin(a), z, int(seconds * 500), joaat("FIRING_PATTERN_FULL_AUTO"))
                 g.native(SET_FOLLOW_PED_CAM_VIEW_MODE, random.choice([1, 1, 2, 4]))
             else:
                 what, seconds = "inside", random.uniform(30, 60)

@@ -36,6 +36,8 @@ namespace loader::graphics::streamline
 		uint32_t inputState = 0;
 		void* depth = nullptr; // depth and stencil at the render resolution
 		uint32_t depthState = 0;
+		void* bias = nullptr; // where DLSS is to favour this frame's colour over its history (R8, the render resolution)
+		uint32_t biasState = 0;
 		uint32_t renderWidth = 0, renderHeight = 0; // the part of the inputs in use
 	};
 	// Called on the render thread right after the game's DLSS Super Resolution pass was recorded.

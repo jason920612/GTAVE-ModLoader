@@ -27,6 +27,7 @@
 #include "../config.hpp"
 #include "../game/natives.hpp"
 #include "../graphics/bridge.hpp"
+#include "../graphics/particles.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../state.hpp"
@@ -654,6 +655,13 @@ namespace loader::debug::remote
 				g_spinRate = rate;
 				g_spinUntil = GetTickCount64() + static_cast<ULONGLONG>(std::clamp(seconds, 0.0f, 600.0f) * 1000.0f);
 				g_spinLast = 0;
+				return "ok";
+			}
+			if (cmd == "ptfxtrace")
+			{
+				std::string path;
+				std::getline(in >> std::ws, path);
+				graphics::particles::Trace(std::filesystem::path(std::u8string(path.begin(), path.end())).wstring());
 				return "ok";
 			}
 			if (cmd == "depthdump" || cmd == "colordump")

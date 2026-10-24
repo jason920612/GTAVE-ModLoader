@@ -29,6 +29,7 @@
 #include "composite.hpp"
 #include "gamelights.hpp"
 #include "interiorsets.hpp"
+#include "particles.hpp"
 #include "streamline.hpp"
 
 namespace loader::graphics::bridge
@@ -418,24 +419,17 @@ namespace loader::graphics::bridge
 		}
 
 		// Research: the game's own scene colour going into DLSS (linear HDR, its render resolution) to a file (header: width,
-		// rows, row pitch, DXGI format, the size in use; then the rows), for measuring its lights against the renderer's.
+		// rows, row pitch, DXGI format, the size in use; then the rows), for measuring its lights against the renderer's; and
+		// beside it, the same way, the mask the game gave DLSS of where to favour the frame's own colour (".bias") and the
+		// copies of the scene colour before and after its particles (".before", ".after").
 		std::wstring g_colorPath;
 
-		void DumpColor(const streamline::DlssFrame& frame)
+		void ReadBack(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, uint32_t state, const std::wstring& path, uint32_t width, uint32_t height)
 		{
-			std::wstring path;
-			{
-				std::lock_guard lock(g_dumpMutex);
-				if (g_colorPath.empty() || !frame.input)
-					return;
-				path = std::move(g_colorPath);
-				g_colorPath.clear();
-			}
-			auto* input = static_cast<ID3D12Resource*>(frame.input);
 			ID3D12Device* device = nullptr;
-			if (FAILED(input->GetDevice(IID_PPV_ARGS(&device))))
+			if (FAILED(texture->GetDevice(IID_PPV_ARGS(&device))))
 				return;
-			const D3D12_RESOURCE_DESC desc = input->GetDesc();
+			const D3D12_RESOURCE_DESC desc = texture->GetDesc();
 			D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
 			UINT rows = 0;
 			UINT64 rowBytes = 0, total = 0;
@@ -453,22 +447,21 @@ namespace loader::graphics::bridge
 			device->Release();
 			if (!made)
 				return;
-			auto* list = static_cast<ID3D12GraphicsCommandList*>(frame.commandList);
 			D3D12_RESOURCE_BARRIER barrier{};
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = input;
+			barrier.Transition.pResource = texture;
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			barrier.Transition.StateBefore = static_cast<D3D12_RESOURCE_STATES>(frame.inputState);
+			barrier.Transition.StateBefore = static_cast<D3D12_RESOURCE_STATES>(state);
 			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
 			list->ResourceBarrier(1, &barrier);
 			D3D12_TEXTURE_COPY_LOCATION to{readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
 			to.PlacedFootprint = footprint;
-			D3D12_TEXTURE_COPY_LOCATION from{input, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+			D3D12_TEXTURE_COPY_LOCATION from{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
 			from.SubresourceIndex = 0;
 			list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			list->ResourceBarrier(1, &barrier);
-			std::thread([readback, footprint, rows, path, width = frame.renderWidth, height = frame.renderHeight] {
+			std::thread([readback, footprint, rows, path, width, height] {
 				Sleep(2000);
 				void* data = nullptr;
 				if (SUCCEEDED(readback->Map(0, nullptr, &data)))
@@ -479,11 +472,32 @@ namespace loader::graphics::bridge
 					out.write(reinterpret_cast<const char*>(header), sizeof(header));
 					out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size_t{footprint.Footprint.RowPitch} * rows));
 					readback->Unmap(0, nullptr);
-					log::Info("ue5 bridge: the game's scene colour written ({}x{}, format {}, in use {}x{})", footprint.Footprint.Width, rows,
+					log::Info("ue5 bridge: a buffer of the game's DLSS pass written ({}x{}, format {}, in use {}x{})", footprint.Footprint.Width, rows,
 					    static_cast<int>(footprint.Footprint.Format), width, height);
 				}
 				readback->Release();
 			}).detach();
+		}
+
+		void DumpColor(const streamline::DlssFrame& frame, const particles::Layer& layer)
+		{
+			std::wstring path;
+			{
+				std::lock_guard lock(g_dumpMutex);
+				if (g_colorPath.empty() || !frame.input)
+					return;
+				path = std::move(g_colorPath);
+				g_colorPath.clear();
+			}
+			auto* list = static_cast<ID3D12GraphicsCommandList*>(frame.commandList);
+			ReadBack(list, static_cast<ID3D12Resource*>(frame.input), frame.inputState, path, frame.renderWidth, frame.renderHeight);
+			if (frame.bias)
+				ReadBack(list, static_cast<ID3D12Resource*>(frame.bias), frame.biasState, path + L".bias", frame.renderWidth, frame.renderHeight);
+			if (layer.before && layer.after)
+			{
+				ReadBack(list, layer.before, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".before", frame.renderWidth, frame.renderHeight);
+				ReadBack(list, layer.after, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".after", frame.renderWidth, frame.renderHeight);
+			}
 		}
 
 		// The game's frame this render thread records (its camera's sequence number): the renderer's frame to wait for;
@@ -499,8 +513,12 @@ namespace loader::graphics::bridge
 		// again once the frame was presented (OnPresent).
 		void AfterDlss(const streamline::DlssFrame& frame)
 		{
+			// (the scene colour before and after the game's particles, when it drew any this frame; the next frame's are
+			// drawn into the same scene colour)
+			particles::SetScene(static_cast<ID3D12Resource*>(frame.input));
+			const particles::Layer layer = particles::TakeLayer(static_cast<ID3D12GraphicsCommandList*>(frame.commandList));
 			DumpDepth(frame);
-			DumpColor(frame);
+			DumpColor(frame, layer);
 			void* commandList = frame.commandList;
 			const uint32_t outputState = frame.outputState;
 			auto* target = static_cast<ID3D12Resource*>(frame.output);
@@ -581,6 +599,8 @@ namespace loader::graphics::bridge
 			// (part of following the game's grading, indoors: outdoors the renderer's own ground - its grass, their
 			// shadows - is wider in brightness than the game's lean one, and narrowed to it the whole scene went flat)
 			settings.contrast = g_shared && g_shared->interior != 0 ? settings.grade : 0.0f;
+			constexpr uint32_t kThunder = 0xB677829F; // (joaat "THUNDER")
+			settings.storm = g_shared && (g_shared->weatherFrom == kThunder || g_shared->weatherTo == kThunder);
 			// (the game's depth to metres: its viewToClip for row vectors gives depth = (z m10 + m14) / (z m11), so
 			// z = m14 / (depth m11 - m10); for column vectors m11 and m14 trade places: w comes from z by the -1)
 			const float* m = t_camera.viewToClip;
@@ -588,7 +608,7 @@ namespace loader::graphics::bridge
 			settings.depthNumerator = rows ? m[14] : m[11];
 			settings.depthScale = rows ? m[11] : m[14];
 			settings.depthOffset = m[10];
-			if (composite::Record(frame, picture, settings))
+			if (composite::Record(frame, picture, layer, settings))
 				return;
 			auto* list = static_cast<ID3D12GraphicsCommandList*>(commandList);
 			D3D12_RESOURCE_BARRIER barrier{};
@@ -938,6 +958,7 @@ namespace loader::graphics::bridge
 		g_showing = true;
 		streamline::SetAfterDlss(&AfterDlss);
 		streamline::SetOnCamera(&OnCamera);
+		particles::Start();
 		log::Info("ue5 bridge: on (needs the game's DLSS on; {} switches pictures)", config::Get().ue5Key);
 	}
 

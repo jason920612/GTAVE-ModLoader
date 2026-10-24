@@ -47,11 +47,18 @@ namespace loader::graphics::composite
 		// frame is (a stop or more: a flash); the
 		// figure is copied out to a small ring the CPU reads two frames later (Flash()) for the renderer's sky. Nothing
 		// is matched to the game's picture while it flashes.
+		// The game's particles (fire, smoke, sparks, rain: research §60.11) go over the renderer's picture: the game's scene
+		// colour copied before and after its particles (particles::TakeLayer) is what they did to each pixel, taken as the
+		// least hiding that explains it - an additive particle (fire, sparks) hides nothing and adds its light, smoke hides
+		// as much of what is behind as it darkens it (a, from the channel darkened most) and adds what is left (c). The
+		// renderer's pixel then takes the same: picture (1 - a) + c. Measured samples skip them.
 		constexpr char kShader[] = R"(
 Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
 Texture2D<float> Depth : register(t2);
 Texture2D<float4> Input : register(t3); // the game's picture before DLSS (the render size)
+Texture2D<float4> Before : register(t4); // the scene colour before and after the game's particles (the render size)
+Texture2D<float4> After : register(t5);
 RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2 * 64), 8 count, 12 scale (float),
                                              // 16 the game's mean log2 luminance (float); the sky's: 20 game sum,
@@ -60,13 +67,16 @@ RWByteAddressBuffer Exposure : register(u1); // 0 game sum, 4 renderer sum (log2
                                              // flash (stops), 48, 52 its baselines (sky, picture), 56 the scale before
                                              // it, 60 flashing (uint); 64.. the red bins,
                                              // 320.. the blue bins, 576.. the luminance bins; 832.., 1088.. the game's
-                                             // and the renderer's lit luminance bins; 1344 the contrast (float)
+                                             // and the renderer's lit luminance bins; 1344 the contrast (float); 1348
+                                             // the frames a flash has lasted
 cbuffer Sizes : register(b0)
 {
 	uint2 OutSize; uint2 RenderSize; float Adapt; float Match; float Grade;
 	float DepthNumerator; float DepthScale; float DepthOffset; // the game's depth d to metres: n / (d s - o)
 	uint Matte; // 1: Input can be read (edges unmixed), 0: blended by the stencil's footprint alone
 	float ContrastMatch; // how far the renderer's spread of brightness is brought down to the game's (0..1)
+	uint Storm; // 1: the game's weather can flash (lightning)
+	uint Particles; // 1: Before and After hold this frame's particles
 };
 
 // Metres along the view at a depth of the game's (0, the sky: very far).
@@ -92,6 +102,57 @@ int2 RenderPixel(uint2 p)
 	return min(int2((float2(p) + 0.5) * float2(RenderSize) / float2(OutSize)), int2(RenderSize) - 1);
 }
 
+// What the game's particles did at a pixel of the render size: how much of what is behind they hide (a) and the light
+// they put there (c), the least hiding that explains it.
+void ParticleAt(int2 q, out float a, out float3 c)
+{
+	float3 after = After.Load(int3(q, 0)).rgb, before = Before.Load(int3(q, 0)).rgb;
+	a = 0;
+	c = 0;
+	if (any(isnan(after)) || any(isnan(before)) || any(isinf(after)) || any(isinf(before)))
+		return;
+	after = max(after, 0);
+	before = max(before, 0);
+	float3 ratio = before > 1e-5 ? after / before : 1.0;
+	a = saturate(1.0 - min(min(ratio.r, ratio.g), ratio.b));
+	c = max(after - before * (1.0 - a), 0);
+	// (nothing drawn: the copy is exact, but not quite where a particle barely touched)
+	if (a < 0.004 && Luminance(c) < 0.002 * (Luminance(before) + 1e-4))
+		a = 0, c = 0;
+}
+
+// The same at a point of the render size between pixels (bilinear).
+void ParticlesAt(float2 p, out float a, out float3 c)
+{
+	int2 b = int2(floor(p));
+	float2 f = p - float2(b);
+	a = 0;
+	c = 0;
+	[unroll] for (int y = 0; y <= 1; ++y)
+	{
+		[unroll] for (int x = 0; x <= 1; ++x)
+		{
+			float ta;
+			float3 tc;
+			ParticleAt(clamp(b + int2(x, y), int2(0, 0), int2(RenderSize) - 1), ta, tc);
+			float w = (x ? f.x : 1 - f.x) * (y ? f.y : 1 - f.y);
+			a += ta * w;
+			c += tc * w;
+		}
+	}
+}
+
+// Whether the game's particles touched a pixel of the render size (more than a little).
+bool Touched(int2 q, float3 game)
+{
+	if (!Particles)
+		return false;
+	float a;
+	float3 c;
+	ParticleAt(q, a, c);
+	return a > 0.02 || Luminance(c) > 0.02 * (Luminance(game) + 1e-4);
+}
+
 groupshared int g_game[64];
 groupshared int g_renderer[64];
 groupshared int g_count[64];
@@ -111,7 +172,8 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 	if (all(p < OutSize))
 	{
 		int2 q = RenderPixel(p);
-		if (!Dynamic(Stencil.Load(int3(q, 0)).y))
+		// (not the game's peds and vehicles, nor its particles: the renderer has neither)
+		if (!Dynamic(Stencil.Load(int3(q, 0)).y) && !Touched(q, Output[p].rgb))
 		{
 			float3 g = max(Output[p].rgb, 1e-4), r = max(Picture.Load(int3(p, 0)).rgb, 1e-4);
 			float gl = log2(max(Luminance(g), 1e-4)), rl = log2(max(Luminance(r), 1e-4));
@@ -227,29 +289,47 @@ float Median(uint base, out uint total)
 	}
 	return median;
 }
-
+)" // (in two pieces: one string literal holds 16 KB at most)
+		                           R"(
 [numthreads(1, 1, 1)]
 void Update()
 {
 	int game = int(Exposure.Load(0)), renderer = int(Exposure.Load(4)), count = int(Exposure.Load(8));
 	{
 		int skyGame = int(Exposure.Load(20)), skyCount = int(Exposure.Load(28));
-		float skyBase = asfloat(Exposure.Load(48)), pictureBase = asfloat(Exposure.Load(52)), flash = 0;
+		float skyBase = asfloat(Exposure.Load(48)), pictureBase = asfloat(Exposure.Load(52)), flash = 0, sky = 0, picture = 0;
 		if (skyCount > 64)
 		{
-			float sky = float(skyGame) / (64.0 * skyCount);
+			sky = float(skyGame) / (64.0 * skyCount);
 			skyBase = abs(skyBase) < 40.0 ? skyBase : sky;
 			flash = sky - skyBase;
-			skyBase = lerp(skyBase, sky, sky > skyBase + 1.0 ? 0.002 : 0.05);
 		}
 		if (count > 64)
 		{
-			float picture = float(game) / (64.0 * count);
+			picture = float(game) / (64.0 * count);
 			pictureBase = abs(pictureBase) < 40.0 ? pictureBase : picture;
 			if (skyCount <= 64)
 				flash = picture - pictureBase;
-			pictureBase = lerp(pictureBase, picture, picture > pictureBase + 1.0 ? 0.002 : 0.05);
 		}
+		// (a flash is the game's lightning: only while it storms, and short - brighter for longer than 90 frames is the
+		// light itself changing, out of a tunnel or the clock moved on, and the baselines take it at once: taken for a
+		// flash, it held the brightness and the colour balance as they were in the dark for seconds, a blue picture)
+		uint flashFrames = flash > 1.0 ? Exposure.Load(1348) + 1 : 0;
+		if (!Storm || flashFrames > 90)
+		{
+			skyBase = skyCount > 64 ? sky : skyBase;
+			pictureBase = count > 64 ? picture : pictureBase;
+			flash = 0;
+			flashFrames = 0;
+		}
+		else
+		{
+			if (skyCount > 64)
+				skyBase = lerp(skyBase, sky, sky > skyBase + 1.0 ? 0.002 : 0.05);
+			if (count > 64)
+				pictureBase = lerp(pictureBase, picture, picture > pictureBase + 1.0 ? 0.002 : 0.05);
+		}
+		Exposure.Store(1348, flashFrames);
 		Exposure.Store3(44, asuint(float3(clamp(flash, 0.0, 8.0), skyBase, pictureBase)));
 	}
 	// (while it flashes the brightness is matched at once, frame by frame - the renderer's own flash comes a few frames
@@ -401,6 +481,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		float over = l - knee;
 		picture.rgb *= (knee + over / (1.0 + over / (top - knee))) / l;
 	}
+	if (Particles)
+	{
+		float a;
+		float3 c;
+		ParticlesAt(p, a, c);
+		picture.rgb = picture.rgb * (1.0 - a) + c;
+	}
 	if (foreWeight <= 0)
 	{
 		Output[id] = picture;
@@ -426,7 +513,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	Output[id] = float4(lerp(picture.rgb, ped, alpha), game.a);
 }
 )";
-		constexpr UINT kViews = 6;  // per frame: picture, stencil, depth, input, output, exposure
+		constexpr UINT kViews = 8;  // per frame: picture, stencil, depth, input, before and after the particles, output, exposure
 		constexpr UINT kSlots = 64; // frames in the ring (frames in flight are far fewer)
 		constexpr float kAdapt = 0.03f; // of the way to the measured ratio each frame (about a second)
 		constexpr UINT kFlashSlots = 4;  // the flash's read-back ring (frames in flight are three at most)
@@ -471,13 +558,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		{
 			D3D12_DESCRIPTOR_RANGE ranges[2]{};
 			ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-			ranges[0].NumDescriptors = 4;
+			ranges[0].NumDescriptors = 6;
 			ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 			ranges[1].NumDescriptors = 2;
-			ranges[1].OffsetInDescriptorsFromTableStart = 4;
+			ranges[1].OffsetInDescriptorsFromTableStart = 6;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 12;
+			parameters[0].Constants.Num32BitValues = 14;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -580,7 +667,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		return g_flash;
 	}
 
-	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, const Settings& settings)
+	bool Record(const streamline::DlssFrame& frame, ID3D12Resource* picture, const particles::Layer& layer, const Settings& settings)
 	{
 		auto* output = static_cast<ID3D12Resource*>(frame.output);
 		auto* depth = static_cast<ID3D12Resource*>(frame.depth);
@@ -594,6 +681,8 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		// (the game's picture before DLSS, for the edges: readable by a compute shader in the state it is left in)
 		const DXGI_FORMAT inputFormat = input ? ColorView(input->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
 		const bool matte = inputFormat != DXGI_FORMAT_UNKNOWN && (frame.inputState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		const DXGI_FORMAT layerFormat = layer.before && layer.after ? ColorView(layer.before->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
+		const bool particles = layerFormat != DXGI_FORMAT_UNKNOWN;
 		if (static bool told = false; !told)
 		{
 			told = true;
@@ -635,6 +724,11 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		view.Format = matte ? inputFormat : DXGI_FORMAT_R16G16B16A16_FLOAT;
 		g_device->CreateShaderResourceView(matte ? input : nullptr, &view, cpu);
 		cpu.ptr += g_increment;
+		view.Format = particles ? layerFormat : DXGI_FORMAT_R16G16B16A16_FLOAT;
+		g_device->CreateShaderResourceView(particles ? layer.before : nullptr, &view, cpu);
+		cpu.ptr += g_increment;
+		g_device->CreateShaderResourceView(particles ? layer.after : nullptr, &view, cpu);
+		cpu.ptr += g_increment;
 		D3D12_UNORDERED_ACCESS_VIEW_DESC write{};
 		write.Format = outputDesc.Format;
 		write.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -657,11 +751,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
 		const float floats[6] = {kAdapt, settings.match, settings.grade, settings.depthNumerator, settings.depthScale, settings.depthOffset};
-		UINT constants[12] = {width, height, frame.renderWidth, frame.renderHeight};
+		UINT constants[14] = {width, height, frame.renderWidth, frame.renderHeight};
 		std::memcpy(&constants[4], floats, sizeof(floats));
 		constants[10] = matte ? 1 : 0;
 		std::memcpy(&constants[11], &settings.contrast, sizeof(float));
-		list->SetComputeRoot32BitConstants(0, 12, constants, 0);
+		constants[12] = settings.storm ? 1 : 0;
+		constants[13] = particles ? 1 : 0;
+		list->SetComputeRoot32BitConstants(0, 14, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);
@@ -671,8 +767,8 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->ResourceBarrier(1, &barriers[1]);
 		// (the flash out to the read-back ring; the slot two frames back is done by now, or nearly: a flash is short)
 		{
-			const UINT slot = g_flashNext++ % kFlashSlots;
-			g_flash = g_flashMapped[(slot + 2) % kFlashSlots];
+			const UINT flashSlot = g_flashNext++ % kFlashSlots;
+			g_flash = g_flashMapped[(flashSlot + 2) % kFlashSlots];
 			D3D12_RESOURCE_BARRIER copy{};
 			copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			copy.Transition.pResource = g_exposure;
@@ -680,7 +776,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 			copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
 			list->ResourceBarrier(1, &copy);
-			list->CopyBufferRegion(g_flashBuffer, slot * 4, g_exposure, 44, 4);
+			list->CopyBufferRegion(g_flashBuffer, flashSlot * 4, g_exposure, 44, 4);
 			std::swap(copy.Transition.StateBefore, copy.Transition.StateAfter);
 			list->ResourceBarrier(1, &copy);
 		}

@@ -42,7 +42,8 @@ namespace loader::graphics::streamline
 		std::atomic<OnCamera> g_onCamera = nullptr;
 		// The output colour tagged last on this thread (the game tags, then evaluates, on one render thread).
 		thread_local DlssFrame t_frame;
-		constexpr uint32_t kBufferDepth = 0, kBufferScalingInputColor = 3, kBufferScalingOutputColor = 4, kFeatureDlss = 0;
+		constexpr uint32_t kBufferDepth = 0, kBufferScalingInputColor = 3, kBufferScalingOutputColor = 4, kBufferBiasCurrentColorHint = 29,
+		                   kFeatureDlss = 0;
 
 		void RememberOutput(const void* tags, uint32_t count)
 		{
@@ -57,9 +58,11 @@ namespace loader::graphics::streamline
 					continue;
 				void** target = type == kBufferScalingOutputColor ? &t_frame.output : type == kBufferScalingInputColor ? &t_frame.input
 				              : type == kBufferDepth                ? &t_frame.depth
+				              : type == kBufferBiasCurrentColorHint ? &t_frame.bias
 				                                                    : nullptr;
 				uint32_t* state = type == kBufferScalingOutputColor ? &t_frame.outputState : type == kBufferScalingInputColor ? &t_frame.inputState
 				                : type == kBufferDepth                ? &t_frame.depthState
+				                : type == kBufferBiasCurrentColorHint ? &t_frame.biasState
 				                                                      : nullptr;
 				if (!target)
 					continue;
@@ -210,6 +213,8 @@ namespace loader::graphics::streamline
 					t_frame.commandList = commandList;
 					after(t_frame);
 				}
+			if (feature == kFeatureDlss)
+				t_frame.bias = nullptr; // (an optional tag: each frame's own or none)
 			return result;
 		}
 
