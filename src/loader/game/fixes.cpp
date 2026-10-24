@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 
 #include <MinHook.h>
 
@@ -78,6 +79,15 @@ namespace loader::game::fixes
 		{
 			return MH_CreateHook(reinterpret_cast<void*>(at), detour, original) == MH_OK && MH_EnableHook(reinterpret_cast<void*>(at)) == MH_OK;
 		}
+
+		// The flow texel (A8R8G8B8 as the block decoder writes it) to the current: each channel 0..255 -> -1..1, times
+		// the scale the legacy game uses.
+		void RiverFlow(const uint32_t* texel, float* flow)
+		{
+			constexpr float kScale = 0.1f;
+			flow[0] = (static_cast<float>(*texel >> 16 & 0xFF) / 255.0f * 2.0f - 1.0f) * kScale;
+			flow[1] = (static_cast<float>(*texel >> 8 & 0xFF) / 255.0f * 2.0f - 1.0f) * kScale;
+		}
 	}
 
 	bool InstallLoadingScreenDeadlockFix()
@@ -101,6 +111,65 @@ namespace loader::game::fixes
 			return false;
 		}
 		log::Info("fix: loading screen deadlock fix active (+{:#x}, +{:#x})", loadingScreen - module.base, *wait - module.base);
+		return true;
+	}
+
+	bool InstallRiverCurrentFix()
+	{
+		const auto module = pattern::Module::Main();
+		// The flow sampler's tail: mov [rsp+20h],rax; lea rcx,[rsp+28h]; call <BC1 texel>; mov rax,<neutral flow, twice>;
+		// mov [r14],rax; jmp <epilogue>
+		const auto pattern = pattern::Pattern::Parse("48 89 44 24 20 48 8D 4C 24 28 E8 ? ? ? ? 48 B8 33 9B CD 39 33 9B CD 39 49 89 06 EB ?");
+		const auto hit = pattern::Find(module.text, pattern);
+		if (!hit || pattern::Count(module.text, pattern) != 1)
+		{
+			log::Warn("fix: river current sampler not found; rivers stay without currents");
+			return false;
+		}
+		const uintptr_t site = *hit + 15; // the 15 bytes from mov rax to the end of jmp
+		const uintptr_t epilogue = *hit + 30 + *reinterpret_cast<const int8_t*>(*hit + 29);
+
+		// Thunk: RiverFlow(&texel, flow out), then on to the epilogue. The sampler's stack is 16-byte aligned here and
+		// everything live after this point is in non-volatile registers.
+		auto* thunk = static_cast<uint8_t*>(VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+		if (!thunk)
+		{
+			log::Warn("fix: no memory for the river current thunk");
+			return false;
+		}
+		uint8_t* at = thunk;
+		const auto bytes = [&](std::initializer_list<uint8_t> list) {
+			for (const uint8_t b : list)
+				*at++ = b;
+		};
+		const auto u64 = [&](uint64_t v) {
+			std::memcpy(at, &v, 8);
+			at += 8;
+		};
+		bytes({0x48, 0x8D, 0x4C, 0x24, 0x28}); // lea rcx,[rsp+28h]
+		bytes({0x4C, 0x89, 0xF2});             // mov rdx,r14
+		bytes({0x48, 0xB8});                   // mov rax,RiverFlow
+		u64(reinterpret_cast<uint64_t>(&RiverFlow));
+		bytes({0xFF, 0xD0});                         // call rax
+		bytes({0xFF, 0x25, 0x00, 0x00, 0x00, 0x00}); // jmp [rip]
+		u64(epilogue);
+		DWORD old = 0;
+		VirtualProtect(thunk, 64, PAGE_EXECUTE_READ, &old);
+		FlushInstructionCache(GetCurrentProcess(), thunk, 64);
+
+		uint8_t jump[15] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00}; // jmp [rip]; <thunk>; nop
+		const uint64_t target = reinterpret_cast<uint64_t>(thunk);
+		std::memcpy(jump + 6, &target, 8);
+		jump[14] = 0x90;
+		if (!VirtualProtect(reinterpret_cast<void*>(site), sizeof(jump), PAGE_EXECUTE_READWRITE, &old))
+		{
+			log::Warn("fix: cannot write the river current sampler");
+			return false;
+		}
+		std::memcpy(reinterpret_cast<void*>(site), jump, sizeof(jump));
+		VirtualProtect(reinterpret_cast<void*>(site), sizeof(jump), old, &old);
+		FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(site), sizeof(jump));
+		log::Info("fix: river currents read from the flow maps again (+{:#x})", site - module.base);
 		return true;
 	}
 }

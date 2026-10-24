@@ -33,7 +33,9 @@ usage:
                                    DRAW_* natives draw for one frame),
                                    spin <degrees a second> <seconds>: the gameplay camera turned round the player,
                                    native <hash> [args]: a native called on the game thread (integers, floats with a
-                                   '.', s:text) -> "ok <int> <float> <x> <y> <z>" (tools/ue5soak.py drives with it),
+                                   '.', s:text, out / out:<n> for a pointer argument, n put there first)
+                                   -> "ok <int> <float> <x> <y> <z>" and " | out <int> <float> <x> <y> <z>" for each
+                                   pointer argument as the native left it (tools/ue5soak.py drives with it),
                                    record <seconds> <fps> <scale> <file> | record status: see video:,
                                    time h [m] [run]: the clock there, stopped (the game's sun then stays where it
                                    was: "run" lets it go on), date d m y: the calendar, weather <type>: kept)

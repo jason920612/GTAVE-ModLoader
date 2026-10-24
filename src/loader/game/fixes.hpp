@@ -9,6 +9,12 @@ namespace loader::game::fixes
 	// mods). When the main thread has stalled, the loading screen thread stops waiting so the lock is released.
 	bool InstallLoadingScreenDeadlockFix();
 
+	// River currents: rivers carry a flow map (each river model's "FlowTexture", BC1, kept on the CPU too), and the
+	// game samples it where a swimmer, boat or floating thing is in a river. The legacy game turns the texel's red and
+	// green into the current; Enhanced decodes the texel and then writes a constant instead (the neutral texel's
+	// value, 0.0004), so its rivers do not flow at all. The loader puts the texel's value back. Research §60.
+	bool InstallRiverCurrentFix();
+
 	// GTA Online vehicles in story mode: shop_controller walks its table of Online content (516 entries, one a frame,
 	// every 10 s, @925037) and, for content it takes as not available, pulls the player out of such a vehicle
 	// (CLEAR_PED_TASKS_IMMEDIATELY) and deletes the nearest one (@925156). Its availability check (@933608) answers

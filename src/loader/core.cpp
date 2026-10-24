@@ -333,6 +333,7 @@ namespace loader::core
 		if (config::Get().aiEnabled)
 			ai::SettingChanged(); // starts the model server in the background
 		game::fixes::InstallLoadingScreenDeadlockFix();
+		game::fixes::InstallRiverCurrentFix();
 		if (config::Get().ue5Renderer)
 			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())

@@ -46,6 +46,9 @@ WEATHERS = ["EXTRASUNNY", "CLEAR", "CLOUDS", "OVERCAST", "RAIN", "FOGGY", "THUND
 CARS = ["sultan", "buffalo", "tailgater", "baller", "felon", "oracle"]
 
 
+OUT = object()  # (a native's output argument: Game.native returns what it wrote)
+
+
 def joaat(text):
     h = 0
     for c in text.lower().encode():
@@ -68,9 +71,12 @@ class Game:
             return self.pipe.send(line)
 
     def native(self, hash_, *args):
+        """(int, float, (x, y, z)) of the result; with OUT arguments a fourth item: the same of each, as the native wrote it."""
         words = []
         for a in args:
-            if isinstance(a, float):
+            if a is OUT:
+                words.append("out")
+            elif isinstance(a, float):
                 words.append(f"{a:.4f}")
             elif isinstance(a, str):
                 words.append("s:" + a)
@@ -79,8 +85,14 @@ class Game:
         reply = self.send(f"native {hash_:#x} {' '.join(words)}".strip())
         if not reply.startswith("ok"):
             return None
-        parts = reply.split()
-        return int(parts[1]), float(parts[2]), (float(parts[3]), float(parts[4]), float(parts[5]))
+        segments = reply.split(" | out ")
+        parts = segments[0].split()
+        result = int(parts[1]), float(parts[2]), (float(parts[3]), float(parts[4]), float(parts[5]))
+        outs = []
+        for seg in segments[1:]:
+            o = seg.split()
+            outs.append((int(o[0]), float(o[1]), (float(o[2]), float(o[3]), float(o[4]))))
+        return result + (outs,) if outs else result
 
     def ped(self):
         r = self.native(PLAYER_PED_ID)

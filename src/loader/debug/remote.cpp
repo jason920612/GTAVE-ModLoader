@@ -77,6 +77,8 @@ namespace loader::debug::remote
 			std::vector<uint64_t> args;
 			std::vector<std::string> strings; // (what string arguments point into)
 			uint64_t result[3]{};
+			uint64_t out[4][3]{}; // ("out" arguments: what the native wrote there)
+			int outs = 0;
 			bool done = false, ok = false;
 		};
 		std::deque<std::shared_ptr<NativeCall>> g_calls;
@@ -564,6 +566,20 @@ namespace loader::debug::remote
 						const char* text = call->strings.back().c_str();
 						std::memcpy(&slot, &text, sizeof(text));
 					}
+					else if ((w == "out" || w.rfind("out:", 0) == 0) && call->outs < 4)
+					{
+						uint64_t* at = call->out[call->outs++];
+						if (w.size() > 4) // out:<n>: the native reads n there first (DELETE_VEHICLE(&vehicle))
+							try
+							{
+								at[0] = static_cast<uint64_t>(std::stoll(w.substr(4), nullptr, 0));
+							}
+							catch (...)
+							{
+								return "err argument " + w;
+							}
+						std::memcpy(&slot, &at, sizeof(at));
+					}
 					else
 						try
 						{
@@ -599,7 +615,16 @@ namespace loader::debug::remote
 				std::memcpy(&f, &call->result[0], 4);
 				for (int k = 0; k < 3; ++k)
 					std::memcpy(&v[k], &call->result[k], 4);
-				return std::format("ok {} {} {} {} {}", static_cast<int64_t>(call->result[0]), f, v[0], v[1], v[2]);
+				std::string reply = std::format("ok {} {} {} {} {}", static_cast<int64_t>(call->result[0]), f, v[0], v[1], v[2]);
+				for (int k = 0; k < call->outs; ++k)
+				{
+					float of = 0, ov[3];
+					std::memcpy(&of, &call->out[k][0], 4);
+					for (int c = 0; c < 3; ++c)
+						std::memcpy(&ov[c], &call->out[k][c], 4);
+					reply += std::format(" | out {} {} {} {} {}", static_cast<int64_t>(call->out[k][0]), of, ov[0], ov[1], ov[2]);
+				}
+				return reply;
 			}
 			if (cmd == "handler")
 			{
