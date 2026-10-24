@@ -42,6 +42,7 @@ namespace ue5export
 			std::string file;                                 // where it came from
 			std::vector<std::map<uint32_t, Texture>> textures; // per material: parameter hash -> texture
 			std::vector<std::string> missing;                  // textures not found
+			mapdata::Vec3 archetypeMin{}, archetypeMax{};      // the archetype's box (a river's flow map spans it)
 		};
 
 		explicit Resolver(const GameFiles& files, size_t cacheBytes = size_t{2} << 30);

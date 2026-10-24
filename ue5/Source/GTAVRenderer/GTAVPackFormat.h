@@ -96,6 +96,8 @@ namespace GTAVPack
 	enum MaterialFlags : uint16_t
 	{
 		kScriptTarget = 1, // shows what a script draws (a TV's or a monitor's screen: a script_rt_* texture): off unless on
+		kFlowUv = 2,       // a river's: its sections' last UV set is the current there (the flow map's, -1..1 a channel,
+		                   // the game's x and y in this space: y mirrored)
 	};
 
 	// What a material draws like (the renderer's master materials).

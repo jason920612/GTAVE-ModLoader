@@ -1,6 +1,7 @@
 #include "pack.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -8,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -281,6 +283,94 @@ namespace ue5export
 			return key;
 		}
 
+		// A river's flow map (its material's FlowTexture, BC1): the current the game reads at a place in the river
+		// (research/phase0.md §60), a texel's red and green -> x and y, -1..1. It spans the archetype's box seen from
+		// above, its first row the box's north edge.
+		struct FlowMap
+		{
+			int w = 0, h = 0;
+			std::vector<std::array<float, 2>> texels; // row by row
+
+			bool Read(const drawable::Texture& t)
+			{
+				w = t.width, h = t.height;
+				texels.assign(static_cast<size_t>(w) * h, {0.0f, 0.0f});
+				const auto put = [&](int x, int y, uint32_t r, uint32_t g) {
+					if (x < w && y < h)
+						texels[static_cast<size_t>(y) * w + x] = {r / 255.0f * 2.0f - 1.0f, g / 255.0f * 2.0f - 1.0f};
+				};
+				if (t.dxgi == 71 || t.dxgi == 72) // BC1 (as the game decodes it: 4 colours, or 3 and black)
+				{
+					const int bw = (w + 3) / 4, bh = (h + 3) / 4;
+					if (t.data.size() < static_cast<size_t>(bw) * bh * 8)
+						return false;
+					for (int by = 0; by < bh; ++by)
+						for (int bx = 0; bx < bw; ++bx)
+						{
+							const uint8_t* b = t.data.data() + (static_cast<size_t>(by) * bw + bx) * 8;
+							const uint32_t c0 = b[0] | b[1] << 8, c1 = b[2] | b[3] << 8;
+							uint32_t r[4], g[4];
+							for (int k = 0; k < 2; ++k)
+							{
+								const uint32_t c = k ? c1 : c0, r5 = c >> 11, g6 = c >> 5 & 63;
+								r[k] = r5 << 3 | r5 >> 2, g[k] = g6 << 2 | g6 >> 4;
+							}
+							if (c0 > c1)
+							{
+								r[2] = (2 * r[0] + r[1]) / 3, g[2] = (2 * g[0] + g[1]) / 3;
+								r[3] = (r[0] + 2 * r[1]) / 3, g[3] = (g[0] + 2 * g[1]) / 3;
+							}
+							else
+							{
+								r[2] = (r[0] + r[1]) / 2, g[2] = (g[0] + g[1]) / 2;
+								r[3] = g[3] = 0;
+							}
+							const uint32_t bits = b[4] | b[5] << 8 | b[6] << 16 | static_cast<uint32_t>(b[7]) << 24;
+							for (int i = 0; i < 16; ++i)
+							{
+								const uint32_t k = bits >> (2 * i) & 3;
+								put(bx * 4 + i % 4, by * 4 + i / 4, r[k], g[k]);
+							}
+						}
+					return true;
+				}
+				if (t.dxgi == 87 || t.dxgi == 28) // B8G8R8A8, R8G8B8A8
+				{
+					if (t.data.size() < static_cast<size_t>(w) * h * 4)
+						return false;
+					for (int y = 0; y < h; ++y)
+						for (int x = 0; x < w; ++x)
+						{
+							const uint8_t* p = t.data.data() + (static_cast<size_t>(y) * w + x) * 4;
+							put(x, y, t.dxgi == 87 ? p[2] : p[0], p[1]);
+						}
+					return true;
+				}
+				return false;
+			}
+
+			// At a point of the model (the game's metres) in the box `lo`..`hi`: the game takes the texel the point is in;
+			// between texel centres here (bilinear), for a current without steps.
+			std::array<float, 2> At(const float* p, const mapdata::Vec3& lo, const mapdata::Vec3& hi) const
+			{
+				const float u = (p[0] - lo[0]) / std::max(hi[0] - lo[0], 1e-3f) * w;
+				const float v = h - (p[1] - lo[1]) / std::max(hi[1] - lo[1], 1e-3f) * h;
+				const float fx = std::clamp(u - 0.5f, 0.0f, w - 1.0f), fy = std::clamp(v - 0.5f, 0.0f, h - 1.0f);
+				const int x0 = static_cast<int>(fx), y0 = static_cast<int>(fy);
+				const int x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
+				const float ax = fx - x0, ay = fy - y0;
+				std::array<float, 2> out{};
+				for (int c = 0; c < 2; ++c)
+				{
+					const auto& t = texels;
+					const float top = t[y0 * w + x0][c] * (1 - ax) + t[y0 * w + x1][c] * ax;
+					const float bottom = t[y1 * w + x0][c] * (1 - ax) + t[y1 * w + x1][c] * ax;
+					out[c] = top * (1 - ay) + bottom * ay;
+				}
+				return out;
+			}
+		};
+
 		std::vector<uint8_t> ModelBytes(Shared& sh, const Resolver::Model& m)
 		{
 			std::vector<uint8_t> out;
@@ -297,12 +387,30 @@ namespace ue5export
 			header.sectionCount = static_cast<uint16_t>(m.model.sections.size());
 			header.flags = m.model.lights.empty() ? 0 : GTAVPack::kModelLights;
 			Put(out, header);
+			// (rivers: the flow map, the river shader's; the model's other water - the foam over it, where it meets the
+			// sea - moves with the same current)
+			std::optional<FlowMap> flowMap;
+			for (size_t i = 0; i < m.model.materials.size() && !flowMap; ++i)
+				if (const auto t = m.textures[i].find(Joaat("FlowTexture")); t != m.textures[i].end() && t->second.texture)
+					if (FlowMap f; f.Read(*t->second.texture) && f.w > 0 && f.h > 0)
+						flowMap = std::move(f);
+					else
+					{
+						std::lock_guard lock(sh.mutex);
+						sh.warnings.push_back(std::format("{}: flow map {} not read (format {})", m.file, t->second.key, t->second.texture->dxgi));
+					}
+			std::vector<const FlowMap*> flows(m.model.materials.size(), nullptr);
+			for (size_t i = 0; i < m.model.materials.size() && flowMap; ++i)
+				if (m.model.materials[i].drawBucket == 6)
+					flows[i] = &*flowMap;
 			for (size_t i = 0; i < m.model.materials.size(); ++i)
 			{
 				const drawable::Material& src = m.model.materials[i];
 				GTAVPack::Material mat{};
 				mat.effect = src.effect;
 				mat.bucket = src.drawBucket;
+				if (flows[i])
+					mat.flags |= GTAVPack::kFlowUv;
 				for (const auto& [param, t] : m.textures[i])
 					if (const auto slot = Slots().find(param); slot != Slots().end())
 						mat.textures[slot->second] = Texture(sh, t);
@@ -348,9 +456,10 @@ namespace ue5export
 				const uint8_t flags = (s.normal.empty() ? 0 : GTAVPack::kNormals) | (s.tangent.empty() ? 0 : GTAVPack::kTangents) |
 				                      (s.color0.empty() ? 0 : GTAVPack::kColor0) | (s.color1.empty() ? 0 : GTAVPack::kColor1) |
 				                      (wide ? GTAVPack::kIndex32 : 0);
+				const FlowMap* flow = s.material < flows.size() ? flows[s.material] : nullptr;
 				GTAVPack::SectionHeader sh2{};
 				sh2.material = static_cast<uint16_t>(s.material);
-				sh2.uvCount = static_cast<uint8_t>(s.uv.size());
+				sh2.uvCount = static_cast<uint8_t>(s.uv.size() + (flow ? 1 : 0));
 				sh2.flags = flags;
 				sh2.vertexCount = v;
 				sh2.indexCount = static_cast<uint32_t>(s.indices.size());
@@ -373,6 +482,13 @@ namespace ue5export
 				PutAll(out, s.color1);
 				for (const auto& uv : s.uv)
 					PutAll(out, uv);
+				if (flow)
+					for (uint32_t i = 0; i < v; ++i)
+					{
+						const auto f = flow->At(&s.position[3 * i], m.archetypeMin, m.archetypeMax);
+						Put(out, f[0]);
+						Put(out, -f[1]);
+					}
 				if (wide)
 					PutAll(out, s.indices);
 				else

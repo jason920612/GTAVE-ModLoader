@@ -38,6 +38,8 @@
 #include "Materials/MaterialExpressionViewProperty.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionFrac.h"
+#include "Materials/MaterialExpressionAbs.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
@@ -179,19 +181,85 @@ UMaterial* FGTAVMaterials::Master(int32 Kind)
 		XY->R = XY->G = 1;
 		XY->B = XY->A = 0;
 		Add(XY);
-		const auto Ripples = [&](float Size, float SpeedX, float SpeedY, int32 Y) {
-			auto* Scale = NewObject<UMaterialExpressionDivide>(M);
-			Scale->A.Connect(0, XY);
-			Scale->ConstB = Size;
-			Add(Scale);
-			auto* Pan = NewObject<UMaterialExpressionPanner>(M);
-			Pan->Coordinate.Connect(0, Scale);
-			Pan->SpeedX = SpeedX;
-			Pan->SpeedY = SpeedY;
-			Add(Pan);
-			auto* S = Sample(TEXT("WaterBump"), FlatNormal, SAMPLERTYPE_Normal, -700, Y);
-			S->Coordinates.Connect(0, Pan);
-			return S;
+		// Rivers: the ripples carried by the current (the fourth UV set: the game's flow map, -1..1 a channel; still water
+		// has none), flow-mapped: two copies of the ripples a half period apart, each moved along with the water and
+		// pulled back to where it started once a period, the one about to be pulled back faded out.
+		UMaterialExpression* Moved[2] = {nullptr, nullptr};
+		UMaterialExpression* Crossfade = nullptr;
+		if (!bSea)
+		{
+			constexpr float FlowSpeed = 350.0f; // cm/s at a flow of 1: what a swimmer left in the river drifts at (§60)
+			constexpr float Period = 1.2f;      // s
+			auto* FlowUv = NewObject<UMaterialExpressionTextureCoordinate>(M);
+			FlowUv->CoordinateIndex = 3;
+			Add(FlowUv);
+			auto* Time = NewObject<UMaterialExpressionTime>(M);
+			Add(Time);
+			auto* Cycles = NewObject<UMaterialExpressionDivide>(M);
+			Cycles->A.Connect(0, Time);
+			Cycles->ConstB = Period;
+			Add(Cycles);
+			for (int32 K = 0; K < 2; ++K)
+			{
+				auto* Shifted = NewObject<UMaterialExpressionAdd>(M);
+				Shifted->A.Connect(0, Cycles);
+				Shifted->ConstB = 0.5f * K;
+				Add(Shifted);
+				auto* Phase = NewObject<UMaterialExpressionFrac>(M);
+				Phase->Input.Connect(0, Shifted);
+				Add(Phase);
+				auto* Distance = NewObject<UMaterialExpressionMultiply>(M); // (cm along the current so far)
+				Distance->A.Connect(0, Phase);
+				Distance->ConstB = FlowSpeed * Period;
+				Add(Distance);
+				auto* Offset = NewObject<UMaterialExpressionMultiply>(M);
+				Offset->A.Connect(0, FlowUv);
+				Offset->B.Connect(0, Distance);
+				Add(Offset);
+				auto* Back = NewObject<UMaterialExpressionSubtract>(M);
+				Back->A.Connect(0, XY);
+				Back->B.Connect(0, Offset);
+				Moved[K] = Add(Back);
+				if (K == 0)
+				{
+					auto* Twice = NewObject<UMaterialExpressionMultiply>(M);
+					Twice->A.Connect(0, Phase);
+					Twice->ConstB = 2.0f;
+					Add(Twice);
+					auto* Centred = NewObject<UMaterialExpressionSubtract>(M);
+					Centred->A.Connect(0, Twice);
+					Centred->ConstB = 1.0f;
+					Add(Centred);
+					auto* Weight = NewObject<UMaterialExpressionAbs>(M); // (1 as the first copy is pulled back: the second shows)
+					Weight->Input.Connect(0, Centred);
+					Crossfade = Add(Weight);
+				}
+			}
+		}
+		const auto Ripples = [&](float Size, float SpeedX, float SpeedY, int32 Y) -> UMaterialExpression* {
+			const auto One = [&](UMaterialExpression* Where) {
+				auto* Scale = NewObject<UMaterialExpressionDivide>(M);
+				Scale->A.Connect(0, Where);
+				Scale->ConstB = Size;
+				Add(Scale);
+				auto* Pan = NewObject<UMaterialExpressionPanner>(M);
+				Pan->Coordinate.Connect(0, Scale);
+				Pan->SpeedX = SpeedX;
+				Pan->SpeedY = SpeedY;
+				Add(Pan);
+				auto* S = Sample(TEXT("WaterBump"), FlatNormal, SAMPLERTYPE_Normal, -700, Y);
+				S->Coordinates.Connect(0, Pan);
+				return S;
+			};
+			if (!Crossfade)
+			{
+				return One(XY);
+			}
+			auto* Mix = NewObject<UMaterialExpressionLinearInterpolate>(M);
+			Mix->A.Connect(0, One(Moved[0]));
+			Mix->B.Connect(0, One(Moved[1]));
+			Mix->Alpha.Connect(0, Crossfade);
+			return Add(Mix);
 		};
 		auto* Sum = NewObject<UMaterialExpressionAdd>(M);
 		Sum->A.Connect(0, Ripples(bSea ? 900.0f : 200.0f, 0.012f, 0.007f, -200));

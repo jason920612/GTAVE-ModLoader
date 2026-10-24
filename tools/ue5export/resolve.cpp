@@ -302,6 +302,7 @@ namespace ue5export
 			return error = std::format("{} has no drawable {:08x} {}", it->second, inDictionary, error), false;
 		out.model.lights = drawable::Lights(view, ext == "yft" ? drawable::View::kRoot + 0x110 : d->second + 0xB0, d->second);
 		out.file = f->path;
+		out.archetypeMin = a.bbMin, out.archetypeMax = a.bbMax;
 
 		const std::string name = Stem(a.name);
 		std::map<std::string, const drawable::Texture*> embedded;

@@ -311,6 +311,17 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 		{
 			UvChannels = FMath::Max(UvChannels, 3); // (the third: the first colour set's blue, red: see below)
 		}
+		// Water: the fourth UV set the current (a river's flow map; still water none), which its material moves the
+		// ripples by.
+		const float* Flow = nullptr;
+		if (Mat.kind == GTAVPack::kWater)
+		{
+			if ((Mat.flags & GTAVPack::kFlowUv) && Uv.Num() > 0)
+			{
+				Flow = Uv.Pop();
+			}
+			UvChannels = FMath::Max(UvChannels, 4);
+		}
 		const uint32 Base = Vertices.Num();
 		Vertices.AddUninitialized(V);
 		for (int64 X = 0; X < V; ++X)
@@ -356,6 +367,10 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 			if (bTerrain)
 			{
 				Out.UVs[2] = C0 ? FVector2f(C0[4 * X + 2] / 255.0f, C0[4 * X] / 255.0f) : FVector2f(0.0f, 1.0f);
+			}
+			if (Mat.kind == GTAVPack::kWater)
+			{
+				Out.UVs[3] = Flow ? FVector2f(Flow[2 * X], Flow[2 * X + 1]) : FVector2f::ZeroVector;
 			}
 		}
 		FStaticMeshSection& Section = Sections.AddDefaulted_GetRef();
