@@ -509,10 +509,10 @@ namespace loader::graphics::bridge
 			ReadBack(list, static_cast<ID3D12Resource*>(frame.input), frame.inputState, path, frame.renderWidth, frame.renderHeight);
 			if (frame.bias)
 				ReadBack(list, static_cast<ID3D12Resource*>(frame.bias), frame.biasState, path + L".bias", frame.renderWidth, frame.renderHeight);
-			if (layer.before && layer.after)
+			if (layer.particles && layer.particlesWhite)
 			{
-				ReadBack(list, layer.before, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".before", frame.renderWidth, frame.renderHeight);
-				ReadBack(list, layer.after, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".after", frame.renderWidth, frame.renderHeight);
+				ReadBack(list, layer.particles, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".particles", frame.renderWidth, frame.renderHeight);
+				ReadBack(list, layer.particlesWhite, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, path + L".particleswhite", frame.renderWidth, frame.renderHeight);
 			}
 			if (layer.decalBefore && layer.decalAfter)
 			{
@@ -532,12 +532,8 @@ namespace loader::graphics::bridge
 		// queue has waited for it (frame for frame, so that the game's peds and vehicles sit on the renderer's
 		// picture exactly; while the renderer stalls, its newest frame instead). The frame's texture is the renderer's
 		// again once the frame was presented (OnPresent).
-		void AfterDlss(const streamline::DlssFrame& frame)
+		void Compose(const streamline::DlssFrame& frame, const particles::Layer& layer)
 		{
-			// (the scene colour before and after the game's particles, when it drew any this frame; the next frame's are
-			// drawn into the same scene colour)
-			particles::SetScene(static_cast<ID3D12Resource*>(frame.input));
-			const particles::Layer layer = particles::TakeLayer(static_cast<ID3D12GraphicsCommandList*>(frame.commandList));
 			DumpDepth(frame);
 			DumpColor(frame, layer);
 			void* commandList = frame.commandList;
@@ -645,6 +641,17 @@ namespace loader::graphics::bridge
 			list->CopyResource(target, picture);
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 			list->ResourceBarrier(1, &barrier);
+		}
+
+		void AfterDlss(const streamline::DlssFrame& frame)
+		{
+			// (the game's particles drawn this frame and its decals, for the composite in DLSS's list; the particles' layer
+			// cleared there after it, for the next frame's)
+			particles::SetScene(static_cast<ID3D12Resource*>(frame.input));
+			auto* list = static_cast<ID3D12GraphicsCommandList*>(frame.commandList);
+			const particles::Layer layer = particles::TakeLayer(list);
+			Compose(frame, layer);
+			particles::FinishLayer(list, layer);
 		}
 
 		bool CreateShared()

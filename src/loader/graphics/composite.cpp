@@ -47,11 +47,10 @@ namespace loader::graphics::composite
 		// frame is (a stop or more: a flash); the
 		// figure is copied out to a small ring the CPU reads two frames later (Flash()) for the renderer's sky. Nothing
 		// is matched to the game's picture while it flashes.
-		// The game's particles (fire, smoke, sparks, rain: research §60.11) go over the renderer's picture: the game's scene
-		// colour copied before and after its particles (particles::TakeLayer) is what they did to each pixel, taken as the
-		// least hiding that explains it - an additive particle (fire, sparks) hides nothing and adds its light, smoke hides
-		// as much of what is behind as it darkens it (a, from the channel darkened most) and adds what is left (c). The
-		// renderer's pixel then takes the same: picture (1 - a) + c. Measured samples skip them.
+		// The game's particles (fire, smoke, sparks, rain: research §60.11, §60.21) go over the renderer's picture: drawn
+		// again over black and over white (particles::TakeLayer), per pixel and channel they add c (over black) and let t
+		// of what is behind them through (over white, less c); the renderer's pixel takes the same: picture t + c.
+		// Measured samples skip them.
 		// Its decals (bullet holes, blood, scorch marks: research §60.17) are on its surfaces: the G-buffer's surface colour
 		// copied before and after them gives, per pixel and channel, how much they darkened or tinted it (after / before);
 		// the renderer's pixel takes the same where its surface is the game's (no ped or vehicle there, the two depths alike).
@@ -60,8 +59,8 @@ Texture2D<float4> Picture : register(t0);
 Texture2D<uint2> Stencil : register(t1);
 Texture2D<float> Depth : register(t2);
 Texture2D<float4> Input : register(t3); // the game's picture before DLSS (the render size)
-Texture2D<float4> Before : register(t4); // the scene colour before and after the game's particles (the render size)
-Texture2D<float4> After : register(t5);
+Texture2D<float4> ParticlesBlack : register(t4); // the game's particles drawn over black and over white (the render size)
+Texture2D<float4> ParticlesWhite : register(t5);
 Texture2D<float4> DecalBefore : register(t6); // the G-buffer's surface colour before and after the game's decals
 Texture2D<float4> DecalAfter : register(t7);
 RWTexture2D<float4> Output : register(u0);
@@ -81,7 +80,7 @@ cbuffer Sizes : register(b0)
 	uint Matte; // 1: Input can be read (edges unmixed), 0: blended by the stencil's footprint alone
 	float ContrastMatch; // how far the renderer's spread of brightness is brought down to the game's (0..1)
 	uint Storm; // 1: the game's weather can flash (lightning)
-	uint Particles; // 1: Before and After hold this frame's particles
+	uint Particles; // 1: ParticlesBlack and ParticlesWhite hold this frame's particles
 	uint Decals; // 1: DecalBefore and DecalAfter hold this frame's decals, linear; 2: sRGB-encoded
 };
 
@@ -108,41 +107,34 @@ int2 RenderPixel(uint2 p)
 	return min(int2((float2(p) + 0.5) * float2(RenderSize) / float2(OutSize)), int2(RenderSize) - 1);
 }
 
-// What the game's particles did at a pixel of the render size: how much of what is behind they hide (a) and the light
-// they put there (c), the least hiding that explains it.
-void ParticleAt(int2 q, out float a, out float3 c)
+// What the game's particles did at a pixel of the render size: how much of what is behind them shows through (t, per
+// channel) and the light they put there (c; less than none where one darkens by subtracting).
+void ParticleAt(int2 q, out float3 t, out float3 c)
 {
-	float3 after = After.Load(int3(q, 0)).rgb, before = Before.Load(int3(q, 0)).rgb;
-	a = 0;
+	float3 black = ParticlesBlack.Load(int3(q, 0)).rgb, white = ParticlesWhite.Load(int3(q, 0)).rgb;
+	t = 1;
 	c = 0;
-	if (any(isnan(after)) || any(isnan(before)) || any(isinf(after)) || any(isinf(before)))
+	if (any(isnan(black)) || any(isnan(white)) || any(isinf(black)) || any(isinf(white)))
 		return;
-	after = max(after, 0);
-	before = max(before, 0);
-	float3 ratio = before > 1e-5 ? after / before : 1.0;
-	a = saturate(1.0 - min(min(ratio.r, ratio.g), ratio.b));
-	c = max(after - before * (1.0 - a), 0);
-	// (nothing drawn: the copy is exact, but not quite where a particle barely touched)
-	if (a < 0.004 && Luminance(c) < 0.002 * (Luminance(before) + 1e-4))
-		a = 0, c = 0;
+	t = saturate(white - black);
+	c = black;
 }
 
 // The same at a point of the render size between pixels (bilinear).
-void ParticlesAt(float2 p, out float a, out float3 c)
+void ParticlesAt(float2 p, out float3 t, out float3 c)
 {
 	int2 b = int2(floor(p));
 	float2 f = p - float2(b);
-	a = 0;
+	t = 0;
 	c = 0;
 	[unroll] for (int y = 0; y <= 1; ++y)
 	{
 		[unroll] for (int x = 0; x <= 1; ++x)
 		{
-			float ta;
-			float3 tc;
-			ParticleAt(clamp(b + int2(x, y), int2(0, 0), int2(RenderSize) - 1), ta, tc);
+			float3 tt, tc;
+			ParticleAt(clamp(b + int2(x, y), int2(0, 0), int2(RenderSize) - 1), tt, tc);
 			float w = (x ? f.x : 1 - f.x) * (y ? f.y : 1 - f.y);
-			a += ta * w;
+			t += tt * w;
 			c += tc * w;
 		}
 	}
@@ -187,10 +179,9 @@ bool Touched(int2 q, float3 game)
 {
 	if (!Particles)
 		return false;
-	float a;
-	float3 c;
-	ParticleAt(q, a, c);
-	return a > 0.02 || Luminance(c) > 0.02 * (Luminance(game) + 1e-4);
+	float3 t, c;
+	ParticleAt(q, t, c);
+	return any(t < 0.98) || Luminance(abs(c)) > 0.02 * (Luminance(game) + 1e-4);
 }
 
 groupshared int g_game[64];
@@ -525,10 +516,9 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		picture.rgb *= DecalsAt(p, near);
 	if (Particles)
 	{
-		float a;
-		float3 c;
-		ParticlesAt(p, a, c);
-		picture.rgb = picture.rgb * (1.0 - a) + c;
+		float3 t, c;
+		ParticlesAt(p, t, c);
+		picture.rgb = max(picture.rgb * t + c, 0);
 	}
 	if (foreWeight <= 0)
 	{
@@ -555,7 +545,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	Output[id] = float4(lerp(picture.rgb, ped, alpha), game.a);
 }
 )";
-		constexpr UINT kViews = 10; // per frame: picture, stencil, depth, input, before and after the particles and the decals, output, exposure
+		constexpr UINT kViews = 10; // per frame: picture, stencil, depth, input, the particles over black and white, before and after the decals, output, exposure
 		constexpr UINT kSlots = 64; // frames in the ring (frames in flight are far fewer)
 		constexpr float kAdapt = 0.03f; // of the way to the measured ratio each frame (about a second)
 		constexpr UINT kFlashSlots = 4;  // the flash's read-back ring (frames in flight are three at most)
@@ -728,7 +718,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		// (the game's picture before DLSS, for the edges: readable by a compute shader in the state it is left in)
 		const DXGI_FORMAT inputFormat = input ? ColorView(input->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
 		const bool matte = inputFormat != DXGI_FORMAT_UNKNOWN && (frame.inputState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		const DXGI_FORMAT layerFormat = layer.before && layer.after ? ColorView(layer.before->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
+		const DXGI_FORMAT layerFormat = layer.particles && layer.particlesWhite ? ColorView(layer.particles->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
 		const bool particles = layerFormat != DXGI_FORMAT_UNKNOWN;
 		const DXGI_FORMAT decalFormat = layer.decalBefore && layer.decalAfter ? ColorView(layer.decalBefore->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
 		const bool decals = decalFormat != DXGI_FORMAT_UNKNOWN;
@@ -780,9 +770,9 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		g_device->CreateShaderResourceView(matte ? input : nullptr, &view, cpu);
 		cpu.ptr += g_increment;
 		view.Format = particles ? layerFormat : DXGI_FORMAT_R16G16B16A16_FLOAT;
-		g_device->CreateShaderResourceView(particles ? layer.before : nullptr, &view, cpu);
+		g_device->CreateShaderResourceView(particles ? layer.particles : nullptr, &view, cpu);
 		cpu.ptr += g_increment;
-		g_device->CreateShaderResourceView(particles ? layer.after : nullptr, &view, cpu);
+		g_device->CreateShaderResourceView(particles ? layer.particlesWhite : nullptr, &view, cpu);
 		cpu.ptr += g_increment;
 		view.Format = decals ? decalFormat : DXGI_FORMAT_R8G8B8A8_UNORM;
 		g_device->CreateShaderResourceView(decals ? layer.decalBefore : nullptr, &view, cpu);

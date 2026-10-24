@@ -657,12 +657,12 @@ namespace loader::debug::remote
 				g_spinLast = 0;
 				return "ok";
 			}
-			if (cmd == "decals")
+			if (cmd == "decals" || cmd == "particles")
 			{
-				// decals 0|1: the game's decals over the renderer's picture or not
+				// decals 0|1, particles 0|1: the game's decals (particles) over the renderer's picture or not
 				int on = 1;
 				in >> on;
-				graphics::particles::SetDecals(on != 0);
+				(cmd == "decals" ? graphics::particles::SetDecals : graphics::particles::SetParticles)(on != 0);
 				return "ok";
 			}
 			if (cmd == "ptfxtrace")

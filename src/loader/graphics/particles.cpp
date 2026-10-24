@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -40,6 +41,7 @@ namespace loader::graphics::particles
 			kOther = 0,
 			kParticle = 1,
 			kDecal = 2,
+			kParticleOnce = 3, // particles whose drawing writes the stencil: not drawn a second time (the layer leaves them out)
 		};
 
 		// vtable slots (d3d12.h's C interface): ID3D12Device2, ID3D12PipelineLibrary1, ID3D12GraphicsCommandList4,
@@ -112,7 +114,28 @@ namespace loader::graphics::particles
 			return kOther;
 		}
 
-		void Note(const void* pipeline, const D3D12_SHADER_BYTECODE* ps)
+		// What a pipeline does besides its pixel shader (a particle's is drawn a second time into the layer: research §60.21).
+		struct Facts
+		{
+			D3D12_RENDER_TARGET_BLEND_DESC blend{}; // its first target's
+			UINT targets = 1;
+			bool depthWrites = false, stencilWrites = false;
+		};
+
+		template <typename Desc>
+		void NoteDepthStencil(const Desc& d, Facts& facts)
+		{
+			const auto writes = [](const auto& face) {
+				return face.StencilFailOp != D3D12_STENCIL_OP_KEEP || face.StencilDepthFailOp != D3D12_STENCIL_OP_KEEP || face.StencilPassOp != D3D12_STENCIL_OP_KEEP;
+			};
+			facts.depthWrites = d.DepthEnable && d.DepthWriteMask == D3D12_DEPTH_WRITE_MASK_ALL;
+			if constexpr (std::is_same_v<Desc, D3D12_DEPTH_STENCIL_DESC2>)
+				facts.stencilWrites = d.StencilEnable && ((d.FrontFace.StencilWriteMask && writes(d.FrontFace)) || (d.BackFace.StencilWriteMask && writes(d.BackFace)));
+			else
+				facts.stencilWrites = d.StencilEnable && d.StencilWriteMask && (writes(d.FrontFace) || writes(d.BackFace));
+		}
+
+		void Note(const void* pipeline, const D3D12_SHADER_BYTECODE* ps, const Facts& facts)
 		{
 			if (!pipeline)
 				return;
@@ -122,7 +145,24 @@ namespace loader::graphics::particles
 			const auto known = [&](const auto& digests) {
 				return std::any_of(std::begin(digests), std::end(digests), [&](const Digest& d) { return d.low == digest.low && d.high == digest.high; });
 			};
-			const uint8_t kind = known(kParticleShaders) ? kParticle : known(kDecalShaders) ? kDecal : kOther;
+			const uint8_t kind = known(kParticleShaders) ? (facts.stencilWrites ? kParticleOnce : kParticle) : known(kDecalShaders) ? kDecal : kOther;
+			if (kind == kParticle || kind == kParticleOnce)
+			{
+				// (what the game's particles' pipelines do, each sort once: research)
+				static std::mutex mutex;
+				static std::vector<std::string> told;
+				const D3D12_RENDER_TARGET_BLEND_DESC& b = facts.blend;
+				std::string sort = std::format("blend {} {}/{}/{} alpha {}/{}/{} mask {:x}, {} targets{}{}", b.BlendEnable ? "on" : "off", static_cast<int>(b.SrcBlend),
+				    static_cast<int>(b.DestBlend), static_cast<int>(b.BlendOp), static_cast<int>(b.SrcBlendAlpha), static_cast<int>(b.DestBlendAlpha),
+				    static_cast<int>(b.BlendOpAlpha), b.RenderTargetWriteMask, facts.targets, facts.depthWrites ? ", writes depth" : "",
+				    facts.stencilWrites ? ", writes the stencil (not drawn again)" : "");
+				std::lock_guard lock(mutex);
+				if (std::find(told.begin(), told.end(), sort) == told.end() && told.size() < 24)
+				{
+					told.push_back(sort);
+					log::Info("ue5 particles: a particle pipeline: {}", sort);
+				}
+			}
 			const auto key = reinterpret_cast<uintptr_t>(pipeline);
 			std::lock_guard lock(g_tableMutex);
 			g_shaderOf[key] = static_cast<uint32_t>(digest.low);
@@ -146,14 +186,15 @@ namespace loader::graphics::particles
 			}
 		}
 
-		// The pixel shader in a pipeline state stream: subobjects aligned to a pointer, each a type and then its data
-		// (at the data's own alignment). Null when a subobject is of a type not known here.
-		const D3D12_SHADER_BYTECODE* StreamPixelShader(const D3D12_PIPELINE_STATE_STREAM_DESC* desc)
+		// The pixel shader in a pipeline state stream, and the rest of the facts: subobjects aligned to a pointer, each a
+		// type and then its data (at the data's own alignment). Null when a subobject is of a type not known here.
+		const D3D12_SHADER_BYTECODE* StreamPixelShader(const D3D12_PIPELINE_STATE_STREAM_DESC* desc, Facts& facts)
 		{
 			if (!desc || !desc->pPipelineStateSubobjectStream)
 				return nullptr;
 			const auto* at = static_cast<const uint8_t*>(desc->pPipelineStateSubobjectStream);
 			const uint8_t* const end = at + desc->SizeInBytes;
+			const D3D12_SHADER_BYTECODE* ps = nullptr;
 			while (at + sizeof(uint32_t) <= end)
 			{
 				D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
@@ -190,14 +231,34 @@ namespace loader::graphics::particles
 				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2: as(static_cast<D3D12_DEPTH_STENCIL_DESC2*>(nullptr)); break;
 				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1: as(static_cast<D3D12_RASTERIZER_DESC1*>(nullptr)); break;
 				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2: as(static_cast<D3D12_RASTERIZER_DESC2*>(nullptr)); break;
-				default: return nullptr;
+				default: return ps;
 				}
 				const size_t offset = (sizeof(uint32_t) + align - 1) / align * align;
-				if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS)
-					return at + offset + size <= end ? reinterpret_cast<const D3D12_SHADER_BYTECODE*>(at + offset) : nullptr;
+				const uint8_t* data = at + offset;
+				if (data + size > end)
+					return ps;
+				switch (type)
+				{
+				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: ps = reinterpret_cast<const D3D12_SHADER_BYTECODE*>(data); break;
+				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: facts.blend = reinterpret_cast<const D3D12_BLEND_DESC*>(data)->RenderTarget[0]; break;
+				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: facts.targets = reinterpret_cast<const D3D12_RT_FORMAT_ARRAY*>(data)->NumRenderTargets; break;
+				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL: NoteDepthStencil(*reinterpret_cast<const D3D12_DEPTH_STENCIL_DESC*>(data), facts); break;
+				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1: NoteDepthStencil(*reinterpret_cast<const D3D12_DEPTH_STENCIL_DESC1*>(data), facts); break;
+				case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2: NoteDepthStencil(*reinterpret_cast<const D3D12_DEPTH_STENCIL_DESC2*>(data), facts); break;
+				default: break;
+				}
 				at += (offset + size + sizeof(void*) - 1) / sizeof(void*) * sizeof(void*);
 			}
-			return nullptr;
+			return ps;
+		}
+
+		Facts DescFacts(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc)
+		{
+			Facts facts;
+			facts.blend = desc.BlendState.RenderTarget[0];
+			facts.targets = desc.NumRenderTargets;
+			NoteDepthStencil(desc.DepthStencilState, facts);
+			return facts;
 		}
 
 		// The render target views made (a descriptor's address to its resource), and those of the scene colour (read
@@ -233,20 +294,52 @@ namespace loader::graphics::particles
 						return;
 		}
 
-		// The copies before and after the particles (NON_PIXEL_SHADER_RESOURCE at rest), made by small lists of our own put
-		// in among the game's as it submits them (research §60.15: copies recorded inside the game's own lists - a barrier
-		// on its scene colour in the midst of its drawing, a predicate on the copy - hung the GPU twice in night soaks):
-		// one before the first list that drew particles in a frame, one after each such list (the last to run is left).
-		// The decals the same, of the G-buffer's first target (the surfaces' colour) about the lists that drew them (the
-		// game draws them in a list of their own, after its opaque surfaces: research §60.17).
+		// The particles' layer (research §60.21): each particle the game draws into its scene colour is drawn again, with
+		// the same pipeline and bindings, into two targets of our own of the scene's size and format - one cleared to black,
+		// one to white. A blend is the source's part plus the target's times a factor (S + D F), so over black the layer
+		// holds what the particles add (C) and over white that plus how much of what is behind them shows through (C + T).
+		// Copying the scene colour before and after the lists that drew particles (as it was) took in everything else
+		// those lists drew between them - windows, light shafts, lamps' coronas - and, as the lists that drew particles
+		// were told apart by the frame they were recorded in (recording runs on into the next frame), in some frames and
+		// not others: a lit room flickered. Render targets at rest; read and cleared after DLSS (TakeLayer, FinishLayer).
+		struct ParticleLayer
+		{
+			ID3D12Resource* black = nullptr;
+			ID3D12Resource* white = nullptr;
+			ID3D12DescriptorHeap* heap = nullptr; // (their two render target views)
+			D3D12_CPU_DESCRIPTOR_HANDLE views[2]{};
+			UINT64 width = 0;
+			UINT height = 0;
+			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN; // (the views': the scene colour's view's)
+			std::atomic<bool> ready = false;          // cleared once after a frame (made with anything in it: not read before)
+
+			~ParticleLayer()
+			{
+				for (IUnknown* object : std::initializer_list<IUnknown*>{black, white, heap})
+					if (object)
+						object->Release();
+			}
+		};
+		std::atomic<ParticleLayer*> g_layer = nullptr;
+		std::mutex g_layerMutex; // (making it)
+		std::atomic<bool> g_particlesOn = true;
+		// (the layer is read and cleared in the list that ends a frame: a list drawing the next frame's particles into it
+		// must be submitted after that one - the frame it was recorded in, against the frames ended at its submission)
+		std::mutex g_againMutex;
+		std::unordered_map<const void*, uint32_t> g_againLists;
+		uint32_t g_framesEnded = 0; // (g_copyMutex)
+
+		// The copies of the G-buffer's first target (the surfaces' colour) before and after the lists that drew decals
+		// (the game draws them in a list of their own, after its opaque surfaces: research §60.17), NON_PIXEL_SHADER_RESOURCE
+		// at rest, made by small lists of our own put in among the game's as it submits them (research §60.15: copies
+		// recorded inside the game's own lists - a barrier on its scene colour in the midst of its drawing, a predicate on
+		// the copy - hung the GPU twice in night soaks): one before the first list that drew decals in a frame, one after
+		// each such list (the last to run is left), and after the frame's end (the list with DLSS and the composite) the
+		// first over the second - a frame that draws none then has none (not the last one's, where they were on the screen).
 		std::mutex g_copyMutex; // (making them; our lists)
-		ID3D12Resource* g_before = nullptr;
-		ID3D12Resource* g_after = nullptr;
 		ID3D12Resource* g_decalBefore = nullptr;
 		ID3D12Resource* g_decalAfter = nullptr;
-		std::atomic<uint32_t> g_drawn = 0;      // lists that drew particles, recorded since the last frame was taken
-		std::atomic<uint32_t> g_decalDrawn = 0; // lists that drew decals, the same
-		std::atomic<uint32_t> g_frame = 0;      // frames taken
+		std::atomic<uint32_t> g_frame = 0; // frames taken
 		// the G-buffer target the decals go into (learnt from them), and whether the colours in it are sRGB-encoded
 		std::atomic<ID3D12Resource*> g_decalTarget = nullptr;
 		std::atomic<bool> g_decalSrgb = false;
@@ -270,35 +363,43 @@ namespace loader::graphics::particles
 			}
 		};
 
-		// A list's particles and decals, as its own thread records it (in this frame: one left from an earlier frame is of
-		// a list closed or reset on another thread since, and is let go).
+		// A list's state as its own thread records it (from its reset: a list is reset and recorded on one thread), for its
+		// particles and decals.
 		struct ListState
 		{
 			ID3D12GraphicsCommandList* list = nullptr;
-			uint32_t frame = 0;
-			uint8_t kind = kOther; // what the pipeline set last draws
-			bool scene = false;    // the first render target bound last is the scene colour
-			SIZE_T target = 0;     // the first render target bound last (a view)
-			bool drew = false;     // particles were drawn into the scene colour
-			bool decals = false;   // decals were drawn
-			Span sceneSpan, decalSpan;
+			uint32_t frame = 0;                    // (when it was reset: one never submitted is let go)
+			ID3D12PipelineState* pipeline = nullptr; // set last
+			uint8_t kind = kOther;                 // what it draws
+			bool scene = false;                    // the first render target bound last is the scene colour
+			SIZE_T target = 0;                     // the first render target bound last (a view)
+			// the render targets and depth bound last, as they were given (put back after a particle's second drawing)
+			UINT targetCount = 0;
+			D3D12_CPU_DESCRIPTOR_HANDLE targets[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+			BOOL range = FALSE;
+			bool hasDepth = false;
+			D3D12_CPU_DESCRIPTOR_HANDLE depth{};
+			bool again = false;  // particles were drawn into the layer
+			bool decals = false; // decals were drawn
+			Span decalSpan;
 			uint32_t age = 0;
 		};
 		thread_local ListState t_lists[4];
 		thread_local uint32_t t_age = 0;
 		thread_local bool t_busy = false; // (our own commands: the hooks pass them on)
 
-		// The lists that drew particles or decals, closed and not yet submitted.
+		// The lists that drew decals, closed and not yet submitted.
 		struct Drawn
 		{
 			D3D12_RESOURCE_STATES first, last;
 			uint32_t frame;
 		};
 		std::mutex g_drawnMutex;
-		std::unordered_map<const void*, Drawn> g_drawnLists, g_decalLists;
-		std::atomic<const void*> g_frameEnd = nullptr; // the list DLSS was recorded on: submitted, the frame's particles are past
-		bool g_beforeTaken = false;                    // (g_copyMutex) the copy before them, in the frame being submitted
-		bool g_decalBeforeTaken = false;               // (g_copyMutex) the same for the decals
+		std::unordered_map<const void*, Drawn> g_decalLists;
+		// the lists DLSS was recorded on (each ends a frame: its decals are past, the particles' layer is read and cleared
+		// there), recorded and not yet submitted, with their frames' numbers
+		std::deque<std::pair<const void*, uint32_t>> g_frameEnds;
+		bool g_decalBeforeTaken = false; // (g_copyMutex) the copy before them, in the frame being submitted
 
 		// Our lists: a ring, each reused once the queue is past it (else that copy is left out).
 		struct CopyList
@@ -349,6 +450,12 @@ namespace loader::graphics::particles
 			}
 			log::Info("ue5 particles: copies of {} ({}x{}, format {})", what, desc.Width, desc.Height, static_cast<int>(desc.Format));
 			return true;
+		}
+
+		bool Same(ID3D12Resource* a, ID3D12Resource* b)
+		{
+			const D3D12_RESOURCE_DESC x = a->GetDesc(), y = b->GetDesc();
+			return x.Width == y.Width && x.Height == y.Height && x.Format == y.Format;
 		}
 
 		D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
@@ -414,11 +521,10 @@ namespace loader::graphics::particles
 
 		ListState& StateOf(ID3D12GraphicsCommandList* list)
 		{
-			const uint32_t frame = g_frame.load(std::memory_order_relaxed);
 			ListState* oldest = &t_lists[0];
 			for (ListState& st : t_lists)
 			{
-				if (st.list == list && st.frame == frame)
+				if (st.list == list)
 				{
 					st.age = ++t_age;
 					return st;
@@ -426,12 +532,9 @@ namespace loader::graphics::particles
 				if (st.age < oldest->age)
 					oldest = &st;
 			}
-			for (ListState& st : t_lists)
-				if (st.list == list)
-					st = ListState{};
 			*oldest = ListState{};
 			oldest->list = list;
-			oldest->frame = frame;
+			oldest->frame = g_frame.load(std::memory_order_relaxed);
 			oldest->age = ++t_age;
 			return *oldest;
 		}
@@ -443,15 +546,13 @@ namespace loader::graphics::particles
 					st = ListState{};
 		}
 
-		// Before a draw: particles into the scene colour, decals into the G-buffer, noted.
+		// Before a draw: decals into the G-buffer, noted.
 		void BeforeDraw(ID3D12GraphicsCommandList* list)
 		{
 			if (t_busy)
 				return;
 			ListState& st = StateOf(list);
-			if (st.kind == kParticle && st.scene)
-				st.drew = true;
-			else if (st.kind == kDecal && !st.decals)
+			if (st.kind == kDecal && !st.decals)
 			{
 				st.decals = true;
 				// (the target they go into, learnt from the first; a list where it is new had its barriers on it unseen,
@@ -481,6 +582,111 @@ namespace loader::graphics::particles
 						log::Info("ue5 particles: the game's decals go into {} (format {}, its view's {})", static_cast<const void*>(target), static_cast<int>(stored),
 						    static_cast<int>(format));
 				}
+			}
+		}
+
+		// The particles' layer for the scene colour as it is now, made (again, when its size changed: the old one let go a
+		// moment later, frames in flight may still use it) by the first list that draws particles into it; null when it
+		// cannot be.
+		ParticleLayer* LayerFor(ID3D12GraphicsCommandList* list, SIZE_T sceneView)
+		{
+			ID3D12Resource* scene = g_scene.load(std::memory_order_acquire);
+			if (!scene)
+				return nullptr;
+			const D3D12_RESOURCE_DESC desc = scene->GetDesc();
+			ParticleLayer* layer = g_layer.load(std::memory_order_acquire);
+			if (layer && layer->width == desc.Width && layer->height == desc.Height)
+				return layer;
+			std::lock_guard lock(g_layerMutex);
+			layer = g_layer.load(std::memory_order_acquire);
+			if (layer && layer->width == desc.Width && layer->height == desc.Height)
+				return layer;
+			static UINT64 failedWidth = 0;
+			static UINT failedHeight = 0;
+			if (desc.SampleDesc.Count != 1 || (failedWidth == desc.Width && failedHeight == desc.Height))
+				return nullptr;
+			DXGI_FORMAT format = desc.Format;
+			{
+				std::lock_guard views(g_viewMutex);
+				if (const auto found = g_viewFormats.find(sceneView); found != g_viewFormats.end() && found->second != DXGI_FORMAT_UNKNOWN)
+					format = found->second;
+			}
+			ID3D12Device* device = nullptr;
+			if (FAILED(list->GetDevice(IID_PPV_ARGS(&device))))
+				return nullptr;
+			auto made = std::make_unique<ParticleLayer>();
+			made->width = desc.Width;
+			made->height = desc.Height;
+			made->format = format;
+			D3D12_HEAP_PROPERTIES heap{};
+			heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+			D3D12_RESOURCE_DESC target = desc;
+			target.Alignment = 0;
+			target.MipLevels = 1;
+			target.DepthOrArraySize = 1;
+			target.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+			D3D12_CLEAR_VALUE black{format, {0, 0, 0, 0}}, white{format, {1, 1, 1, 1}};
+			D3D12_DESCRIPTOR_HEAP_DESC views{};
+			views.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+			views.NumDescriptors = 2;
+			bool ok =
+			    SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &target, D3D12_RESOURCE_STATE_RENDER_TARGET, &black, IID_PPV_ARGS(&made->black))) &&
+			    SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &target, D3D12_RESOURCE_STATE_RENDER_TARGET, &white, IID_PPV_ARGS(&made->white))) &&
+			    SUCCEEDED(device->CreateDescriptorHeap(&views, IID_PPV_ARGS(&made->heap)));
+			if (ok)
+			{
+				const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+				made->views[0] = made->heap->GetCPUDescriptorHandleForHeapStart();
+				made->views[1].ptr = made->views[0].ptr + step;
+				D3D12_RENDER_TARGET_VIEW_DESC view{};
+				view.Format = format;
+				view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+				device->CreateRenderTargetView(made->black, &view, made->views[0]);
+				device->CreateRenderTargetView(made->white, &view, made->views[1]);
+			}
+			device->Release();
+			if (!ok)
+			{
+				failedWidth = desc.Width, failedHeight = desc.Height;
+				log::Warn("ue5 particles: the particles' layer could not be made ({}x{}, format {})", desc.Width, desc.Height, static_cast<int>(format));
+				return nullptr;
+			}
+			log::Info("ue5 particles: the particles' layer ({}x{}, format {})", desc.Width, desc.Height, static_cast<int>(format));
+			layer = made.release();
+			if (ParticleLayer* old = g_layer.exchange(layer))
+				std::thread([old] {
+					Sleep(3000);
+					delete old;
+				}).detach();
+			return layer;
+		}
+
+		// After a particle's drawing into the scene colour: the same again into the layer, over black and over white, and
+		// the list's own targets back.
+		template <typename Draw>
+		void Again(ID3D12GraphicsCommandList* list, Draw draw)
+		{
+			if (t_busy || !g_particlesOn.load(std::memory_order_relaxed))
+				return;
+			ListState& st = StateOf(list);
+			if (st.kind != kParticle || !st.scene || !st.targetCount)
+				return;
+			ParticleLayer* layer = LayerFor(list, st.target);
+			if (!layer)
+				return;
+			const D3D12_CPU_DESCRIPTOR_HANDLE* depth = st.hasDepth ? &st.depth : nullptr;
+			for (const D3D12_CPU_DESCRIPTOR_HANDLE& view : layer->views)
+			{
+				g_omSetRenderTargets(list, 1, &view, FALSE, depth);
+				draw();
+			}
+			g_omSetRenderTargets(list, st.targetCount, st.targets, st.range, depth);
+			st.again = true;
+			if (st.targetCount > 1)
+			{
+				static std::atomic_bool told = false;
+				if (!told.exchange(true))
+					log::Info("ue5 particles: particles drawn with {} render targets bound (the layer takes the first's)", st.targetCount);
 			}
 		}
 
@@ -581,7 +787,7 @@ namespace loader::graphics::particles
 		{
 			const HRESULT hr = g_createGraphicsPipelineState(device, desc, riid, out);
 			if (SUCCEEDED(hr) && out && desc)
-				Note(*out, &desc->PS);
+				Note(*out, &desc->PS, DescFacts(*desc));
 			return hr;
 		}
 
@@ -589,7 +795,11 @@ namespace loader::graphics::particles
 		{
 			const HRESULT hr = g_createPipelineState(device, desc, riid, out);
 			if (SUCCEEDED(hr) && out)
-				Note(*out, StreamPixelShader(desc));
+			{
+				Facts facts;
+				const D3D12_SHADER_BYTECODE* ps = StreamPixelShader(desc, facts);
+				Note(*out, ps, facts);
+			}
 			return hr;
 		}
 
@@ -597,7 +807,7 @@ namespace loader::graphics::particles
 		{
 			const HRESULT hr = g_loadGraphicsPipeline(library, name, desc, riid, out);
 			if (SUCCEEDED(hr) && out && desc)
-				Note(*out, &desc->PS);
+				Note(*out, &desc->PS, DescFacts(*desc));
 			return hr;
 		}
 
@@ -605,7 +815,11 @@ namespace loader::graphics::particles
 		{
 			const HRESULT hr = g_loadPipeline(library, name, desc, riid, out);
 			if (SUCCEEDED(hr) && out)
-				Note(*out, StreamPixelShader(desc));
+			{
+				Facts facts;
+				const D3D12_SHADER_BYTECODE* ps = StreamPixelShader(desc, facts);
+				Note(*out, ps, facts);
+			}
 			return hr;
 		}
 
@@ -627,19 +841,15 @@ namespace loader::graphics::particles
 				for (ListState& st : t_lists)
 					if (st.list == list)
 					{
-						if (st.frame == g_frame.load(std::memory_order_relaxed) && ((st.drew && !st.sceneSpan.odd) || (st.decals && !st.decalSpan.odd)))
+						if (st.decals && !st.decalSpan.odd)
 						{
 							std::lock_guard lock(g_drawnMutex);
-							if (st.drew && !st.sceneSpan.odd)
-							{
-								g_drawnLists[list] = {st.sceneSpan.first, st.sceneSpan.last, st.frame};
-								++g_drawn;
-							}
-							if (st.decals && !st.decalSpan.odd)
-							{
-								g_decalLists[list] = {st.decalSpan.first, st.decalSpan.last, st.frame};
-								++g_decalDrawn;
-							}
+							g_decalLists[list] = {st.decalSpan.first, st.decalSpan.last, st.frame};
+						}
+						if (st.again)
+						{
+							std::lock_guard lock(g_againMutex);
+							g_againLists[list] = st.frame;
 						}
 						st = ListState{};
 					}
@@ -652,9 +862,12 @@ namespace loader::graphics::particles
 			Forget(list);
 			Record(list, 'Z', 0);
 			const HRESULT hr = g_reset(list, allocator, pipeline);
-			if (!t_busy && pipeline)
-				if (const uint8_t kind = KindOf(pipeline); kind != kOther)
-					StateOf(list).kind = kind;
+			if (!t_busy)
+			{
+				ListState& st = StateOf(list);
+				st.pipeline = pipeline;
+				st.kind = KindOf(pipeline);
+			}
 			return hr;
 		}
 
@@ -662,7 +875,11 @@ namespace loader::graphics::particles
 		{
 			Record(list, 'S', reinterpret_cast<uintptr_t>(pipeline));
 			if (!t_busy)
-				StateOf(list).kind = KindOf(pipeline);
+			{
+				ListState& st = StateOf(list);
+				st.pipeline = pipeline;
+				st.kind = KindOf(pipeline);
+			}
 			g_setPipelineState(list, pipeline);
 		}
 
@@ -676,6 +893,12 @@ namespace loader::graphics::particles
 				ListState& st = StateOf(list);
 				st.scene = IsSceneView(first);
 				st.target = first;
+				st.targetCount = targets ? std::min<UINT>(count, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT) : 0;
+				st.range = range;
+				for (UINT i = 0; i < (range ? std::min<UINT>(st.targetCount, 1) : st.targetCount); ++i)
+					st.targets[i] = targets[i];
+				st.hasDepth = depth != nullptr;
+				st.depth = depth ? *depth : D3D12_CPU_DESCRIPTOR_HANDLE{};
 			}
 			g_omSetRenderTargets(list, count, targets, range, depth);
 		}
@@ -684,19 +907,19 @@ namespace loader::graphics::particles
 		{
 			if (!t_busy && barriers)
 			{
-				// (the scene colour's and the decals' target's states at the list's start and end, for the copies around it)
-				ID3D12Resource* scene = g_scene.load(std::memory_order_relaxed);
-				ID3D12Resource* decal = g_decalTarget.load(std::memory_order_relaxed);
-				ListState* st = nullptr;
-				for (UINT i = 0; (scene || decal) && i < count; ++i)
+				// (the decals' target's states at the list's start and end, for the copies around it)
+				if (ID3D12Resource* decal = g_decalTarget.load(std::memory_order_relaxed))
 				{
-					const D3D12_RESOURCE_BARRIER& b = barriers[i];
-					if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.pResource ||
-					    (b.Transition.pResource != scene && b.Transition.pResource != decal))
-						continue;
-					if (!st)
-						st = &StateOf(list);
-					(b.Transition.pResource == scene ? st->sceneSpan : st->decalSpan).Note(b);
+					ListState* st = nullptr;
+					for (UINT i = 0; i < count; ++i)
+					{
+						const D3D12_RESOURCE_BARRIER& b = barriers[i];
+						if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || b.Transition.pResource != decal)
+							continue;
+						if (!st)
+							st = &StateOf(list);
+						st->decalSpan.Note(b);
+					}
 				}
 			}
 			g_resourceBarrier(list, count, barriers);
@@ -707,6 +930,7 @@ namespace loader::graphics::particles
 			BeforeDraw(list);
 			CountDraw(list);
 			g_drawInstanced(list, a, b, c, d);
+			Again(list, [&] { g_drawInstanced(list, a, b, c, d); });
 		}
 
 		void STDMETHODCALLTYPE DrawIndexedInstanced(ID3D12GraphicsCommandList* list, UINT a, UINT b, UINT c, INT d, UINT e)
@@ -714,6 +938,7 @@ namespace loader::graphics::particles
 			BeforeDraw(list);
 			CountDraw(list);
 			g_drawIndexedInstanced(list, a, b, c, d, e);
+			Again(list, [&] { g_drawIndexedInstanced(list, a, b, c, d, e); });
 		}
 
 		void STDMETHODCALLTYPE ExecuteIndirect(ID3D12GraphicsCommandList* list, ID3D12CommandSignature* signature, UINT most, ID3D12Resource* arguments,
@@ -721,6 +946,7 @@ namespace loader::graphics::particles
 		{
 			BeforeDraw(list);
 			g_executeIndirect(list, signature, most, arguments, argumentsOffset, counts, countsOffset);
+			Again(list, [&] { g_executeIndirect(list, signature, most, arguments, argumentsOffset, counts, countsOffset); });
 		}
 
 		void STDMETHODCALLTYPE BeginRenderPass(ID3D12GraphicsCommandList4* list, UINT count, const D3D12_RENDER_PASS_RENDER_TARGET_DESC* targets,
@@ -734,79 +960,102 @@ namespace loader::graphics::particles
 		{
 			for (UINT i = 0; i < count; ++i)
 				Record(lists[i], 'X', reinterpret_cast<uintptr_t>(queue));
-			ID3D12Resource* scene = g_scene.load(std::memory_order_acquire);
-			ID3D12Resource* decal = g_decalsOn ? g_decalTarget.load(std::memory_order_acquire) : nullptr;
-			if (t_busy || (!scene && !decal) || !count || !lists)
+			if (t_busy || !count || !lists)
 				return g_executeCommandLists(queue, count, lists);
-			// The lists that drew particles (decals) in this submission, and the state of the scene colour (the decals'
-			// target) about each.
-			std::vector<std::pair<UINT, Drawn>> drawn, decals;
-			const void* frameEnd = g_frameEnd.load(std::memory_order_acquire);
-			bool ends = false;
+			// The lists in this submission that drew decals (and the state of their target about each) and that end a frame
+			// (DLSS's and the composite's: the frame's number).
+			std::vector<std::pair<UINT, Drawn>> decals;
+			std::vector<std::pair<UINT, uint32_t>> ends;
 			{
 				std::lock_guard lock(g_drawnMutex);
 				for (UINT i = 0; i < count; ++i)
 				{
-					ends = ends || lists[i] == frameEnd;
-					if (const auto found = g_drawnLists.find(lists[i]); found != g_drawnLists.end())
-					{
-						drawn.emplace_back(i, found->second);
-						g_drawnLists.erase(found);
-					}
 					if (const auto found = g_decalLists.find(lists[i]); found != g_decalLists.end())
 					{
 						decals.emplace_back(i, found->second);
 						g_decalLists.erase(found);
 					}
+					if (const auto found = std::find_if(g_frameEnds.begin(), g_frameEnds.end(), [&](const auto& e) { return e.first == lists[i]; });
+					    found != g_frameEnds.end())
+					{
+						ends.emplace_back(i, found->second);
+						g_frameEnds.erase(found);
+					}
 				}
 			}
-			if (drawn.empty() && decals.empty() && !ends)
+			// (the lists that drew particles into the layer: each after the end of the frame before the one it was recorded in)
+			{
+				std::lock_guard lock(g_againMutex);
+				size_t nextEnd = 0;
+				for (UINT i = 0; i < count && (!g_againLists.empty() || nextEnd < ends.size()); ++i)
+				{
+					if (const auto found = g_againLists.find(lists[i]); found != g_againLists.end())
+					{
+						if (found->second > g_framesEnded)
+						{
+							static std::atomic<int> told = 0;
+							if (told.fetch_add(1) < 4)
+								log::Warn("ue5 particles: a list drew particles into the layer for frame {} before frame {} ended (the layer is read there)", found->second,
+								    found->second - 1);
+						}
+						g_againLists.erase(found);
+					}
+					if (nextEnd < ends.size() && ends[nextEnd].first == i)
+						g_framesEnded = std::max(g_framesEnded, ends[nextEnd++].second + 1);
+				}
+			}
+			ID3D12Resource* decal = g_decalsOn ? g_decalTarget.load(std::memory_order_acquire) : nullptr;
+			if (!decal || (decals.empty() && ends.empty()))
+			{
+				if (!ends.empty())
+				{
+					std::lock_guard lock(g_copyMutex);
+					g_decalBeforeTaken = false;
+				}
 				return g_executeCommandLists(queue, count, lists);
+			}
 			std::lock_guard lock(g_copyMutex);
 			std::vector<ID3D12CommandList*> out;
 			std::vector<int> used;
 			ID3D12Device* device = nullptr;
 			const bool direct = queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
-			if ((!drawn.empty() || !decals.empty()) && direct && SUCCEEDED((scene ? scene : decal)->GetDevice(IID_PPV_ARGS(&device))))
+			if (direct && SUCCEEDED(decal->GetDevice(IID_PPV_ARGS(&device))))
 			{
-				const bool made = !drawn.empty() && scene && MakeTexture(device, scene, g_before, "the scene colour about its particles") &&
-				                  MakeTexture(device, scene, g_after, "the scene colour about its particles");
-				const bool madeDecals = !decals.empty() && decal && MakeTexture(device, decal, g_decalBefore, "the G-buffer about its decals") &&
-				                        MakeTexture(device, decal, g_decalAfter, "the G-buffer about its decals");
+				const bool made = !decals.empty() && MakeTexture(device, decal, g_decalBefore, "the G-buffer about its decals") &&
+				                  MakeTexture(device, decal, g_decalAfter, "the G-buffer about its decals");
 				const auto copy = [&](ID3D12Resource* from, D3D12_RESOURCE_STATES state, ID3D12Resource* to) {
 					if (const int slot = CopyScene(device, from, state, to); slot >= 0)
 						out.push_back(g_copyLists[slot].list), used.push_back(slot);
 				};
-				size_t next = 0, nextDecal = 0;
+				size_t nextDecal = 0, nextEnd = 0;
 				for (UINT i = 0; i < count; ++i)
 				{
-					const Drawn* d = next < drawn.size() && drawn[next].first == i ? &drawn[next++].second : nullptr;
 					const Drawn* e = nextDecal < decals.size() && decals[nextDecal].first == i ? &decals[nextDecal++].second : nullptr;
-					if (e && madeDecals && !g_decalBeforeTaken)
+					const bool end = nextEnd < ends.size() && ends[nextEnd].first == i;
+					nextEnd += end ? 1 : 0;
+					if (e && made && !g_decalBeforeTaken)
 					{
 						g_decalBeforeTaken = true;
 						copy(decal, e->first, g_decalBefore);
 					}
-					if (d && made && !g_beforeTaken)
-					{
-						g_beforeTaken = true;
-						copy(scene, d->first, g_before);
-					}
 					out.push_back(lists[i]);
-					if (e && madeDecals)
+					if (e && made)
 						copy(decal, e->last, g_decalAfter);
-					if (d && made)
-						copy(scene, d->last, g_after);
-					if (lists[i] == frameEnd)
-						g_beforeTaken = g_decalBeforeTaken = false;
+					if (end)
+					{
+						g_decalBeforeTaken = false;
+						// (the next frame's decals start from none: one that draws none shows none)
+						if (g_decalBefore && g_decalAfter && Same(g_decalBefore, g_decalAfter))
+							copy(g_decalBefore, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, g_decalAfter);
+					}
 				}
 				device->Release();
 			}
 			else
 			{
 				out.assign(lists, lists + count);
-				if (ends)
-					g_beforeTaken = g_decalBeforeTaken = false;
+				if (!ends.empty())
+					g_decalBeforeTaken = false;
 			}
 			const uint64_t value = g_copyValue + 1;
 			for (const int slot : used)
@@ -946,21 +1195,32 @@ namespace loader::graphics::particles
 	{
 		Layer layer;
 		const uint32_t frame = g_frame.fetch_add(1, std::memory_order_relaxed);
-		g_frameEnd.store(list, std::memory_order_release);
-		const bool particles = g_drawn.exchange(0) > 0, decals = g_decalDrawn.exchange(0) > 0;
-		if (particles || decals)
 		{
-			std::lock_guard lock(g_copyMutex);
-			if (particles && g_before && g_after)
-				layer.before = g_before, layer.after = g_after;
-			if (decals && g_decalsOn && g_decalBefore && g_decalAfter)
-				layer.decalBefore = g_decalBefore, layer.decalAfter = g_decalAfter, layer.decalSrgb = g_decalSrgb;
+			// (and the lists that drew decals or particles but were never submitted, let go)
+			std::lock_guard lock(g_drawnMutex);
+			if (list)
+				g_frameEnds.emplace_back(list, frame);
+			while (g_frameEnds.size() > 8)
+				g_frameEnds.pop_front();
+			std::erase_if(g_decalLists, [&](const auto& d) { return d.second.frame + 8 < frame; });
 		}
 		{
-			// (lists that drew particles or decals but were never submitted)
-			std::lock_guard lock(g_drawnMutex);
-			std::erase_if(g_drawnLists, [&](const auto& d) { return d.second.frame + 8 < frame; });
-			std::erase_if(g_decalLists, [&](const auto& d) { return d.second.frame + 8 < frame; });
+			std::lock_guard lock(g_againMutex);
+			std::erase_if(g_againLists, [&](const auto& d) { return d.second + 8 < frame; });
+		}
+		// The particles' layer, to be read (a render target again, cleared, in FinishLayer).
+		if (ParticleLayer* p = g_layer.load(std::memory_order_acquire); p && list && p->ready && g_particlesOn.load(std::memory_order_relaxed))
+		{
+			const D3D12_RESOURCE_BARRIER barriers[2] = {Transition(p->black, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			    Transition(p->white, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)};
+			g_resourceBarrier(list, 2, barriers);
+			layer.particles = p->black, layer.particlesWhite = p->white;
+			layer.particleViews[0] = p->views[0], layer.particleViews[1] = p->views[1];
+		}
+		{
+			std::lock_guard lock(g_copyMutex);
+			if (g_decalsOn && g_decalBefore && g_decalAfter && Same(g_decalBefore, g_decalAfter))
+				layer.decalBefore = g_decalBefore, layer.decalAfter = g_decalAfter, layer.decalSrgb = g_decalSrgb;
 		}
 		const int tracing = g_tracing.load(std::memory_order_relaxed);
 		if (tracing == 2)
@@ -986,6 +1246,36 @@ namespace loader::graphics::particles
 			Record(nullptr, 'T', 0);
 		}
 		return layer;
+	}
+
+	void FinishLayer(ID3D12GraphicsCommandList* list, const Layer& layer)
+	{
+		if (!list)
+			return;
+		const float black[4] = {0, 0, 0, 0}, white[4] = {1, 1, 1, 1};
+		if (layer.particles && layer.particlesWhite)
+		{
+			const D3D12_RESOURCE_BARRIER barriers[2] = {
+			    Transition(layer.particles, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+			    Transition(layer.particlesWhite, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)};
+			g_resourceBarrier(list, 2, barriers);
+			list->ClearRenderTargetView(layer.particleViews[0], black, 0, nullptr);
+			list->ClearRenderTargetView(layer.particleViews[1], white, 0, nullptr);
+			return;
+		}
+		// (not read this frame: cleared all the same, and one just made cleared for the first time)
+		if (ParticleLayer* p = g_layer.load(std::memory_order_acquire))
+		{
+			list->ClearRenderTargetView(p->views[0], black, 0, nullptr);
+			list->ClearRenderTargetView(p->views[1], white, 0, nullptr);
+			p->ready = true;
+		}
+	}
+
+	void SetParticles(bool on)
+	{
+		g_particlesOn = on;
+		log::Info("ue5 particles: the game's particles {}", on ? "over the renderer's picture" : "left out");
 	}
 
 	void SetDecals(bool on)
