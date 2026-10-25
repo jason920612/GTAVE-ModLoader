@@ -244,7 +244,7 @@ def monitor(out_dir, stop, state, profile_over=None):
             pace = [float(a) for a in re.findall(r"renderer ([\d.]+) frames/s", text)]
             rtext, renderer_at = tail(RENDERER_LOG, renderer_at)
             times = re.findall(r"time: world ([\d.]+) ms a frame \(slowest [\d.]+\), render thread ([\d.]+) ms, GPU ([\d.]+) ms; \d+ components pooled, (\d+) objects", rtext)
-            drawn = re.findall(r"drawn (\d+) .*?textures \d+ \(([\d.]+) MB, \d+ failed\), meshes ([\d.]+) MB, (\d+) evicted", rtext)
+            drawn = re.findall(r"drawn (\d+) .*?textures \d+ \(([\d.]+) MB, \d+ failed(?:, \d+ retuned)?\), meshes ([\d.]+) MB, (\d+) evicted", rtext)
             game, renderer = pids()
             by_pid, shared, adapter, busy = gpu_memory()
             camera = re.findall(r"game camera ([-\d.]+) ([-\d.]+) ([-\d.]+) .*?hours ([\d.]+); weather \w+ -> (\w+) [\d.]+; interior (\d+)", rtext)
@@ -383,13 +383,18 @@ def summary(path):
     rows = list(csv.DictReader(open(path)))
     if not rows:
         return "no samples"
+    # (the loader writes its frame rate only with ModLoader/debug_fps.txt there; without it, the renderer's pace: the
+    # chain is serial, its frames are the game's)
+    for r in rows:
+        if not r["fps"] and r.get("renderer_fps"):
+            r["fps"] = r["renderer_fps"]
     out = []
     for i in range(0, len(rows), 8):
         part = [r for r in rows[i:i + 8] if r["fps"]]
         if not part:
             continue
         fps = sum(float(r["fps"]) for r in part) / len(part)
-        slow = max(float(r["slowest_ms"]) for r in part)
+        slow = max((float(r["slowest_ms"]) for r in part if r["slowest_ms"]), default=0.0)
         out.append(f"{int(part[0]['t']) // 60:>3} min: {fps:5.1f} fps, slowest {slow:5.1f} ms, GPU memory {part[-1]['adapter_mb']} MB "
                    f"(game {part[-1]['game_mb']}, renderer {part[-1]['renderer_mb']}"
                    + (f"; in system memory {part[-1]['game_shared_mb']}+{part[-1]['renderer_shared_mb']}" if part[-1].get("renderer_shared_mb") else "")
