@@ -1,10 +1,11 @@
 // The picture the game gets (GTAVBridgeShaders.h): the scene colour (after motion blur: HDR, before bloom and tone
 // mapping), and in alpha the depth at that pixel in metres along the view (the depth is at the render resolution, in
-// the view's own rectangle; the colour at the output's).
+// the view's own rectangle; the colour at the output's) - negative on a screen a script draws into (custom stencil 1).
 #include "/Engine/Private/Common.ush"
 
 Texture2D SceneColor;
 Texture2D SceneDepth;
+Texture2D<uint2> CustomStencil;
 int2 ColorMin;
 int2 ColorSize;
 
@@ -15,6 +16,10 @@ void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
 	const int2 DepthMin = int2(View.ViewRectMinAndSize.xy), DepthSize = int2(View.ViewRectMinAndSize.zw);
 	const int2 Q = clamp(DepthMin + int2((float2(P) + 0.5) * float2(DepthSize) / float2(ColorSize)), DepthMin, DepthMin + DepthSize - 1);
 	const float DeviceZ = SceneDepth.Load(int3(Q, 0)).r;
-	const float Metres = DeviceZ > 0 ? ConvertFromDeviceZ(DeviceZ) * 0.01 : 65504.0;
-	OutColor = float4(Color, min(Metres, 65504.0));
+	float Metres = min(DeviceZ > 0 ? ConvertFromDeviceZ(DeviceZ) * 0.01 : 65504.0, 65504.0);
+	if (DeviceZ > 0 && CustomStencil.Load(int3(Q, 0)).g == 1)
+	{
+		Metres = -Metres;
+	}
+	OutColor = float4(Color, Metres);
 }

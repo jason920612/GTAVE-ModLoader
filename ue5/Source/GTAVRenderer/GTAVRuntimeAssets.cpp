@@ -650,6 +650,14 @@ bool FGTAVRuntimeAssets::Finish(FPrepared& P)
 	{
 		ModelLights.Add(P.Key, MoveTemp(P.Lights));
 	}
+	for (const GTAVPack::Material& M : P.Materials)
+	{
+		if (M.flags & GTAVPack::kScriptTarget)
+		{
+			Screens.Add(P.Key);
+			break;
+		}
+	}
 	States.Add(P.Key, EState::Ready);
 	return true;
 }
@@ -1264,6 +1272,7 @@ void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused, double Stale)
 		MeshBytes -= Use.Bytes;
 		Meshes.Remove(O.Value);
 		ModelLights.Remove(O.Value);
+		Screens.Remove(O.Value);
 		States.Remove(O.Value);
 		++Evicted;
 	}

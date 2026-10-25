@@ -16,6 +16,9 @@ namespace loader::graphics::composite
 		// and roads, 3 trees, 4 grass and terrain). Each output pixel takes the renderer's picture, the game's own where
 		// those are - but not where the renderer's world is in front of them (its depth, metres, in the picture's alpha,
 		// against the game's depth there: the game's leaner world may leave out a wall or a fence the renderer draws).
+		// And the game's own on a screen a script draws into (a TV with its channel on, a monitor, a heist's board: the
+		// renderer flags those models, its depth negative there) where the game's depth agrees: what the script drew is
+		// only in the game's picture (research §60.29).
 		// Their edges: the stencil is at the render size and jittered from frame to frame (by DLSS's sub-pixel offsets),
 		// so taken as it is, a ped's outline is a staircase that crawls as the view moves - a cut-out pasted on. DLSS's
 		// output has the outline smooth and steady, but against the game's own background. So at an edge the pixel is
@@ -207,8 +210,8 @@ void Measure(uint2 id : SV_DispatchThreadID, uint index : SV_GroupIndex)
 	if (all(p < OutSize))
 	{
 		int2 q = RenderPixel(p);
-		// (not the game's peds and vehicles, nor its particles: the renderer has neither)
-		if (!Dynamic(Stencil.Load(int3(q, 0)).y) && !Touched(q, Output[p].rgb))
+		// (not the game's peds and vehicles, nor its particles: the renderer has neither; nor a screen that shows the game's)
+		if (!Dynamic(Stencil.Load(int3(q, 0)).y) && !Touched(q, Output[p].rgb) && Picture.Load(int3(p, 0)).a >= 0)
 		{
 			float3 g = max(Output[p].rgb, 1e-4), r = max(Picture.Load(int3(p, 0)).rgb, 1e-4);
 			float gl = log2(max(Luminance(g), 1e-4)), rl = log2(max(Luminance(r), 1e-4));
@@ -482,6 +485,15 @@ void Composite(uint2 id : SV_DispatchThreadID)
 	int2 b = int2(floor(p));
 	float2 f = p - float2(b);
 	float4 picture = Picture.Load(int3(id, 0));
+	// (a screen a script draws into - a TV's, a monitor's: the renderer's depth is negative there, GTAVBridge.usf - shows
+	// the game's own picture, what the script drew, where the game's surface is there too)
+	if (picture.a < 0)
+	{
+		float screen = GameMetres(Depth.Load(int3(clamp(int2(round(p)), int2(0, 0), int2(RenderSize) - 1), 0)));
+		if (abs(-picture.a - screen) < 0.2 + 0.02 * screen)
+			return;
+		picture.a = -picture.a;
+	}
 	// (the renderer's depth here, metres; a ped or vehicle of the game's farther than that, by more than the two worlds'
 	// grounds and shapes may differ, is behind the renderer's world)
 	float near = picture.a;

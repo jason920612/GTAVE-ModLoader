@@ -277,6 +277,8 @@ private:
 			P->View = View.ViewUniformBuffer;
 			P->SceneColor = SceneColor.Texture;
 			P->SceneDepth = Depth;
+			// (the screens a script draws into, flagged by their custom stencil: GTAVWorldSubsystem)
+			P->CustomStencil = Inputs.SceneTextures.SceneTextures->GetParameters()->CustomStencilTexture;
 			P->ColorMin = SceneColor.ViewRect.Min;
 			P->ColorSize = SceneColor.ViewRect.Size();
 			P->RenderTargets[0] = FRenderTargetBinding(Dest, ERenderTargetLoadAction::ENoAction);

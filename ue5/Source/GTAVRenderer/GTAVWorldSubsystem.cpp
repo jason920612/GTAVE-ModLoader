@@ -986,6 +986,8 @@ void UGTAVWorldSubsystem::ApplyObjects(const FVector& Center)
 			C->SetWorldTransform(Transform);
 			// (the tint of the entity it stands in for)
 			C->SetCustomPrimitiveDataFloat(0, S.Hides ? float(EntityTint(S.Hides)) : 0.0f);
+			C->SetRenderCustomDepth(Assets->HasScreen(O.model));
+			C->SetCustomDepthStencilValue(Assets->HasScreen(O.model) ? 1 : 0);
 			C->RegisterComponent();
 			ObjectComponents.Add(O.id, C);
 		}
@@ -994,6 +996,8 @@ void UGTAVWorldSubsystem::ApplyObjects(const FVector& Center)
 			if (C->GetStaticMesh() != Mesh)
 			{
 				C->SetStaticMesh(Mesh);
+				C->SetRenderCustomDepth(Assets->HasScreen(O.model));
+				C->SetCustomDepthStencilValue(Assets->HasScreen(O.model) ? 1 : 0);
 			}
 			if (!C->GetComponentTransform().Equals(Transform, 0.01))
 			{
@@ -1099,6 +1103,11 @@ void UGTAVWorldSubsystem::Apply()
 		C->SetVisibility(!HiddenByObjects.Contains(W.Key));
 		// (the entity's tint: the palette row its tinted materials take; see EntityRow in the masters)
 		C->SetCustomPrimitiveDataFloat(0, float(EntityTint(W.Key)));
+		// (a screen a script draws into - a TV, a monitor - flagged in the custom stencil: the game's own picture shows
+		// there, what the script drew, GTAVBridge.usf)
+		const bool bScreen = Assets->HasScreen(W.Value);
+		C->SetRenderCustomDepth(bScreen);
+		C->SetCustomDepthStencilValue(bScreen ? 1 : 0);
 		C->RegisterComponent();
 		Drawn.Add(W.Key, C);
 		if (const TArray<GTAVPack::ModelLight>* ML = Assets->LightsOf(W.Value))

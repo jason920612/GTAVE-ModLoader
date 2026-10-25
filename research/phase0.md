@@ -3249,3 +3249,20 @@ MB、0 自動、−1 不管）；精簡設定的 LodScale 改 0.4。
 
 量測的陷阱：遊戲剛啟動、渲染器的共享畫面還沒接上時（loader 記錄「renderer texture opened」之前）截到的都是遊戲自己的畫面——
 同一處切換前後各截一張（UE、遊戲、UE），前後兩張相同才算數。
+
+### 60.29 腳本畫的螢幕：電視的節目、看板
+
+停車場頂的看板在 UE 裡是黑的：重拍後已和遊戲一樣有圖——正面在陰影裡，是 §60.27 的反彈光（不是貼圖）。真正的「腳本
+螢幕」是材質貼圖名 script_rt_* 的（遊戲有 28 種：tvscreen、big_disp、planning、heist_brd、npcphone、digicam、車上儀表…；
+資料包裡 19 個材質、5 種預設貼圖：512×256 均勻灰 11（14 個，電視）、灰 42、256×256 全白、128×128 灰 41 與一張小圖）。
+沒有腳本畫的時候遊戲就顯示預設貼圖（電視關著是暗的，和 UE 畫的暗玻璃一樣）；腳本畫的時候（打開電視）只有遊戲的畫面有。
+
+用原生函式照安全屋電視腳本的做法播一台：REGISTER_NAMED_RENDERTARGET("tvscreen")、LINK_NAMED_RENDERTARGET(阿姨家的電視
+0xca7fafeb)、GET_NAMED_RENDERTARGET_RENDER_ID、SET_TV_CHANNEL_PLAYLIST / SET_TV_CHANNEL，每格 SET_TEXT_RENDER_ID(id)、
+DRAW_TV_CHANNEL、SET_TEXT_RENDER_ID(1)（remote 的 `every` 依序呼叫）。註冊的那一刻遊戲建了一張 512×256 格式 87 的繪製目標
+（和預設貼圖同大小、同格式），之後每格都畫進去。這幾個原生函式在 Enhanced 裡是混淆過的跳板，沒有去追它的管理結構。
+
+做法：不把那張貼圖搬過來，而是在那裡用遊戲自己的畫面（遊戲的世界在那裡也畫了那台電視）——渲染器把有腳本螢幕材質的
+模型標上自訂模板 1（r.CustomDepth 3；`HasScreen`），交給遊戲的畫面在那些像素的深度記成負的（GTAVBridge.usf）；合成在
+深度為負、而且遊戲的深度與之相符（0.2 m + 2%）處保留遊戲的像素（曝光取樣也略過）。電視開著時 UE 的畫面裡是節目，
+關掉回到暗螢幕，和遊戲一樣；不必知道是哪一種螢幕、哪一台。
