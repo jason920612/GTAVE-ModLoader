@@ -336,6 +336,7 @@ namespace loader::core
 		game::fixes::InstallLoadingScreenDeadlockFix();
 		game::fixes::InstallRiverCurrentFix();
 		game::pathregions::Install();
+		game::pathregions::AllowNewRegionFiles();
 		if (config::Get().ue5Renderer)
 			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())

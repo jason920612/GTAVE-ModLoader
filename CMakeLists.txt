@@ -241,6 +241,7 @@ target_compile_options(ue5export PRIVATE /W4 /utf-8 /O2 /permissive-)
 add_executable(worldgen
     tools/worldgen/main.cpp
     tools/worldgen/ynd.cpp
+    tools/worldgen/ynv.cpp
     tools/ue5export/ng.cpp
     tools/ue5export/gamefiles.cpp
     tools/ue5export/meta.cpp

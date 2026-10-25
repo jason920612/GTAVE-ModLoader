@@ -23,14 +23,16 @@
 //     movsx                     a movzx read: load it sign-extended and add the origin (32-bit absolute value)
 //     pmov                      a pmovsxwd decoding a pair loaded earlier (needs area:)
 //     rewrite:<hex>             replace the instruction's bytes in place (nop-padded), no stub
-//   grid.tsv:      rva  -- reads of the region grid's constants (8192, 1/512, 512, 256, -8192; the vectors), pointed
-//                  at copies scaled for 1024 m regions from -16384 (still 32 x 32)
+//   grid.tsv:      rva [imm] -- reads of the region grid's constants (8192, 1/512, 512, 256, -8192, in any lane of a
+//                  vector), pointed at copies scaled for 1024 m regions from -16384 (still 32 x 32); "imm": a float
+//                  immediate of the instruction, rewritten scaled
 #include <Zydis/Zydis.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <set>
@@ -957,14 +959,33 @@ int main(int argc, char** argv)
 	out << "\n};\n";
 
 	// The region grid (1024 m regions instead of 512 m, from -16384): every rip-relative read of the grid's constants in
-	// the path code is pointed at our own copy of it, scaled. They go in after the stubs, 16-byte aligned.
+	// the path code is pointed at our own copy of it, scaled. They go in after the stubs, 16-byte aligned. A float the
+	// code holds as an immediate ("imm") is rewritten in place.
 	struct Redirect
 	{
 		uint32_t rva, length, dispOffset, constant;
 		std::vector<uint8_t> original;
 	};
+	struct Immediate
+	{
+		uint32_t rva, length, immOffset, value;
+		std::vector<uint8_t> original;
+	};
 	std::vector<Redirect> redirects;
+	std::vector<Immediate> immediates;
 	std::vector<std::array<float, 4>> constants;
+	// one lane scaled: 8192, -8192, 512 and 256 doubled, 1/512 halved, 0 kept; anything else is not the grid's
+	const auto scale = [](float v, float& out) {
+		if (v == 8192.0f || v == -8192.0f || v == 512.0f || v == 256.0f)
+			out = v * 2;
+		else if (v == 1.0f / 512)
+			out = 1.0f / 1024;
+		else if (v == 0.0f)
+			out = 0.0f;
+		else
+			return false;
+		return true;
+	};
 	if (argc > 5)
 	{
 		std::ifstream in(argv[5]);
@@ -972,28 +993,51 @@ int main(int argc, char** argv)
 		{
 			if (line.empty() || line[0] == '#')
 				continue;
-			const uint32_t rva = static_cast<uint32_t>(std::stoul(line, nullptr, 16));
+			std::istringstream fields(line);
+			std::string at, kind;
+			fields >> at >> kind;
+			const uint32_t rva = static_cast<uint32_t>(std::stoul(at, nullptr, 16));
 			Decoded d;
+			if (kind == "imm")
+			{
+				int op = -1;
+				if (Decode(rva, d))
+					for (int i = 0; i < d.instr.operand_count; ++i)
+						if (d.ops[i].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && d.ops[i].size == 32)
+							op = i;
+				float v = 0, scaled = 0;
+				const uint32_t bits = op >= 0 ? static_cast<uint32_t>(d.ops[op].imm.value.u) : 0;
+				std::memcpy(&v, &bits, 4);
+				if (op < 0 || d.instr.raw.imm[0].size != 32 || !scale(v, scaled) || v == 0.0f)
+				{
+					std::printf("grid %#x: not an immediate of the region grid\n", rva);
+					continue;
+				}
+				uint32_t value = 0;
+				std::memcpy(&value, &scaled, 4);
+				const uint8_t* orig = image.At(rva, d.instr.length);
+				immediates.push_back({rva, d.instr.length, d.instr.raw.imm[0].offset, value, std::vector<uint8_t>(orig, orig + d.instr.length)});
+				continue;
+			}
 			if (!Decode(rva, d) || !(d.instr.attributes & ZYDIS_ATTRIB_IS_RELATIVE) || d.instr.raw.disp.size != 32)
 			{
 				std::printf("grid %#x: not a rip-relative read\n", rva);
 				continue;
 			}
 			uint64_t target = 0;
+			int lanes = 1; // the floats the instruction reads
 			for (int i = 0; i < d.instr.operand_count; ++i)
 				if (d.ops[i].type == ZYDIS_OPERAND_TYPE_MEMORY && d.ops[i].mem.base == ZYDIS_REGISTER_RIP)
+				{
 					ZydisCalcAbsoluteAddress(&d.instr, &d.ops[i], rva, &target);
+					lanes = std::clamp(d.ops[i].size / 32, 1, 4);
+				}
 			const float* v = reinterpret_cast<const float*>(image.At(static_cast<uint32_t>(target), 16));
 			std::array<float, 4> c{};
-			if (v[0] == 8192.0f && v[1] == 8192.0f)
-				c = {16384.0f, 16384.0f, 0.0f, 0.0f};
-			else if (v[0] == 1.0f / 512 && v[1] == 1.0f / 512)
-				c = {1.0f / 1024, 1.0f / 1024, 0.0f, 0.0f};
-			else if (v[0] == 8192.0f || v[0] == -8192.0f || v[0] == 512.0f || v[0] == 256.0f)
-				c = {v[0] * 2, 0.0f, 0.0f, 0.0f};
-			else if (v[0] == 1.0f / 512)
-				c = {1.0f / 1024, 0.0f, 0.0f, 0.0f};
-			else
+			bool grid = true;
+			for (int l = 0; l < lanes && grid; ++l)
+				grid = scale(v[l], c[l]);
+			if (!grid || std::all_of(c.begin(), c.begin() + lanes, [](float x) { return x == 0.0f; }))
 			{
 				std::printf("grid %#x: constant %g is not the region grid's\n", rva, v[0]);
 				continue;
@@ -1008,7 +1052,8 @@ int main(int argc, char** argv)
 			redirects.push_back({rva, d.instr.length, d.instr.raw.disp.offset, static_cast<uint32_t>(it - constants.begin()),
 			    std::vector<uint8_t>(orig, orig + d.instr.length)});
 		}
-		std::printf("\n%zu grid constant reads redirected to %zu constants\n", redirects.size(), constants.size());
+		std::printf("\n%zu grid constant reads redirected to %zu constants, %zu immediates rewritten\n", redirects.size(), constants.size(),
+		    immediates.size());
 	}
 	auto literal = [](float v) {
 		char buf[32];
@@ -1032,6 +1077,18 @@ int main(int argc, char** argv)
 			out << static_cast<int>(b) << ",";
 		out << "}},";
 	}
+	out << "\n};\n";
+	out << "struct PathGridImmediate\n{\n\tuint32_t rva, length, immOffset, value;\n\tuint8_t original[16];\n};\n"
+	       "constexpr PathGridImmediate kPathGridImmediates[] = {";
+	for (const Immediate& m : immediates)
+	{
+		out << "\n\t{" << m.rva << ", " << m.length << ", " << m.immOffset << ", " << m.value << "u, {";
+		for (const uint8_t b : m.original)
+			out << static_cast<int>(b) << ",";
+		out << "}},";
+	}
+	if (immediates.empty())
+		out << "{}";
 	out << "\n};\n";
 	return 0;
 }
