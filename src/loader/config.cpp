@@ -58,6 +58,7 @@ namespace loader::config
 			c.ue5Particles = j.value("ue5Particles", c.ue5Particles);
 			c.ue5GameResolution = j.value("ue5GameResolution", c.ue5GameResolution);
 			c.ue5GameDetail = j.value("ue5GameDetail", c.ue5GameDetail);
+			c.ue5GameMemory = j.value("ue5GameMemory", c.ue5GameMemory);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -94,6 +95,7 @@ namespace loader::config
 				{"ue5Particles", c.ue5Particles},
 				{"ue5GameResolution", c.ue5GameResolution},
 				{"ue5GameDetail", c.ue5GameDetail},
+				{"ue5GameMemory", c.ue5GameMemory},
 			};
 		}
 	}

@@ -66,6 +66,7 @@ add_library(loader SHARED
     src/loader/graphics/interiorsets.cpp
     src/loader/graphics/gameobjects.cpp
     src/loader/graphics/particles.cpp
+    src/loader/graphics/gamememory.cpp
     src/loader/ui/dx12_hook.cpp
     src/loader/ui/overlay.cpp
     src/loader/ui/recorder.cpp

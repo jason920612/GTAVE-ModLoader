@@ -29,6 +29,7 @@
 #include "GTAVBridgeProtocol.h"
 #include "composite.hpp"
 #include "gamelights.hpp"
+#include "gamememory.hpp"
 #include "gameobjects.hpp"
 #include "interiorsets.hpp"
 #include "particles.hpp"
@@ -192,9 +193,9 @@ namespace loader::graphics::bridge
 		//   shown, so what only draws the world it need not (grass, water, tessellation, volumetric fog, ray traced
 		//   trees, the farther levels of detail, its ray tracing: its shadow maps shade the peds and vehicles as well;
 		//   in a storm it cost the shared GPU some 4 ms a frame, research §60.6; the map's detailed models streamed in
-		//   while flying, which only take the shared GPU's memory, §60.25); the peds' and vehicles' own (their shadows,
-		//   reflections) stay, and what acts on the whole picture after the renderer's goes in (depth of field, motion
-		//   blur).
+		//   while flying, which only take the shared GPU's memory, §60.25; its levels of detail nearer, 0.4 of the
+		//   distances: at 0.6 it kept 0.3 GB more, §60.26); the peds' and vehicles' own (their shadows, reflections)
+		//   stay, and what acts on the whole picture after the renderer's goes in (depth of field, motion blur).
 		std::filesystem::path g_settingsFile;
 		bool g_settingsRestored = true;
 
@@ -279,7 +280,7 @@ namespace loader::graphics::bridge
 			if (r == "performance" || r == "balanced" || r == "quality")
 				wanted.emplace_back("dlssQuality", r == "performance" ? "0" : r == "balanced" ? "1" : "2");
 			static constexpr std::pair<const char*, const char*> kLean[] = {{"GrassQuality", "0"}, {"WaterQuality", "0"}, {"Tessellation", "0"},
-			    {"LodScale", "0.600000"}, {"MaxLodScale", "0.000000"}, {"Lighting_FogVolumes", "false"}, {"Shadow_LongShadows", "false"},
+			    {"LodScale", "0.400000"}, {"MaxLodScale", "0.000000"}, {"Lighting_FogVolumes", "false"}, {"Shadow_LongShadows", "false"},
 			    {"Raytracing_TreeBvhEnabled", "false"}, {"Raytracing_GrassBvhEnabled", "false"}, {"Raytracing_Enabled", "false"},
 			    {"RTShadows_Enabled", "false"}, {"HdStreamingInFlight", "false"}};
 			if (c.ue5GameDetail == "lean")
@@ -1036,6 +1037,7 @@ namespace loader::graphics::bridge
 		g_showing = true;
 		streamline::SetAfterDlss(&AfterDlss);
 		streamline::SetOnCamera(&OnCamera);
+		gamememory::Start();
 		if (config::Get().ue5Particles)
 			particles::Start();
 		else

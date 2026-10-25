@@ -75,6 +75,9 @@ namespace loader::config
 		// fog, the farther levels of detail; the peds' and vehicles' own kept) or "game" (its own settings). Takes
 		// effect when the game starts.
 		std::string ue5GameDetail = "lean";
+		// The GPU memory (MB) the game is told it may use meanwhile, the rest left to the renderer (graphics/
+		// gamememory.cpp): 0 = 42% of the card's, -1 = what Windows gives it. Takes effect when the game starts.
+		int ue5GameMemory = 0;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.
