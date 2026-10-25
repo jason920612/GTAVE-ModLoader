@@ -41,9 +41,13 @@ public:
 	void RemoveEntity(uint64 Key);
 	// (checking: the real lights near a point, to the log)
 	void Dump(const FVector& Point, float Radius) const;
-	// The shape the glows are drawn with (a closed shape 100 cm across, every corner as far from its centre; null: the
-	// engine's sphere).
-	void SetGlowShape(UStaticMesh* Mesh) { GlowShape = Mesh; }
+	// The shapes the glows are drawn with, far and near (closed shapes 100 cm across, every corner as far from the
+	// centre; null: the engine's sphere): the near ones finer (seen tens of pixels across).
+	void SetGlowShape(UStaticMesh* Far, UStaticMesh* Near)
+	{
+		GlowShape = Far;
+		NearGlowShape = Near;
+	}
 
 	float NearRadius = 40000.0f;  // cm: real lights within (gtav.Lights of them, those that matter most)
 	float FarRadius = 500000.0f;  // cm: glowing points within
@@ -76,9 +80,13 @@ private:
 	TMap<int64, TWeakObjectPtr<ULocalLightComponent>> Active; // the real lights by the light they are
 	TArray<TWeakObjectPtr<ULocalLightComponent>> FreePoints, FreeSpots;
 	bool bLastShadows = false;
-	TWeakObjectPtr<UInstancedStaticMeshComponent> Glow;
-	TWeakObjectPtr<UStaticMesh> GlowShape;
+	TWeakObjectPtr<UInstancedStaticMeshComponent> Glow, GlowRing;
+	TArray<float> RingData; // (what the ring shows: rebuilt when that changes)
+	double LastRingTime = 0;
+	TWeakObjectPtr<UStaticMesh> GlowShape, NearGlowShape;
 	UStaticMesh* GlowMesh() const;
+	bool StandsDown(const GTAVPack::LodLight& L, float D2) const;
+	void UpdateRing(AActor* Owner, const FVector& Camera, int32 Hour);
 	FVector LastNear = FVector(1e30), LastFar = FVector(1e30);
 	int32 LastHour = -1;
 	double LastNearTime = 0;

@@ -54,6 +54,9 @@ namespace
 	constexpr float kLux = 70.0f;
 	// (M_GTAV_Corona's Candela: the custom data are the colour x candela over it)
 	constexpr float kCoronaCandela = 4500.0f;
+	// The LOD lights' glows within this of where they were last gathered (cm) are kept apart from the far ones: rebuilt
+	// each second against the game's own lights, drawn finer (FGTAVLights::UpdateRing).
+	constexpr float kGlowRing = 30000.0f;
 
 	// A light of a drawn entity, by the entity and its index (negative: the map's lights are 0 and up).
 	int64 EntityLightKey(uint64 Entity, int32 Index)
@@ -310,8 +313,43 @@ void FGTAVLights::Update(AActor* Owner, const FVector& Camera, int32 Hour)
 	{
 		UpdateFar(Owner, Camera, Hour);
 		LastFar = Camera;
+		LastRingTime = 0;
+	}
+	if (Now - LastRingTime > 1.0)
+	{
+		UpdateRing(Owner, Camera, Hour);
+		LastRingTime = Now;
 	}
 	LastHour = Hour;
+}
+
+// With the game's lights: a LOD light where the game has one of its own stands down, and in an interior those near too
+// (the house's windows seen from outside, its porch lamp). D2: its distance from the camera, squared.
+bool FGTAVLights::StandsDown(const GTAVPack::LodLight& L, float D2) const
+{
+	if (!bWasGame)
+	{
+		return false;
+	}
+	if (bGameInside && D2 < kIndoorLodClear * kIndoorLodClear)
+	{
+		return true;
+	}
+	const FIntVector P = Spot100(L.position);
+	for (int32 X = -1; X <= 1; ++X)
+	{
+		for (int32 Y = -1; Y <= 1; ++Y)
+		{
+			for (int32 Z = -1; Z <= 1; ++Z)
+			{
+				if (GameSpots.Contains(P + FIntVector(X, Y, Z)))
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
@@ -323,34 +361,7 @@ void FGTAVLights::UpdateNear(AActor* Owner, const FVector& Camera, int32 Hour)
 	TArray<TPair<float, int64>> Near;
 	NearRadius = FMath::Max(CVarLightRadius.GetValueOnGameThread(), 10.0f) * 100.0f;
 	TMap<FIntVector, int32> Taken; // (where a LOD light is: which)
-	// (with the game's lights: a LOD light where the game has one of its own stands down, and in an interior those near
-	// too - the house's windows seen from outside, its porch lamp)
 	const bool bGame = bWasGame;
-	const auto StandsDown = [&](const GTAVPack::LodLight& L, float D2) {
-		if (!bGame)
-		{
-			return false;
-		}
-		if (bGameInside && D2 < kIndoorLodClear * kIndoorLodClear)
-		{
-			return true;
-		}
-		const FIntVector P = Spot100(L.position);
-		for (int32 X = -1; X <= 1; ++X)
-		{
-			for (int32 Y = -1; Y <= 1; ++Y)
-			{
-				for (int32 Z = -1; Z <= 1; ++Z)
-				{
-					if (GameSpots.Contains(P + FIntVector(X, Y, Z)))
-					{
-						return true;
-					}
-				}
-			}
-		}
-		return false;
-	};
 	{
 		TArray<TPair<float, int32>> Map;
 		Gather(Camera, NearRadius, Hour, Map);
@@ -785,7 +796,7 @@ void FGTAVLights::UpdateNearGlow(AActor* Owner)
 	UInstancedStaticMeshComponent* G = NearGlow.Get();
 	if (!G)
 	{
-		UStaticMesh* Sphere = GlowMesh();
+		UStaticMesh* Sphere = NearGlowShape.IsValid() ? NearGlowShape.Get() : GlowMesh();
 		UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Corona.M_GTAV_Corona"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		if (!Sphere || !Material)
 		{
@@ -841,6 +852,8 @@ void FGTAVLights::UpdateFar(AActor* Owner, const FVector& Camera, int32 Hour)
 	}
 	TArray<TPair<float, int32>> Far;
 	Gather(Camera, FarRadius, Hour, Far);
+	// (those near here are the ring's: UpdateRing)
+	Far.RemoveAll([](const TPair<float, int32>& F) { return F.Key < kGlowRing * kGlowRing; });
 	G->ClearInstances();
 	TArray<FTransform> Transforms;
 	Transforms.Reserve(Far.Num());
@@ -858,6 +871,65 @@ void FGTAVLights::UpdateFar(AActor* Owner, const FVector& Camera, int32 Hour)
 		const FLinearColor C = ColorOf(L) * (CandelaOf(L) / kCoronaCandela);
 		const float Data[3] = {C.R, C.G, C.B};
 		G->SetCustomData(I, MakeArrayView(Data, 3), false);
+	}
+	G->MarkRenderStateDirty();
+}
+
+void FGTAVLights::UpdateRing(AActor* Owner, const FVector& Camera, int32 Hour)
+{
+	// The LOD lights' glows within kGlowRing of where the far ones were gathered (they are left out there): where the
+	// game has a light of its own they stand down, as the real lights do (its lamp is drawn lit; the glow was a white
+	// ball a metre across on the wall where a plaza's step light is), and the shape is the finer one (seen up close).
+	TArray<TPair<float, int32>> Ring;
+	Gather(LastFar, kGlowRing, Hour, Ring);
+	TArray<float> Data; // (x, y, z, scale, r, g, b) each
+	Data.Reserve(Ring.Num() * 7);
+	for (const TPair<float, int32>& R : Ring)
+	{
+		const GTAVPack::LodLight& L = Lights[R.Value];
+		if (StandsDown(L, float(FVector::DistSquared(Camera, FVector(L.position[0], L.position[1], L.position[2])))))
+		{
+			continue;
+		}
+		const FLinearColor C = ColorOf(L) * (CandelaOf(L) / kCoronaCandela);
+		Data.Append({L.position[0], L.position[1], L.position[2], 0.6f * (1.0f + L.corona / 128.0f), C.R, C.G, C.B});
+	}
+	if (Data == RingData && GlowRing.IsValid())
+	{
+		return;
+	}
+	RingData = Data;
+	UInstancedStaticMeshComponent* G = GlowRing.Get();
+	if (!G)
+	{
+		UStaticMesh* Sphere = NearGlowShape.IsValid() ? NearGlowShape.Get() : GlowMesh();
+		UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Corona.M_GTAV_Corona"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!Sphere || !Material)
+		{
+			return;
+		}
+		G = NewObject<UInstancedStaticMeshComponent>(Owner);
+		G->SetMobility(EComponentMobility::Movable);
+		G->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		G->SetCastShadow(false);
+		G->SetStaticMesh(Sphere);
+		G->SetMaterial(0, Material);
+		G->NumCustomDataFloats = 3;
+		G->RegisterComponent();
+		GlowRing = G;
+	}
+	G->ClearInstances();
+	const int32 Count = Data.Num() / 7;
+	TArray<FTransform> Transforms;
+	Transforms.Reserve(Count);
+	for (int32 I = 0; I < Count; ++I)
+	{
+		Transforms.Emplace(FQuat::Identity, FVector(Data[7 * I], Data[7 * I + 1], Data[7 * I + 2]), FVector(Data[7 * I + 3]));
+	}
+	G->AddInstances(Transforms, false, false);
+	for (int32 I = 0; I < Count; ++I)
+	{
+		G->SetCustomData(I, MakeArrayView(&Data[7 * I + 4], 3), false);
 	}
 	G->MarkRenderStateDirty();
 }

@@ -207,12 +207,13 @@ void UGTAVWorldSubsystem::AddSky(UWorld& World)
 	World.SpawnActor<AExponentialHeightFog>(FVector::ZeroVector, FRotator::ZeroRotator);
 }
 
-// The glows' shape (the map's lights seen from afar, the lamps' lit lenses): a sphere of 80 faces 100 cm across (an
-// icosahedron's, each face split in four, the new corners out on the sphere). The engine's sphere has hundreds of
+// The glows' shape (the map's lights seen from afar, the lamps' lit lenses): a sphere 100 cm across, an icosahedron's
+// with each face split in four `Splits` times, the new corners out on the sphere. The engine's sphere has hundreds of
 // triangles; with the tens of thousands of glows over a city by night they took 8 ms of the frame in the translucent
-// pass (research §60.13), and a glow is mostly a disk a few pixels wide - but a lamp's near the camera is a disk of tens
-// of pixels, where the icosahedron's own 20 faces showed as a hexagon.
-UStaticMesh* UGTAVWorldSubsystem::MakeGlowShape()
+// pass (research §60.13), and a glow is mostly a disk a few pixels wide: those have 80 faces (one split) - but a lamp's
+// near the camera is a disk of tens of pixels, where the icosahedron's own 20 faces showed as a hexagon and 80 as an
+// octagon: the near lamps' (few) have 1,280 (three).
+UStaticMesh* UGTAVWorldSubsystem::MakeGlowShape(int32 Splits)
 {
 	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/GTAV/Materials/M_GTAV_Corona.M_GTAV_Corona"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	if (!Assets || !Material)
@@ -242,8 +243,18 @@ UStaticMesh* UGTAVWorldSubsystem::MakeGlowShape()
 	TArray<uint32> Corners;
 	for (const auto& F : Faces)
 	{
-		const uint32 AB = Middle(F[0], F[1]), BC = Middle(F[1], F[2]), CA = Middle(F[2], F[0]);
-		Corners.Append({F[0], AB, CA, F[1], BC, AB, F[2], CA, BC, AB, BC, CA});
+		Corners.Append({F[0], F[1], F[2]});
+	}
+	for (int32 Split = 0; Split < Splits; ++Split)
+	{
+		TArray<uint32> Finer;
+		for (int32 I = 0; I + 2 < Corners.Num(); I += 3)
+		{
+			const uint32 A = Corners[I], B = Corners[I + 1], C = Corners[I + 2];
+			const uint32 AB = Middle(A, B), BC = Middle(B, C), CA = Middle(C, A);
+			Finer.Append({A, AB, CA, B, BC, AB, C, CA, BC, AB, BC, CA});
+		}
+		Corners = MoveTemp(Finer);
 	}
 	TArray<FStaticMeshBuildVertex> Vertices;
 	for (const FVector3f& N : Points)
@@ -305,7 +316,7 @@ void UGTAVWorldSubsystem::OnWorldBeginPlay(UWorld& World)
 	GTAVSky::SetSkyTextures(Assets->GlobalTexture(TEXT("moon-new"), false), Assets->GlobalTexture(TEXT("starfield"), false));
 	const int32 LightCount = Data.LodLights.Num();
 	Lights.Load(MoveTemp(Data.LodLights));
-	Lights.SetGlowShape(MakeGlowShape());
+	Lights.SetGlowShape(MakeGlowShape(1), MakeGlowShape(3));
 	UE_LOG(LogGTAVWorld, Display, TEXT("%d LOD lights"), LightCount);
 	bLoaded = true;
 	int32 Roots = 0;
