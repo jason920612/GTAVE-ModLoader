@@ -76,6 +76,10 @@ namespace loader::game::pools
 			return size + std::max<uint32_t>(size / 4, 500);
 		}
 
+		// Stores the world builder's new land fills: room for that many more (a whole island: thousands of collision
+		// files, a few hundred maps).
+		constexpr std::pair<std::string_view, uint32_t> kWorldStores[] = {{"fwStaticBoundsStore", 12000}, {"fwMapDataStore", 3000}, {"MapTypesStore", 1000}};
+
 		// Stores that need a size of their own (SetMinimum), by name.
 		std::vector<std::pair<std::string, uint32_t>> g_minimum;
 
@@ -115,6 +119,21 @@ namespace loader::game::pools
 				else
 					log::Info("pools: {} {} -> {}", name, before, *fallback);
 			}
+			if (!store[0x98] && name)
+				for (const auto& [storeName, extra] : kWorldStores)
+					if (storeName == name)
+					{
+						auto* fallback = reinterpret_cast<uint32_t*>(store + 0x10);
+						const uint32_t before = *fallback;
+						*fallback += extra;
+						if (Node* entry = Find(Joaat(name)))
+						{
+							log::Info("pools: {} {} -> {} (new land)", name, entry->size, entry->size + extra);
+							entry->size += extra;
+						}
+						else
+							log::Info("pools: {} {} -> {} (new land)", name, before, *fallback);
+					}
 			g_original(store);
 		}
 

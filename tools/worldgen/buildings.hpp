@@ -35,7 +35,8 @@ namespace worldgen::buildings
 		// `kind`: the OSM building type (house, apartments, commercial, industrial...): which of the game's areas'
 		// buildings fit (houses from the residential hills and Vespucci; apartments from Vespucci, Del Perro,
 		// Hollywood; shops and offices from the city; industrial ones only for industrial buildings).
-		bool Pick(const std::vector<P2>& footprint, float height, float ground, const std::string& kind, Placement& out) const;
+		// (a model already used often costs a little more: streets of the same house in a row look made)
+		bool Pick(const std::vector<P2>& footprint, float height, float ground, const std::string& kind, Placement& out);
 
 	private:
 		enum class Style : uint8_t
@@ -53,6 +54,7 @@ namespace worldgen::buildings
 			uint8_t styles; // a bit per Style it suits
 		};
 		std::vector<Candidate> candidates_;
+		std::vector<uint32_t> used_; // per candidate: how often it was picked
 	};
 
 	// The oriented box of a footprint: centre, the long side's direction (radians), long and short sides.

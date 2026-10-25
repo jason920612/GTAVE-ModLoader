@@ -1,0 +1,53 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "elevation.hpp"
+#include "world.hpp"
+
+// Buildings of our own (research/phase0.md §61.18): each footprint's measured shape. The roof is the laser scan's
+// building returns over the footprint as a surface of few triangles (the greedy insertion of Garland and Heckbert:
+// the footprint's own triangles first, then the measured point farthest from the surface, until every point is within a
+// tolerance; Delaunay flips inside the outline), so that flat roofs, pitched ones, set-back towers, courtyards and
+// domes all come out of one method. Before that the heights become planes (regions grown over the cells; the small
+// ones - roof clutter - join their neighbours), so that a roof's faces are flat and its triangles few. The walls stand on the outline, from below the ground to the roof's edge. Without
+// a measurement the map's height makes a flat-roofed block.
+namespace worldgen::structures
+{
+	using P2 = std::array<float, 2>;
+	using P3 = std::array<double, 3>;
+
+	struct Shape
+	{
+		std::vector<P3> vertices;                   // world positions
+		std::vector<std::array<uint32_t, 3>> roof;  // anticlockwise seen from above
+		std::vector<std::array<uint32_t, 2>> outline; // the roof's edge, anticlockwise: the walls stand under it
+		float base = 0;     // the ground under the building (the walls reach `sink` below it)
+		float height = 0;   // the main roof above the base
+		float top = 0;      // the highest point above the base
+		bool measured = false;
+		std::string kind;   // the map's building value
+	};
+
+	struct Options
+	{
+		float tolerance = 0.3f;      // the roof's largest height error (m)
+		size_t maxTriangles = 800;   // a roof's triangles at most
+		float flat = 0.8f;           // a roof whose middle 80 % of heights spans less than this is flat
+		float sink = 0.6f;           // the walls go this far below the base
+		float coverage = 0.3f;       // the share of the footprint with building returns a measurement needs
+		float minPlane = 6;          // the smallest roof plane kept (m²); smaller ones join a neighbour
+	};
+
+	struct Stats
+	{
+		size_t measured = 0, flat = 0, shaped = 0, mapHeight = 0, skipped = 0, triangles = 0;
+	};
+
+	// `ground` is the terrain's height (the base is the lowest of it under the outline).
+	bool Make(const world::Building& b, elevation::Scan* scan, const std::function<float(float, float)>& ground, const Options& o, Shape& out,
+	    Stats& stats);
+}

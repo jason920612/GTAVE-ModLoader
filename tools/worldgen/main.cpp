@@ -55,6 +55,11 @@
 #include "pbf.hpp"
 #include "raster.hpp"
 #include "world.hpp"
+#include "convert/ytd.hpp"
+#include "elevation.hpp"
+#include "facades.hpp"
+#include "structures.hpp"
+#include "texture.hpp"
 #include "mapfiles.hpp"
 #include "terrain.hpp"
 #include "ybn.hpp"
@@ -475,6 +480,91 @@ namespace
 	}
 }
 
+namespace
+{
+	// Buildings of our own for checking, without the game: --world <world.json> --scan <rasters> --area x0,y0,x1,y1 --out
+	// <file.obj> [--datum m] [--facades <dir>: the wall textures as pictures]
+	int Shapes()
+	{
+		std::string error;
+		if (g_options.contains("facades"))
+		{
+			const auto set = worldgen::facades::Make("wb_f_", 1024);
+			fs::create_directories(g_options["facades"]);
+			for (const auto& t : set.textures)
+			{
+				auto format = t.format;
+				uint8_t mips = t.mips;
+				auto pixels = t.pixels;
+				loader::convert::MakeRenderTargetFormat(format, mips, t.width, t.height, pixels);
+				worldgen::texture::Image img(t.width, t.height);
+				for (size_t i = 0; i < img.pixels.size(); ++i)
+					img.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], 255};
+				if (!worldgen::texture::WritePng(fs::path(g_options["facades"]) / (t.name + ".png"), img, error))
+					return Fail(error);
+			}
+			std::printf("%zu textures in %s\n", set.textures.size(), g_options["facades"].c_str());
+			if (!g_options.contains("world"))
+				return 0;
+		}
+		if (!g_options.contains("world") || !g_options.contains("scan") || !g_options.contains("area") || !g_options.contains("out"))
+			return Fail("--world <world.json> --scan <dir> --area x0,y0,x1,y1 --out <file.obj> are needed");
+		worldgen::world::World w;
+		if (!worldgen::world::Load(g_options["world"], w, error))
+			return Fail(error);
+		worldgen::elevation::Scan scan;
+		if (!scan.Open(g_options["scan"], g_options.contains("datum") ? std::stof(g_options["datum"]) : 0.6f))
+			return Fail("no scan rasters in " + g_options["scan"]);
+		float a[4] = {};
+		char c = 0;
+		std::istringstream(g_options["area"]) >> a[0] >> c >> a[1] >> c >> a[2] >> c >> a[3];
+		const auto ground = [&](float x, float y) {
+			for (float r = 0; r <= 8; r += 1)
+				for (int k = 0; k < (r == 0 ? 1 : 8); ++k)
+				{
+					const float g = scan.Ground(x + r * std::cos(k * 0.785f), y + r * std::sin(k * 0.785f));
+					if (!std::isnan(g))
+						return g;
+				}
+			return 1.5f;
+		};
+		worldgen::structures::Options so;
+		worldgen::structures::Stats ss;
+		std::ofstream obj(g_options["out"]);
+		size_t base = 1, count = 0;
+		const auto start = std::chrono::steady_clock::now();
+		for (const auto& b : w.buildings)
+		{
+			if (b.footprint.size() < 3)
+				continue;
+			float cx = 0, cy = 0;
+			for (const auto& q : b.footprint)
+				cx += q[0] / b.footprint.size(), cy += q[1] / b.footprint.size();
+			if (cx < a[0] || cx >= a[2] || cy < a[1] || cy >= a[3])
+				continue;
+			worldgen::structures::Shape s;
+			if (!worldgen::structures::Make(b, &scan, ground, so, s, ss))
+				continue;
+			++count;
+			obj << "o b" << count << "\n";
+			for (const auto& v : s.vertices)
+				obj << std::format("v {:.3f} {:.3f} {:.3f}\n", v[0], v[2], -v[1]);
+			for (const auto& v : s.vertices)
+				obj << std::format("v {:.3f} {:.3f} {:.3f}\n", v[0], s.base - 0.6, -v[1]);
+			const size_t n = s.vertices.size();
+			for (const auto& t : s.roof)
+				obj << "f " << base + t[0] << ' ' << base + t[1] << ' ' << base + t[2] << "\n";
+			for (const auto& e : s.outline)
+				obj << "f " << base + n + e[0] << ' ' << base + n + e[1] << ' ' << base + e[1] << ' ' << base + e[0] << "\n";
+			base += 2 * n;
+		}
+		std::printf("%zu buildings (%zu measured: %zu flat, %zu shaped; %zu at the map's height; %zu skipped), %zu roof triangles, %.1f s\n", count,
+		    ss.measured, ss.flat, ss.shaped, ss.mapHeight, ss.skipped, ss.triangles,
+		    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+		return 0;
+	}
+}
+
 int main(int argc, char** argv)
 {
 	_setmaxstdio(8192);
@@ -483,6 +573,34 @@ int main(int argc, char** argv)
 	for (int i = 2; i + 1 < argc; i += 2)
 		if (std::string(argv[i]).starts_with("--"))
 			g_options[argv[i] + 2] = argv[i + 1];
+	if (std::string(argv[1]) == "shapes")
+		return Shapes();
+	if (std::string(argv[1]) == "ytd-png")
+	{
+		// a texture dictionary's textures as pictures (mip 0; block formats BC1-3): --ytd <file> --out <dir>
+		std::ifstream in(g_options["ytd"], std::ios::binary);
+		Bytes data((std::istreambuf_iterator<char>(in)), {});
+		loader::convert::Resource res;
+		std::string error;
+		if (!loader::convert::Read(data, res, error))
+			return Fail(error);
+		const ue5export::drawable::View view(res);
+		fs::create_directories(g_options["out"]);
+		for (const auto& t : ue5export::drawable::Textures(view, ue5export::drawable::View::kRoot))
+		{
+			std::printf("%s %ux%u format %u mips %u\n", t.name.c_str(), t.width, t.height, t.dxgi, t.mips);
+			loader::convert::TextureFormat format{t.dxgi, t.dxgi == 71 ? 8u : 16u, true};
+			uint8_t mips = t.mips;
+			Bytes pixels(t.data.begin(), t.data.end());
+			loader::convert::MakeRenderTargetFormat(format, mips, static_cast<uint16_t>(t.width), static_cast<uint16_t>(t.height), pixels);
+			worldgen::texture::Image img(t.width, t.height);
+			for (size_t i = 0; i < img.pixels.size() && 4 * i + 3 < pixels.size(); ++i)
+				img.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], 255};
+			if (!worldgen::texture::WritePng(fs::path(g_options["out"]) / (t.name + ".png"), img, error))
+				return Fail(error);
+		}
+		return 0;
+	}
 	if (!g_options.contains("game") || !g_options.contains("keys"))
 		return Fail("--game <dir> and --keys <ng.bin> are needed");
 	ue5export::ng::Keys keys;
@@ -853,6 +971,55 @@ int main(int argc, char** argv)
 		    triangles, back.triangles.size(), worst, file.size());
 		return 0;
 	}
+	if (command == "material-dump")
+	{
+		// a game model's shader as worldgen reads it for its own models: --model <file.ydr> --index <n>
+		Bytes data;
+		loader::convert::Resource res;
+		const auto* f = files.Find(g_options["model"]);
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
+			return Fail("cannot read " + g_options["model"] + ": " + error);
+		worldgen::ydr::Material m;
+		if (!worldgen::ydr::ReadMaterial(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, std::stoul(g_options["index"]), m, error))
+			return Fail(error);
+		std::printf("effect %08x bucket %u block %u\n", m.effect, m.bucket, m.block);
+		for (const auto& [p, n] : m.textures)
+			std::printf("  texture %08x %s\n", p, n.c_str());
+		for (const auto& [p, bytes] : m.constants)
+		{
+			std::printf("  constant %08x (%zu bytes):", p, bytes.size());
+			for (size_t k = 0; k + 3 < bytes.size() && k < 64; k += 4)
+			{
+				float v;
+				std::memcpy(&v, bytes.data() + k, 4);
+				std::printf(" %g", v);
+			}
+			std::printf("\n");
+		}
+		std::printf("  slots:");
+		for (const uint8_t sl : m.slots)
+			std::printf(" %u", sl);
+		std::printf("\n");
+		return 0;
+	}
+	if (command == "file-find")
+	{
+		// the game's files whose names contain --pattern, with where they are; --out <dir>: their contents too
+		const std::string pattern = g_options["pattern"];
+		for (const auto& [name, f] : files.Files())
+		{
+			if (name.find(pattern) == std::string::npos)
+				continue;
+			std::printf("%s  %s\n", name.c_str(), f.path.c_str());
+			Bytes data;
+			if (g_options.contains("out") && files.Read(f, data, error))
+			{
+				fs::create_directories(g_options["out"]);
+				std::ofstream(fs::path(g_options["out"]) / name, std::ios::binary).write(reinterpret_cast<const char*>(data.data()), data.size());
+			}
+		}
+		return 0;
+	}
 	if (command == "rpf-find")
 	{
 		// the paths inside an archive (and the archives in it) that contain --pattern; with --out also their contents
@@ -901,6 +1068,7 @@ int main(int argc, char** argv)
 			return Fail("--in <dir> --out <dlc.rpf> --name <pack name> are needed");
 		const std::string name = g_options["name"], device = "dlc_" + name;
 		loader::convert::WriteNode stream;
+		std::string parentTxds;
 		stream.name = name + ".rpf";
 		stream.kind = loader::convert::WriteNode::Kind::Archive;
 		size_t count = 0;
@@ -912,6 +1080,13 @@ int main(int argc, char** argv)
 			std::transform(file.begin(), file.end(), file.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 			if (file.ends_with(".txt") || file.ends_with(".png") || file.ends_with(".json"))
 				continue; // (the build's notes, not game files)
+			if (file == "gtxd.meta")
+			{
+				// (texture dictionaries' parents: the pack's data, not streamed)
+				std::ifstream in(entry.path(), std::ios::binary);
+				parentTxds.assign(std::istreambuf_iterator<char>(in), {});
+				continue;
+			}
 			loader::convert::WriteNode n;
 			n.name = file;
 			std::ifstream in(entry.path(), std::ios::binary);
@@ -925,12 +1100,42 @@ int main(int argc, char** argv)
 		// the pack's map cache (x64\data\cacheloaderdata_dlc\<pack>_<change set hash>_cache_y.dat) for where each map and
 		// collision file lies. Without it a new map is registered disabled and without its box, and never loaded.
 		const std::string changeSet = name + "_MAP";
+		// The streaming files in archives of at most 1800 files and 48 KB of names (an archive's name table is
+		// addressed with 16 bits): <name>.rpf, <name>_1.rpf, ...
+		std::vector<std::vector<size_t>> groups(1);
+		std::vector<std::string> archiveNames{name};
+		std::map<std::string, std::string> archiveOf;
+		{
+			size_t names = 0;
+			for (size_t i = 0; i < stream.children.size(); ++i)
+			{
+				const size_t length = stream.children[i].name.size() + 1;
+				if (groups.back().size() >= 1800 || names + length > 48000)
+				{
+					groups.emplace_back();
+					archiveNames.push_back(std::format("{}_{}", name, groups.size() - 1));
+					names = 0;
+				}
+				groups.back().push_back(i);
+				names += length;
+				archiveOf[stream.children[i].name] = archiveNames.back();
+			}
+		}
+		std::string rpfItems, rpfEnables;
+		for (const std::string& a : archiveNames)
+		{
+			rpfItems += std::format("    <Item>\n      <filename>{}:/%PLATFORM%/levels/gta5/{}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
+			                        "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n"
+			                        "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n",
+			    device, a);
+			rpfEnables += std::format("            <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n", device, a);
+		}
 		// Archetype files (.ytyp): requested with the change set (DLC_ITYP_REQUEST), kept while it is on.
 		std::string typeItems, typeEnables;
 		for (const auto& child : stream.children)
 			if (child.name.ends_with(".ytyp"))
 			{
-				const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, name, child.name);
+				const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, archiveOf[child.name], child.name);
 				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
 				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
 				    path);
@@ -952,18 +1157,24 @@ int main(int argc, char** argv)
 				typeEnables += std::format("            <Item>{}</Item>\n", path);
 			}
 		}
+		// texture dictionaries' parents (gtxd.meta in the input): GTXD_PARENTING_DATA, on with the change set
+		if (!parentTxds.empty())
+		{
+			typeItems += std::format("    <Item>\n      <filename>{}:/common/data/gtxd.meta</filename>\n      <fileType>GTXD_PARENTING_DATA</fileType>\n"
+			                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"false\" />\n    </Item>\n",
+			    device);
+			typeEnables += std::format("            <Item>{}:/common/data/gtxd.meta</Item>\n", device);
+		}
 		const std::string content = std::format(
 		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CDataFileMgr__ContentsOfDataFileXml>\n  <disabledFiles />\n  <includedXmlFiles />\n"
-		    "  <includedDataFiles />\n  <dataFiles>\n    <Item>\n      <filename>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
-		    "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n"
-		    "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n{3}  </dataFiles>\n"
+		    "  <includedDataFiles />\n  <dataFiles>\n{1}{3}  </dataFiles>\n"
 		    "  <contentChangeSets>\n    <Item>\n      <changeSetName>{2}</changeSetName>\n      <mapChangeSetData>\n        <Item>\n"
 		    "          <associatedMap>MO_JIM_L11</associatedMap>\n          <filesToInvalidate />\n          <filesToEnable>\n"
-		    "            <Item>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</Item>\n{4}          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
+		    "{5}{4}          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
 		    "      <requiresLoadingScreen value=\"true\" />\n      <loadingScreenContext>LOADINGSCREEN_CONTEXT_LAST_FRAME</loadingScreenContext>\n"
 		    "      <useCacheLoader value=\"true\" />\n    </Item>\n  </contentChangeSets>\n  <patchFiles />\n"
 		    "</CDataFileMgr__ContentsOfDataFileXml>\n",
-		    device, name, changeSet, typeItems, typeEnables);
+		    device, rpfItems, changeSet, typeItems, typeEnables, rpfEnables);
 		const std::string setup = std::format(
 		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SSetupData>\n  <deviceName>{}</deviceName>\n  <datFile>content.xml</datFile>\n"
 		    "  <timeStamp>00/00/0000 00:00:00</timeStamp>\n  <nameHash>{}</nameHash>\n  <contentChangeSets />\n  <contentChangeSetGroups>\n"
@@ -1033,6 +1244,15 @@ int main(int argc, char** argv)
 		};
 		root.children.push_back(text("content.xml", content));
 		root.children.push_back(text("setup2.xml", setup));
+		if (!parentTxds.empty())
+		{
+			loader::convert::WriteNode common, commonData;
+			common.name = "common";
+			commonData.name = "data";
+			commonData.children.push_back(text("gtxd.meta", parentTxds));
+			common.children.push_back(std::move(commonData));
+			root.children.push_back(std::move(common));
+		}
 		std::string lowerName = name;
 		std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		loader::convert::WriteNode data, loaderData, cacheFile;
@@ -1048,7 +1268,15 @@ int main(int argc, char** argv)
 		loader::convert::WriteNode levels, gta5;
 		levels.name = "levels";
 		gta5.name = "gta5";
-		gta5.children.push_back(std::move(stream));
+		for (size_t g = 0; g < groups.size(); ++g)
+		{
+			loader::convert::WriteNode a;
+			a.name = archiveNames[g] + ".rpf";
+			a.kind = loader::convert::WriteNode::Kind::Archive;
+			for (const size_t i : groups[g])
+				a.children.push_back(std::move(stream.children[i]));
+			gta5.children.push_back(std::move(a));
+		}
 		levels.children.push_back(std::move(gta5));
 		platform.name = "x64";
 		platform.children.push_back(std::move(levels));
@@ -1058,7 +1286,7 @@ int main(int argc, char** argv)
 			return Fail(error);
 		fs::create_directories(fs::path(g_options["out"]).parent_path());
 		std::ofstream(g_options["out"], std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), packed.size());
-		std::printf("%s: %zu files in %s.rpf (%zu bytes)\n", g_options["out"].c_str(), count, name.c_str(), packed.size());
+		std::printf("%s: %zu files in %zu archive(s) (%zu bytes)\n", g_options["out"].c_str(), count, archiveNames.size(), packed.size());
 		return 0;
 	}
 	if (command == "testterrain")
@@ -1269,7 +1497,8 @@ int main(int argc, char** argv)
 	if (command == "build")
 	{
 		// a world description -> its pack's files (build.hpp): --world <world.json> --out <dir> [--zones <mod dir>] [--name n]
-		// [--area x0,y0,x1,y1] [--tile m] [--cell m] [--navmesh 0] [--paths 0]
+		// [--area x0,y0,x1,y1] [--tile m] [--cell m] [--navmesh 0] [--paths 0] [--scan <lidar.py rasters> [--aerial <aerial.py
+		// tiles>] [--datum m]: measured ground and buildings of our own]
 		if (!g_options.contains("world") || !g_options.contains("out"))
 			return Fail("--world <world.json> --out <dir> are needed");
 		worldgen::world::World w;
@@ -1289,6 +1518,12 @@ int main(int argc, char** argv)
 			o.tile = std::stof(g_options["tile"]);
 		if (g_options.contains("cell"))
 			o.cell = std::stof(g_options["cell"]);
+		if (g_options.contains("scan"))
+			o.scan = g_options["scan"];
+		if (g_options.contains("aerial"))
+			o.aerial = g_options["aerial"];
+		if (g_options.contains("datum"))
+			o.datum = std::stof(g_options["datum"]);
 		o.navmesh = !g_options.contains("navmesh") || g_options["navmesh"] != "0";
 		o.paths = !g_options.contains("paths") || g_options["paths"] != "0";
 		std::vector<worldgen::catalog::Item> catalog;

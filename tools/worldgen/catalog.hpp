@@ -41,6 +41,8 @@ namespace worldgen::catalog
 		uint32_t lod = 0;    // the archetype its HD entities' LOD parent mostly is (0: none)
 		std::string lodName;
 		float entityLodDist = 0; // the median lodDist the game's entities give it
+		float upright = 1;       // the share of its entities that stand upright (turned about z alone; parts of
+		                         // buildings - roofs, frames - are often set tilted)
 	};
 
 	bool Build(const ue5export::GameFiles& files, std::vector<Item>& out, std::string& error);

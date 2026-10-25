@@ -23,7 +23,8 @@ namespace worldgen::buildings
 			static const char* kNo[] = {"det", "decal", "dcl", "emissive", "emis", "glass", "glss", "rail", "pipe", "ovly", "lod", "intref", "_int",
 			    "scaffold", "ground", "gnd", "wire", "cable", "ivy", "sign", "light", "dmg", "damage", "repair", "fizz", "alpha", "proxy", "shadow",
 			    "_ref", "reflect", "frame", "_fr", "window", "door", "awning", "stair", "fence", "wall", "_rd", "fur", "grass", "_d_", "dirt", "blend",
-			    "ladder", "_lad", "pole", "tarp", "struct", "_top", "fake", "_ob", "neon", "_em"};
+			    "ladder", "_lad", "pole", "tarp", "struct", "_top", "fake", "_ob", "neon", "_em", "scaff", "billboard", "_bb", "antenna", "balcon",
+			    "balus", "fnc", "dtl", "_dec", "shad", "shdw", "steps", "support", "fire_exit", "_fg", "sign", "burnt", "destroy", "_dam"};
 			if (std::none_of(std::begin(kYes), std::end(kYes), [&](const char* w) { return Has(it.name, w); }))
 				return false;
 			if (std::any_of(std::begin(kNo), std::end(kNo), [&](const char* w) { return Has(it.name, w); }) || it.name.ends_with("_d"))
@@ -78,7 +79,10 @@ namespace worldgen::buildings
 		const auto bit = [](Style s) { return static_cast<uint8_t>(1u << static_cast<int>(s)); };
 		for (const auto& it : catalog)
 		{
-			if (it.kind != catalog::Kind::Building || it.drawableDictionary || it.fragment || it.assetType != 2 || it.name.empty() || !it.uses || !IsBuilding(it))
+			// (a whole building has a LOD of its own in the game's maps; the pieces round it - details, fences, balconies,
+			// decals - do not)
+			if (it.kind != catalog::Kind::Building || it.drawableDictionary || it.fragment || it.assetType != 2 || it.name.empty() || !it.uses ||
+			    it.upright < 0.95f || !it.lod || !IsBuilding(it))
 				continue;
 			const float w = it.max[0] - it.min[0], d = it.max[1] - it.min[1], h = it.max[2] - it.min[2];
 			const std::string& n = it.name;
@@ -98,9 +102,10 @@ namespace worldgen::buildings
 			}
 			candidates_.push_back({&it, std::max(w, d), std::min(w, d), h, w >= d, styles});
 		}
+		used_.assign(candidates_.size(), 0);
 	}
 
-	bool Matcher::Pick(const std::vector<P2>& footprint, float height, float ground, const std::string& kind, Placement& out) const
+	bool Matcher::Pick(const std::vector<P2>& footprint, float height, float ground, const std::string& kind, Placement& out)
 	{
 		if (footprint.size() < 3 || candidates_.empty())
 			return false;
@@ -123,11 +128,12 @@ namespace worldgen::buildings
 		struct Scored
 		{
 			float cost;
-			const Candidate* c;
+			size_t c;
 		};
 		std::vector<Scored> best;
-		for (const Candidate& c : candidates_)
+		for (size_t ci = 0; ci < candidates_.size(); ++ci)
 		{
+			const Candidate& c = candidates_[ci];
 			if (!(c.styles & want))
 				continue;
 			const float rl = c.longSide / longSide, rs = c.shortSide / shortSide, rh = c.height / std::max(height, 3.0f);
@@ -136,14 +142,24 @@ namespace worldgen::buildings
 			const float cost = std::fabs(std::log(rl)) + std::fabs(std::log(rs)) + 0.6f * std::fabs(std::log(rh));
 			if (cost > 1.3f)
 				continue;
-			best.push_back({cost, &c});
+			best.push_back({cost, ci});
 		}
 		if (best.empty())
 			return false;
-		const size_t keep = std::min<size_t>(best.size(), 6);
-		std::partial_sort(best.begin(), best.begin() + static_cast<ptrdiff_t>(keep), best.end(), [](const Scored& a, const Scored& b) { return a.cost < b.cost; });
+		// among the closest dozen: the fit, how often it is used already, and a little chance (by the footprint's place)
 		const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(centre[0] * 7)) * 73856093u ^ static_cast<uint32_t>(std::lround(centre[1] * 7)) * 19349663u);
-		const Candidate& c = *best[seed % keep].c;
+		const size_t keep = std::min<size_t>(best.size(), 12);
+		std::partial_sort(best.begin(), best.begin() + static_cast<ptrdiff_t>(keep), best.end(), [](const Scored& a, const Scored& b) { return a.cost < b.cost; });
+		size_t pick = 0;
+		float pickScore = 1e30f;
+		for (size_t k = 0; k < keep; ++k)
+		{
+			const float score = best[k].cost + 0.015f * static_cast<float>(used_[best[k].c]) + 0.15f * static_cast<float>(Mix(seed + static_cast<uint32_t>(k)) % 1000) / 1000.0f;
+			if (score < pickScore)
+				pickScore = score, pick = best[k].c;
+		}
+		++used_[pick];
+		const Candidate& c = candidates_[pick];
 		const catalog::Item& it = *c.item;
 		// the model's long side along the footprint's (turned half round now and then)
 		float heading = c.longIsX ? angle : angle - kPi / 2;

@@ -1,6 +1,7 @@
 #pragma once
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "resource.hpp"
 
@@ -35,6 +36,8 @@ namespace loader::convert
 		uint64_t data;      // pointer to the pixels
 		bool renderTarget;  // "script_rt_*"
 		bool normalMap;     // "*_n"
+		bool map = false;   // a map texture: the game's own map textures' flags (all mips resident)
+		bool specular = false; // "*_s" (a map texture's usage)
 	};
 	// Writes an Enhanced texture (0x80, view at +0x58) at `offset`; `self` is its own pointer.
 	void WriteTextureHeader(Bytes& b, size_t offset, uint64_t self, const TextureHeader& t);
@@ -43,4 +46,18 @@ namespace loader::convert
 	// texture to B8G8R8A8 (other compressed formats become blank) and keeps a single mip.
 	void MakeRenderTargetFormat(TextureFormat& format, uint8_t& mips, uint16_t width, uint16_t height, Bytes& pixels);
 	bool IsNormalMapName(std::string_view name);
+
+	// A texture for a new dictionary: its pixels, every mip back to back. `map`: written as the game's map textures are
+	// (research/phase0.md §61.18: the flags converted textures get leave the game showing only their smallest mips).
+	struct DictionaryTexture
+	{
+		std::string name;
+		uint16_t width = 0, height = 0, depth = 1;
+		uint8_t mips = 1;
+		TextureFormat format{};
+		Bytes pixels;
+		bool map = false;
+	};
+	// An Enhanced texture dictionary (version 5) of these textures.
+	bool WriteTextureDictionary(std::vector<DictionaryTexture> textures, Bytes& out, std::string& error);
 }

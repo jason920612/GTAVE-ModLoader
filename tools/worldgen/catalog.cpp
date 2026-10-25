@@ -1,6 +1,7 @@
 #include "catalog.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <format>
 #include <fstream>
@@ -112,6 +113,7 @@ namespace worldgen::catalog
 		std::vector<Hd> hds;
 		std::unordered_map<uint32_t, std::array<uint32_t, 8>> levels;     // archetype -> entities per lod level
 		std::unordered_map<uint32_t, std::vector<float>> distances;
+		std::unordered_map<uint32_t, uint32_t> upright;
 		for (const auto& [file, f] : files.Files())
 		{
 			if (!file.ends_with(".ymap"))
@@ -135,6 +137,9 @@ namespace worldgen::catalog
 				list.push_back(archetype);
 				++levels[archetype][std::min<uint32_t>(level, 7)];
 				distances[archetype].push_back(e.Get<float>(Hash("lodDist")));
+				const auto q = e.Get<std::array<float, 4>>(Hash("rotation"));
+				if (std::fabs(q[0]) < 0.02f && std::fabs(q[1]) < 0.02f)
+					++upright[archetype];
 				const int32_t parentIndex = e.Get<int32_t>(Hash("parentIndex"));
 				if ((level == 0 || level == 5) && parentIndex >= 0 && parent)
 					hds.push_back({archetype, parent, parentIndex});
@@ -162,6 +167,8 @@ namespace worldgen::catalog
 						it.kind = Kind::Slod;
 				}
 			}
+			if (it.uses)
+				it.upright = static_cast<float>(upright[it.hash]) / static_cast<float>(it.uses);
 			if (auto d = distances.find(it.hash); d != distances.end() && !d->second.empty())
 			{
 				auto& v = d->second;
@@ -197,11 +204,12 @@ namespace worldgen::catalog
 		if (!o)
 			return error = "cannot write " + file.string(), false;
 		o << "name\thash\tkind\tarea\tytyp\ttxd\tphysics\tdrawableDictionary\tflags\tassetType\tfragment\tminX\tminY\tminZ\tmaxX\tmaxY\tmaxZ\tlodDist"
-		     "\thdTextureDist\tuses\tlod\tlodName\tentityLodDist\n";
+		     "\thdTextureDist\tuses\tlod\tlodName\tentityLodDist\tupright\n";
 		for (const Item& it : items)
-			o << std::format("{}\t{:08x}\t{}\t{}\t{}\t{:08x}\t{:08x}\t{:08x}\t{:x}\t{}\t{}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.0f}\t{:.0f}\t{}\t{:08x}\t{}\t{:.0f}\n",
+			o << std::format("{}\t{:08x}\t{}\t{}\t{}\t{:08x}\t{:08x}\t{:08x}\t{:x}\t{}\t{}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{:.0f}\t{:.0f}\t{}\t{:08x}\t{}\t{:.0f}\t{:.2f}\n",
 			    it.name, it.hash, Name(it.kind), it.area, it.ytyp, it.txd, it.physics, it.drawableDictionary, it.flags, it.assetType, it.fragment ? 1 : 0,
-			    it.min[0], it.min[1], it.min[2], it.max[0], it.max[1], it.max[2], it.lodDist, it.hdTextureDist, it.uses, it.lod, it.lodName, it.entityLodDist);
+			    it.min[0], it.min[1], it.min[2], it.max[0], it.max[1], it.max[2], it.lodDist, it.hdTextureDist, it.uses, it.lod, it.lodName, it.entityLodDist,
+			    it.upright);
 		return true;
 	}
 
@@ -246,6 +254,8 @@ namespace worldgen::catalog
 			it.lod = hex(f[20]);
 			it.lodName = f[21];
 			it.entityLodDist = std::stof(f[22]);
+			if (f.size() > 23)
+				it.upright = std::stof(f[23]);
 			out.push_back(std::move(it));
 		}
 		return true;

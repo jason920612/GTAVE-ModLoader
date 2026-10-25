@@ -56,9 +56,18 @@ namespace worldgen::world
 		std::string kind; // canal, river, stream, ...
 	};
 
+	// Latitude and longitude to game metres: (lat0, lon0) at (x0, y0), metres per degree at the box's middle.
+	struct Projection
+	{
+		double lat0 = 0, lon0 = 0, x0 = 0, y0 = 0, kx = 0, ky = 0;
+		static Projection Around(double south, double west, double north, double east, double x0, double y0);
+		P2 To(double lat, double lon) const { return {static_cast<float>(x0 + (lon - lon0) * kx), static_cast<float>(y0 + (lat - lat0) * ky)}; }
+	};
+
 	struct World
 	{
 		std::string name;
+		Projection projection; // (kept for the data read later: elevation, aerial pictures)
 		P2 min{}, max{}; // the land's box
 		std::vector<std::vector<P2>> coastlines;
 		std::vector<Area> areas;
@@ -69,13 +78,6 @@ namespace worldgen::world
 		std::string attribution; // the data's source
 	};
 
-	// Latitude and longitude to game metres: (lat0, lon0) at (x0, y0), metres per degree at the box's middle.
-	struct Projection
-	{
-		double lat0 = 0, lon0 = 0, x0 = 0, y0 = 0, kx = 0, ky = 0;
-		static Projection Around(double south, double west, double north, double east, double x0, double y0);
-		P2 To(double lat, double lon) const { return {static_cast<float>(x0 + (lon - lon0) * kx), static_cast<float>(y0 + (lat - lat0) * ky)}; }
-	};
 
 	bool FromOsm(const osm::Data& data, const Projection& p, World& out, std::string& error);
 	bool Save(const World& w, const std::filesystem::path& file, std::string& error);

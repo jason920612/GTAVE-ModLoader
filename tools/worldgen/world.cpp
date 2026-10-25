@@ -179,6 +179,7 @@ namespace worldgen::world
 
 	bool FromOsm(const osm::Data& d, const Projection& p, World& out, std::string& error)
 	{
+		out.projection = p;
 		out.min = p.To(d.south, d.west);
 		out.max = p.To(d.north, d.east);
 		out.attribution = "Map data (c) OpenStreetMap contributors, ODbL";
@@ -362,6 +363,8 @@ namespace worldgen::world
 		j["attribution"] = w.attribution;
 		j["min"] = {w.min[0], w.min[1]};
 		j["max"] = {w.max[0], w.max[1]};
+		const Projection& pr = w.projection;
+		j["projection"] = {{"lat0", pr.lat0}, {"lon0", pr.lon0}, {"x0", pr.x0}, {"y0", pr.y0}, {"kx", pr.kx}, {"ky", pr.ky}};
 		auto& coast = j["coastlines"] = nlohmann::json::array();
 		for (const auto& c : w.coastlines)
 			coast.push_back(Line(c));
@@ -406,6 +409,12 @@ namespace worldgen::world
 		w.attribution = j.value("attribution", "");
 		w.min = {j["min"][0].get<float>(), j["min"][1].get<float>()};
 		w.max = {j["max"][0].get<float>(), j["max"][1].get<float>()};
+		if (const auto p = j.find("projection"); p != j.end())
+		{
+			const auto& o = *p;
+			w.projection = {o["lat0"].get<double>(), o["lon0"].get<double>(), o["x0"].get<double>(), o["y0"].get<double>(), o["kx"].get<double>(),
+			    o["ky"].get<double>()};
+		}
 		for (const auto& c : j["coastlines"])
 			w.coastlines.push_back(Line(c));
 		for (const auto& o : j["areas"])

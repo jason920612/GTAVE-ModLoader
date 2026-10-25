@@ -268,7 +268,14 @@ add_executable(worldgen
     tools/worldgen/paths.cpp
     tools/worldgen/build.cpp
     tools/worldgen/buildings.cpp
+    tools/worldgen/props.cpp
     tools/worldgen/navgen.cpp
+    tools/worldgen/elevation.cpp
+    tools/worldgen/polygon.cpp
+    tools/worldgen/structures.cpp
+    tools/worldgen/texture.cpp
+    tools/worldgen/facades.cpp
+    tools/worldgen/trees.cpp
     tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp
     tools/ue5export/gamefiles.cpp
@@ -276,7 +283,8 @@ add_executable(worldgen
     tools/ue5export/pso.cpp
     src/loader/convert/archive.cpp
     src/loader/convert/pso.cpp
-    src/loader/convert/resource.cpp)
+    src/loader/convert/resource.cpp
+    src/loader/convert/ytd.cpp)
 target_include_directories(worldgen PRIVATE src/loader)
 target_compile_definitions(worldgen PRIVATE NOMINMAX)
 target_link_libraries(worldgen PRIVATE nlohmann_json::nlohmann_json recast)

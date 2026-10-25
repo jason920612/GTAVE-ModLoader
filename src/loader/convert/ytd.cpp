@@ -152,8 +152,9 @@ namespace loader::convert
 		Put<uint32_t>(b, o + 0x08, t.stored / t.format.unit);
 		Put<uint16_t>(b, o + 0x0C, static_cast<uint16_t>(t.format.unit));
 		// "script_rt_*" textures become render targets (vehicle dials drawn by scripts): the game's own files
-		// mark them render-target capable; a render target view of a plain texture removes the device.
-		Put<uint32_t>(b, o + 0x10, t.renderTarget ? 0x01A60228 : 0x01A70208);
+		// mark them render-target capable; a render target view of a plain texture removes the device. The game's map
+		// textures: 0x00260208 (with 0x01A70208 a map texture is drawn from its smallest mips only).
+		Put<uint32_t>(b, o + 0x10, t.renderTarget ? 0x01A60228 : t.map ? 0x00260208 : 0x01A70208);
 		Put<uint16_t>(b, o + 0x18, t.width);
 		Put<uint16_t>(b, o + 0x1A, t.height);
 		Put<uint16_t>(b, o + 0x1C, t.depth);
@@ -161,24 +162,22 @@ namespace loader::convert
 		b[o + 0x1F] = t.format.dxgi;
 		b[o + 0x20] = 0xFF;
 		b[o + 0x22] = t.mips;
+		if (t.map)
+			b[o + 0x23] = 0x28; // (as every map texture of the game's has it)
 		b[o + 0x26] = 1;
 		Put<uint64_t>(b, o + 0x28, t.name);
 		Put<uint64_t>(b, o + 0x30, self + 0x58);
 		Put<uint64_t>(b, o + 0x38, t.data);
-		Put<uint16_t>(b, o + 0x40, t.renderTarget ? 0x21A : (t.normalMap ? 0x216 : 0x214));
+		// (the game's map textures: diffuse 0x274, normal 0x256, specular 0x257)
+		Put<uint16_t>(b, o + 0x40, t.renderTarget ? 0x21A : t.map ? (t.normalMap ? 0x256 : t.specular ? 0x257 : 0x274) : (t.normalMap ? 0x216 : 0x214));
 		Put<uint16_t>(b, o + 0x42, t.renderTarget ? 0x40 : 0x80);
 		Put<uint16_t>(b, o + 0x44, 2);
 	}
 
 	namespace
 	{
-		struct Texture
+		struct Texture : DictionaryTexture
 		{
-			std::string name;
-			uint16_t width, height, depth;
-			uint8_t mips;
-			TextureFormat format;
-			Bytes pixels;
 			uint32_t stored = 0; // 4 KB aligned
 			uint32_t offset = 0; // in the physical block
 			uint32_t nameOffset = 0;
@@ -209,7 +208,7 @@ namespace loader::convert
 
 		const uint16_t count = Get<uint16_t>(v, 0x38);
 		const size_t list = ptr(Get<uint64_t>(v, 0x30));
-		std::vector<Texture> textures;
+		std::vector<DictionaryTexture> textures;
 		for (uint16_t i = 0; i < count; ++i)
 		{
 			const size_t o = ptr(Get<uint64_t>(v, list + 8 * i));
@@ -218,7 +217,7 @@ namespace loader::convert
 				error = "corrupt texture list";
 				return false;
 			}
-			Texture t;
+			DictionaryTexture t;
 			t.name = CString(v, ptr(Get<uint64_t>(v, o + 0x28)));
 			t.width = Get<uint16_t>(v, o + 0x50);
 			t.height = Get<uint16_t>(v, o + 0x52);
@@ -242,6 +241,18 @@ namespace loader::convert
 			t.pixels.assign(in.physicalBlock.begin() + start, in.physicalBlock.begin() + start + size);
 			if (IsRenderTargetName(t.name))
 				MakeRenderTargetFormat(t.format, t.mips, t.width, t.height, t.pixels);
+			textures.push_back(std::move(t));
+		}
+		return WriteTextureDictionary(std::move(textures), out, error);
+	}
+
+	bool WriteTextureDictionary(std::vector<DictionaryTexture> list, Bytes& out, std::string& error)
+	{
+		std::vector<Texture> textures;
+		for (DictionaryTexture& d : list)
+		{
+			Texture t;
+			static_cast<DictionaryTexture&>(t) = std::move(d);
 			t.stored = static_cast<uint32_t>((t.pixels.size() + 0xFFF) & ~size_t{0xFFF});
 			textures.push_back(std::move(t));
 		}
@@ -329,7 +340,7 @@ namespace loader::convert
 			Put<uint64_t>(b, offPointers + 8 * i, kVirtual + o);
 			Put<uint32_t>(b, offHashes + 4 * i, Joaat(t.name));
 			WriteTextureHeader(b, o, kVirtual + o, {kVirtual + t.nameOffset, t.width, t.height, t.depth, t.mips, t.format, t.stored,
-			    kPhysical + t.offset, IsRenderTargetName(t.name), IsNormalMapName(t.name)});
+			    kPhysical + t.offset, IsRenderTargetName(t.name), IsNormalMapName(t.name), t.map, LowerText(t.name).ends_with("_s")});
 			std::copy(t.name.begin(), t.name.end(), b.begin() + t.nameOffset);
 		}
 		b[offPageMap + 8] = static_cast<uint8_t>(PageCount(res.virtualFlags));
