@@ -84,13 +84,15 @@ namespace loader::game::arrayfault
 		bool g_debug = false;
 		std::unordered_set<uint64_t> g_servedLogged;                    // program << 32 | ip, logged once
 
-		// While watching: the first access violations (and bad instructions) are logged with the running script, to
-		// tell a crash in rewritten script code from one elsewhere.
-		uintptr_t g_moduleBase = 0;
+		// While watching: the first access violations (and bad instructions, breakpoints - the game's fatal checks - and
+		// stack overflows) are logged with the running script, to tell a crash in rewritten script code from one
+		// elsewhere, and the game's return addresses found on the stack.
+		uintptr_t g_moduleBase = 0, g_moduleEnd = 0;
 		LONG CALLBACK OnException(EXCEPTION_POINTERS* e)
 		{
 			const DWORD code = e->ExceptionRecord->ExceptionCode;
-			if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION)
+			if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION &&
+			    code != EXCEPTION_BREAKPOINT && code != EXCEPTION_STACK_OVERFLOW)
 				return EXCEPTION_CONTINUE_SEARCH;
 			static std::atomic<int> logged = 0;
 			if (logged++ >= 20)
@@ -104,8 +106,21 @@ namespace loader::game::arrayfault
 				strncpy_s(script, reinterpret_cast<const char*>(t + kName), _TRUNCATE);
 				ip = *reinterpret_cast<const uint32_t*>(t + 0x1C);
 			}
-			log::Warn("exception {:#x} at rva {:#x} (address {:#x}); script {} (saved ip {}), r13-r14 {:#x}", code, c.Rip - g_moduleBase,
-			    e->ExceptionRecord->NumberParameters > 1 ? e->ExceptionRecord->ExceptionInformation[1] : 0, script, ip, c.R13 - c.R14);
+			std::string stack;
+			if (code != EXCEPTION_STACK_OVERFLOW)
+			{
+				const auto* slot = reinterpret_cast<const uintptr_t*>(c.Rsp);
+				const auto top = reinterpret_cast<uintptr_t>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
+				const int slots = static_cast<int>(std::min<uintptr_t>(512, (top - c.Rsp) / 8));
+				for (int i = 0, found = 0; i < slots && found < 16; ++i)
+					if (slot[i] > g_moduleBase && slot[i] < g_moduleEnd)
+					{
+						stack += std::format(" {:#x}", slot[i] - g_moduleBase);
+						++found;
+					}
+			}
+			log::Warn("exception {:#x} at rva {:#x} (address {:#x}); script {} (saved ip {}), r13-r14 {:#x}; stack{}", code, c.Rip - g_moduleBase,
+			    e->ExceptionRecord->NumberParameters > 1 ? e->ExceptionRecord->ExceptionInformation[1] : 0, script, ip, c.R13 - c.R14, stack);
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
 
@@ -334,6 +349,7 @@ namespace loader::game::arrayfault
 		// mov rax,[r15]; mov ecx,[r15-8]; cmp ecx,[rax]; jnb <failure block> (short or near): the six ARRAY handlers.
 		const auto module = pattern::Module::Main();
 		g_moduleBase = module.base;
+		g_moduleEnd = module.base + module.size;
 		if (g_debug)
 			AddVectoredExceptionHandler(1, OnException);
 		const auto handler = pattern::Pattern::Parse("49 8B 07 41 8B 4F F8 3B 08");

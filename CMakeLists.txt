@@ -254,6 +254,7 @@ add_executable(worldgen
     tools/worldgen/ynv.cpp
     tools/worldgen/meta.cpp
     tools/worldgen/bounds.cpp
+    tools/worldgen/ybn.cpp
     tools/worldgen/navgen.cpp
     tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp

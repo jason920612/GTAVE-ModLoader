@@ -47,6 +47,7 @@
 
 #include "../ue5export/drawable.hpp"
 #include "convert/archive.hpp"
+#include "ybn.hpp"
 #include "../ue5export/gamefiles.hpp"
 #include "../ue5export/meta.hpp"
 #include "../ue5export/ng.hpp"
@@ -651,17 +652,19 @@ int main(int argc, char** argv)
 	}
 	if (command == "navmesh")
 	{
-		// pedestrians' navmeshes (navgen.hpp) for the entities of a map file: each one's collision (its drawable's)
-		// placed as the entity is, every walkable face of the --surface kind
-		if (!g_options.contains("ymap") || !g_options.contains("out"))
-			return Fail("--ymap <file> --out <dir> are needed");
+		// pedestrians' navmeshes (navgen.hpp) for the entities of a map file (each one's collision, its drawable's,
+		// placed as the entity is; every walkable face of the --surface kind) and for collision files (--ybn a,b...: the
+		// kind from each face's material)
+		if ((!g_options.contains("ymap") && !g_options.contains("ybn")) || !g_options.contains("out"))
+			return Fail("--ymap <file> and/or --ybn <file>[,<file>...], and --out <dir> are needed");
 		Bytes data;
+		if (g_options.contains("ymap"))
 		{
 			std::ifstream in(g_options["ymap"], std::ios::binary);
 			data.assign(std::istreambuf_iterator<char>(in), {});
 		}
 		ue5export::meta::Meta m;
-		if (!m.Read(data, error))
+		if (!data.empty() && !m.Read(data, error))
 			return Fail("not a map file: " + error);
 		using ue5export::meta::Hash;
 		std::map<uint32_t, const ue5export::GameFiles::File*> drawables;
@@ -675,7 +678,7 @@ int main(int argc, char** argv)
 		worldgen::bounds::Mesh mesh;
 		std::map<uint32_t, std::unique_ptr<loader::convert::Resource>> models;
 		size_t placed = 0, missing = 0;
-		for (const ue5export::meta::Ref& e : m.Root().Array(Hash("entities")))
+		for (const ue5export::meta::Ref& e : data.empty() ? std::vector<ue5export::meta::Ref>{} : m.Root().Array(Hash("entities")))
 		{
 			if (!e)
 				continue;
@@ -728,8 +731,32 @@ int main(int argc, char** argv)
 			for (const auto& t : mesh.triangles)
 				obj << "f " << t[0] + 1 << ' ' << t[1] + 1 << ' ' << t[2] + 1 << '\n';
 		}
+		std::vector<worldgen::navgen::Surface> surfaces(mesh.triangles.size(), surface);
+		if (g_options.contains("ybn"))
+		{
+			std::istringstream list(g_options["ybn"]);
+			for (std::string file; std::getline(list, file, ',');)
+			{
+				std::ifstream in(file, std::ios::binary);
+				Bytes bytes((std::istreambuf_iterator<char>(in)), {});
+				loader::convert::Resource res;
+				if (!loader::convert::Read(bytes, res, error))
+					return Fail(file + ": " + error);
+				const size_t first = mesh.triangles.size();
+				if (!worldgen::bounds::Collect(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, worldgen::bounds::kIdentity, mesh, error))
+					return Fail(file + ": " + error);
+				// tarmac roads, concrete and paving pavement, the rest ground
+				for (size_t t = first; t < mesh.triangles.size(); ++t)
+				{
+					const uint8_t type = mesh.materials[t];
+					surfaces.push_back(type >= 4 && type <= 6 ? worldgen::navgen::Surface::Road
+					                   : type == 1 || type == 15 || type == 174 ? worldgen::navgen::Surface::Pavement
+					                                                           : worldgen::navgen::Surface::Ground);
+				}
+			}
+			std::printf("collision files: %zu triangles in all\n", mesh.triangles.size());
+		}
 		worldgen::navgen::Result result;
-		const std::vector<worldgen::navgen::Surface> surfaces(mesh.triangles.size(), surface);
 		if (!worldgen::navgen::Build(mesh, surfaces, {}, result, error))
 			return Fail(error);
 		const fs::path out = g_options["out"];
@@ -744,6 +771,64 @@ int main(int argc, char** argv)
 		}
 		std::printf("%zu navmeshes, %zu polygons; %zu edges joined across squares, %zu vertices put into edges on their sides\n", result.navmeshes.size(),
 		    result.polygons, result.joined, result.cut);
+		return 0;
+	}
+	if (command == "testground")
+	{
+		// a collision file of flat ground (no model): --at x,y (its south-west corner) --size m --z height --cell m
+		// --material type --name <file name> --out <dir>
+		if (!g_options.contains("at") || !g_options.contains("out") || !g_options.contains("name"))
+			return Fail("--at x,y --out <dir> --name <name> are needed");
+		float x0 = 0, y0 = 0;
+		char comma = 0;
+		std::istringstream(g_options["at"]) >> x0 >> comma >> y0;
+		const float size = g_options.contains("size") ? std::stof(g_options["size"]) : 150.0f;
+		const float z = g_options.contains("z") ? std::stof(g_options["z"]) : 100.0f;
+		const float cell = g_options.contains("cell") ? std::stof(g_options["cell"]) : 5.0f;
+		const uint8_t type = static_cast<uint8_t>(g_options.contains("material") ? std::stoi(g_options["material"]) : 47);
+		const int cells = std::max(1, static_cast<int>(std::lround(size / cell)));
+		// parts of at most 20 x 20 cells (800 triangles)
+		std::vector<worldgen::ybn::Part> parts;
+		for (int py = 0; py < cells; py += 20)
+			for (int px = 0; px < cells; px += 20)
+			{
+				worldgen::ybn::Part part;
+				part.materials.push_back(worldgen::ybn::Material(type));
+				const int nx = std::min(20, cells - px), ny = std::min(20, cells - py);
+				for (int j = 0; j <= ny; ++j)
+					for (int i = 0; i <= nx; ++i)
+						part.vertices.push_back({x0 + (px + i) * cell, y0 + (py + j) * cell, z});
+				for (int j = 0; j < ny; ++j)
+					for (int i = 0; i < nx; ++i)
+					{
+						const uint32_t a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+						part.triangles.push_back({a, b, d});
+						part.triangles.push_back({a, d, c});
+						part.triangleMaterials.push_back(0);
+						part.triangleMaterials.push_back(0);
+					}
+				parts.push_back(std::move(part));
+			}
+		Bytes file;
+		if (!worldgen::ybn::Write(parts, file, error))
+			return Fail(error);
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		std::ofstream(out / (g_options["name"] + ".ybn"), std::ios::binary).write(reinterpret_cast<const char*>(file.data()), file.size());
+		// read back: every triangle where it was put (within the quantum)
+		loader::convert::Resource res;
+		worldgen::bounds::Mesh back;
+		if (!loader::convert::Read(file, res, error) || !worldgen::bounds::Collect(ue5export::drawable::View(res), ue5export::drawable::View::kRoot,
+		                                                worldgen::bounds::kIdentity, back, error))
+			return Fail("reading it back: " + error);
+		size_t triangles = 0;
+		for (const auto& p : parts)
+			triangles += p.triangles.size();
+		float worst = 0;
+		for (const auto& v : back.vertices)
+			worst = std::max(worst, std::fabs(v[2] - z));
+		std::printf("%s.ybn: %zu parts, %zu triangles (read back %zu, heights within %.4f m), %zu bytes\n", g_options["name"].c_str(), parts.size(),
+		    triangles, back.triangles.size(), worst, file.size());
 		return 0;
 	}
 	if (command == "rpf-find")
