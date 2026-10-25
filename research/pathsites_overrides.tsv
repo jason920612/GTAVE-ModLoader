@@ -1,0 +1,34 @@
+# Overrides for tools/pathpatch (see its header). One line per site: rva  what...
+
+# not road-network nodes: other structures with int16 pairs at +0x1c/+0x1e (a 0x18/0x1a pair; navmesh code)
+0xcd8d45 skip
+0xcd8d6a skip
+0x115e90d skip
+
+# junction reads: the area id is the first word of the junction-ref entry found just before
+0xf18070 area:rbx:0
+0xf18081 area:rbx:0
+0xf18260 area:rbx:0
+0xf18271 area:rbx:0
+0xf188c0 area:rbp:0
+0xf188d1 area:rbp:0
+0xf1b45b area:rsi:0
+0xf1b470 area:rsi:0
+# 0xf1ba10 is called with {junction*, region*}: the region's first node carries the area id
+0xf1ba44 area:rcx:8,0x10,0x10
+0xf1ba63 area:r10:0x10,0x10
+0xf1bd5e area:r10:0x10,0x10
+0xf1bd72 area:r10:0x10,0x10
+
+# 0xf0c280: one node's x/y loaded zero-extended into r9/r10 and sign-extended later from the 16-bit registers:
+# loaded sign-extended with the origin (32-bit absolute), and the later movsx ebp, r10w / r9w become mov ebp, r10d / r9d
+0xf0c3dc movsx
+0xf0c3e2 movsx
+0xf0c510 movsx
+0xf0c516 movsx
+0xf0c423 rewrite:4489d5
+0xf0c432 rewrite:4489cd
+
+# 0x161b940: the pair loaded into xmm7 at 0x161c1fb is decoded at 0x161c401; the node pointer stays at [rsp + 0x98]
+0x161c1fb skip
+0x161c401 pmov area:rsp:0x98,0x10

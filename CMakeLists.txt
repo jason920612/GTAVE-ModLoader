@@ -54,6 +54,7 @@ add_library(loader SHARED
     src/loader/game/text_override.cpp
     src/loader/game/datafiles.cpp
     src/loader/game/fixes.cpp
+    src/loader/game/pathregions.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp
@@ -208,6 +209,14 @@ target_link_libraries(relocate PRIVATE Zydis)
 target_compile_features(relocate PRIVATE cxx_std_20)
 target_compile_options(relocate PRIVATE /utf-8 /O2)
 
+# World builder: the stubs that give the road network region-relative positions (tools/pathpatch). Not built by default.
+add_executable(pathpatch EXCLUDE_FROM_ALL
+    tools/pathpatch/main.cpp
+    tools/relocate/image.cpp)
+target_link_libraries(pathpatch PRIVATE Zydis)
+target_compile_features(pathpatch PRIVATE cxx_std_20)
+target_compile_options(pathpatch PRIVATE /utf-8 /O2)
+
 # Graphics mod: exports the game's world for Unreal Engine 5 (tools/ue5export), from the player's own game files.
 add_executable(ue5export
     tools/ue5export/main.cpp
@@ -226,6 +235,22 @@ target_include_directories(ue5export PRIVATE src/loader ue5/Source/GTAVRenderer)
 target_compile_definitions(ue5export PRIVATE NOMINMAX)
 target_link_libraries(ue5export PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(ue5export PRIVATE /W4 /utf-8 /O2 /permissive-)
+
+# World builder: compiles new land into game files and checks/rebuilds the road network (tools/worldgen), from the
+# player's own game files.
+add_executable(worldgen
+    tools/worldgen/main.cpp
+    tools/worldgen/ynd.cpp
+    tools/ue5export/ng.cpp
+    tools/ue5export/gamefiles.cpp
+    tools/ue5export/meta.cpp
+    tools/ue5export/pso.cpp
+    src/loader/convert/archive.cpp
+    src/loader/convert/resource.cpp)
+target_include_directories(worldgen PRIVATE src/loader)
+target_compile_definitions(worldgen PRIVATE NOMINMAX)
+target_link_libraries(worldgen PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(worldgen PRIVATE /W4 /utf-8 /O2 /permissive-)
 
 # In-game web browser (src/browser): CEF (Chromium Embedded Framework, BSD) renders the game's own web pages off-screen;
 # ModLoader.dll loads ModLoader\browser\mlbrowser.dll the first time the browser is opened.

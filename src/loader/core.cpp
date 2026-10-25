@@ -30,6 +30,7 @@
 #include "web/browser.hpp"
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
+#include "game/pathregions.hpp"
 #include "game/pools.hpp"
 #include "graphics/bridge.hpp"
 #include "graphics/gamelights.hpp"
@@ -334,6 +335,7 @@ namespace loader::core
 			ai::SettingChanged(); // starts the model server in the background
 		game::fixes::InstallLoadingScreenDeadlockFix();
 		game::fixes::InstallRiverCurrentFix();
+		game::pathregions::Install();
 		if (config::Get().ue5Renderer)
 			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())

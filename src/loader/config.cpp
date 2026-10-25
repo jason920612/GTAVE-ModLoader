@@ -59,6 +59,8 @@ namespace loader::config
 			c.ue5GameResolution = j.value("ue5GameResolution", c.ue5GameResolution);
 			c.ue5GameDetail = j.value("ue5GameDetail", c.ue5GameDetail);
 			c.ue5GameMemory = j.value("ue5GameMemory", c.ue5GameMemory);
+			c.worldPathRegions = j.value("worldPathRegions", c.worldPathRegions);
+			c.worldPathGrid = j.value("worldPathGrid", c.worldPathGrid);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -96,6 +98,8 @@ namespace loader::config
 				{"ue5GameResolution", c.ue5GameResolution},
 				{"ue5GameDetail", c.ue5GameDetail},
 				{"ue5GameMemory", c.ue5GameMemory},
+				{"worldPathRegions", c.worldPathRegions},
+				{"worldPathGrid", c.worldPathGrid},
 			};
 		}
 	}

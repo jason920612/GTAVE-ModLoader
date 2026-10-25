@@ -78,6 +78,13 @@ namespace loader::config
 		// The GPU memory (MB) the game is told it may use meanwhile, the rest left to the renderer (graphics/
 		// gamememory.cpp): 0 = 42% of the card's, -1 = what Windows gives it. Takes effect when the game starts.
 		int ue5GameMemory = 0;
+
+		// World builder: the road network's regions get origins of their own, so roads (and their AI traffic) can lie
+		// beyond +-8192 m (game/pathregions.cpp). Takes effect when the game starts.
+		bool worldPathRegions = false;
+		// With it, the road network's regions are 1024 m (from -16384, still 32 x 32) instead of 512 m: only together with
+		// path files regridded for it (worldgen regrid). Takes effect when the game starts.
+		bool worldPathGrid = false;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.
