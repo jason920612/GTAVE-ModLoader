@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <format>
 #include <optional>
 #include <string>
 #include <vector>
@@ -77,8 +78,10 @@ namespace loader::convert
 		uint64_t U64(size_t o) const { return Get<uint64_t>(data, o); }
 
 		// Packs every page (chunk) into pages of the game's size classes. The game allocates each page on
-		// its own, so chunks are never split; the root object (offset 0) stays at offset 0.
-		bool Relayout(Bytes& out, uint32_t& flags, uint32_t& pageCount, std::string& error) const
+		// its own, so chunks are never split; the root object (offset 0) stays at offset 0. Pointers are found by
+		// their looks, or, for data written from scratch (vertices could look like pointers), only at `pointers`
+		// (offsets in `data`).
+		bool Relayout(Bytes& out, uint32_t& flags, uint32_t& pageCount, std::string& error, const std::vector<size_t>* pointers = nullptr) const
 		{
 			uint32_t largest = 0;
 			for (const Chunk& c : chunks_)
@@ -176,23 +179,41 @@ namespace loader::convert
 					return false;
 				}
 			}
-			// Rewrite every pointer-looking value.
+			// Rewrite every pointer-looking value (or the listed ones).
 			std::vector<size_t> byStart(chunks_.size());
 			for (size_t i = 0; i < byStart.size(); ++i)
 				byStart[i] = i;
 			std::sort(byStart.begin(), byStart.end(), [&](size_t x, size_t y) { return chunks_[x].at < chunks_[y].at; });
-			for (size_t o = 0; o + 8 <= out.size(); o += 8)
-			{
+			const auto chunkOf = [&](size_t old) -> std::optional<size_t> {
+				const auto it = std::upper_bound(byStart.begin(), byStart.end(), old, [&](size_t v, size_t c) { return v < chunks_[c].at; });
+				if (it == byStart.begin() || old >= chunks_[*(it - 1)].at + chunks_[*(it - 1)].size)
+					return std::nullopt;
+				return *(it - 1);
+			};
+			const auto rewrite = [&](size_t o) {
 				const auto old = Ptr(Get<uint64_t>(out, o));
 				if (!old)
-					continue;
-				const auto it = std::upper_bound(byStart.begin(), byStart.end(), *old, [&](size_t v, size_t c) { return v < chunks_[c].at; });
-				if (it == byStart.begin())
-					continue;
-				const size_t c = *(it - 1);
-				if (*old >= chunks_[c].at + chunks_[c].size)
-					continue;
-				Put<uint64_t>(out, o, kVirtual + newStart[c] + (*old - chunks_[c].at));
+					return false;
+				const auto c = chunkOf(*old);
+				if (!c)
+					return false;
+				Put<uint64_t>(out, o, kVirtual + newStart[*c] + (*old - chunks_[*c].at));
+				return true;
+			};
+			if (!pointers)
+			{
+				for (size_t o = 0; o + 8 <= out.size(); o += 8)
+					rewrite(o);
+				return true;
+			}
+			for (const size_t location : *pointers)
+			{
+				const auto c = chunkOf(location);
+				if (!c || !rewrite(newStart[*c] + (location - chunks_[*c].at)))
+				{
+					error = std::format("a pointer at {:#x} does not point into the resource", location);
+					return false;
+				}
 			}
 			return true;
 		}

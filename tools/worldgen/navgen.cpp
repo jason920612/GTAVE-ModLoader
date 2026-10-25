@@ -20,6 +20,7 @@ namespace worldgen::navgen
 		constexpr uint32_t kTag = 0x7F800001;  // what the game keeps in a vector's fourth float
 		constexpr uint32_t kPolysPerChunk = 341;
 		constexpr float kSideTolerance = 0.6f; // (m) how far apart in height two squares' vertices on their side may be
+		constexpr uint8_t kSurfaceMask = 7, kChequer = 8; // a span's area: its Surface, and the chequerboard's colour
 
 		struct Polygon
 		{
@@ -152,7 +153,26 @@ namespace worldgen::navgen
 				                return true;
 			                }() &&
 			                rcBuildCompactHeightfield(&ctx, c.walkableHeight, c.walkableClimb, *r.hf, *r.chf) &&
-			                rcErodeWalkableArea(&ctx, c.walkableRadius, *r.chf) && rcBuildDistanceField(&ctx, *r.chf) &&
+			                rcErodeWalkableArea(&ctx, c.walkableRadius, *r.chf) &&
+			                [&] {
+				                // A polygon is planar, and the game keeps a pedestrian on its plane: a region of
+				                // gentle ground, one polygon across a hill, would leave it metres from the ground. So
+				                // the walkable spans are marked in a chequerboard of world squares (alternate areas:
+				                // regions never cross from one to the next), and polygons stay that small.
+				                const rcCompactHeightfield& chf = *r.chf;
+				                for (int z = 0; z < chf.height; ++z)
+					                for (int x = 0; x < chf.width; ++x)
+					                {
+						                const float wx = chf.bmin[0] + (x + 0.5f) * chf.cs, wy = -(chf.bmin[2] + (z + 0.5f) * chf.cs);
+						                const int parity = static_cast<int>(std::floor(wx / s.polygonSpan) + std::floor(wy / s.polygonSpan)) & 1;
+						                const rcCompactCell& cell = chf.cells[x + z * chf.width];
+						                for (unsigned i = cell.index; i < cell.index + cell.count; ++i)
+							                if (chf.areas[i] != RC_NULL_AREA)
+								                chf.areas[i] = static_cast<unsigned char>((chf.areas[i] & kSurfaceMask) | (parity ? kChequer : 0));
+					                }
+				                return true;
+			                }() &&
+			                rcBuildDistanceField(&ctx, *r.chf) &&
 			                rcBuildRegions(&ctx, *r.chf, c.borderSize, c.minRegionArea, c.mergeRegionArea) &&
 			                rcBuildContours(&ctx, *r.chf, c.maxSimplificationError, c.maxEdgeLen, *r.cset, RC_CONTOUR_TESS_WALL_EDGES | RC_CONTOUR_TESS_AREA_EDGES) &&
 			                rcBuildPolyMesh(&ctx, *r.cset, c.maxVertsPerPoly, *r.pmesh);
@@ -164,7 +184,7 @@ namespace worldgen::navgen
 			{
 				const unsigned short* p = &pm.polys[i * 2 * pm.nvp];
 				Polygon poly;
-				poly.surface = static_cast<Surface>(pm.areas[i]);
+				poly.surface = static_cast<Surface>(pm.areas[i] & kSurfaceMask);
 				for (int k = 0; k < pm.nvp && p[k] != RC_MESH_NULL_IDX; ++k)
 				{
 					const unsigned short* v = &pm.verts[p[k] * 3];

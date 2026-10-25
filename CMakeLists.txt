@@ -255,6 +255,9 @@ add_executable(worldgen
     tools/worldgen/meta.cpp
     tools/worldgen/bounds.cpp
     tools/worldgen/ybn.cpp
+    tools/worldgen/ydr.cpp
+    tools/worldgen/terrain.cpp
+    tools/worldgen/mapfiles.cpp
     tools/worldgen/navgen.cpp
     tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp

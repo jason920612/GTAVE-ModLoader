@@ -47,7 +47,10 @@
 
 #include "../ue5export/drawable.hpp"
 #include "convert/archive.hpp"
+#include "mapfiles.hpp"
+#include "terrain.hpp"
 #include "ybn.hpp"
+#include "ydr.hpp"
 #include "../ue5export/gamefiles.hpp"
 #include "../ue5export/meta.hpp"
 #include "../ue5export/ng.hpp"
@@ -756,6 +759,16 @@ int main(int argc, char** argv)
 			}
 			std::printf("collision files: %zu triangles in all\n", mesh.triangles.size());
 		}
+		// (--sea z: ground more than half a metre under the sea is for swimming over, not walking)
+		if (g_options.contains("sea"))
+		{
+			const float sea = std::stof(g_options["sea"]) - 0.5f;
+			size_t under = 0;
+			for (size_t t = 0; t < mesh.triangles.size(); ++t)
+				if (std::all_of(mesh.triangles[t].begin(), mesh.triangles[t].end(), [&](uint32_t v) { return mesh.vertices[v][2] < sea; }))
+					surfaces[t] = worldgen::navgen::Surface::None, ++under;
+			std::printf("%zu triangles under the sea\n", under);
+		}
 		worldgen::navgen::Result result;
 		if (!worldgen::navgen::Build(mesh, surfaces, {}, result, error))
 			return Fail(error);
@@ -901,18 +914,29 @@ int main(int argc, char** argv)
 		// the pack's map cache (x64\data\cacheloaderdata_dlc\<pack>_<change set hash>_cache_y.dat) for where each map and
 		// collision file lies. Without it a new map is registered disabled and without its box, and never loaded.
 		const std::string changeSet = name + "_MAP";
+		// Archetype files (.ytyp): requested with the change set (DLC_ITYP_REQUEST), kept while it is on.
+		std::string typeItems, typeEnables;
+		for (const auto& child : stream.children)
+			if (child.name.ends_with(".ytyp"))
+			{
+				const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, name, child.name);
+				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
+				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+				    path);
+				typeEnables += std::format("            <Item>{}</Item>\n", path);
+			}
 		const std::string content = std::format(
 		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CDataFileMgr__ContentsOfDataFileXml>\n  <disabledFiles />\n  <includedXmlFiles />\n"
 		    "  <includedDataFiles />\n  <dataFiles>\n    <Item>\n      <filename>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
 		    "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n"
-		    "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n  </dataFiles>\n"
+		    "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n{3}  </dataFiles>\n"
 		    "  <contentChangeSets>\n    <Item>\n      <changeSetName>{2}</changeSetName>\n      <mapChangeSetData>\n        <Item>\n"
 		    "          <associatedMap>MO_JIM_L11</associatedMap>\n          <filesToInvalidate />\n          <filesToEnable>\n"
-		    "            <Item>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</Item>\n          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
+		    "            <Item>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</Item>\n{4}          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
 		    "      <requiresLoadingScreen value=\"true\" />\n      <loadingScreenContext>LOADINGSCREEN_CONTEXT_LAST_FRAME</loadingScreenContext>\n"
 		    "      <useCacheLoader value=\"true\" />\n    </Item>\n  </contentChangeSets>\n  <patchFiles />\n"
 		    "</CDataFileMgr__ContentsOfDataFileXml>\n",
-		    device, name, changeSet);
+		    device, name, changeSet, typeItems, typeEnables);
 		const std::string setup = std::format(
 		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SSetupData>\n  <deviceName>{}</deviceName>\n  <datFile>content.xml</datFile>\n"
 		    "  <timeStamp>00/00/0000 00:00:00</timeStamp>\n  <nameHash>{}</nameHash>\n  <contentChangeSets />\n  <contentChangeSetGroups>\n"
@@ -1008,6 +1032,220 @@ int main(int argc, char** argv)
 		fs::create_directories(fs::path(g_options["out"]).parent_path());
 		std::ofstream(g_options["out"], std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), packed.size());
 		std::printf("%s: %zu files in %s.rpf (%zu bytes)\n", g_options["out"].c_str(), count, name.c_str(), packed.size());
+		return 0;
+	}
+	if (command == "testterrain")
+	{
+		// a small island of generated ground (models, collision, archetypes, map) for testing: --at x,y (its south-west
+		// corner) --size m --cell m --tile m --name <n> --out <dir>. A hill in the middle, grass, then a sand beach
+		// into the sea; textures of the game's beach (Vespucci), the shader of its airport ground.
+		if (!g_options.contains("at") || !g_options.contains("out"))
+			return Fail("--at x,y --out <dir> are needed");
+		float x0 = 0, y0 = 0;
+		char comma = 0;
+		std::istringstream(g_options["at"]) >> x0 >> comma >> y0;
+		const std::string name = g_options.contains("name") ? g_options["name"] : "wb_terrain";
+		const float size = g_options.contains("size") ? std::stof(g_options["size"]) : 400.0f;
+		const float cell = g_options.contains("cell") ? std::stof(g_options["cell"]) : 2.0f;
+		const float tile = g_options.contains("tile") ? std::stof(g_options["tile"]) : 100.0f;
+		worldgen::terrain::Field f;
+		f.x0 = x0, f.y0 = y0, f.cell = cell;
+		f.nx = f.ny = static_cast<int>(std::lround(size / cell));
+		const float cx = x0 + size / 2, cy = y0 + size / 2;
+		for (int j = 0; j <= f.ny; ++j)
+			for (int i = 0; i <= f.nx; ++i)
+			{
+				const float x = x0 + i * cell, y = y0 + j * cell;
+				// distance from the middle (0..1 at the edge's middle), a little wavy
+				const float r = std::hypot(x - cx, y - cy) / (size / 2) + 0.04f * std::sin(x * 0.031f) * std::cos(y * 0.027f);
+				float h;
+				if (r < 0.55f)
+					h = 3.0f + 9.0f * (1 - r / 0.55f) * (1 - r / 0.55f) + 0.6f * std::sin(x * 0.07f) * std::sin(y * 0.05f);
+				else if (r < 0.75f)
+					h = 3.0f - 2.6f * (r - 0.55f) / 0.2f; // down to the beach
+				else
+					h = 0.4f - 9.0f * (r - 0.75f) / 0.3f; // the beach into the sea
+				f.height.push_back(h);
+				// grass on top, soft sand below 2.4 m, wet sand below 0.6 m, hard sand where it is steep
+				const float grass = std::clamp((h - 2.0f) / 0.8f, 0.0f, 1.0f), wet = std::clamp((0.9f - h) / 0.6f, 0.0f, 1.0f);
+				f.layers.push_back(worldgen::terrain::Layers(grass, 0, (1 - grass) * (1 - wet), (1 - grass) * wet));
+			}
+		for (int j = 0; j < f.ny; ++j)
+			for (int i = 0; i < f.nx; ++i)
+				f.material.push_back(f.H(i, j) > 2.4f ? 47 : 19); // grass, compact sand
+		// the material: the airport ground's terrain_cb_w_4lyr with the beach's textures
+		worldgen::ydr::Material material;
+		{
+			Bytes data;
+			loader::convert::Resource res;
+			const auto* tf = files.Find("ap1_01_a_ap1_gm_grnd03.ydr");
+			if (!tf || !files.Read(*tf, data, error) || !loader::convert::Read(data, res, error))
+				return Fail("template model: " + error);
+			if (!worldgen::ydr::ReadMaterial(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, 1, material, error))
+				return Fail("template material: " + error);
+			const std::pair<const char*, const char*> layers[] = {{"IM_Grass02V", "IM_Grass02_N"},
+			    {"RSN_OS_beachhard", "NXG_RSN_OS_beachhard_n"},
+			    {"NXG_RSN_OS_beachsoftprints", "NXG_RSN_OS_beachsoftprints_n"},
+			    {"RSN_OS_beachhardwater", "RSN_OS_beachhardwater_n"}};
+			for (int k = 0; k < 4; ++k)
+			{
+				material.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), layers[k].first);
+				material.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), layers[k].second);
+			}
+		}
+		worldgen::mapfiles::Archetype beach; // (whose texture dictionary has those textures)
+		if (!worldgen::mapfiles::FindArchetype(files, "vb_35_beacha", beach, error))
+			return Fail(error);
+		const uint32_t txd = beach.textureDictionary;
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		std::vector<worldgen::mapfiles::Archetype> archetypes;
+		std::vector<worldgen::mapfiles::Entity> entities;
+		const int per = static_cast<int>(std::lround(tile / cell));
+		size_t triangles = 0;
+		for (int tj = 0; tj * per < f.ny; ++tj)
+			for (int ti = 0; ti * per < f.nx; ++ti)
+			{
+				const std::string tileName = std::format("{}_{}_{}", name, ti, tj);
+				const float tx = x0 + (ti * per + per / 2.0f) * cell, ty = y0 + (tj * per + per / 2.0f) * cell;
+				worldgen::ydr::Drawable d;
+				d.name = tileName;
+				d.materials.push_back(material);
+				d.lods[0].push_back(worldgen::terrain::TileMesh(f, ti * per, tj * per, per, tx, ty, 5.0f));
+				triangles += d.lods[0][0].indices.size() / 3;
+				Bytes file;
+				if (!worldgen::ydr::Write(d, file, error))
+					return Fail(tileName + ": " + error);
+				std::ofstream(out / (tileName + ".ydr"), std::ios::binary).write(reinterpret_cast<const char*>(file.data()), file.size());
+				Bytes collision;
+				if (!worldgen::ybn::Write(worldgen::terrain::TileCollision(f, ti * per, tj * per, per), collision, error))
+					return Fail(tileName + " collision: " + error);
+				std::ofstream(out / (name + std::format("_c_{}_{}.ybn", ti, tj)), std::ios::binary)
+				    .write(reinterpret_cast<const char*>(collision.data()), collision.size());
+				worldgen::mapfiles::Archetype a;
+				a.name = tileName;
+				a.textureDictionary = txd;
+				a.lodDist = 1000;
+				worldgen::ydr::Box(d, a.min, a.max);
+				archetypes.push_back(a);
+				worldgen::mapfiles::Entity e;
+				e.archetype = loader::convert::Joaat(tileName);
+				e.position = {tx, ty, 0};
+				e.lodDist = 1000;
+				e.radius = std::hypot(a.max[0] - a.min[0], a.max[1] - a.min[1], a.max[2] - a.min[2]) / 2;
+				entities.push_back(e);
+			}
+		Bytes types, map;
+		if (!worldgen::mapfiles::WriteTypes(files, name, archetypes, types, error) || !worldgen::mapfiles::WriteMap(files, name, entities, map, error))
+			return Fail(error);
+		std::ofstream(out / (name + ".ytyp"), std::ios::binary).write(reinterpret_cast<const char*>(types.data()), types.size());
+		std::ofstream(out / (name + ".ymap"), std::ios::binary).write(reinterpret_cast<const char*>(map.data()), map.size());
+		// read back: every model as the exporter reads it
+		for (const auto& a : archetypes)
+		{
+			std::ifstream in(out / (a.name + ".ydr"), std::ios::binary);
+			Bytes data((std::istreambuf_iterator<char>(in)), {});
+			loader::convert::Resource res;
+			ue5export::drawable::Model model;
+			if (!loader::convert::Read(data, res, error) ||
+			    !ue5export::drawable::Read(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, model, error))
+				return Fail(a.name + " read back: " + error);
+			if (model.sections.size() != 1 || model.materials.size() != 1 || model.materials[0].textures.size() != material.textures.size())
+				return Fail(a.name + " read back: not what was written");
+		}
+		std::printf("%s: %zu tiles, %zu triangles; archetypes %s.ytyp, map %s.ymap\n", name.c_str(), archetypes.size(), triangles, name.c_str(), name.c_str());
+		return 0;
+	}
+	if (command == "effect-find")
+	{
+		// models whose shaders use an effect: --effect <name or hash>[,...] [--limit n] (the first n of each), with the
+		// vertex layout of the first geometry drawn with it (declaration slots and formats)
+		std::map<uint32_t, int> wanted;
+		{
+			std::istringstream list(g_options["effect"]);
+			for (std::string n; std::getline(list, n, ',');)
+				wanted[n.starts_with("0x") ? static_cast<uint32_t>(std::stoul(n, nullptr, 16)) : loader::convert::Joaat(n)] = 0;
+		}
+		const int limit = g_options.contains("limit") ? std::stoi(g_options["limit"]) : 3;
+		using ue5export::drawable::View;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.ends_with(".ydr"))
+				continue;
+			if (std::all_of(wanted.begin(), wanted.end(), [&](const auto& w) { return w.second >= limit; }))
+				break;
+			Bytes data;
+			loader::convert::Resource res;
+			if (!files.Read(f, data, error) || !loader::convert::Read(data, res, error))
+				continue;
+			const View view(res);
+			const uint64_t group = view.Get<uint64_t>(View::kRoot + 0x10);
+			const uint64_t shaders = view.Get<uint64_t>(group + 0x10);
+			const uint16_t count = view.Get<uint16_t>(group + 0x18);
+			for (uint16_t s = 0; s < count; ++s)
+			{
+				const uint32_t effect = view.Get<uint32_t>(view.Get<uint64_t>(shaders + 8u * s));
+				const auto it = wanted.find(effect);
+				if (it == wanted.end() || it->second >= limit)
+					continue;
+				++it->second;
+				// the first geometry of the high level of detail drawn with this shader
+				std::string layout;
+				const uint64_t list = view.Get<uint64_t>(View::kRoot + 0x50);
+				const uint64_t models = view.Get<uint64_t>(list);
+				for (uint16_t m = 0; m < view.Get<uint16_t>(list + 8) && layout.empty(); ++m)
+				{
+					const uint64_t model = view.Get<uint64_t>(models + 8u * m);
+					const uint64_t geometries = view.Get<uint64_t>(model + 0x08), mapping = view.Get<uint64_t>(model + 0x20);
+					for (uint16_t g = 0; g < view.Get<uint16_t>(model + 0x10) && layout.empty(); ++g)
+					{
+						if (view.Get<uint16_t>(mapping + 2u * g) != s)
+							continue;
+						const uint64_t vb = view.Get<uint64_t>(view.Get<uint64_t>(geometries + 8u * g) + 0x18);
+						const uint8_t* decl = view.At(view.Get<uint64_t>(vb + 0x38), 0x140);
+						if (!decl)
+							continue;
+						layout = std::format("stride {}:", view.Get<uint16_t>(vb + 0x0C) & 0xFFF);
+						for (int slot = 0; slot < 36; ++slot)
+							if (decl[0x104 + slot])
+								layout += std::format(" {}/{}", slot, decl[0x104 + slot]);
+					}
+				}
+				std::printf("%08x %s shader %u: %s\n", effect, name.c_str(), s, layout.c_str());
+			}
+		}
+		return 0;
+	}
+	if (command == "archetype-find")
+	{
+		// where archetypes are defined: --name a,b,... (every archetype file is read); their texture dictionaries etc.
+		std::set<uint32_t> wanted;
+		{
+			std::istringstream list(g_options["name"]);
+			for (std::string n; std::getline(list, n, ',');)
+				wanted.insert(ue5export::meta::Hash(n.c_str()));
+		}
+		using ue5export::meta::Hash;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.ends_with(".ytyp"))
+				continue;
+			Bytes data;
+			ue5export::meta::Meta m;
+			if (!files.Read(f, data, error) || !m.Read(data, error))
+				continue;
+			for (const ue5export::meta::Ref& a : m.Root().Array(Hash("archetypes")))
+			{
+				if (!a || !wanted.contains(a.Get<uint32_t>(Hash("name"))))
+					continue;
+				const auto lo = a.Get<std::array<float, 4>>(Hash("bbMin")), hi = a.Get<std::array<float, 4>>(Hash("bbMax"));
+				std::printf("%s: name %#x txd %#x drawable dictionary %#x physics %#x asset %#x type %u flags %#x lodDist %.0f hdTextureDist %.0f "
+				            "box %.1f %.1f %.1f .. %.1f %.1f %.1f\n",
+				    name.c_str(), a.Get<uint32_t>(Hash("name")), a.Get<uint32_t>(Hash("textureDictionary")), a.Get<uint32_t>(Hash("drawableDictionary")),
+				    a.Get<uint32_t>(Hash("physicsDictionary")), a.Get<uint32_t>(Hash("assetName")), a.Get<uint32_t>(Hash("assetType")),
+				    a.Get<uint32_t>(Hash("flags")), a.Get<float>(Hash("lodDist")), a.Get<float>(Hash("hdTextureDist")), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+			}
+		}
 		return 0;
 	}
 	if (command == "ymap-dump")

@@ -32,7 +32,8 @@ namespace worldgen::navgen
 	{
 		float cellSize = 0.25f, cellHeight = 0.1f;
 		float agentHeight = 1.9f, agentRadius = 0.25f, agentClimb = 0.45f, maxSlope = 50.0f; // (m, degrees)
-		float maxEdgeLength = 12.0f, maxError = 0.3f;                                       // (m)
+		float maxEdgeLength = 16.0f, maxError = 0.3f;                                       // (m)
+		float polygonSpan = 15.0f; // (m) polygons stay within squares of this size (a tenth of a navmesh's), so their planes follow the ground
 		int maxVertsPerPoly = 6;
 		int gridWidth = 147; // squares in a row of the grid
 	};
