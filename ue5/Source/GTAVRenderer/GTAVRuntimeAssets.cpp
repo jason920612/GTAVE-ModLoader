@@ -212,6 +212,14 @@ FGTAVRuntimeAssets::EState FGTAVRuntimeAssets::Request(uint64 Key, float Priorit
 	return S;
 }
 
+void FGTAVRuntimeAssets::Touch(uint64 Key)
+{
+	if (FMeshUse* Use = MeshUse.Find(Key))
+	{
+		Use->LastUsed = Clock;
+	}
+}
+
 // A worker loop: the nearest queued model, until there are none.
 void FGTAVRuntimeAssets::Pump()
 {
@@ -892,6 +900,21 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	{
 		MI->SetScalarParameterValue(TEXT("UseVertexColour"), 1.0f);
 	}
+	// The game's glass: smooth and reflecting as glass (research §60.24).
+	static const TSet<uint32> Glass = [] {
+		TSet<uint32> Out;
+		for (const TCHAR* Name : {TEXT("glass"), TEXT("glass_pv"), TEXT("glass_pv_env"), TEXT("glass_env"), TEXT("glass_spec"), TEXT("glass_reflect"),
+				 TEXT("glass_emissive"), TEXT("glass_emissivenight"), TEXT("glass_emissive_alpha"), TEXT("glass_emissivenight_alpha"), TEXT("glass_breakable"),
+				 TEXT("glass_breakable_screendoor"), TEXT("glass_displacement"), TEXT("glass_normal_spec_reflect")})
+		{
+			Out.Add(GTAVHash(FStringView(Name)));
+		}
+		return Out;
+	}();
+	if (Glass.Contains(M.effect))
+	{
+		MI->SetScalarParameterValue(TEXT("Glossy"), 1.0f);
+	}
 	// A decal_dirt: the dirt's colour is the vertex colour, its texture the mask (the channels in its dirtDecalMask: a
 	// pack without it, the red) - research §60.22.
 	static const uint32 DecalDirt = GTAVHash(TEXTVIEW("decal_dirt"));
@@ -1164,7 +1187,7 @@ void FGTAVRuntimeAssets::RetuneTextures(double Budget)
 	Retune.RemoveAt(0, Taken, EAllowShrinking::No);
 }
 
-void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
+void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused, double Stale)
 {
 	const auto Collect = [this] {
 		if (EvictedSinceCollection >= (int64(128) << 20) || (EvictedSinceCollection > 0 && Clock - LastCollection > 20.0))
@@ -1174,16 +1197,12 @@ void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
 			GEngine->ForceGarbageCollection(false);
 		}
 	};
-	if (TextureBytes + MeshBytes <= BudgetBytes)
-	{
-		Collect();
-		return;
-	}
+	const bool bOver = TextureBytes + MeshBytes > BudgetBytes;
 	const int64 Goal = BudgetBytes / 100 * 85;
 	TArray<TPair<double, uint64>> Old;
 	for (const TPair<uint64, FMeshUse>& M : MeshUse)
 	{
-		if (M.Value.LastUsed < Clock - Unused)
+		if (M.Value.LastUsed < Clock - (bOver ? FMath::Min(Unused, Stale) : Stale))
 		{
 			Old.Add({M.Value.LastUsed, M.Key});
 		}
@@ -1193,7 +1212,8 @@ void FGTAVRuntimeAssets::Evict(int64 BudgetBytes, double Unused)
 	const int64 Before = TextureBytes + MeshBytes;
 	for (const TPair<double, uint64>& O : Old)
 	{
-		if (TextureBytes + MeshBytes <= Goal)
+		// (oldest first: the stale ones all go, the budget's others down to its goal)
+		if (O.Key >= Clock - Stale && TextureBytes + MeshBytes <= Goal)
 		{
 			break;
 		}

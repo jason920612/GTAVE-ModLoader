@@ -801,8 +801,21 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	Rough->ConstB = 0.3f;
 	Rough->Alpha.Connect(1, Spec);
 	M->GetExpressionCollection().AddExpression(Rough);
-	Inputs->Roughness.Connect(0, Rough);
-	Inputs->Specular.Connect(1, Spec);
+	// Glass (Glossy 1, the game's glass shaders): smooth, and reflecting as glass does (4% head on, more at a slant) -
+	// most have no specular map, which left them reflecting nothing at all (research §60.24).
+	auto* Glossy = Scalar(TEXT("Glossy"), 0.0f);
+	auto* Smooth = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	Smooth->A.Connect(0, Rough);
+	Smooth->ConstB = 0.05f;
+	Smooth->Alpha.Connect(0, Glossy);
+	Add(Smooth);
+	Inputs->Roughness.Connect(0, Smooth);
+	auto* Reflects = NewObject<UMaterialExpressionLinearInterpolate>(M);
+	Reflects->A.Connect(1, Spec);
+	Reflects->ConstB = 0.5f;
+	Reflects->Alpha.Connect(0, Glossy);
+	Add(Reflects);
+	Inputs->Specular.Connect(0, Reflects);
 	if (Kind == 1)
 	{
 		// (decals fade with the vertex alpha; many have no alpha in their texture)

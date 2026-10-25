@@ -705,6 +705,13 @@ void FGTAVLights::UpdateGame(AActor* Owner, const FVector& Camera)
 			const float Steep = 0.5f + 0.5f * FMath::Exp(-(FMath::Max(L.falloffExponent, 1.0f) - 1.0f) / 6.0f);
 			C->SetIntensity(Lux * Steep * FMath::Square(L.radius / 200.0f) * (1.0f + 2.0f * Length / FMath::Max(L.radius, 1.0f)));
 			C->SetAttenuationRadius(FMath::Max(L.radius, 100.0f));
+			// (a lamp is a bulb in a shade, not a point: 5-15 cm, a twentieth of its reach - soft shadows, and no blinding
+			// spot where it sits close to a wall or a pane. Measured against the game's own on flat ground, research
+			// §60.24: the pool as bright and as wide)
+			if (UPointLightComponent* Source = Cast<UPointLightComponent>(C))
+			{
+				Source->SetSourceRadius(FMath::Clamp(L.radius * 0.05f, 5.0f, 15.0f));
+			}
 		}
 		// (the LOD lights' spots light their reach evenly instead: the shared components switch)
 		if (UPointLightComponent* Light = Cast<UPointLightComponent>(C); Light && !Light->bUseInverseSquaredFalloff)

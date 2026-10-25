@@ -67,8 +67,9 @@ namespace
 			}
 		}));
 	// What Windows lets this process have of the GPU's memory (its share beside the game and everything else running) and
-	// what it uses; false when it cannot be asked.
-	bool GpuMemoryShare(int64& OutBudget, int64& OutUsage)
+	// what it uses, and (OutSystem) what of the system's memory the GPU reads for it - upload buffers, and what Windows
+	// moved out of the GPU's own when it ran short; false when it cannot be asked.
+	bool GpuMemoryShare(int64& OutBudget, int64& OutUsage, int64* OutSystem = nullptr)
 	{
 		static IDXGIAdapter3* Adapter = [] {
 			IDXGIAdapter3* Found = nullptr;
@@ -89,6 +90,10 @@ namespace
 		}
 		OutBudget = int64(Info.Budget);
 		OutUsage = int64(Info.CurrentUsage);
+		if (OutSystem)
+		{
+			*OutSystem = SUCCEEDED(Adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &Info)) ? int64(Info.CurrentUsage) : 0;
+		}
 		return true;
 	}
 
@@ -551,17 +556,20 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 	}
 	if (Now - LastEvict > 2.0)
 	{
-		// (-gtavbudget, or less: what Windows gives this process of the GPU's memory, 90% of it, less what the rest of
-		// the renderer takes; over its share Windows moves memory out to the system's, and every frame waits on that)
+		// (-gtavbudget, or less: of what Windows gives this process of the GPU's memory (its share beside the game) 65%,
+		// less what the rest of the renderer takes. Over its share Windows moves memory out to the system's, and every
+		// frame waits on what it reads there; over 70% of it the engine's residency manager already starts letting go
+		// of what was not used for a minute or less, to be made resident again, waited on, when it is: research §60.25)
 		LastEvict = Now;
 		int64 Budget = BudgetBytes, Share = 0, Usage = 0;
 		if (GpuMemoryShare(Share, Usage))
 		{
 			const int64 Held = Assets->TextureBytes + Assets->MeshBytes;
-			Budget = FMath::Clamp(Share / 10 * 9 - FMath::Max<int64>(Usage - Held, 0), int64(768) << 20, BudgetBytes);
+			Budget = FMath::Clamp(Share / 100 * 65 - FMath::Max<int64>(Usage - Held, 0), int64(512) << 20, BudgetBytes);
 		}
 		AssetBudget = Budget;
-		Assets->Evict(Budget, 20.0);
+		// (what the world has not asked for for 30 s goes in any case; over the budget, 10 s)
+		Assets->Evict(Budget, 10.0, 30.0);
 	}
 	// (checking: -gtavdump=x,y,z,radius in the game's metres lists what is drawn there once everything is in)
 	static bool bDumped = false;
@@ -584,12 +592,12 @@ void UGTAVWorldSubsystem::Tick(float DeltaTime)
 			Drawn.Num(), Wanted.Num(), WantedMissing, DrawnGrass.Num(), Assets->MeshesBuilt, Assets->Loading(), Assets->MeshesFailed, Assets->TexturesMade,
 			Assets->TextureBytes / 1048576.0, Assets->TexturesFailed, Assets->TexturesRetuned, Assets->MeshBytes / 1048576.0, Assets->MeshesEvicted);
 		// (where a frame's time goes: this subsystem's own share of the game thread, the render thread, the GPU)
-		int64 Share = 0, Usage = 0;
-		GpuMemoryShare(Share, Usage);
-		UE_LOG(LogGTAVWorld, Display, TEXT("time: world %.2f ms a frame (slowest %.1f), render thread %.1f ms, GPU %.1f ms; %d components pooled, %d objects; %s; GPU memory %lld of %lld MB, assets' budget %lld MB"),
+		int64 Share = 0, Usage = 0, System = 0;
+		GpuMemoryShare(Share, Usage, &System);
+		UE_LOG(LogGTAVWorld, Display, TEXT("time: world %.2f ms a frame (slowest %.1f), render thread %.1f ms, GPU %.1f ms; %d components pooled, %d objects; %s; GPU memory %lld of %lld MB (%lld MB in system memory), assets' budget %lld MB"),
 			Ticks ? TickSeconds * 1000.0 / Ticks : 0.0, TickMax * 1000.0, Ticks ? RenderSeconds * 1000.0 / Ticks : 0.0,
 			Ticks ? GpuSeconds * 1000.0 / Ticks : 0.0, Pool.Num(), GUObjectArray.GetObjectArrayNumMinusAvailable(), *Lights.Counts(),
-			Usage >> 20, Share >> 20, AssetBudget >> 20);
+			Usage >> 20, Share >> 20, System >> 20, AssetBudget >> 20);
 		// (checking, -gtavprofileheavy: a GPU profile of a heavy stretch into the log, once a minute at most)
 		static double LastProfile = 0;
 		if (Ticks && GpuSeconds * 1000.0 / Ticks > 25.0 && Now - LastProfile > 60.0 && FParse::Param(FCommandLine::Get(), TEXT("gtavprofileheavy")))
@@ -613,6 +621,18 @@ bool UGTAVWorldSubsystem::Ready(uint32 Entity, const FVector& Center)
 		return true;
 	}
 	const FGTAVRuntimeAssets::EState State = Assets->Request(E.archetype, Data.Distance(Entity, Center));
+	return State == FGTAVRuntimeAssets::EState::Ready || State == FGTAVRuntimeAssets::EState::Failed;
+}
+
+// The same without asking for it: loaded, or with nothing to load.
+bool UGTAVWorldSubsystem::Present(uint32 Entity) const
+{
+	const GTAVPack::Entity& E = Data.Entities[Entity];
+	if (!YmapOn[E.ymap] || E.interiorPlacement != GTAVPack::kNone || !Shown(E.archetype) || !GTAVPack::InMainView(E.flags))
+	{
+		return true;
+	}
+	const FGTAVRuntimeAssets::EState State = Assets->State(E.archetype);
 	return State == FGTAVRuntimeAssets::EState::Ready || State == FGTAVRuntimeAssets::EState::Failed;
 }
 
@@ -668,6 +688,26 @@ void UGTAVWorldSubsystem::Visit(uint32 Entity, const FVector& Center, bool bForc
 			}
 			if (bAll)
 			{
+				// (its own model, if there, kept while they stand in for it: to take over again on the way out)
+				Assets->Touch(E.archetype);
+				for (const uint32 C : Children)
+				{
+					Visit(C, Center, true);
+				}
+				return;
+			}
+		}
+		else if (E.interiorPlacement == GTAVPack::kNone && !Present(Entity))
+		{
+			// (its own model let go meanwhile, or never loaded: the children, all there, stay until it is back - no hole)
+			bool bAll = true;
+			for (const uint32 C : Children)
+			{
+				bAll &= Present(C);
+			}
+			if (bAll)
+			{
+				Assets->Request(E.archetype, D);
 				for (const uint32 C : Children)
 				{
 					Visit(C, Center, true);
@@ -1136,6 +1176,8 @@ void UGTAVWorldSubsystem::Apply()
 		{
 			++Removed;
 			It.Value()->UnregisterComponent();
+			// (pooled without its model: else the model, let go, stays in memory as long as the component waits)
+			It.Value()->SetStaticMesh(nullptr);
 			Pool.Add(It.Value());
 			Lights.RemoveEntity(It.Key());
 			It.RemoveCurrent();

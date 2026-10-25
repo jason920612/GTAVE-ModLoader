@@ -191,9 +191,10 @@ namespace loader::graphics::bridge
 		// - its world's detail (config ue5GameDetail "lean"): of the game's picture only the peds and vehicles are
 		//   shown, so what only draws the world it need not (grass, water, tessellation, volumetric fog, ray traced
 		//   trees, the farther levels of detail, its ray tracing: its shadow maps shade the peds and vehicles as well;
-		//   in a storm it cost the shared GPU some 4 ms a frame, research §60.6); the peds' and vehicles' own (their
-		//   shadows, reflections) stay, and what acts on the whole picture after the renderer's goes in (depth of
-		//   field, motion blur).
+		//   in a storm it cost the shared GPU some 4 ms a frame, research §60.6; the map's detailed models streamed in
+		//   while flying, which only take the shared GPU's memory, §60.25); the peds' and vehicles' own (their shadows,
+		//   reflections) stay, and what acts on the whole picture after the renderer's goes in (depth of field, motion
+		//   blur).
 		std::filesystem::path g_settingsFile;
 		bool g_settingsRestored = true;
 
@@ -280,7 +281,7 @@ namespace loader::graphics::bridge
 			static constexpr std::pair<const char*, const char*> kLean[] = {{"GrassQuality", "0"}, {"WaterQuality", "0"}, {"Tessellation", "0"},
 			    {"LodScale", "0.600000"}, {"MaxLodScale", "0.000000"}, {"Lighting_FogVolumes", "false"}, {"Shadow_LongShadows", "false"},
 			    {"Raytracing_TreeBvhEnabled", "false"}, {"Raytracing_GrassBvhEnabled", "false"}, {"Raytracing_Enabled", "false"},
-			    {"RTShadows_Enabled", "false"}};
+			    {"RTShadows_Enabled", "false"}, {"HdStreamingInFlight", "false"}};
 			if (c.ue5GameDetail == "lean")
 				for (const auto& [name, value] : kLean)
 					wanted.emplace_back(name, value);
@@ -739,15 +740,18 @@ namespace loader::graphics::bridge
 			struct Level
 			{
 				const char* name;
-				int resolution, scalability;
+				int resolution, scalability, antiAliasing;
 				float distance;
 				int lights, lightRadius;
 				bool megaLights, lightShadows;
 				float clouds;
 			};
-			static constexpr Level kLevels[] = {{"low", 50, 0, 0.8f, 32, 150, false, false, 0.35f}, {"medium", 67, 1, 1.0f, 64, 200, false, false, 0.5f},
-			    {"high", 80, 2, 1.25f, 2048, 400, true, false, 0.5f}, {"ultra", 100, 3, 1.5f, 4096, 600, true, false, 0.75f},
-			    {"cinematic", 100, 4, 2.0f, 8192, 800, true, true, 1.0f}};
+			// (the upscaler (TSR) at the engine's high below ultra: its epic keeps a history twice the output's size, 3 ms
+			// more of a drive through the docks - 54.7 -> 59.4 fps - for a picture as sharp, still and turning: research
+			// §60.24)
+			static constexpr Level kLevels[] = {{"low", 50, 0, 1, 0.8f, 32, 150, false, false, 0.35f}, {"medium", 67, 1, 2, 1.0f, 64, 200, false, false, 0.5f},
+			    {"high", 80, 2, 2, 1.25f, 2048, 400, true, false, 0.5f}, {"ultra", 100, 3, 3, 1.5f, 4096, 600, true, false, 0.75f},
+			    {"cinematic", 100, 4, 4, 2.0f, 8192, 800, true, true, 1.0f}};
 			const Level* l = &kLevels[2];
 			for (const Level& k : kLevels)
 				if (preset == k.name)
@@ -755,6 +759,11 @@ namespace loader::graphics::bridge
 			std::string out = std::format("r.ScreenPercentage {}\n", l->resolution);
 			for (const char* group : {"ViewDistance", "Shadow", "GlobalIllumination", "Reflection", "PostProcess", "Texture", "Effects", "Foliage", "Shading"})
 				out += std::format("sg.{}Quality {}\n", group, l->scalability);
+			out += std::format("sg.AntiAliasingQuality {}\n", l->antiAliasing);
+			// (Lumen's surface cache stays empty for the renderer's meshes, made at run time without card data: it only
+			// tried again each frame - 170-300 captures, 2 ms of the GPU and 1.4 of the render thread - for a picture the
+			// same without: research §60.24)
+			out += "r.LumenScene.SurfaceCache.CardCapturesPerFrame 0\n";
 			out += std::format("gtav.LodScale {}\ngtav.Lights {}\ngtav.LightRadius {}\nr.MegaLights.EnableForProject {}\ngtav.LightShadows {}\n", l->distance,
 			    l->lights, l->lightRadius, l->megaLights ? 1 : 0, l->lightShadows ? 1 : 0);
 			// (with MegaLights the sun and the moon too, their shadows ray traced: a shadow map of the city for them was

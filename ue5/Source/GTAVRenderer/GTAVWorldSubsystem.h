@@ -112,6 +112,7 @@ private:
 	void Update(const FVector& Center);
 	void Visit(uint32 Entity, const FVector& Center, bool bForced);
 	bool Ready(uint32 Entity, const FVector& Center);
+	bool Present(uint32 Entity) const;
 	bool Shown(uint32 Archetype) const;
 	void Want(uint64 Key, uint32 Archetype, float Distance);
 	void WantInterior(uint32 Entity, const FVector& Center);

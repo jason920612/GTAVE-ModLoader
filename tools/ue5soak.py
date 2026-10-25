@@ -165,23 +165,26 @@ def look_about(g, seconds, stop):
 
 
 def gpu_memory():
-    """GPU memory by process and the adapter's (MB); the 3D engine's busy share by process (%, over 2 s)."""
-    ps = ("Get-Counter -Counter '\\GPU Process Memory(*)\\Dedicated Usage','\\GPU Adapter Memory(*)\\Dedicated Usage' "
+    """GPU memory by process and the adapter's (MB); the system memory the GPU reads by process (MB: upload buffers, and
+    what Windows moved out of the GPU's own when it ran short); the 3D engine's busy share by process (%, over 2 s)."""
+    ps = ("Get-Counter -Counter '\\GPU Process Memory(*)\\Dedicated Usage','\\GPU Process Memory(*)\\Shared Usage',"
+          "'\\GPU Adapter Memory(*)\\Dedicated Usage' "
           "-ErrorAction SilentlyContinue | % { $_.CounterSamples } | % { $_.Path + '=' + $_.CookedValue }; "
           "Get-Counter -Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage' -SampleInterval 1 -MaxSamples 2 "
           "-ErrorAction SilentlyContinue | % { $_.CounterSamples } | % { 'busy ' + $_.InstanceName + '=' + $_.CookedValue }")
     out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True).stdout
-    by_pid, adapter, busy = {}, 0.0, {}
+    by_pid, shared, adapter, busy = {}, {}, 0.0, {}
     for line in out.splitlines():
         m = re.search(r"pid_(\d+)_.*=(\d+(\.\d+)?)", line)
         if line.startswith("busy "):
             if m:
                 busy[int(m.group(1))] = busy.get(int(m.group(1)), 0) + float(m.group(2)) / 2
         elif m:
-            by_pid[int(m.group(1))] = by_pid.get(int(m.group(1)), 0) + float(m.group(2)) / 2**20
+            into = shared if "shared usage" in line.lower() else by_pid
+            into[int(m.group(1))] = into.get(int(m.group(1)), 0) + float(m.group(2)) / 2**20
         elif "gpu adapter memory" in line.lower():
             adapter = max(adapter, float(line.rsplit("=", 1)[1]) / 2**20)
-    return by_pid, adapter, busy
+    return by_pid, shared, adapter, busy
 
 
 def pids():
@@ -233,7 +236,7 @@ def monitor(out_dir, stop, state, profile_over=None):
         w = csv.writer(f)
         w.writerow(["t", "doing", "fps", "slowest_ms", "renderer_fps", "game_mb", "renderer_mb", "adapter_mb", "world_ms", "render_ms", "gpu_ms",
                     "objects", "drawn", "textures_mb", "meshes_mb", "evicted", "game_busy", "renderer_busy", "x", "y", "z", "hours", "weather",
-                    "interior"])
+                    "interior", "game_shared_mb", "renderer_shared_mb"])
         start = time.time()
         while not stop.wait(15):
             text, loader_at = tail(LOADER_LOG, loader_at)
@@ -243,7 +246,7 @@ def monitor(out_dir, stop, state, profile_over=None):
             times = re.findall(r"time: world ([\d.]+) ms a frame \(slowest [\d.]+\), render thread ([\d.]+) ms, GPU ([\d.]+) ms; \d+ components pooled, (\d+) objects", rtext)
             drawn = re.findall(r"drawn (\d+) .*?textures \d+ \(([\d.]+) MB, \d+ failed\), meshes ([\d.]+) MB, (\d+) evicted", rtext)
             game, renderer = pids()
-            by_pid, adapter, busy = gpu_memory()
+            by_pid, shared, adapter, busy = gpu_memory()
             camera = re.findall(r"game camera ([-\d.]+) ([-\d.]+) ([-\d.]+) .*?hours ([\d.]+); weather \w+ -> (\w+) [\d.]+; interior (\d+)", rtext)
             row = [round(time.time() - start), state.get("doing", ""),
                    round(sum(a for a, _ in fps) / len(fps), 1) if fps else "", max((b for _, b in fps), default=""),
@@ -252,6 +255,7 @@ def monitor(out_dir, stop, state, profile_over=None):
             row += list(drawn[-1]) if drawn else ["", "", "", ""]
             row += [round(busy.get(game, 0)), round(busy.get(renderer, 0))]
             row += list(camera[-1]) if camera else ["", "", "", "", "", ""]
+            row += [round(shared.get(game, 0)), round(shared.get(renderer, 0))]
             w.writerow(row)
             f.flush()
             if profile_over and profiling and "GPU Profile for Frame" in rtext:
@@ -387,7 +391,9 @@ def summary(path):
         fps = sum(float(r["fps"]) for r in part) / len(part)
         slow = max(float(r["slowest_ms"]) for r in part)
         out.append(f"{int(part[0]['t']) // 60:>3} min: {fps:5.1f} fps, slowest {slow:5.1f} ms, GPU memory {part[-1]['adapter_mb']} MB "
-                   f"(game {part[-1]['game_mb']}, renderer {part[-1]['renderer_mb']}), render thread {part[-1]['render_ms']} ms, GPU {part[-1]['gpu_ms']} ms"
+                   f"(game {part[-1]['game_mb']}, renderer {part[-1]['renderer_mb']}"
+                   + (f"; in system memory {part[-1]['game_shared_mb']}+{part[-1]['renderer_shared_mb']}" if part[-1].get("renderer_shared_mb") else "")
+                   + f"), render thread {part[-1]['render_ms']} ms, GPU {part[-1]['gpu_ms']} ms"
                    + (f", busy {part[-1]['game_busy']}+{part[-1]['renderer_busy']}%, {part[-1]['weather']} {part[-1]['hours']} h" if part[-1].get("weather") else ""))
     # (the slowest places: where to go back to)
     slow = sorted((r for r in rows if r["fps"] and r.get("x")), key=lambda r: float(r["fps"]))[:5]

@@ -38,6 +38,8 @@ public:
 	// Starts loading a model (by its key: the archetype's name hash) unless it is loaded or loading; lower priorities
 	// load first (the streamer gives the distance).
 	EState Request(uint64 Key, float Priority = 0);
+	// A loaded model kept as if it was asked for now (not loaded if it is not).
+	void Touch(uint64 Key);
 	EState State(uint64 Key) const;
 	UStaticMesh* Get(uint64 Key) const;
 	// The lights a loaded model carries (none: null).
@@ -60,12 +62,13 @@ public:
 	// A static mesh from vertices and triangles (game thread), with one material.
 	UStaticMesh* BuildMesh(TArray<FStaticMeshBuildVertex>& Vertices, TArray<uint32>& Indices, UMaterialInterface* Material);
 
-	// Once the textures and meshes take more than BudgetBytes, the models not used for Unused seconds go (oldest
-	// first), with the materials and textures nothing else uses, down to 85% of it (so that this happens now and then,
-	// a batch at a time). Their memory comes back with the next garbage collection: one is asked for once 128 MB went,
-	// or 20 s after anything went (not a full purge: the objects are destroyed a few at a time over the next frames; a
-	// full collection every few seconds made the frames that had it stutter).
-	void Evict(int64 BudgetBytes, double Unused);
+	// The models not used for Stale seconds go, with the materials and textures nothing else uses: what the world asks
+	// for again is made again from the pack (the CPU's work spent for the GPU's memory, which the game shares). Once
+	// the textures and meshes take more than BudgetBytes, those not used for Unused seconds go too (oldest first), down
+	// to 85% of it. Their memory comes back with the next garbage collection: one is asked for once 128 MB went, or 20 s
+	// after anything went (not a full purge: the objects are destroyed a few at a time over the next frames; a full
+	// collection every few seconds made the frames that had it stutter).
+	void Evict(int64 BudgetBytes, double Unused, double Stale);
 
 	int32 MeshesBuilt = 0, MeshesFailed = 0, TexturesMade = 0, TexturesFailed = 0, MaterialsMade = 0, MeshesEvicted = 0, TexturesRetuned = 0;
 	int64 TextureBytes = 0, MeshBytes = 0;
