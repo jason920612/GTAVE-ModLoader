@@ -33,6 +33,9 @@ namespace ue5export
 		bool Read(const File& file, loader::convert::Bytes& out, std::string& error) const;
 
 		std::vector<std::string> warnings;
+		// DLC packs (dlc.rpf files) mounted after the game's own, as the loader adds a mod's pack (the world builder's
+		// new land); by default those the tools were started with (--extra).
+		static inline std::vector<std::filesystem::path> extraPacks;
 		size_t activeArchives = 0;
 
 	private:

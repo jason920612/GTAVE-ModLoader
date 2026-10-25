@@ -153,7 +153,7 @@ namespace worldgen::mapfiles
 			f.Set<uint32_t>("textureDictionary", a.textureDictionary);
 			f.Set<uint32_t>("physicsDictionary", a.physicsDictionary);
 			f.Set<uint32_t>("assetType", 2); // a drawable
-			f.Set<uint32_t>("assetName", hash);
+			f.Set<uint32_t>("assetName", a.assetName ? a.assetName : hash);
 		};
 		if (!Blocks(w, "CBaseArchetypeDef", archetypes.size(), fill, list, error))
 			return false;

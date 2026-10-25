@@ -16,6 +16,7 @@ namespace worldgen::mapfiles
 	struct Archetype
 	{
 		std::string name;
+		uint32_t assetName = 0; // the model's name (0: the archetype's own); a game model under a new name: an alias
 		uint32_t textureDictionary = 0;
 		uint32_t physicsDictionary = 0;
 		uint32_t flags = 0;

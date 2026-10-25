@@ -196,11 +196,26 @@ namespace ue5export
 		Bytes listData;
 		if (list == loose_.end() || !list->second.archive->ReadFile(list->second.node, listData, error))
 			return error = "dlclist.xml: " + error, false;
-		for (std::string item : Tags(std::string(listData.begin(), listData.end()), "Item"))
+		std::vector<std::string> items = Tags(std::string(listData.begin(), listData.end()), "Item");
+		for (const fs::path& extra : extraPacks)
+			items.push_back("extra:" + extra.string());
+		for (std::string item : items)
 		{
-			item = Lower(Trim(item));
+			item = item.starts_with("extra:") ? item : Lower(Trim(item));
 			// The pack's archives: one device over dlc.rpf, dlc1.rpf, dlc2.rpf... (the enhanced game splits packs).
 			std::vector<std::pair<std::shared_ptr<Archive>, std::string>> parts;
+			if (item.starts_with("extra:"))
+			{
+				// a mod's pack: mounted like the game's (its folder's name as the pack's)
+				const fs::path file = item.substr(6);
+				std::shared_ptr<Archive> part;
+				std::string e;
+				if (OpenFile(file, decrypt, part, e))
+					parts.emplace_back(part, file.generic_string());
+				else
+					warnings.push_back(file.string() + ": " + e);
+				item = "mods:/" + Lower(file.parent_path().filename().string()) + "/";
+			}
 			if (item.starts_with("platform:/dlcpacks/"))
 			{
 				const std::string where = "dlcpacks/" + item.substr(19) + "dlc.rpf";

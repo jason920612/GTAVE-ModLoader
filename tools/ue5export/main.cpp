@@ -12,6 +12,7 @@
 //                                                  tools/ue5hydrology.py's: the Alamo Sea's inflows)
 //   ue5export lightdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's light attributes, raw
 //   ue5export matdump --out <dir> --game <dir> --file <name.ydr|ydd|yft>   a drawable's materials: shaders, textures by name
+//   (any command: --extra <dlc.rpf>[,...] mounts mods' DLC packs after the game's: the world builder's new land)
 //   ue5export resdump --out <dir> --game <dir> --file <name>   a resource's blocks as they are in memory:
 //                                                  <out>\<name>.virtual (at 0x50000000), <name>.physical (0x60000000)
 #include <Windows.h>
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -367,7 +369,26 @@ namespace
 			return Fail(f ? error : "not found");
 		const ue5export::drawable::View view(resource);
 		for (const auto& t : ue5export::drawable::Textures(view, ue5export::drawable::View::kRoot))
+		{
 			std::printf("%-40s %4ux%-4u dxgi %3u mips %2u\n", t.name.c_str(), t.width, t.height, t.dxgi, t.mips);
+			// --dds <dir>: each as a DDS file (DX10 header: the DXGI format as it is)
+			if (!g_options.contains("dds"))
+				continue;
+			const fs::path dir = g_options["dds"];
+			fs::create_directories(dir);
+			uint32_t h[32] = {};
+			h[0] = 0x20534444; // "DDS "
+			h[1] = 124;
+			h[2] = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000; // caps, height, width, pixel format, mip count
+			h[3] = t.height, h[4] = t.width, h[7] = t.mips;
+			h[19] = 32, h[20] = 0x4, h[21] = 0x30315844; // pixel format: four CC "DX10"
+			h[27] = 0x1000 | 0x400000 | 0x8;             // texture, mipmaps, complex
+			const uint32_t dx10[5] = {t.dxgi, 3, 0, 1, 0}; // format, 2D, flags, array size 1
+			std::ofstream o(dir / (t.name + ".dds"), std::ios::binary);
+			o.write(reinterpret_cast<const char*>(h), 128);
+			o.write(reinterpret_cast<const char*>(dx10), 20);
+			o.write(reinterpret_cast<const char*>(t.data.data()), static_cast<std::streamsize>(t.data.size()));
+		}
 		return 0;
 	}
 
@@ -649,6 +670,13 @@ int main(int argc, char** argv)
 		return Fail(error);
 	const loader::convert::Decryptor decrypt = [&keys](uint32_t key, uint8_t* data, uint32_t size) { ue5export::ng::Decrypt(keys, key, data, size); };
 	SetDllDirectoryW(fs::path(g_options["game"]).c_str()); // (the game's zlib1.dll)
+	// --extra <dlc.rpf>[,...]: mods' DLC packs mounted after the game's (the world builder's new land)
+	if (g_options.contains("extra"))
+	{
+		std::istringstream list(g_options["extra"]);
+		for (std::string p; std::getline(list, p, ',');)
+			ue5export::GameFiles::extraPacks.push_back(p);
+	}
 	if (command == "index")
 		return Index(decrypt);
 	if (command == "map")

@@ -259,6 +259,15 @@ add_executable(worldgen
     tools/worldgen/ydr.cpp
     tools/worldgen/terrain.cpp
     tools/worldgen/mapfiles.cpp
+    tools/worldgen/catalog.cpp
+    tools/worldgen/osm.cpp
+    tools/worldgen/pbf.cpp
+    tools/worldgen/world.cpp
+    tools/worldgen/raster.cpp
+    tools/worldgen/roads.cpp
+    tools/worldgen/paths.cpp
+    tools/worldgen/build.cpp
+    tools/worldgen/buildings.cpp
     tools/worldgen/navgen.cpp
     tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp

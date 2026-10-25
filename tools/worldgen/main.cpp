@@ -40,6 +40,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <chrono>
 #include <set>
 #include <sstream>
 #include <string>
@@ -48,6 +49,12 @@
 #include "../ue5export/drawable.hpp"
 #include "convert/archive.hpp"
 #include "convert/pso.hpp"
+#include "build.hpp"
+#include "catalog.hpp"
+#include "osm.hpp"
+#include "pbf.hpp"
+#include "raster.hpp"
+#include "world.hpp"
 #include "mapfiles.hpp"
 #include "terrain.hpp"
 #include "ybn.hpp"
@@ -903,6 +910,8 @@ int main(int argc, char** argv)
 				continue;
 			std::string file = entry.path().filename().string();
 			std::transform(file.begin(), file.end(), file.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (file.ends_with(".txt") || file.ends_with(".png") || file.ends_with(".json"))
+				continue; // (the build's notes, not game files)
 			loader::convert::WriteNode n;
 			n.name = file;
 			std::ifstream in(entry.path(), std::ios::binary);
@@ -927,6 +936,22 @@ int main(int argc, char** argv)
 				    path);
 				typeEnables += std::format("            <Item>{}</Item>\n", path);
 			}
+		// (requests.txt in the input: the game's own archetype files to keep loaded, one path a line, "platform:/..." -
+		// those of the game's models the world places)
+		{
+			std::ifstream requests(fs::path(g_options["in"]) / "requests.txt");
+			for (std::string path; std::getline(requests, path);)
+			{
+				while (!path.empty() && (path.back() == '\r' || path.back() == ' '))
+					path.pop_back();
+				if (path.empty() || path[0] == '#')
+					continue;
+				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
+				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+				    path);
+				typeEnables += std::format("            <Item>{}</Item>\n", path);
+			}
+		}
 		const std::string content = std::format(
 		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CDataFileMgr__ContentsOfDataFileXml>\n  <disabledFiles />\n  <includedXmlFiles />\n"
 		    "  <includedDataFiles />\n  <dataFiles>\n    <Item>\n      <filename>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
@@ -1216,6 +1241,167 @@ int main(int argc, char** argv)
 				std::printf("%08x %s shader %u: %s\n", effect, name.c_str(), s, layout.c_str());
 			}
 		}
+		return 0;
+	}
+	if (command == "alias")
+	{
+		// an archetype file of aliases: --models a,b,... (game models) --name <ytyp name> --out <dir>: "<name>_<model>" each,
+		// the model's own fields and model (assetName) under the new name
+		std::vector<worldgen::mapfiles::Archetype> list;
+		std::istringstream models(g_options["models"]);
+		for (std::string m; std::getline(models, m, ',');)
+		{
+			worldgen::mapfiles::Archetype a;
+			if (!worldgen::mapfiles::FindArchetype(files, m, a, error))
+				return Fail(error);
+			a.assetName = loader::convert::Joaat(m);
+			a.name = g_options["name"] + "_" + m;
+			list.push_back(a);
+			std::printf("%s -> %s (txd %08x)\n", m.c_str(), a.name.c_str(), a.textureDictionary);
+		}
+		Bytes types;
+		if (!worldgen::mapfiles::WriteTypes(files, g_options["name"], list, types, error))
+			return Fail(error);
+		fs::create_directories(g_options["out"]);
+		std::ofstream(fs::path(g_options["out"]) / (g_options["name"] + ".ytyp"), std::ios::binary).write(reinterpret_cast<const char*>(types.data()), types.size());
+		return 0;
+	}
+	if (command == "build")
+	{
+		// a world description -> its pack's files (build.hpp): --world <world.json> --out <dir> [--zones <mod dir>] [--name n]
+		// [--area x0,y0,x1,y1] [--tile m] [--cell m] [--navmesh 0] [--paths 0]
+		if (!g_options.contains("world") || !g_options.contains("out"))
+			return Fail("--world <world.json> --out <dir> are needed");
+		worldgen::world::World w;
+		if (!worldgen::world::Load(g_options["world"], w, error))
+			return Fail(error);
+		worldgen::build::Options o;
+		o.out = g_options["out"];
+		o.name = g_options.contains("name") ? g_options["name"] : w.name;
+		if (g_options.contains("zones"))
+			o.zonesOut = g_options["zones"];
+		if (g_options.contains("area"))
+		{
+			char c = 0;
+			std::istringstream(g_options["area"]) >> o.area[0] >> c >> o.area[1] >> c >> o.area[2] >> c >> o.area[3];
+		}
+		if (g_options.contains("tile"))
+			o.tile = std::stof(g_options["tile"]);
+		if (g_options.contains("cell"))
+			o.cell = std::stof(g_options["cell"]);
+		o.navmesh = !g_options.contains("navmesh") || g_options["navmesh"] != "0";
+		o.paths = !g_options.contains("paths") || g_options["paths"] != "0";
+		std::vector<worldgen::catalog::Item> catalog;
+		if (g_options.contains("catalog") && !worldgen::catalog::Load(g_options["catalog"], catalog, error))
+			return Fail(error);
+		worldgen::build::Stats s;
+		const auto start = std::chrono::steady_clock::now();
+		if (!worldgen::build::Run(files, w, catalog, o, s, error))
+			return Fail(error);
+		std::printf("%s: %zu tiles (%zu terrain triangles), %zu road edges (%zu collision triangles), %zu navmeshes, %zu path nodes in %zu regions, "
+		            "%zu zones (%.0f s)\n",
+		    o.name.c_str(), s.tiles, s.terrainTriangles, s.roadEdges, s.roadTriangles, s.navmeshes, s.pathNodes, s.regions, s.zones,
+		    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+		return 0;
+	}
+	if (command == "osm")
+	{
+		// OpenStreetMap data (tools/osm_fetch.py's folder) -> a world description in game coordinates: --osm <dir> --out
+		// <world dir> [--at x,y: where the box's south-west corner goes (default 4300,-3000)] [--name n]; writes world.json
+		// and world.png (8 m a pixel: water, land use, buildings, roads)
+		// (or --pbf <file.osm.pbf> --box south,west,north,east: a binary extract, read for that box)
+		if ((!g_options.contains("osm") && !g_options.contains("pbf")) || !g_options.contains("out"))
+			return Fail("--osm <dir> (or --pbf <file> --box s,w,n,e) and --out <dir> are needed");
+		worldgen::osm::Data data;
+		if (g_options.contains("pbf"))
+		{
+			double s = 0, w0 = 0, n = 0, e = 0;
+			char c = 0;
+			std::istringstream(g_options["box"]) >> s >> c >> w0 >> c >> n >> c >> e;
+			if (n <= s || e <= w0)
+				return Fail("--box south,west,north,east is needed with --pbf");
+			const auto start = std::chrono::steady_clock::now();
+			if (!worldgen::pbf::Load(g_options["pbf"], s, w0, n, e, 0.05, data, error))
+				return Fail(error);
+			std::printf("extract: %zu nodes, %zu ways, %zu relations kept (%.0f s)\n", data.nodes.size(), data.ways.size(), data.relations.size(),
+			    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+		}
+		else if (!worldgen::osm::Load(g_options["osm"], data, error))
+			return Fail(error);
+		double ax = 4300, ay = -3000;
+		if (g_options.contains("at"))
+		{
+			char comma = 0;
+			std::istringstream(g_options["at"]) >> ax >> comma >> ay;
+		}
+		const auto projection = worldgen::world::Projection::Around(data.south, data.west, data.north, data.east, ax, ay);
+		worldgen::world::World w;
+		w.name = g_options.contains("name") ? g_options["name"] : "world";
+		if (!worldgen::world::FromOsm(data, projection, w, error))
+			return Fail(error);
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		if (!worldgen::world::Save(w, out / "world.json", error))
+			return Fail(error);
+		std::printf("%s: box %.0f,%.0f .. %.0f,%.0f; %zu coastlines, %zu areas, %zu waterways, %zu roads, %zu buildings, %zu points\n", w.name.c_str(), w.min[0],
+		    w.min[1], w.max[0], w.max[1], w.coastlines.size(), w.areas.size(), w.waterways.size(), w.roads.size(), w.buildings.size(), w.points.size());
+		// the picture
+		worldgen::raster::Grid<uint8_t> g;
+		g.Init(w.min[0], w.min[1], w.max[0], w.max[1], 8.0f, 0);
+		enum : uint8_t { kWater, kLand, kPark, kBeach, kWood, kParking, kBuilding, kMinor, kMajor, kMotorway };
+		worldgen::raster::ClassifyCoast(g, w.coastlines, 160.0f);
+		const auto fill = [&](const std::string& kind, uint8_t value) {
+			for (const auto& a : w.areas)
+				if (a.kind == kind)
+				{
+					auto rings = a.outer;
+					rings.insert(rings.end(), a.inner.begin(), a.inner.end());
+					worldgen::raster::FillPolygon(g, rings, value);
+				}
+		};
+		for (const char* k : {"park", "grass", "pitch"})
+			fill(k, kPark);
+		fill("wood", kWood);
+		fill("beach", kBeach);
+		fill("parking", kParking);
+		fill("water", kWater);
+		for (const auto& ww : w.waterways)
+			worldgen::raster::DrawLine(g, ww.points, ww.width / 2, static_cast<uint8_t>(kWater));
+		for (const auto& b : w.buildings)
+			worldgen::raster::FillPolygon(g, {b.footprint}, static_cast<uint8_t>(kBuilding));
+		for (const auto& r : w.roads)
+		{
+			const float half = (r.forward + r.backward) * r.laneWidth / 2;
+			const uint8_t c = r.kind.starts_with("motorway") || r.kind.starts_with("trunk") ? kMotorway
+			                  : r.kind.starts_with("primary") || r.kind.starts_with("secondary") ? kMajor
+			                                                                                     : kMinor;
+			worldgen::raster::DrawLine(g, r.points, std::max(half, 4.0f), c);
+		}
+		const std::array<uint8_t, 3> colours[] = {{40, 90, 160}, {205, 195, 170}, {120, 170, 90}, {235, 220, 160}, {70, 120, 60}, {150, 150, 150},
+		    {110, 100, 95}, {250, 250, 250}, {250, 210, 120}, {230, 120, 90}};
+		std::vector<std::array<uint8_t, 3>> rgb(g.v.size());
+		for (size_t k = 0; k < g.v.size(); ++k)
+			rgb[k] = colours[g.v[k]];
+		if (!worldgen::raster::WritePng(out / "world.png", g.nx, g.ny, rgb, error))
+			return Fail(error);
+		std::printf("world.png: %d x %d\n", g.nx, g.ny);
+		return 0;
+	}
+	if (command == "catalog")
+	{
+		// the asset catalog (catalog.hpp): --out <file.tsv>
+		if (!g_options.contains("out"))
+			return Fail("--out <file.tsv> is needed");
+		std::vector<worldgen::catalog::Item> items;
+		if (!worldgen::catalog::Build(files, items, error) || !worldgen::catalog::Save(items, g_options["out"], error))
+			return Fail(error);
+		std::map<std::string, int> kinds;
+		for (const auto& it : items)
+			++kinds[worldgen::catalog::Name(it.kind)];
+		std::printf("%zu archetypes:", items.size());
+		for (const auto& [k, n] : kinds)
+			std::printf(" %s %d", k.c_str(), n);
+		std::printf("\n");
 		return 0;
 	}
 	if (command == "zones")

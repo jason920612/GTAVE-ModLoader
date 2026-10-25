@@ -1,0 +1,446 @@
+#include "world.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <set>
+
+#include <nlohmann/json.hpp>
+
+namespace worldgen::world
+{
+	namespace
+	{
+		using osm::Tag;
+		constexpr double kPi = 3.14159265358979323846;
+
+		std::vector<P2> Points(const osm::Data& d, const osm::Way& w, const Projection& p)
+		{
+			std::vector<P2> out;
+			for (const int64_t n : w.nodes)
+				if (const auto it = d.nodes.find(n); it != d.nodes.end())
+					out.push_back(p.To(it->second.lat, it->second.lon));
+			return out;
+		}
+
+		float SignedArea(const std::vector<P2>& r)
+		{
+			double a = 0;
+			for (size_t i = 0; i < r.size(); ++i)
+			{
+				const P2& u = r[i];
+				const P2& v = r[(i + 1) % r.size()];
+				a += static_cast<double>(u[0]) * v[1] - static_cast<double>(v[0]) * u[1];
+			}
+			return static_cast<float>(a / 2);
+		}
+
+		// A closed way's ring without the repeated last point, anticlockwise when `ccw`.
+		std::vector<P2> Ring(std::vector<P2> r, bool ccw)
+		{
+			if (r.size() > 1 && r.front() == r.back())
+				r.pop_back();
+			if (r.size() >= 3 && (SignedArea(r) > 0) != ccw)
+				std::reverse(r.begin(), r.end());
+			return r;
+		}
+
+		// A multipolygon's rings of one role: its member ways joined end to end.
+		std::vector<std::vector<P2>> Rings(const osm::Data& d, const osm::Relation& rel, const std::string& role, const Projection& p)
+		{
+			std::vector<std::vector<int64_t>> parts;
+			for (const osm::Member& m : rel.members)
+				if (m.type == 'w' && (m.role == role || (role == "outer" && m.role.empty())))
+					if (const auto it = d.ways.find(m.ref); it != d.ways.end() && it->second.nodes.size() >= 2)
+						parts.push_back(it->second.nodes);
+			std::vector<std::vector<P2>> rings;
+			while (!parts.empty())
+			{
+				std::vector<int64_t> ring = std::move(parts.back());
+				parts.pop_back();
+				for (bool grew = true; grew && ring.front() != ring.back();)
+				{
+					grew = false;
+					for (size_t i = 0; i < parts.size(); ++i)
+					{
+						auto& q = parts[i];
+						if (q.front() == ring.back())
+							ring.insert(ring.end(), q.begin() + 1, q.end());
+						else if (q.back() == ring.back())
+							ring.insert(ring.end(), q.rbegin() + 1, q.rend());
+						else
+							continue;
+						parts.erase(parts.begin() + static_cast<ptrdiff_t>(i));
+						grew = true;
+						break;
+					}
+				}
+				if (ring.front() != ring.back())
+					continue; // (open: part of it lies outside the data)
+				osm::Way w;
+				w.nodes = std::move(ring);
+				auto pts = Ring(Points(d, w, p), role == "outer");
+				if (pts.size() >= 3)
+					rings.push_back(std::move(pts));
+			}
+			return rings;
+		}
+
+		// An area's kind from its tags, or "".
+		std::string AreaKind(const osm::Tags& t)
+		{
+			const std::string &leisure = Tag(t, "leisure"), &landuse = Tag(t, "landuse"), &natural = Tag(t, "natural"), &amenity = Tag(t, "amenity");
+			if (natural == "water" || landuse == "basin" || landuse == "reservoir" || Tag(t, "waterway") == "riverbank" || Tag(t, "waterway") == "dock" ||
+			    natural == "bay")
+				return "water";
+			if (natural == "beach" || natural == "sand")
+				return "beach";
+			if (natural == "wetland")
+				return "wetland";
+			if (natural == "wood" || natural == "scrub" || landuse == "forest")
+				return "wood";
+			if (leisure == "park" || leisure == "garden" || leisure == "recreation_ground" || leisure == "playground" || leisure == "dog_park" ||
+			    leisure == "nature_reserve")
+				return "park";
+			if (leisure == "pitch" || leisure == "golf_course" || leisure == "stadium" || leisure == "track")
+				return "pitch";
+			if (landuse == "grass" || landuse == "recreation_ground" || landuse == "village_green" || landuse == "meadow" || landuse == "cemetery" ||
+			    natural == "grassland")
+				return "grass";
+			if (amenity == "parking")
+				return "parking";
+			if (!Tag(t, "aeroway").empty())
+				return "paved";
+			if (landuse == "residential" || landuse == "commercial" || landuse == "retail" || landuse == "industrial" || landuse == "construction" ||
+			    landuse == "railway" || landuse == "military")
+				return landuse;
+			return {};
+		}
+
+		float Number(const std::string& s)
+		{
+			try
+			{
+				size_t used = 0;
+				const float v = std::stof(s, &used);
+				const std::string unit = s.substr(used);
+				if (unit.find('\'') != std::string::npos || unit.find("ft") != std::string::npos)
+					return v * 0.3048f;
+				return v;
+			}
+			catch (...)
+			{
+				return 0;
+			}
+		}
+
+		float Speed(const std::string& s)
+		{
+			const float v = Number(s);
+			return s.find("mph") != std::string::npos ? v * 0.44704f : v / 3.6f;
+		}
+
+		float BuildingHeight(const osm::Tags& t)
+		{
+			if (const float h = Number(Tag(t, "height")); h > 0)
+				return h;
+			if (const float l = Number(Tag(t, "building:levels")); l > 0)
+				return l * 3.3f + 1.5f;
+			const std::string& b = Tag(t, "building");
+			if (b == "house" || b == "detached" || b == "residential" || b == "semidetached_house" || b == "terrace" || b == "bungalow")
+				return 6;
+			if (b == "apartments" || b == "dormitory")
+				return 14;
+			if (b == "hotel")
+				return 24;
+			if (b == "office")
+				return 18;
+			if (b == "industrial" || b == "warehouse")
+				return 9;
+			if (b == "garage" || b == "garages" || b == "shed" || b == "roof" || b == "carport")
+				return 3;
+			if (b == "church" || b == "cathedral")
+				return 12;
+			return 7;
+		}
+	}
+
+	Projection Projection::Around(double south, double west, double north, double east, double x0, double y0)
+	{
+		// metres per degree at the box's middle latitude (WGS84)
+		const double phi = (south + north) / 2 * kPi / 180;
+		Projection p;
+		p.lat0 = south, p.lon0 = west, p.x0 = x0, p.y0 = y0;
+		p.ky = 111132.92 - 559.82 * std::cos(2 * phi) + 1.175 * std::cos(4 * phi);
+		p.kx = 111412.84 * std::cos(phi) - 93.5 * std::cos(3 * phi) + 0.118 * std::cos(5 * phi);
+		(void)east;
+		return p;
+	}
+
+	bool FromOsm(const osm::Data& d, const Projection& p, World& out, std::string& error)
+	{
+		out.min = p.To(d.south, d.west);
+		out.max = p.To(d.north, d.east);
+		out.attribution = "Map data (c) OpenStreetMap contributors, ODbL";
+		static const std::set<std::string> kRoads{"motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "living_street",
+		    "service", "road", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"};
+		for (const auto& [id, w] : d.ways)
+		{
+			if (w.nodes.size() < 2)
+				continue;
+			const osm::Tags& t = w.tags;
+			const bool closed = w.nodes.front() == w.nodes.back() && w.nodes.size() >= 4;
+			if (Tag(t, "natural") == "coastline")
+			{
+				// (split where its nodes were not read: far outside the box, a straight jump would cut across the land)
+				std::vector<P2> piece;
+				for (const int64_t node : w.nodes)
+				{
+					const auto it = d.nodes.find(node);
+					if (it == d.nodes.end())
+					{
+						if (piece.size() >= 2)
+							out.coastlines.push_back(std::move(piece));
+						piece.clear();
+						continue;
+					}
+					piece.push_back(p.To(it->second.lat, it->second.lon));
+				}
+				if (piece.size() >= 2)
+					out.coastlines.push_back(std::move(piece));
+				continue;
+			}
+			const std::string& highway = Tag(t, "highway");
+			if (kRoads.contains(highway) && Tag(t, "area") != "yes")
+			{
+				const std::string& service = Tag(t, "service");
+				if (highway == "service" && (service == "parking_aisle" || service == "driveway" || service == "drive-through"))
+					continue;
+				Road r;
+				r.id = id;
+				r.points = Points(d, w, p);
+				r.kind = highway;
+				r.name = Tag(t, "name");
+				const bool link = highway.ends_with("_link");
+				const std::string base = link ? highway.substr(0, highway.size() - 5) : highway;
+				const std::string& oneway = Tag(t, "oneway");
+				const bool one = oneway == "yes" || oneway == "true" || oneway == "1" || oneway == "-1" || (highway == "motorway" && oneway != "no") ||
+				                 Tag(t, "junction") == "roundabout";
+				if (oneway == "-1")
+					std::reverse(r.points.begin(), r.points.end());
+				const int lanes = static_cast<int>(Number(Tag(t, "lanes")));
+				const int defaultLanes = base == "motorway" ? (one ? 3 : 6) : base == "trunk" || base == "primary" ? (one ? 2 : 4) : link ? 1 : 2;
+				const int total = lanes > 0 ? lanes : defaultLanes;
+				if (one)
+					r.forward = std::max(1, total), r.backward = 0;
+				else
+				{
+					const int f = static_cast<int>(Number(Tag(t, "lanes:forward"))), b = static_cast<int>(Number(Tag(t, "lanes:backward")));
+					r.forward = f > 0 ? f : std::max(1, (total + 1) / 2);
+					r.backward = b > 0 ? b : std::max(1, total / 2);
+				}
+				r.laneWidth = base == "motorway" || base == "trunk" ? 3.7f : base == "primary" || base == "secondary" ? 3.5f : base == "tertiary" ? 3.3f
+				              : highway == "service"                                                                     ? 2.8f
+				                                                                                                         : 3.0f;
+				const std::string& sidewalk = Tag(t, "sidewalk");
+				r.sidewalks = !link && base != "motorway" && base != "trunk" && highway != "service" && sidewalk != "no" && sidewalk != "none";
+				r.bridge = !Tag(t, "bridge").empty() && Tag(t, "bridge") != "no";
+				r.tunnel = !Tag(t, "tunnel").empty() && Tag(t, "tunnel") != "no";
+				r.layer = static_cast<int>(Number(Tag(t, "layer")));
+				r.speed = Speed(Tag(t, "maxspeed"));
+				if (r.points.size() >= 2)
+					out.roads.push_back(std::move(r));
+				continue;
+			}
+			const std::string& waterway = Tag(t, "waterway");
+			if (!closed && (waterway == "canal" || waterway == "river" || waterway == "stream" || waterway == "ditch" || waterway == "drain"))
+			{
+				Waterway ww;
+				ww.points = Points(d, w, p);
+				ww.kind = waterway;
+				const float width = Number(Tag(t, "width"));
+				ww.width = width > 0 ? width : waterway == "river" ? 25.0f : waterway == "canal" ? 18.0f : 4.0f;
+				out.waterways.push_back(std::move(ww));
+				continue;
+			}
+			if (!closed)
+				continue;
+			if (!Tag(t, "building").empty() || !Tag(t, "building:part").empty())
+			{
+				if (!Tag(t, "building:part").empty() && Tag(t, "building").empty())
+					continue; // (parts: the building's own outline carries the height)
+				Building b;
+				b.footprint = Ring(Points(d, w, p), true);
+				b.height = BuildingHeight(t);
+				b.kind = Tag(t, "building");
+				b.name = Tag(t, "name");
+				if (b.footprint.size() >= 3)
+					out.buildings.push_back(std::move(b));
+				continue;
+			}
+			if (const std::string kind = AreaKind(t); !kind.empty())
+			{
+				Area a;
+				a.kind = kind;
+				a.outer.push_back(Ring(Points(d, w, p), true));
+				if (a.outer.back().size() >= 3)
+					out.areas.push_back(std::move(a));
+			}
+		}
+		for (const auto& [id, r] : d.relations)
+		{
+			const osm::Tags& t = r.tags;
+			if (Tag(t, "type") != "multipolygon")
+				continue;
+			if (!Tag(t, "building").empty())
+			{
+				for (auto& ring : Rings(d, r, "outer", p))
+				{
+					Building b;
+					b.footprint = std::move(ring);
+					b.height = BuildingHeight(t);
+					b.kind = Tag(t, "building");
+					b.name = Tag(t, "name");
+					out.buildings.push_back(std::move(b));
+				}
+				continue;
+			}
+			if (const std::string kind = AreaKind(t); !kind.empty())
+			{
+				Area a;
+				a.kind = kind;
+				a.outer = Rings(d, r, "outer", p);
+				a.inner = Rings(d, r, "inner", p);
+				if (!a.outer.empty())
+					out.areas.push_back(std::move(a));
+			}
+		}
+		for (const auto& [id, t] : d.nodeTags)
+		{
+			const auto n = d.nodes.find(id);
+			if (n == d.nodes.end())
+				continue;
+			std::string kind;
+			if (Tag(t, "natural") == "tree")
+				kind = "tree";
+			else if (Tag(t, "highway") == "traffic_signals")
+				kind = "traffic_signals";
+			else if (Tag(t, "highway") == "stop")
+				kind = "stop";
+			else if (Tag(t, "highway") == "crossing")
+				kind = "crossing";
+			if (!kind.empty())
+				out.points.push_back({kind, p.To(n->second.lat, n->second.lon)});
+		}
+		if (out.roads.empty() && out.buildings.empty() && out.coastlines.empty())
+			return error = "nothing usable in the data", false;
+		return true;
+	}
+
+	namespace
+	{
+		nlohmann::json Line(const std::vector<P2>& pts)
+		{
+			nlohmann::json a = nlohmann::json::array();
+			for (const P2& q : pts)
+				a.push_back({std::round(q[0] * 100) / 100, std::round(q[1] * 100) / 100});
+			return a;
+		}
+		std::vector<P2> Line(const nlohmann::json& a)
+		{
+			std::vector<P2> pts;
+			for (const auto& q : a)
+				pts.push_back({q[0].get<float>(), q[1].get<float>()});
+			return pts;
+		}
+	}
+
+	bool Save(const World& w, const std::filesystem::path& file, std::string& error)
+	{
+		nlohmann::json j;
+		j["name"] = w.name;
+		j["attribution"] = w.attribution;
+		j["min"] = {w.min[0], w.min[1]};
+		j["max"] = {w.max[0], w.max[1]};
+		auto& coast = j["coastlines"] = nlohmann::json::array();
+		for (const auto& c : w.coastlines)
+			coast.push_back(Line(c));
+		auto& areas = j["areas"] = nlohmann::json::array();
+		for (const Area& a : w.areas)
+		{
+			nlohmann::json o{{"kind", a.kind}, {"outer", nlohmann::json::array()}, {"inner", nlohmann::json::array()}};
+			for (const auto& r : a.outer)
+				o["outer"].push_back(Line(r));
+			for (const auto& r : a.inner)
+				o["inner"].push_back(Line(r));
+			areas.push_back(std::move(o));
+		}
+		auto& waterways = j["waterways"] = nlohmann::json::array();
+		for (const Waterway& ww : w.waterways)
+			waterways.push_back({{"kind", ww.kind}, {"width", ww.width}, {"points", Line(ww.points)}});
+		auto& roads = j["roads"] = nlohmann::json::array();
+		for (const Road& r : w.roads)
+			roads.push_back({{"id", r.id}, {"kind", r.kind}, {"name", r.name}, {"forward", r.forward}, {"backward", r.backward}, {"laneWidth", r.laneWidth},
+			    {"sidewalks", r.sidewalks}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}});
+		auto& buildings = j["buildings"] = nlohmann::json::array();
+		for (const Building& b : w.buildings)
+			buildings.push_back({{"kind", b.kind}, {"name", b.name}, {"height", b.height}, {"footprint", Line(b.footprint)}});
+		auto& points = j["points"] = nlohmann::json::array();
+		for (const Point& p : w.points)
+			points.push_back({{"kind", p.kind}, {"at", {p.position[0], p.position[1]}}});
+		std::ofstream o(file, std::ios::binary);
+		if (!o)
+			return error = "cannot write " + file.string(), false;
+		o << j.dump(1);
+		return true;
+	}
+
+	bool Load(const std::filesystem::path& file, World& w, std::string& error)
+	{
+		std::ifstream in(file, std::ios::binary);
+		const auto j = nlohmann::json::parse(in, nullptr, false);
+		if (j.is_discarded())
+			return error = file.string() + " is not a world description", false;
+		w = {};
+		w.name = j.value("name", "");
+		w.attribution = j.value("attribution", "");
+		w.min = {j["min"][0].get<float>(), j["min"][1].get<float>()};
+		w.max = {j["max"][0].get<float>(), j["max"][1].get<float>()};
+		for (const auto& c : j["coastlines"])
+			w.coastlines.push_back(Line(c));
+		for (const auto& o : j["areas"])
+		{
+			Area a;
+			a.kind = o["kind"];
+			for (const auto& r : o["outer"])
+				a.outer.push_back(Line(r));
+			for (const auto& r : o["inner"])
+				a.inner.push_back(Line(r));
+			w.areas.push_back(std::move(a));
+		}
+		for (const auto& o : j["waterways"])
+			w.waterways.push_back({Line(o["points"]), o["width"].get<float>(), o["kind"].get<std::string>()});
+		for (const auto& o : j["roads"])
+		{
+			Road r;
+			r.id = o["id"];
+			r.kind = o["kind"];
+			r.name = o["name"];
+			r.forward = o["forward"];
+			r.backward = o["backward"];
+			r.laneWidth = o["laneWidth"];
+			r.sidewalks = o["sidewalks"];
+			r.bridge = o["bridge"];
+			r.tunnel = o["tunnel"];
+			r.layer = o["layer"];
+			r.speed = o["speed"];
+			r.points = Line(o["points"]);
+			w.roads.push_back(std::move(r));
+		}
+		for (const auto& o : j["buildings"])
+			w.buildings.push_back({Line(o["footprint"]), o["height"].get<float>(), o["kind"].get<std::string>(), o["name"].get<std::string>()});
+		for (const auto& o : j["points"])
+			w.points.push_back({o["kind"].get<std::string>(), {o["at"][0].get<float>(), o["at"][1].get<float>()}});
+		return true;
+	}
+}
