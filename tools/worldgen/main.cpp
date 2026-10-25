@@ -4,6 +4,9 @@
 //       every road-network region the game uses read, written back with our writer and read again: must be the same
 //   worldgen ynv-roundtrip --game <dir> --keys <ng.bin>
 //       every navmesh the game uses read, written back with our writer and read again: must be the same
+//   worldgen ynv-reindex --game <dir> --keys <ng.bin> --out <dir> [--width n]
+//       every navmesh renumbered for a wider grid (default 147 squares; the game has 100): own index, adjacency, polygons,
+//       special links
 //   worldgen extract --game <dir> --keys <ng.bin> --out <dir> --name <pattern>
 //       game files by name ("*" matches any run of characters), as stored; a resource also as its two blocks
 //   worldgen extract-ynd --game <dir> --keys <ng.bin> --out <dir>
@@ -12,6 +15,12 @@
 //       [--template x,y]
 //       a two-way test road along the polyline for the 1024 m grid (a road node of the game copied: its flags, switched
 //       on; n lanes each way), positions relative to the region's corner outside +-8192 m
+//   worldgen navmesh --game <dir> --keys <ng.bin> --ymap <file> --out <dir> [--surface pavement|ground|road] [--obj <file>]
+//       pedestrians' navmeshes (navgen.hpp) for the entities of a map file: each one's collision (its drawable's) placed
+//       as the entity is; every walkable face of that kind (pavement by default). --obj: the collision as an OBJ file
+//   worldgen pack --game <dir> --keys <ng.bin> --in <dir> --out <dlc.rpf> --name <pack>
+//       a DLC pack of the files in the folder (ModLoader\mods\<name>\dlc.rpf): a plain streaming archive, so new files
+//       (maps, navmeshes...) are registered as new
 //   worldgen regrid --game <dir> --keys <ng.bin> --out <dir>
 //       the road network in 1024 m regions from -16384 (still 32 x 32; the loader's worldPathGrid): every node goes to
 //       the region its position falls in, regions sorted (vehicle nodes, then pedestrian nodes, each by y) and renumbered,
@@ -27,15 +36,24 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include "../ue5export/drawable.hpp"
+#include "convert/archive.hpp"
 #include "../ue5export/gamefiles.hpp"
+#include "../ue5export/meta.hpp"
 #include "../ue5export/ng.hpp"
+#include "bounds.hpp"
+#include "meta.hpp"
+#include "navgen.hpp"
+#include "pages.hpp"
 #include "ynd.hpp"
 #include "ynv.hpp"
 
@@ -510,6 +528,564 @@ int main(int argc, char** argv)
 		}
 		std::printf("%zu navmeshes, %zu polygons: %zu differ after writing them again\n", count, polys, bad);
 		return bad ? 1 : 0;
+	}
+	if (command == "testland")
+	{
+		// a map file placing a straight prop (--piece, its long axis its x) end to end along the polyline at --z: test
+		// ground for the far roads (--out <dir>, --name <map name>)
+		if (!g_options.contains("out") || !g_options.contains("path"))
+			return Fail("--out <dir> --path x,y/x,y[/...] are needed");
+		const std::string mapName = g_options.contains("name") ? g_options["name"] : "wb_testland";
+		const std::string piece = g_options.contains("piece") ? g_options["piece"] : "stt_prop_track_straight_l";
+		const float z = g_options.contains("z") ? std::stof(g_options["z"]) : 100.0f;
+		const float length = g_options.contains("length") ? std::stof(g_options["length"]) : 158.95f;
+		std::vector<std::array<float, 2>> corners;
+		{
+			std::istringstream in(g_options["path"]);
+			for (std::string item; std::getline(in, item, '/');)
+			{
+				std::array<float, 2> c{};
+				char comma = 0;
+				std::istringstream(item) >> c[0] >> comma >> c[1];
+				corners.push_back(c);
+			}
+		}
+		struct Piece
+		{
+			float x, y, heading;
+		};
+		std::vector<Piece> pieces;
+		for (size_t c = 0; c + 1 < corners.size(); ++c)
+		{
+			const float dx = corners[c + 1][0] - corners[c][0], dy = corners[c + 1][1] - corners[c][1];
+			const float span = std::hypot(dx, dy), ux = dx / span, uy = dy / span;
+			const float heading = std::atan2(uy, ux) * 180.0f / 3.14159265f; // (the piece's long axis is its x)
+			// from 20 m before the corner to 20 m past the next one: the corners overlap
+			for (float t = -20.0f; t < span + 20.0f; t += length)
+			{
+				const float mid = std::min(t + length / 2, span + 20.0f - length / 2);
+				pieces.push_back({corners[c][0] + ux * mid, corners[c][1] + uy * mid, heading});
+			}
+		}
+		Bytes templ;
+		const auto* tf = files.Find("cs1_10_strm_0.ymap");
+		worldgen::meta::Writer w;
+		if (!tf || !files.Read(*tf, templ, error) || !w.Template(templ, error))
+			return Fail("template map: " + error);
+		using worldgen::meta::Hash;
+		const uint32_t mapData = Hash("CMapData"), entityDef = Hash("CEntityDef");
+		const uint32_t mapSize = w.Size(mapData), entitySize = w.Size(entityDef);
+		const auto put = [&](Bytes& b, uint32_t structure, const char* field, const void* value, size_t size) {
+			const int at = w.Offset(structure, Hash(field));
+			if (at < 0 || at + size > b.size())
+				return false;
+			std::memcpy(b.data() + at, value, size);
+			return true;
+		};
+		// the entities, 128 to a block, then the block of pointers to them
+		std::vector<uint64_t> pointers;
+		std::array<float, 3> lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+		const uint32_t archetype = loader::convert::Joaat(piece);
+		const uint32_t perBlock = worldgen::Pages::kSize / entitySize;
+		for (size_t i = 0; i < pieces.size(); i += perBlock)
+		{
+			const size_t n = std::min<size_t>(perBlock, pieces.size() - i);
+			Bytes block(n * entitySize, 0);
+			const uint32_t number = w.AddBlock(entityDef, {});
+			for (size_t k = 0; k < n; ++k)
+			{
+				const Piece& p = pieces[i + k];
+				Bytes e(entitySize, 0);
+				const float h = p.heading * 3.14159265f / 180.0f;
+				// (a map stores the inverse of an entity's rotation)
+				const float position[4] = {p.x, p.y, z, 0}, rotation[4] = {0, 0, -std::sin(h / 2), std::cos(h / 2)};
+				const float one = 1.0f, lodDist = 1500.0f, ao = 0;
+				const uint32_t guid = loader::convert::Joaat(mapName + std::to_string(i + k)), flags = 0, lodLevel = 5, ao255 = 255;
+				const int32_t parent = -1;
+				bool ok = put(e, entityDef, "archetypeName", &archetype, 4) && put(e, entityDef, "flags", &flags, 4) && put(e, entityDef, "guid", &guid, 4) &&
+				          put(e, entityDef, "position", position, 16) && put(e, entityDef, "rotation", rotation, 16) &&
+				          put(e, entityDef, "scaleXY", &one, 4) && put(e, entityDef, "scaleZ", &one, 4) && put(e, entityDef, "parentIndex", &parent, 4) &&
+				          put(e, entityDef, "lodDist", &lodDist, 4) && put(e, entityDef, "childLodDist", &ao, 4) &&
+				          put(e, entityDef, "lodLevel", &lodLevel, 4) && put(e, entityDef, "ambientOcclusionMultiplier", &ao255, 4) &&
+				          put(e, entityDef, "artificialAmbientOcclusion", &ao255, 4);
+				if (!ok)
+					return Fail("a field of CEntityDef is not in the template");
+				std::memcpy(block.data() + k * entitySize, e.data(), entitySize);
+				pointers.push_back(worldgen::meta::Writer::Pointer(number, static_cast<uint32_t>(k * entitySize)));
+				for (int a = 0; a < 2; ++a)
+				{
+					lo[a] = std::min(lo[a], (a ? p.y : p.x) - 85.0f);
+					hi[a] = std::max(hi[a], (a ? p.y : p.x) + 85.0f);
+				}
+				lo[2] = std::min(lo[2], z - 5.0f), hi[2] = std::max(hi[2], z + 5.0f);
+			}
+			w.Block(number) = std::move(block);
+		}
+		Bytes pointerBlock(pointers.size() * 8);
+		std::memcpy(pointerBlock.data(), pointers.data(), pointerBlock.size());
+		const uint32_t pointerNumber = w.AddBlock(7, std::move(pointerBlock));
+		Bytes root(mapSize, 0);
+		const uint32_t name = loader::convert::Joaat(mapName), zero = 0, content = 0x41;
+		const float entitiesMin[4] = {lo[0], lo[1], lo[2], 0}, entitiesMax[4] = {hi[0], hi[1], hi[2], 0};
+		const float streamMin[4] = {lo[0] - 1500, lo[1] - 1500, lo[2] - 500, 0}, streamMax[4] = {hi[0] + 1500, hi[1] + 1500, hi[2] + 500, 0};
+		const uint64_t entities = worldgen::meta::Writer::Pointer(pointerNumber, 0);
+		const uint16_t count = static_cast<uint16_t>(pointers.size());
+		const int arrayAt = w.Offset(mapData, Hash("entities"));
+		if (!put(root, mapData, "name", &name, 4) || !put(root, mapData, "parent", &zero, 4) || !put(root, mapData, "flags", &zero, 4) ||
+		    !put(root, mapData, "contentFlags", &content, 4) || !put(root, mapData, "streamingExtentsMin", streamMin, 16) ||
+		    !put(root, mapData, "streamingExtentsMax", streamMax, 16) || !put(root, mapData, "entitiesExtentsMin", entitiesMin, 16) ||
+		    !put(root, mapData, "entitiesExtentsMax", entitiesMax, 16) || arrayAt < 0)
+			return Fail("a field of CMapData is not in the template");
+		std::memcpy(root.data() + arrayAt, &entities, 8);
+		std::memcpy(root.data() + arrayAt + 8, &count, 2);
+		std::memcpy(root.data() + arrayAt + 10, &count, 2);
+		const uint32_t rootNumber = w.AddBlock(mapData, std::move(root));
+		Bytes file;
+		if (!w.Write(rootNumber, file, error))
+			return Fail(error);
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		std::ofstream(out / (mapName + ".ymap"), std::ios::binary).write(reinterpret_cast<const char*>(file.data()), file.size());
+		std::printf("%s.ymap: %zu pieces of %s\n", mapName.c_str(), pieces.size(), piece.c_str());
+		return 0;
+	}
+	if (command == "navmesh")
+	{
+		// pedestrians' navmeshes (navgen.hpp) for the entities of a map file: each one's collision (its drawable's)
+		// placed as the entity is, every walkable face of the --surface kind
+		if (!g_options.contains("ymap") || !g_options.contains("out"))
+			return Fail("--ymap <file> --out <dir> are needed");
+		Bytes data;
+		{
+			std::ifstream in(g_options["ymap"], std::ios::binary);
+			data.assign(std::istreambuf_iterator<char>(in), {});
+		}
+		ue5export::meta::Meta m;
+		if (!m.Read(data, error))
+			return Fail("not a map file: " + error);
+		using ue5export::meta::Hash;
+		std::map<uint32_t, const ue5export::GameFiles::File*> drawables;
+		for (const auto& [name, f] : files.Files())
+			if (name.ends_with(".ydr"))
+				drawables.emplace(loader::convert::Joaat(name.substr(0, name.size() - 4)), &f);
+		const std::string surfaceName = g_options.contains("surface") ? g_options["surface"] : "pavement";
+		const worldgen::navgen::Surface surface = surfaceName == "road" ? worldgen::navgen::Surface::Road
+		                                          : surfaceName == "ground" ? worldgen::navgen::Surface::Ground
+		                                                                    : worldgen::navgen::Surface::Pavement;
+		worldgen::bounds::Mesh mesh;
+		std::map<uint32_t, std::unique_ptr<loader::convert::Resource>> models;
+		size_t placed = 0, missing = 0;
+		for (const ue5export::meta::Ref& e : m.Root().Array(Hash("entities")))
+		{
+			if (!e)
+				continue;
+			const uint32_t archetype = e.Get<uint32_t>(Hash("archetypeName"));
+			auto model = models.find(archetype);
+			if (model == models.end())
+			{
+				std::unique_ptr<loader::convert::Resource> r;
+				Bytes file;
+				if (const auto d = drawables.find(archetype); d != drawables.end() && files.Read(*d->second, file, error))
+				{
+					r = std::make_unique<loader::convert::Resource>();
+					if (!loader::convert::Read(file, *r, error))
+						r.reset();
+				}
+				model = models.emplace(archetype, std::move(r)).first;
+			}
+			if (!model->second)
+			{
+				++missing;
+				continue;
+			}
+			const ue5export::drawable::View view(*model->second);
+			const uint64_t bound = view.Get<uint64_t>(ue5export::drawable::View::kRoot + 0xC8);
+			if (!bound)
+			{
+				++missing;
+				continue;
+			}
+			// the entity's transform: a map stores the inverse of its rotation
+			const auto p = e.Get<std::array<float, 4>>(Hash("position"));
+			const auto s = e.Get<std::array<float, 4>>(Hash("rotation"));
+			const float x = -s[0], y = -s[1], z = -s[2], w = s[3], xy = e.Get<float>(Hash("scaleXY")), sz = e.Get<float>(Hash("scaleZ"));
+			worldgen::bounds::Matrix t{};
+			t[0] = {(1 - 2 * (y * y + z * z)) * xy, 2 * (x * y + z * w) * xy, 2 * (x * z - y * w) * xy};
+			t[1] = {2 * (x * y - z * w) * xy, (1 - 2 * (x * x + z * z)) * xy, 2 * (y * z + x * w) * xy};
+			t[2] = {2 * (x * z + y * w) * sz, 2 * (y * z - x * w) * sz, (1 - 2 * (x * x + y * y)) * sz};
+			t[3] = {p[0], p[1], p[2]};
+			if (!worldgen::bounds::Collect(view, bound, t, mesh, error))
+				return Fail("collision: " + error);
+			++placed;
+		}
+		std::printf("%zu entities placed (%zu without a drawable or collision): %zu triangles (%zu from boxes, %zu primitives as boxes)\n", placed,
+		    missing, mesh.triangles.size(), mesh.counts[1] * 12, mesh.counts[5]);
+		if (g_options.contains("obj"))
+		{
+			std::ofstream obj(g_options["obj"]);
+			for (const auto& v : mesh.vertices)
+				obj << "v " << v[0] << ' ' << v[1] << ' ' << v[2] << '\n';
+			for (const auto& t : mesh.triangles)
+				obj << "f " << t[0] + 1 << ' ' << t[1] + 1 << ' ' << t[2] + 1 << '\n';
+		}
+		worldgen::navgen::Result result;
+		const std::vector<worldgen::navgen::Surface> surfaces(mesh.triangles.size(), surface);
+		if (!worldgen::navgen::Build(mesh, surfaces, {}, result, error))
+			return Fail(error);
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		for (const auto& [square, nm] : result.navmeshes)
+		{
+			Bytes file;
+			if (!worldgen::ynv::Write(nm, file, error))
+				return Fail(worldgen::navgen::FileName(square) + ": " + error);
+			std::ofstream(out / worldgen::navgen::FileName(square), std::ios::binary).write(reinterpret_cast<const char*>(file.data()), file.size());
+			std::printf("%s: index %u, %zu polygons, %zu vertices\n", worldgen::navgen::FileName(square).c_str(), nm.index, nm.polys.size(), nm.vertices.size());
+		}
+		std::printf("%zu navmeshes, %zu polygons; %zu edges joined across squares, %zu vertices put into edges on their sides\n", result.navmeshes.size(),
+		    result.polygons, result.joined, result.cut);
+		return 0;
+	}
+	if (command == "rpf-find")
+	{
+		// the paths inside an archive (and the archives in it) that contain --pattern; with --out also their contents
+		if (!g_options.contains("rpf") || !g_options.contains("pattern"))
+			return Fail("--rpf <file> --pattern <text> are needed");
+		const fs::path path = g_options["rpf"];
+		auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
+		loader::convert::Archive root;
+		if (!in->is_open() || !root.Open(in, 0, fs::file_size(path), path.filename().string(), &decrypt, error))
+			return Fail("cannot open " + path.string() + ": " + error);
+		const std::string pattern = g_options["pattern"];
+		const fs::path out = g_options.contains("out") ? fs::path(g_options["out"]) : fs::path();
+		const auto walk = [&](auto&& self, const loader::convert::Archive& a, uint32_t node, const std::string& prefix) -> void {
+			for (const uint32_t c : a.Nodes()[node].children)
+			{
+				const auto& n = a.Nodes()[c];
+				const std::string p = prefix + "/" + n.name;
+				if (n.directory)
+					self(self, a, c, p);
+				else if (n.name.ends_with(".rpf"))
+				{
+					loader::convert::Archive nested;
+					if (a.OpenNested(c, nested, error))
+						self(self, nested, 0, p);
+				}
+				if (!n.directory && p.find(pattern) != std::string::npos)
+				{
+					std::printf("%s (%u bytes)\n", p.c_str(), n.size);
+					Bytes data;
+					if (!out.empty() && a.ReadFile(c, data, error))
+					{
+						fs::create_directories(out);
+						std::ofstream(out / n.name, std::ios::binary).write(reinterpret_cast<const char*>(data.data()), data.size());
+					}
+				}
+			}
+		};
+		walk(walk, root, 0, "");
+		return 0;
+	}
+	if (command == "pack")
+	{
+		// a DLC pack of the files in --in (maps, navmeshes, models...): ModLoader\mods\<name>\dlc.rpf. Its streaming archive is
+		// a plain one (not an overlay): files the game does not have are registered as new (a map is then loaded where it is)
+		if (!g_options.contains("in") || !g_options.contains("out") || !g_options.contains("name"))
+			return Fail("--in <dir> --out <dlc.rpf> --name <pack name> are needed");
+		const std::string name = g_options["name"], device = "dlc_" + name;
+		loader::convert::WriteNode stream;
+		stream.name = name + ".rpf";
+		stream.kind = loader::convert::WriteNode::Kind::Archive;
+		size_t count = 0;
+		for (const auto& entry : fs::directory_iterator(g_options["in"]))
+		{
+			if (!entry.is_regular_file())
+				continue;
+			std::string file = entry.path().filename().string();
+			std::transform(file.begin(), file.end(), file.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			loader::convert::WriteNode n;
+			n.name = file;
+			std::ifstream in(entry.path(), std::ios::binary);
+			n.data.assign(std::istreambuf_iterator<char>(in), {});
+			n.kind = n.data.size() >= 4 && std::memcmp(n.data.data(), "RSC7", 4) == 0 ? loader::convert::WriteNode::Kind::Resource
+			                                                                          : loader::convert::WriteNode::Kind::File;
+			stream.children.push_back(std::move(n));
+			++count;
+		}
+		// The archive is a map change set of story mode (GROUP_MAP_SP), as the game's own DLC maps are: the game then reads
+		// the pack's map cache (x64\data\cacheloaderdata_dlc\<pack>_<change set hash>_cache_y.dat) for where each map and
+		// collision file lies. Without it a new map is registered disabled and without its box, and never loaded.
+		const std::string changeSet = name + "_MAP";
+		const std::string content = std::format(
+		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CDataFileMgr__ContentsOfDataFileXml>\n  <disabledFiles />\n  <includedXmlFiles />\n"
+		    "  <includedDataFiles />\n  <dataFiles>\n    <Item>\n      <filename>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
+		    "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n"
+		    "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n  </dataFiles>\n"
+		    "  <contentChangeSets>\n    <Item>\n      <changeSetName>{2}</changeSetName>\n      <mapChangeSetData>\n        <Item>\n"
+		    "          <associatedMap>MO_JIM_L11</associatedMap>\n          <filesToInvalidate />\n          <filesToEnable>\n"
+		    "            <Item>{0}:/%PLATFORM%/levels/gta5/{1}.rpf</Item>\n          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
+		    "      <requiresLoadingScreen value=\"true\" />\n      <loadingScreenContext>LOADINGSCREEN_CONTEXT_LAST_FRAME</loadingScreenContext>\n"
+		    "      <useCacheLoader value=\"true\" />\n    </Item>\n  </contentChangeSets>\n  <patchFiles />\n"
+		    "</CDataFileMgr__ContentsOfDataFileXml>\n",
+		    device, name, changeSet);
+		const std::string setup = std::format(
+		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SSetupData>\n  <deviceName>{}</deviceName>\n  <datFile>content.xml</datFile>\n"
+		    "  <timeStamp>00/00/0000 00:00:00</timeStamp>\n  <nameHash>{}</nameHash>\n  <contentChangeSets />\n  <contentChangeSetGroups>\n"
+		    "    <Item>\n      <NameHash>GROUP_MAP_SP</NameHash>\n      <ContentChangeSets>\n        <Item>{}</Item>\n      </ContentChangeSets>\n"
+		    "    </Item>\n  </contentChangeSetGroups>\n  <type>EXTRACONTENT_COMPAT_PACK</type>\n  <order value=\"999\" />\n</SSetupData>\n",
+		    device, name, changeSet);
+		// The cache (version 46): a header, <fileDates> (each archive: hash of its path, a file time), then per module its
+		// entries after their byte count. fwMapDataStore, 64 bytes a map: name, parent, content flags, streaming box, entities
+		// box, flags (1: streamed like the game's own maps). BoundsStore, 32 bytes a collision file: name, box, flags (0).
+		Bytes cache(0x64, 0);
+		const std::string head = "[VERSION]\n46\n";
+		std::memcpy(cache.data(), head.data(), head.size());
+		const auto append = [&](const std::string& s) { cache.insert(cache.end(), s.begin(), s.end()); };
+		append("<fileDates>\n</fileDates>\n");
+		Bytes maps, bounds;
+		const auto put32 = [](Bytes& b, uint32_t v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
+		const auto putf = [](Bytes& b, float v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
+		for (const auto& child : stream.children)
+		{
+			const std::string base = child.name.substr(0, child.name.rfind('.'));
+			if (child.name.ends_with(".ymap"))
+			{
+				ue5export::meta::Meta mm;
+				if (!mm.Read(child.data, error))
+					return Fail(child.name + ": " + error);
+				using ue5export::meta::Hash;
+				const auto r = mm.Root();
+				put32(maps, loader::convert::Joaat(base));
+				put32(maps, r.Get<uint32_t>(Hash("parent")));
+				put32(maps, r.Get<uint32_t>(Hash("contentFlags")));
+				for (const char* field : {"streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax"})
+				{
+					const auto v = r.Get<std::array<float, 4>>(Hash(field));
+					for (int a = 0; a < 3; ++a)
+						putf(maps, v[a]);
+				}
+				put32(maps, 1); // (always loaded where it is; 0: an IPL group's, off until a script asks for it)
+			}
+			else if (child.name.ends_with(".ybn"))
+			{
+				loader::convert::Resource res;
+				if (!loader::convert::Read(child.data, res, error))
+					return Fail(child.name + ": " + error);
+				const ue5export::drawable::View view(res);
+				put32(bounds, loader::convert::Joaat(base));
+				for (const uint64_t at : {ue5export::drawable::View::kRoot + 0x30, ue5export::drawable::View::kRoot + 0x20})
+					for (int a = 0; a < 3; ++a)
+						putf(bounds, view.Get<float>(at + 4 * a));
+				put32(bounds, 0);
+			}
+		}
+		for (const auto& [module, payload] : {std::pair<const char*, const Bytes*>{"fwMapDataStore", &maps}, {"CInteriorProxy", nullptr}, {"BoundsStore", &bounds}})
+		{
+			append(std::format("<module>\n{}\n", module));
+			put32(cache, payload ? static_cast<uint32_t>(payload->size()) : 0);
+			if (payload)
+				cache.insert(cache.end(), payload->begin(), payload->end());
+			append("</module>\n");
+		}
+		loader::convert::WriteNode root, platform;
+		const auto text = [](const char* file, const std::string& s) {
+			loader::convert::WriteNode n;
+			n.name = file;
+			n.kind = loader::convert::WriteNode::Kind::File;
+			n.data.assign(s.begin(), s.end());
+			return n;
+		};
+		root.children.push_back(text("content.xml", content));
+		root.children.push_back(text("setup2.xml", setup));
+		std::string lowerName = name;
+		std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		loader::convert::WriteNode data, loaderData, cacheFile;
+		data.name = "data";
+		loaderData.name = "cacheloaderdata_dlc";
+		cacheFile.name = std::format("{}_{}_cache_y.dat", lowerName, loader::convert::Joaat(changeSet));
+		cacheFile.kind = loader::convert::WriteNode::Kind::File;
+		cacheFile.data = std::move(cache);
+		loaderData.children.push_back(std::move(cacheFile));
+		data.children.push_back(std::move(loaderData));
+		platform.children.push_back(std::move(data));
+		// (where the game's own map archives are: x64\levels\gta5)
+		loader::convert::WriteNode levels, gta5;
+		levels.name = "levels";
+		gta5.name = "gta5";
+		gta5.children.push_back(std::move(stream));
+		levels.children.push_back(std::move(gta5));
+		platform.name = "x64";
+		platform.children.push_back(std::move(levels));
+		root.children.push_back(std::move(platform));
+		Bytes packed;
+		if (!loader::convert::BuildArchive(root, packed, error))
+			return Fail(error);
+		fs::create_directories(fs::path(g_options["out"]).parent_path());
+		std::ofstream(g_options["out"], std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), packed.size());
+		std::printf("%s: %zu files in %s.rpf (%zu bytes)\n", g_options["out"].c_str(), count, name.c_str(), packed.size());
+		return 0;
+	}
+	if (command == "ymap-dump")
+	{
+		// a map file's header fields and its first entities (to see what the game's own files carry)
+		Bytes data;
+		ue5export::meta::Meta m;
+		if (g_options.contains("file"))
+		{
+			std::ifstream in(g_options["file"], std::ios::binary);
+			data.assign(std::istreambuf_iterator<char>(in), {});
+		}
+		else if (const auto* f = files.Find(g_options["name"]); !f || !files.Read(*f, data, error))
+			return Fail("cannot read " + g_options["name"] + " " + error);
+		if (!m.Read(data, error))
+			return Fail("not a map file: " + error);
+		const ue5export::meta::Ref root = m.Root();
+		using ue5export::meta::Hash;
+		for (const char* field : {"name", "parent", "flags", "contentFlags"})
+			std::printf("%s %#x\n", field, root.Get<uint32_t>(Hash(field)));
+		for (const char* field : {"streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax"})
+		{
+			const auto v = root.Get<std::array<float, 4>>(Hash(field));
+			std::printf("%s %.1f %.1f %.1f\n", field, v[0], v[1], v[2]);
+		}
+		int shown = 0;
+		for (const ue5export::meta::Ref& e : root.Array(Hash("entities")))
+		{
+			if (!e || shown++ >= 12)
+				continue;
+			const auto p = e.Get<std::array<float, 4>>(Hash("position"));
+			const auto q = e.Get<std::array<float, 4>>(Hash("rotation"));
+			std::printf("entity %#x flags %#x guid %#x pos %.1f %.1f %.1f rot %.3f %.3f %.3f %.3f scale %.2f %.2f parent %d lod %.0f child %.0f level %u children %u priority %u ao %u %u tint %u\n",
+			    e.Get<uint32_t>(Hash("archetypeName")), e.Get<uint32_t>(Hash("flags")), e.Get<uint32_t>(Hash("guid")), p[0], p[1], p[2], q[0], q[1], q[2],
+			    q[3], e.Get<float>(Hash("scaleXY")), e.Get<float>(Hash("scaleZ")), e.Get<int32_t>(Hash("parentIndex")), e.Get<float>(Hash("lodDist")),
+			    e.Get<float>(Hash("childLodDist")), e.Get<uint32_t>(Hash("lodLevel")), e.Get<uint32_t>(Hash("numChildren")),
+			    e.Get<uint32_t>(Hash("priorityLevel")), e.Get<uint32_t>(Hash("ambientOcclusionMultiplier")),
+			    e.Get<uint32_t>(Hash("artificialAmbientOcclusion")), e.Get<uint32_t>(Hash("tintValue")));
+		}
+		return 0;
+	}
+	if (command == "meta-roundtrip")
+	{
+		// metadata files (--name pattern: ymap, ytyp) written again with our writer from their own blocks (the file its own
+		// template) and read back: the same blocks, in the same order
+		const std::string pattern = g_options.contains("name") ? g_options["name"] : "*.ymap";
+		const auto match = [&](const std::string& name) {
+			const size_t star = pattern.find('*');
+			if (star == std::string::npos)
+				return name == pattern;
+			const std::string head = pattern.substr(0, star), tail = pattern.substr(star + 1);
+			return name.size() >= head.size() + tail.size() && name.starts_with(head) && name.ends_with(tail);
+		};
+		// a metadata resource's blocks: (structure, data), the root block's number
+		const auto blocks = [](const Bytes& file, std::vector<std::pair<uint32_t, Bytes>>& out, uint32_t& rootBlock, std::string& why) {
+			loader::convert::Resource r;
+			if (!loader::convert::Read(file, r, why))
+				return false;
+			Bytes v = r.virtualBlock;
+			const size_t virtualSize = v.size();
+			v.insert(v.end(), r.physicalBlock.begin(), r.physicalBlock.end());
+			rootBlock = loader::convert::Get<uint32_t>(v, 0x1C);
+			const uint64_t list = loader::convert::Get<uint64_t>(v, 0x30);
+			const uint16_t count = loader::convert::Get<uint16_t>(v, 0x4C);
+			if ((list >> 28) != 5)
+				return why = "no block list", false;
+			for (uint16_t i = 0; i < count; ++i)
+			{
+				const size_t at = (list & 0x0FFFFFFF) + 16u * i;
+				const uint32_t structure = loader::convert::Get<uint32_t>(v, at), size = loader::convert::Get<uint32_t>(v, at + 4);
+				const uint64_t p = loader::convert::Get<uint64_t>(v, at + 8);
+				const size_t data = (p >> 28) == 5 ? (p & 0x0FFFFFFF) : (p >> 28) == 6 ? virtualSize + (p & 0x0FFFFFFF) : SIZE_MAX;
+				if (data == SIZE_MAX || data + size > v.size())
+					return why = "a block outside the resource", false;
+				out.emplace_back(structure, Bytes(v.begin() + data, v.begin() + data + size));
+			}
+			return true;
+		};
+		size_t count = 0, bad = 0, skipped = 0;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!match(name))
+				continue;
+			Bytes data, written;
+			std::vector<std::pair<uint32_t, Bytes>> before, after;
+			uint32_t root = 0, rootAgain = 0;
+			std::string why;
+			worldgen::meta::Writer w;
+			if (!files.Read(f, data, error) || !blocks(data, before, root, why) || !w.Template(data, why))
+				why = "read: " + (why.empty() ? error : why);
+			else
+			{
+				bool big = false;
+				for (auto& [structure, bytes] : before)
+				{
+					big |= bytes.size() > worldgen::Pages::kSize;
+					w.AddBlock(structure, bytes);
+				}
+				if (big)
+				{
+					++skipped;
+					continue;
+				}
+				if (!w.Write(root, written, why) || !blocks(written, after, rootAgain, why))
+					why = "again: " + why;
+				else if (root != rootAgain || before != after)
+					why = "blocks differ";
+			}
+			if (!why.empty() && ++bad <= 20)
+				std::printf("%s: %s\n", name.c_str(), why.c_str());
+			++count;
+		}
+		std::printf("%zu files: %zu differ after writing them again (%zu with a block over 16 KB skipped)\n", count, bad, skipped);
+		return bad ? 1 : 0;
+	}
+	if (command == "ynv-reindex")
+	{
+		// every navmesh renumbered for a wider grid (--width, default 147; the game's is 100): index = y * width + x for its
+		// own index, the adjacency table, each polygon's and each special link's (two 14-bit indices at +0x18)
+		if (!g_options.contains("out"))
+			return Fail("--out <dir> is needed");
+		const uint32_t width = g_options.contains("width") ? static_cast<uint32_t>(std::stoul(g_options["width"])) : 147;
+		const auto remap = [&](uint32_t index) -> uint32_t {
+			if (index >= 10000)
+				return index; // (not a square: none, 0x3FFF; dynamic navmeshes are not in files)
+			return index / 100 * width + index % 100;
+		};
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		size_t count = 0;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.starts_with("navmesh") || !name.ends_with(".ynv"))
+				continue;
+			Bytes data, written;
+			worldgen::ynv::Navmesh m;
+			if (!files.Read(f, data, error) || !worldgen::ynv::Read(data, m, error))
+				return Fail(name + ": " + error);
+			const uint32_t own = m.index;
+			m.index = remap(own);
+			for (uint32_t& a : m.adjacent)
+				a = remap(a);
+			for (worldgen::ynv::Poly& p : m.polys)
+			{
+				if (p.Navmesh() != own)
+					return Fail(std::format("{}: a polygon of navmesh {} in {}", name, p.Navmesh(), own));
+				p.SetNavmesh(static_cast<uint16_t>(m.index));
+			}
+			for (auto& link : m.links)
+			{
+				uint32_t v;
+				std::memcpy(&v, link.data() + 0x18, 4);
+				const uint32_t from = remap(v & 0x3FFF), to = remap(v >> 14 & 0x3FFF);
+				v = (v & 0xF0000000u) | from | to << 14;
+				std::memcpy(link.data() + 0x18, &v, 4);
+			}
+			if (!worldgen::ynv::Write(m, written, error))
+				return Fail(name + ": " + error);
+			std::ofstream(out / name, std::ios::binary).write(reinterpret_cast<const char*>(written.data()), written.size());
+			++count;
+		}
+		std::printf("%zu navmeshes renumbered for a grid %u wide\n", count, width);
+		return 0;
 	}
 	if (command == "extract")
 	{

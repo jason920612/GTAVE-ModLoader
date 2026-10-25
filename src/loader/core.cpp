@@ -30,6 +30,7 @@
 #include "web/browser.hpp"
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
+#include "game/navgrid.hpp"
 #include "game/pathregions.hpp"
 #include "game/pools.hpp"
 #include "graphics/bridge.hpp"
@@ -337,6 +338,7 @@ namespace loader::core
 		game::fixes::InstallRiverCurrentFix();
 		game::pathregions::Install();
 		game::pathregions::AllowNewRegionFiles();
+		game::navgrid::Install();
 		if (config::Get().ue5Renderer)
 			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())

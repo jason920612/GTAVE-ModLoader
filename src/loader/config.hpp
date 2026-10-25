@@ -85,6 +85,10 @@ namespace loader::config
 		// With it, the road network's regions are 1024 m (from -16384, still 32 x 32) instead of 512 m: only together with
 		// path files regridded for it (worldgen regrid). Takes effect when the game starts.
 		bool worldPathGrid = false;
+		// World builder: the pedestrians' navigation mesh grid grows from 100 x 100 to 147 x 110 squares of 150 m (east to
+		// x 16050, north to y 10500; game/navgrid.cpp). The game's own navmeshes are renumbered as they load. Takes effect
+		// when the game starts.
+		bool worldNavGrid = false;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

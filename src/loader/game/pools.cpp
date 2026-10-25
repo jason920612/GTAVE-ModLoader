@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <MinHook.h>
 
@@ -74,6 +76,27 @@ namespace loader::game::pools
 			return size + std::max<uint32_t>(size / 4, 500);
 		}
 
+		// Stores that need a size of their own (SetMinimum), by name.
+		std::vector<std::pair<std::string, uint32_t>> g_minimum;
+
+		// The pool size lookup (GTA5_Enhanced.exe +0x149060: table, name hash, default -> the configured size, or the
+		// default): every store and pool asks it. A store with a minimum gets at least that.
+		constexpr const char* kPoolSize = "44 0F B7 51 10 45 85 D2 74 ? 41 89 D1 48 8B 49 08 89 D0 31 D2 41 F7 F2";
+		using PoolSizeFn = uint32_t (*)(void* table, uint32_t hash, uint32_t fallback);
+		PoolSizeFn g_poolSize = nullptr;
+
+		uint32_t HookPoolSize(void* table, uint32_t hash, uint32_t fallback)
+		{
+			uint32_t size = g_poolSize(table, hash, fallback);
+			for (const auto& [storeName, minimum] : g_minimum)
+				if (size < minimum && hash == Joaat(storeName.c_str()))
+				{
+					log::Info("pools: {} {} -> {}", storeName, size, minimum);
+					size = minimum;
+				}
+			return size;
+		}
+
 		void HookCreateStore(uint8_t* store)
 		{
 			const bool named = *reinterpret_cast<uint16_t*>(store + 0x20) != 0;
@@ -113,6 +136,11 @@ namespace loader::game::pools
 		}
 	}
 
+	void SetMinimum(const char* name, uint32_t size)
+	{
+		g_minimum.emplace_back(name, size);
+	}
+
 	bool InstallHooks()
 	{
 		const auto module = pattern::Module::Main();
@@ -129,6 +157,12 @@ namespace loader::game::pools
 			log::Error("pools: could not hook store creation");
 			return false;
 		}
+		const auto poolSize = pattern::Find(module.text, pattern::Pattern::Parse(kPoolSize));
+		if (!poolSize)
+			log::Warn("pools: pool size lookup not found; stores keep their configured sizes");
+		else if (MH_CreateHook(reinterpret_cast<void*>(*poolSize), reinterpret_cast<void*>(&HookPoolSize), reinterpret_cast<void**>(&g_poolSize)) != MH_OK ||
+		         MH_EnableHook(reinterpret_cast<void*>(*poolSize)) != MH_OK)
+			log::Error("pools: could not hook the pool size lookup");
 		const auto block = pattern::Find(module.text, pattern::Pattern::Parse(kCreateVehicleBlock));
 		static constexpr uint8_t kElementSize[] = {0x48, 0x69, 0xC8, 0xA0, 0x05, 0x00, 0x00};
 		if (!block || std::memcmp(reinterpret_cast<const void*>(*block + kElementSizeOperand), kElementSize, sizeof(kElementSize)) != 0)

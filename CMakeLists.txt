@@ -55,6 +55,7 @@ add_library(loader SHARED
     src/loader/game/datafiles.cpp
     src/loader/game/fixes.cpp
     src/loader/game/pathregions.cpp
+    src/loader/game/navgrid.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp
@@ -237,11 +238,24 @@ target_link_libraries(ue5export PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(ue5export PRIVATE /W4 /utf-8 /O2 /permissive-)
 
 # World builder: compiles new land into game files and checks/rebuilds the road network (tools/worldgen), from the
-# player's own game files.
+# player's own game files. Pedestrians' navigation meshes are worked out with Recast (zlib licence).
+FetchContent_Declare(recast
+    URL https://github.com/recastnavigation/recastnavigation/archive/refs/tags/v1.6.0.tar.gz)
+FetchContent_GetProperties(recast)
+if(NOT recast_POPULATED)
+    FetchContent_Populate(recast)
+endif()
+file(GLOB RECAST_SOURCES ${recast_SOURCE_DIR}/Recast/Source/*.cpp)
+add_library(recast STATIC ${RECAST_SOURCES})
+target_include_directories(recast PUBLIC ${recast_SOURCE_DIR}/Recast/Include)
 add_executable(worldgen
     tools/worldgen/main.cpp
     tools/worldgen/ynd.cpp
     tools/worldgen/ynv.cpp
+    tools/worldgen/meta.cpp
+    tools/worldgen/bounds.cpp
+    tools/worldgen/navgen.cpp
+    tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp
     tools/ue5export/gamefiles.cpp
     tools/ue5export/meta.cpp
@@ -250,7 +264,7 @@ add_executable(worldgen
     src/loader/convert/resource.cpp)
 target_include_directories(worldgen PRIVATE src/loader)
 target_compile_definitions(worldgen PRIVATE NOMINMAX)
-target_link_libraries(worldgen PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(worldgen PRIVATE nlohmann_json::nlohmann_json recast)
 target_compile_options(worldgen PRIVATE /W4 /utf-8 /O2 /permissive-)
 
 # In-game web browser (src/browser): CEF (Chromium Embedded Framework, BSD) renders the game's own web pages off-screen;
