@@ -7,7 +7,8 @@ usage:
                                    runs in offline mode (-scOfflineOnly, passed on by Steam): story mode needs no
                                    sign-in, and Rockstar's sign-in has been failing
   gtactl.py restore                the person's settings back (after the game closed)
-  gtactl.py quit                   closes the game, then restore
+  gtactl.py quit                   closes the game, then restore (returns when Steam has seen it closed: a start
+                                   asked for before that fails)
   gtactl.py convert <file.grec> <file.mp4> [fps]
                                    a recording (see video:) as an MP4
   gtactl.py <step> [<step> ...]    steps run in order:
@@ -41,7 +42,7 @@ usage:
                                    was: "run" lets it go on), date d m y: the calendar, weather <type>: kept)
 Exits 1 on the first step that fails.
 """
-import json, os, re, shutil, struct, subprocess, sys, threading, time
+import json, os, re, shutil, struct, subprocess, sys, threading, time, winreg
 
 PIPE = r"\\.\pipe\gtave-modloader"
 GAME = r"D:\SteamLibrary\steamapps\common\Grand Theft Auto V Enhanced"
@@ -50,6 +51,9 @@ SETTINGS = os.path.expanduser(r"~\Documents\Rockstar Games\GTAV Enhanced\setting
 BACKUP = SETTINGS + ".gtactl-backup"
 MOD_LOG = os.path.join(GAME, "ModLoader", "mods", "police", "log.txt")
 LAUNCHER_LOG = os.path.expanduser(r"~\Documents\Rockstar Games\Launcher\launcher.log")
+STEAM = r"C:\Program Files (x86)\Steam"
+STEAM_LOG = os.path.join(STEAM, "logs", "console_log.txt")
+APP_ID = "3240220"
 
 
 class Pipe:
@@ -108,6 +112,40 @@ def game_running():
     return "GTA5_Enhanced.exe" in out
 
 
+def steam_counts_it_running():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"Software\Valve\Steam\Apps\{APP_ID}") as key:
+            return winreg.QueryValueEx(key, "Running")[0] != 0
+    except OSError:
+        return False
+
+
+def wait_closed(seconds=60):
+    """Until the game's process is gone and Steam has seen it go (some seconds after taskkill). A start asked for before
+    that waits 5 s for the old process, then fails ("AppError_16" in Steam's log): no game."""
+    end = time.time() + seconds
+    while (game_running() or steam_counts_it_running()) and time.time() < end:
+        time.sleep(1)
+
+
+def steam_log_size():
+    try:
+        return os.path.getsize(STEAM_LOG)
+    except OSError:
+        return 0
+
+
+def steam_start_failed(since):
+    """Steam's error for a start of the game it gave up on (in its log after `since`), or None."""
+    try:
+        with open(STEAM_LOG, "rb") as f:
+            f.seek(since)
+            m = re.search(rb"\[AppID " + APP_ID.encode() + rb", ActionID \d+\] : LaunchApp failed with (\w+)", f.read())
+        return m.group(1).decode() if m else None
+    except OSError:
+        return None
+
+
 def sign_in_failed(since):
     """The Rockstar launcher started after `since` and could not sign in (its fatal "OnScAuthError")."""
     try:
@@ -122,11 +160,15 @@ def sign_in_failed(since):
 def launch():
     if game_running():
         sys.exit("the game is already running")
+    wait_closed()
     test_settings(True)
     started = time.time()
     # Steam passes extra arguments on to the Rockstar launcher. (Killing a launcher stuck on its sign-in error and
     # starting another one makes PlayGTAV, Steam's process, show "unable to start the game" on the desktop.)
-    subprocess.Popen([r"C:\Program Files (x86)\Steam\steam.exe", "-applaunch", "3240220", "-nobattleye", "-scOfflineOnly"])
+    start = [os.path.join(STEAM, "steam.exe"), "-applaunch", APP_ID, "-nobattleye", "-scOfflineOnly"]
+    since = steam_log_size()
+    subprocess.Popen(start)
+    asked_again = False
     end = time.time() + 300
     while True:
         try:
@@ -135,6 +177,16 @@ def launch():
         except OSError:
             if time.time() >= end:
                 sys.exit("the game did not start" + (" (the launcher could not sign in)" if sign_in_failed(started) else ""))
+            error = steam_start_failed(since)
+            if error and asked_again:
+                sys.exit(f"Steam did not start the game ({error})")
+            if error:
+                # (Steam still had the last game's process: once more when it is gone)
+                print(f"Steam did not start the game ({error}); again")
+                wait_closed()
+                since = steam_log_size()
+                subprocess.Popen(start)
+                asked_again = True
         time.sleep(1)
     print("pipe up:", p.send("ping"))
     end = time.time() + 300
@@ -157,7 +209,7 @@ def quit_game():
     except OSError:
         pass
     subprocess.run(["taskkill", "/F", "/IM", "GTA5_Enhanced.exe"], capture_output=True)
-    time.sleep(3)
+    wait_closed()
     test_settings(False)
 
 
