@@ -652,6 +652,15 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	auto* Vertex = NewObject<UMaterialExpressionVertexColor>(M);
 	Add(Vertex);
 	auto* UseVertexColour = Scalar(TEXT("UseVertexColour"), 0.0f); // (cpv_only: below)
+	// (the game's leaves and blades - Leaves 1, the tree and grass shaders - carry other things in their colour: red and
+	// green low throughout, a cypress's 47 and 19 of 255, an oak's 68 and 81, the outermost leaves too. Taken for the sky
+	// they see, a tree in shade or against the sun kept a fifth of its light, black where the game's is green: research
+	// §60.27. Their own shade is the rays')
+	auto* Leaves = Scalar(TEXT("Leaves"), 0.0f);
+	auto* NotOcclusion = NewObject<UMaterialExpressionMax>(M);
+	NotOcclusion->A.Connect(0, UseVertexColour);
+	NotOcclusion->B.Connect(0, Leaves);
+	Add(NotOcclusion);
 	auto* Ambient = NewObject<UMaterialExpressionMax>(M);
 	Ambient->A.Connect(1, Vertex);
 	Ambient->B.Connect(2, Vertex);
@@ -659,7 +668,7 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 	auto* Occlusion = NewObject<UMaterialExpressionLinearInterpolate>(M); // (a colour's red is no occlusion)
 	Occlusion->A.Connect(0, Ambient);
 	Occlusion->ConstB = 1.0f;
-	Occlusion->Alpha.Connect(0, UseVertexColour);
+	Occlusion->Alpha.Connect(0, NotOcclusion);
 	Add(Occlusion);
 	Inputs->AmbientOcclusion.Connect(0, Occlusion);
 	// Tint (the game's *_tnt shaders): a grey diffuse times the palette's colour, column = vertex blue, row = the
@@ -769,6 +778,19 @@ return saturate(1 - (1 - F) * exp(-Sigma * d));
 		Lawn->B.Connect(0, FurTint);
 		Add(Lawn);
 		Inputs->BaseColor.Connect(0, Lawn);
+		// Leaves and blades let the light through (Leaves 1: the game's tree and grass shaders): lit from behind they
+		// glow, coloured by themselves, as real ones do, where they stood black against the sun (research §60.27). A
+		// thin leaf passes on about half of what reaches it; a fence (Leaves 0) is lit as before.
+		M->SetShadingModel(MSM_TwoSidedFoliage);
+		auto* Through = NewObject<UMaterialExpressionMultiply>(M);
+		Through->A.Connect(0, Lawn);
+		Through->B.Connect(0, Leaves);
+		Add(Through);
+		auto* Half = NewObject<UMaterialExpressionMultiply>(M);
+		Half->A.Connect(0, Through);
+		Half->ConstB = 0.5f;
+		Add(Half);
+		Inputs->SubsurfaceColor.Connect(0, Half);
 		// It grows where its mask (FurMask's red, on the second UV set) times the vertex alpha lets it, as the game
 		// draws its lowest shell: the paths and the edges bare.
 		auto* MaskUv = NewObject<UMaterialExpressionTextureCoordinate>(M);

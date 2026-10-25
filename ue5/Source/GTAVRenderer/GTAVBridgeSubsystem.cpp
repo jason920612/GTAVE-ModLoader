@@ -36,6 +36,14 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogGTAVBridge, Log, All);
 
+// Lumen's rays find the renderer's surfaces without a surface cache to light them (its meshes are made at run time: their
+// cards are boxes at a few texels each, research §60.27), and what they find off the screen is black: shade lit by the
+// sky and by the light bouncing about is left with the screen's own bounce. This much of the sky's light gets in anyway:
+// under a roof by a sunlit yard the shade came to 3% of the sun's (the game's 4%, Lumen's hit lighting 7%, 3.7 ms more
+// of the GPU's frame), the yard no longer burnt out white by the exposure matched to the dark (91% -> 24% clipped).
+static TAutoConsoleVariable<float> CVarSkylightLeaking(TEXT("gtav.SkylightLeaking"), 0.2f,
+	TEXT("Lumen's skylight leaking (the share of the sky's light let into shade its rays could not light)."), ECVF_Default);
+
 // The picture to the game: after motion blur (HDR, before bloom and tone mapping), drawn into the shared texture of its
 // game frame with its depth, then the shared fence signalled with the game frame (both on UE's graphics queue, in that
 // order). Each frame is drawn with its game frame's camera, set as the view point itself (whatever the camera manager
@@ -65,7 +73,13 @@ public:
 	}
 
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
-	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
+	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override
+	{
+		if (const float Leak = CVarSkylightLeaking.GetValueOnGameThread(); Leak > 0.0f)
+		{
+			InView.FinalPostProcessSettings.LumenSkylightLeaking = Leak;
+		}
+	}
 	virtual void SetupViewPoint(APlayerController* Player, FMinimalViewInfo& InViewInfo) override
 	{
 		if (ViewSequence)

@@ -915,6 +915,22 @@ UMaterialInterface* FGTAVRuntimeAssets::Material(const GTAVPack::Material& M)
 	{
 		MI->SetScalarParameterValue(TEXT("Glossy"), 1.0f);
 	}
+	// The game's leaves and blades: they let the light through (research §60.27).
+	static const TSet<uint32> Leaves = [] {
+		TSet<uint32> Out;
+		for (const TCHAR* Name : {TEXT("trees"), TEXT("trees_tnt"), TEXT("trees_lod"), TEXT("trees_lod2"), TEXT("trees_lod_tnt"), TEXT("trees_normal"),
+				 TEXT("trees_normal_spec"), TEXT("trees_normal_spec_tnt"), TEXT("trees_normal_diffspec"), TEXT("trees_normal_diffspec_tnt"),
+				 TEXT("trees_camera_aligned"), TEXT("trees_camera_facing"), TEXT("grass"), TEXT("grass_batch"), TEXT("grass_camera_aligned"),
+				 TEXT("grass_batch_camera_aligned")})
+		{
+			Out.Add(GTAVHash(FStringView(Name)));
+		}
+		return Out;
+	}();
+	if (Leaves.Contains(M.effect))
+	{
+		MI->SetScalarParameterValue(TEXT("Leaves"), 1.0f);
+	}
 	// A decal_dirt: the dirt's colour is the vertex colour, its texture the mask (the channels in its dirtDecalMask: a
 	// pack without it, the red) - research §60.22.
 	static const uint32 DecalDirt = GTAVHash(TEXTVIEW("decal_dirt"));
