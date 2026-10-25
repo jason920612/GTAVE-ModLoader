@@ -26,8 +26,9 @@ namespace loader::graphics::composite
 		// samples about it (an estimate off by a little would otherwise make a colour neither has: a red rim on a dark
 		// shoe over a pink floor), and that much of it goes over the renderer's picture.
 		// The renderer's picture is scaled to the game's brightness first: Measure sums the log luminance of both
-		// pictures over a sparse grid (not the sky: depth 0, reversed; not peds and vehicles), Update moves the scale a
-		// little towards their ratio each frame, Composite applies it. A view of nothing but sky goes by the skies
+		// pictures over a sparse grid (not the sky: depth 0, reversed; not peds and vehicles) and bins it, Update moves
+		// the scale a little towards the ratio of their medians each frame (their means where there are too few samples),
+		// Composite applies it. A view of nothing but sky goes by the skies
 		// instead (else the game's eye adaptation would brighten a night sky it cannot see the ground of). The game's own exposure and tone mapping come
 		// after, as for its own scene. The renderer's highlights saturate as a camera's sensor does (from 7 stops over
 		// the game's mean luminance, never past 10): physical light (the moon's 2,500 nits over a night city's few) is
@@ -383,10 +384,17 @@ void Update()
 		steady = scale;
 	if (!flashing && wasFlashing && steady > 0)
 		scale = steady;
+	// (the ground's medians where there are enough of them, not its means: the renderer's darkest corners - under a roof,
+	// darker than the game's - pulled its whole picture up, and a sunlit yard beyond burnt out white: research §60.28.
+	// The renderer's samples were taken with the scale as it was.)
+	uint medianGame, medianRenderer;
+	const float gameMedian = Percentile(832, 0.5, medianGame), rendererMedian = Percentile(1088, 0.5, medianRenderer);
 	if (count > 64)
 	{
 		float target = clamp((float(game) - float(renderer)) / (64.0 * count), -6.0, 6.0) * Match; // log2 of the ratio
 		float current = scale > 0 ? log2(scale) : target;
+		if (medianGame > 64 && medianRenderer > 64 && scale > 0)
+			target = clamp(current + gameMedian - rendererMedian, -6.0, 6.0) * Match;
 		// (the renderer's sum is of its picture as it comes, before the scale)
 		if (flashing)
 			scale = exp2(target);
@@ -439,6 +447,7 @@ void Update()
 	uint gameCount, rendererCount;
 	float g10 = Percentile(832, 0.1, gameCount), g90 = Percentile(832, 0.9, gameCount);
 	float r10 = Percentile(1088, 0.1, rendererCount), r90 = Percentile(1088, 0.9, rendererCount);
+	float g50 = Percentile(832, 0.5, gameCount), r50 = Percentile(1088, 0.5, rendererCount);
 	[loop] for (uint m = 0; m < 128; ++m)
 		Exposure.Store(832 + m * 4, 0);
 	float contrast = asfloat(Exposure.Load(1344));
@@ -447,6 +456,21 @@ void Update()
 	if (gameCount > 64 && rendererCount > 64 && !flashing && r90 - r10 > 0.5)
 		contrast = lerp(contrast, lerp(1.0, clamp((g90 - g10) / (r90 - r10), 0.6, 1.0), ContrastMatch), Adapt);
 	Exposure.Store(1344, asuint(contrast));
+	// Outdoors (where the whole spread is the renderer's own: see ContrastMatch) the half above the median alone: from a
+	// shade, a sunlit yard of the renderer's sat higher over the median than the game's and burnt out where the game's
+	// kept its texture (research §60.28); the shade and the ground's shadows, below, stay as they are. 1352 the narrowing
+	// (1: none), 1356 the median it pivots on (log2, the renderer's after the scale).
+	float upper = asfloat(Exposure.Load(1352)), pivot = asfloat(Exposure.Load(1356));
+	if (!(upper >= 0.5 && upper <= 1.0))
+		upper = 1.0;
+	if (gameCount > 64 && rendererCount > 64 && !flashing && ContrastMatch <= 0.0 && r90 - r50 > 0.25)
+	{
+		upper = lerp(upper, lerp(1.0, clamp((g90 - g50) / (r90 - r50), 0.6, 1.0), Grade), Adapt);
+		pivot = key + r50;
+	}
+	else if (ContrastMatch > 0.0)
+		upper = 1.0;
+	Exposure.Store2(1352, uint2(asuint(upper), asuint(pivot)));
 }
 
 [numthreads(8, 8, 1)]
@@ -507,6 +531,13 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		float l = Luminance(picture.rgb);
 		if (l > 0)
 			picture.rgb *= exp2((log2(l) - key) * (spread - 1.0));
+	}
+	float upper = asfloat(Exposure.Load(1352)), pivot = asfloat(Exposure.Load(1356)); // (the upper half's: see Update)
+	if (upper >= 0.5 && upper < 0.999 && abs(pivot) < 40.0)
+	{
+		float l = Luminance(picture.rgb);
+		if (l > 0 && log2(l) > pivot)
+			picture.rgb *= exp2((log2(l) - pivot) * (upper - 1.0));
 	}
 	brightest = abs(brightest) < 40.0 ? brightest : key + 7.0;
 	float knee = exp2(min(key + 7.0, brightest - 0.5 - max(1.0 - Headroom, 0.0))), top = exp2(min(key + 10.0, brightest + Headroom));
