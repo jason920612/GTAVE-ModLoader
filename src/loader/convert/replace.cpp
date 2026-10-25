@@ -296,7 +296,8 @@ namespace loader::convert
 			if (!it->is_regular_file(ec))
 				continue;
 			const std::string ext = Extension(Utf8(it->path().filename().u8string()));
-			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || ext == ".gxt2" || ext == ".rel" || ext == ".ysc" || std::find(kNamed.begin(), kNamed.end(), ext) != kNamed.end() ||
+			if (ext == ".rpf" || ext == ".oiv" || ext == ".meta" || ext == ".gxt2" || ext == ".rel" || ext == ".ipl" || ext == ".ysc" ||
+			    std::find(kNamed.begin(), kNamed.end(), ext) != kNamed.end() ||
 			    std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
 				return true;
 		}
@@ -412,6 +413,15 @@ namespace loader::convert
 			const std::string ext = Extension(in.name);
 			if (ext == ".gfx")
 				AddNamed(in);
+			// Zone bindings (population per zone name, opened by path): the mod's entries merged into the game's file.
+			if (in.name == "zonebind.ymt")
+			{
+				const size_t before = files.named.size();
+				AddNamed(in);
+				if (files.named.size() > before)
+					files.named.back().merge = true;
+				continue;
+			}
 			if (std::find(kStreaming.begin(), kStreaming.end(), ext) != kStreaming.end())
 			{
 				if (std::any_of(stream.children.begin(), stream.children.end(), [&](const WriteNode& n) { return n.name == in.name; }))
@@ -474,7 +484,9 @@ namespace loader::convert
 					result.warnings.push_back(std::format("{} 不是可讀的文字檔，已略過", in.path));
 				continue;
 			}
-			if (ext == ".rel")
+			// Audio game data, and placement files opened by path (popzone.ipl: the world builder's zones): merged per
+			// entry into the game's own file.
+			if (ext == ".rel" || ext == ".ipl")
 			{
 				const size_t before = files.named.size();
 				AddNamed(in);

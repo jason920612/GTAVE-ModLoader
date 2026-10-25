@@ -96,6 +96,7 @@ add_library(loader SHARED
     src/loader/convert/peds.cpp
     src/loader/convert/packs.cpp
     src/loader/convert/oiv.cpp
+    src/loader/convert/pso.cpp
     src/loader/convert/rel.cpp
     src/loader/convert/replace.cpp
     src/loader/convert/xmlmerge.cpp
@@ -265,6 +266,7 @@ add_executable(worldgen
     tools/ue5export/meta.cpp
     tools/ue5export/pso.cpp
     src/loader/convert/archive.cpp
+    src/loader/convert/pso.cpp
     src/loader/convert/resource.cpp)
 target_include_directories(worldgen PRIVATE src/loader)
 target_compile_definitions(worldgen PRIVATE NOMINMAX)

@@ -105,6 +105,18 @@ namespace ue5export::pso
 	std::string Ref::String(uint32_t field) const
 	{
 		const Field* f = type ? type->Find(field) : nullptr;
+		if (f && f->type == kString && f->subtype == 2)
+		{
+			// a pointer to a C string elsewhere in the data
+			size_t text = 0;
+			uint32_t structure = 0;
+			if (!pso->Resolve(pso->U32(at + f->offset), text, structure))
+				return {};
+			std::string out;
+			for (const uint8_t* c = pso->At(text, 1); c && *c; c = pso->At(++text, 1))
+				out += static_cast<char>(*c);
+			return out;
+		}
 		if (!f || f->type != kString || f->subtype != 0)
 			return {};
 		const size_t length = f->ref >> 16;

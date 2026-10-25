@@ -16,7 +16,7 @@ namespace ue5export::pso
 	enum Type : uint8_t
 	{
 		kU32 = 0x06,
-		kString = 0x0b, // subtype 0: inline char[ref >> 16]; 7: a name hash
+		kString = 0x0b, // subtype 0: inline char[ref >> 16]; 2: a pointer to a C string; 7: a name hash
 		kStruct = 0x0c,
 		kArray = 0x0d, // ref: the entry describing its elements
 		kEnum = 0x0e,

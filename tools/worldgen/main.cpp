@@ -47,6 +47,7 @@
 
 #include "../ue5export/drawable.hpp"
 #include "convert/archive.hpp"
+#include "convert/pso.hpp"
 #include "mapfiles.hpp"
 #include "terrain.hpp"
 #include "ybn.hpp"
@@ -54,6 +55,7 @@
 #include "../ue5export/gamefiles.hpp"
 #include "../ue5export/meta.hpp"
 #include "../ue5export/ng.hpp"
+#include "../ue5export/pso.hpp"
 #include "bounds.hpp"
 #include "meta.hpp"
 #include "navgen.hpp"
@@ -1212,6 +1214,92 @@ int main(int argc, char** argv)
 					}
 				}
 				std::printf("%08x %s shader %u: %s\n", effect, name.c_str(), s, layout.c_str());
+			}
+		}
+		return 0;
+	}
+	if (command == "zones")
+	{
+		// population zones for new land: --zones <file> (lines "name, x0, y0, z0, x1, y1, z1, label, like": a box, the text
+		// label it shows, and the game zone whose population it takes) --out <mod folder>. Writes popzone.ipl (the boxes,
+		// merged into the game's by the loader) and zonebind.ymt (copies of those zones' bindings under the new names).
+		if (!g_options.contains("zones") || !g_options.contains("out"))
+			return Fail("--zones <file> --out <dir> are needed");
+		Bytes data;
+		const auto* f = files.Find("zonebind.ymt");
+		if (!f || !files.Read(*f, data, error))
+			return Fail("zonebind.ymt: " + error);
+		loader::convert::pso::Entries game, ours;
+		if (!game.Read(std::string(data.begin(), data.end()), error) || !ours.Read(std::string(data.begin(), data.end()), error))
+			return Fail("zonebind.ymt: " + error);
+		ours.Clear();
+		std::string ipl = "zone\n";
+		std::ifstream in(g_options["zones"]);
+		int count = 0;
+		for (std::string line; std::getline(in, line);)
+		{
+			if (line.empty() || line[0] == '#')
+				continue;
+			std::vector<std::string> fields;
+			std::istringstream words(line);
+			for (std::string w; std::getline(words, w, ',');)
+			{
+				w.erase(0, w.find_first_not_of(" \t"));
+				w.erase(w.find_last_not_of(" \t\r") + 1);
+				fields.push_back(w);
+			}
+			if (fields.size() != 9)
+				return Fail("not a zone line: " + line);
+			const int like = game.Find(fields[8]);
+			if (like < 0)
+				return Fail("no game zone " + fields[8]);
+			ours.Put(game, like, fields[0]);
+			ipl += std::format("{}, {}, {}, {}, {}, {}, {}, {}, 0\n", fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7]);
+			++count;
+		}
+		ipl += "end\n";
+		std::string binds;
+		if (!ours.Write(binds, error))
+			return Fail(error);
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		std::ofstream(out / "popzone.ipl", std::ios::binary) << ipl;
+		std::ofstream(out / "zonebind.ymt", std::ios::binary).write(binds.data(), static_cast<std::streamsize>(binds.size()));
+		// read back
+		loader::convert::pso::Entries back;
+		if (!back.Read(binds, error) || back.Size() != static_cast<size_t>(count))
+			return Fail("zonebind.ymt read back: " + error);
+		std::printf("%d zones: popzone.ipl, zonebind.ymt (%zu bytes)\n", count, binds.size());
+		return 0;
+	}
+	if (command == "pso-dump")
+	{
+		// a PSO file's structures (--name <file>): the root's fields, and the first --limit entries of its arrays of
+		// structures (every field's value as a u32; strings and hashes as they are)
+		Bytes data;
+		ue5export::pso::Pso pso;
+		const auto* f = files.Find(g_options["name"]);
+		if (!f || !files.Read(*f, data, error) || !pso.Read(data, error))
+			return Fail("cannot read " + g_options["name"] + ": " + error);
+		const int limit = g_options.contains("limit") ? std::stoi(g_options["limit"]) : 3;
+		const ue5export::pso::Ref root = pso.Root();
+		std::printf("root %08x, %zu bytes\n", root.type->name, static_cast<size_t>(root.type->size));
+		for (const auto& field : root.type->fields)
+		{
+			std::printf("  field %08x type %#x subtype %u offset %u ref %#x\n", field.name, field.type, field.subtype, field.offset, field.ref);
+			if (field.type != ue5export::pso::kArray)
+				continue;
+			const auto items = root.Array(field.name);
+			std::printf("    %zu entries\n", items.size());
+			for (size_t i = 0; i < items.size() && static_cast<int>(i) < limit; ++i)
+			{
+				std::printf("    [%zu] %08x:", i, items[i].type->name);
+				for (const auto& sub : items[i].type->fields)
+					if (sub.type == ue5export::pso::kString)
+						std::printf(" %08x=\"%s\"(s%u %#x)", sub.name, items[i].String(sub.name).c_str(), sub.subtype, items[i].U32(sub.name));
+					else
+						std::printf(" %08x=%u", sub.name, items[i].U32(sub.name));
+				std::printf("\n");
 			}
 		}
 		return 0;

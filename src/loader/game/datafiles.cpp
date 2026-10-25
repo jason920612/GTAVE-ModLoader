@@ -1,5 +1,6 @@
 #include "datafiles.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@
 
 #include <MinHook.h>
 
+#include "../convert/pso.hpp"
 #include "../convert/rel.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
@@ -275,6 +277,109 @@ namespace loader::game::datafiles
 			return out;
 		}
 
+		// A placement text file (.ipl: sections of comma-separated entries, each section "<name>" ... "end") with the mods'
+		// entries merged in: an entry replaces the game's one with the same first field, others are added to the section
+		// of the same name (or a new one). An entry whose first field starts with '+' is always added (without the '+'):
+		// another box of a population zone the game has, which then takes that zone's bindings (zonebind.ymt, by name).
+		std::string MergeIpl(const std::string& original, const std::vector<convert::rel::Mod>& mods, int& replaced, int& added)
+		{
+			struct Section
+			{
+				std::string name;
+				std::vector<std::string> lines;
+			};
+			const auto parse = [](const std::string& text) {
+				std::vector<Section> sections;
+				Section* current = nullptr;
+				size_t at = 0;
+				while (at < text.size())
+				{
+					size_t end = text.find('\n', at);
+					if (end == std::string::npos)
+						end = text.size();
+					std::string line = text.substr(at, end - at);
+					at = end + 1;
+					while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+						line.pop_back();
+					const size_t first = line.find_first_not_of(" \t");
+					if (first == std::string::npos || line[first] == '#')
+						continue;
+					line.erase(0, first);
+					if (!current)
+						current = &sections.emplace_back(Section{Lower(line), {}});
+					else if (Lower(line) == "end")
+						current = nullptr;
+					else
+						current->lines.push_back(line);
+				}
+				return sections;
+			};
+			const auto key = [](const std::string& line) { return Lower(line.substr(0, line.find(','))); };
+			std::vector<Section> game = parse(original);
+			for (const auto& mod : mods)
+				for (const Section& s : parse(mod.bytes))
+				{
+					auto it = std::find_if(game.begin(), game.end(), [&](const Section& g) { return g.name == s.name; });
+					if (it == game.end())
+					{
+						game.push_back({s.name, {}});
+						it = game.end() - 1;
+					}
+					for (const std::string& line : s.lines)
+					{
+						if (line[0] == '+')
+						{
+							it->lines.push_back(line.substr(1)), ++added;
+							continue;
+						}
+						auto same = std::find_if(it->lines.begin(), it->lines.end(), [&](const std::string& g) { return key(g) == key(line); });
+						if (same != it->lines.end())
+							*same = line, ++replaced;
+						else
+							it->lines.push_back(line), ++added;
+					}
+				}
+			std::string out;
+			for (const Section& s : game)
+			{
+				out += s.name + "\n";
+				for (const std::string& line : s.lines)
+					out += line + "\n";
+				out += "end\n";
+			}
+			return out;
+		}
+
+		// A PSO metadata file with an array of named entries (zonebind.ymt) with the mods' entries merged in: an entry
+		// replaces the game's one of the same name, others are added.
+		std::string MergePso(const std::string& original, const std::vector<convert::rel::Mod>& mods, int& replaced, int& added, std::string& error)
+		{
+			convert::pso::Entries game;
+			if (!game.Read(original, error))
+				return {};
+			for (const auto& mod : mods)
+			{
+				convert::pso::Entries entries;
+				std::string modError;
+				if (!entries.Read(mod.bytes, modError))
+				{
+					error += std::format("{}: {}; ", mod.name, modError);
+					continue;
+				}
+				for (size_t i = 0; i < entries.Size(); ++i)
+					switch (game.Put(entries, i, entries.Key(i)))
+					{
+					case 1: ++added; break;
+					case 0: ++replaced; break;
+					default: error += std::format("{}: its entries are not the game's kind; ", mod.name); i = entries.Size(); break;
+					}
+			}
+			std::string out;
+			if (!game.Write(out, error))
+				return {};
+			return out;
+		}
+
 		// The merged (or generated) copy of `path`, or "" to load the original.
 		std::string Redirect(const char* path)
 		{
@@ -285,7 +390,7 @@ namespace loader::game::datafiles
 			const size_t dot = name.rfind('.');
 			const std::string_view ext = dot == std::string_view::npos ? std::string_view() : name.substr(dot);
 			const bool data = ext == ".meta" || ext == ".xml";
-			if (!data && ext != ".gxt2" && ext != ".awc" && ext != ".gfx" && ext != ".dat" && ext != ".rel")
+			if (!data && ext != ".gxt2" && ext != ".awc" && ext != ".gfx" && ext != ".dat" && ext != ".rel" && ext != ".ipl" && name != "zonebind.ymt")
 				return {};
 			// Our own copies (and generated packs' files read back through the game) are never redirected again.
 			if (p.starts_with(g_ownRoot))
@@ -327,14 +432,17 @@ namespace loader::game::datafiles
 						}
 					int replaced = 0, added = 0;
 					std::string error;
-					const std::string merged = convert::rel::Merge(original, mods, replaced, added, error);
+					const bool ipl = ext == ".ipl", pso = ext == ".ymt";
+					const std::string merged = ipl   ? MergeIpl(original, mods, replaced, added)
+					                           : pso ? MergePso(original, mods, replaced, added, error)
+					                                 : convert::rel::Merge(original, mods, replaced, added, error);
 					if (!error.empty())
 						log::Warn("datafiles: {}: {}", path, error);
 					if (merged.empty())
 						return {};
 					redirect = WriteCopy(p, merged);
-					log::Info("datafiles: {} -> {} entr{} replaced, {} added (audio data of {} mod(s))", path, replaced, replaced == 1 ? "y" : "ies",
-					    added, mods.size());
+					log::Info("datafiles: {} -> {} entr{} replaced, {} added ({} of {} mod(s))", path, replaced, replaced == 1 ? "y" : "ies", added,
+					    ipl ? "placement entries" : pso ? "metadata entries" : "audio data", mods.size());
 					return redirect;
 				}
 				if (match)

@@ -574,14 +574,17 @@ namespace worldgen::navgen
 					nm.edges.push_back(e);
 				}
 				polyBoxes.push_back(box);
-				const uint16_t flags = p.surface == Surface::Pavement ? 1 : p.surface == Surface::Road ? 2 : 0;
+				// (+0x00 bit 2 with a density at +0x24 bits 14-16: ambient pedestrians are spawned there, as on the game's
+				// own walkable ground; roads have none)
+				const bool spawns = p.surface == Surface::Pavement || p.surface == Surface::Ground;
+				const uint16_t flags = static_cast<uint16_t>((p.surface == Surface::Pavement ? 1 : p.surface == Surface::Road ? 2 : 0) | (spawns ? 4 : 0));
 				std::memcpy(poly.raw + 0x00, &flags, 2);
 				poly.SetVertexCount(static_cast<uint32_t>(p.v.size()));
 				poly.SetFirstIndex(static_cast<uint16_t>(first));
 				poly.SetNavmesh(static_cast<uint16_t>(nm.index));
 				const int16_t halves[6] = {HalfMetres(box[0]), HalfMetres(box[1]), HalfMetres(box[2]), HalfMetres(box[3]), HalfMetres(boxZ[0]), HalfMetres(boxZ[1])};
 				std::memcpy(poly.raw + 0x18, halves, sizeof(halves));
-				const uint32_t flags2 = p.surface == Surface::Road ? 0x420 : 0;
+				const uint32_t flags2 = p.surface == Surface::Road ? 0x420 : spawns ? 0x200u | static_cast<uint32_t>(settings.pedDensity) << 14 : 0;
 				std::memcpy(poly.raw + 0x24, &flags2, 4);
 				for (int a = 0; a < 2; ++a)
 				{

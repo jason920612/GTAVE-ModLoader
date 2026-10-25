@@ -35,6 +35,7 @@ namespace worldgen::navgen
 		float maxEdgeLength = 16.0f, maxError = 0.3f;                                       // (m)
 		float polygonSpan = 15.0f; // (m) polygons stay within squares of this size (a tenth of a navmesh's), so their planes follow the ground
 		int maxVertsPerPoly = 6;
+		int pedDensity = 1; // (0-7) ambient pedestrians spawned on walkable ground and pavements
 		int gridWidth = 147; // squares in a row of the grid
 	};
 
