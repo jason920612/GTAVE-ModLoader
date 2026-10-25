@@ -619,6 +619,8 @@ namespace loader::graphics::bridge
 			// (part of following the game's grading, indoors: outdoors the renderer's own ground - its grass, their
 			// shadows - is wider in brightness than the game's lean one, and narrowed to it the whole scene went flat)
 			settings.contrast = g_shared && g_shared->interior != 0 ? settings.grade : 0.0f;
+			// (and its lit lamp shades kept near the game's brightest, not a stop over it: flat white otherwise)
+			settings.headroom = g_shared && g_shared->interior != 0 ? 0.25f : 1.0f;
 			constexpr uint32_t kThunder = 0xB677829F; // (joaat "THUNDER")
 			settings.storm = g_shared && (g_shared->weatherFrom == kThunder || g_shared->weatherTo == kThunder);
 			// (the game's depth to metres: its viewToClip for row vectors gives depth = (z m10 + m14) / (z m11), so

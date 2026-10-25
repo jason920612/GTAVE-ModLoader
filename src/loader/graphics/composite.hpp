@@ -15,6 +15,7 @@ namespace loader::graphics::composite
 	{
 		float match = 1, grade = 1; // how far the brightness and the colour balance are brought to the game's (0..1)
 		float contrast = 1;         // how far a wider spread of brightness than the game's is narrowed to it (0..1)
+		float headroom = 1;         // stops over the game's brightest the renderer's highlights may reach
 		bool storm = false;         // the game's weather can flash (lightning): only then is a sudden brightening one
 		// The game's depth d (its projection, reversed) to metres along the view: numerator / (d scale - offset).
 		float depthNumerator = 0.1f, depthScale = -1, depthOffset = 0;

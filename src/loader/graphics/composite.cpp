@@ -31,7 +31,9 @@ namespace loader::graphics::composite
 		// instead (else the game's eye adaptation would brighten a night sky it cannot see the ground of). The game's own exposure and tone mapping come
 		// after, as for its own scene. The renderer's highlights saturate as a camera's sensor does (from 7 stops over
 		// the game's mean luminance, never past 10): physical light (the moon's 2,500 nits over a night city's few) is
-		// beyond what the game's own picture ever holds, and its lens effects then streak across the screen. Not a
+		// beyond what the game's own picture ever holds, and its lens effects then streak across the screen. Indoors they
+		// stop nearer the game's own brightest (Headroom): a room's lamp shades, a few hundred nits over a dim room, were
+		// flat white shapes where the game's are lit cloth. Not a
 		// number (a shader's 0/0) is black, not a blot the upscaler and the bloom spread.
 		// Its colour balance follows the game's grading the same way (the timecycle's light colours, the region's and the
 		// moment's tints: the game's people and vehicles are lit by them): at the same samples, the difference of each
@@ -82,6 +84,7 @@ cbuffer Sizes : register(b0)
 	uint Storm; // 1: the game's weather can flash (lightning)
 	uint Particles; // 1: ParticlesBlack and ParticlesWhite hold this frame's particles
 	uint Decals; // 1: DecalBefore and DecalAfter hold this frame's decals, linear; 2: sRGB-encoded
+	float Headroom; // stops over the game's brightest the renderer's highlights may reach (indoors less: see below)
 };
 
 // Metres along the view at a depth of the game's (0, the sky: very far).
@@ -506,7 +509,8 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			picture.rgb *= exp2((log2(l) - key) * (spread - 1.0));
 	}
 	brightest = abs(brightest) < 40.0 ? brightest : key + 7.0;
-	float knee = exp2(min(key + 7.0, brightest - 0.5)), top = exp2(min(key + 10.0, brightest + 1.0)), l = Luminance(picture.rgb);
+	float knee = exp2(min(key + 7.0, brightest - 0.5 - max(1.0 - Headroom, 0.0))), top = exp2(min(key + 10.0, brightest + Headroom));
+	float l = Luminance(picture.rgb);
 	if (l > knee)
 	{
 		float over = l - knee;
@@ -596,7 +600,7 @@ void Composite(uint2 id : SV_DispatchThreadID)
 			ranges[1].OffsetInDescriptorsFromTableStart = 8;
 			D3D12_ROOT_PARAMETER parameters[2]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-			parameters[0].Constants.Num32BitValues = 15;
+			parameters[0].Constants.Num32BitValues = 16;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable.NumDescriptorRanges = 2;
 			parameters[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -801,14 +805,15 @@ void Composite(uint2 id : SV_DispatchThreadID)
 		list->SetComputeRootSignature(g_root);
 		const UINT width = static_cast<UINT>(outputDesc.Width), height = outputDesc.Height;
 		const float floats[6] = {kAdapt, settings.match, settings.grade, settings.depthNumerator, settings.depthScale, settings.depthOffset};
-		UINT constants[15] = {width, height, frame.renderWidth, frame.renderHeight};
+		UINT constants[16] = {width, height, frame.renderWidth, frame.renderHeight};
 		std::memcpy(&constants[4], floats, sizeof(floats));
 		constants[10] = matte ? 1 : 0;
 		std::memcpy(&constants[11], &settings.contrast, sizeof(float));
 		constants[12] = settings.storm ? 1 : 0;
 		constants[13] = particles ? 1 : 0;
 		constants[14] = decals ? (layer.decalSrgb ? 2 : 1) : 0;
-		list->SetComputeRoot32BitConstants(0, 15, constants, 0);
+		std::memcpy(&constants[15], &settings.headroom, sizeof(float));
+		list->SetComputeRoot32BitConstants(0, 16, constants, 0);
 		list->SetComputeRootDescriptorTable(1, gpu);
 		list->SetPipelineState(g_measure);
 		list->Dispatch((width / 8 + 7) / 8, (height / 8 + 7) / 8, 1);

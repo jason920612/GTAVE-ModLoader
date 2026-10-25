@@ -442,6 +442,34 @@ TUniquePtr<FGTAVRuntimeAssets::FPrepared> FGTAVRuntimeAssets::Prepare(uint64 Key
 	{
 		return P;
 	}
+	// A lamp's own shade and bulb - the small parts about one of its lights - cast no shadows: the light sits inside the
+	// shade, and a shade of cloth, paper or glass lets it through. Shadowed by it, a table lamp lit nothing but itself
+	// (a room's walls and furniture still shade it: research §60.22).
+	for (FStaticMeshSection& S : Sections)
+	{
+		if (P->Lights.IsEmpty())
+		{
+			break;
+		}
+		FBox3f Part(ForceInit);
+		for (uint32 X = S.MinVertexIndex; X <= S.MaxVertexIndex && X < uint32(Vertices.Num()); ++X)
+		{
+			Part += Vertices[X].Position;
+		}
+		if (!Part.IsValid || Part.GetExtent().GetMax() > 75.0f)
+		{
+			continue;
+		}
+		const FBox3f About = Part.ExpandBy(20.0f);
+		for (const GTAVPack::ModelLight& ML : P->Lights)
+		{
+			if (About.IsInside(FVector3f(ML.position[0], ML.position[1], ML.position[2])))
+			{
+				S.bCastShadow = false;
+				break;
+			}
+		}
+	}
 	P->Density.SetNumZeroed(P->SlotMaterials.Num());
 	for (int32 S = 0; S < P->SlotMaterials.Num(); ++S)
 	{

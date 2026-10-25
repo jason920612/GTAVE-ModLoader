@@ -26,6 +26,7 @@ namespace loader::graphics::gameobjects
 		constexpr size_t kModelHash = 0x18;
 		constexpr uint8_t kVisible = 1; // (the flags' lowest bit: SET_ENTITY_VISIBLE clears it, measured)
 		constexpr uint8_t kObjectType = 5, kDummyType = 6;
+		constexpr float kEveryWithin = 40.0f; // metres: the map's objects passed whether or not they moved (see Near)
 
 		uint64_t Rol(uint64_t v, unsigned n)
 		{
@@ -152,7 +153,9 @@ namespace loader::graphics::gameobjects
 			if (!Copy(&g.model, info + kModelHash, 4) || !g.model)
 				continue;
 			// (as the map placed it and shown, it is the renderer's already: only one moved, turned or hidden; one not the
-			// map's only shown)
+			// map's only shown. But the game keeps a moved object's new place in its dummy once it has settled - a fridge
+			// door turned 25 degrees, bottles fallen over as the map never had them - so near the camera every one is
+			// passed, and the renderer tells them against the map's own placement)
 			const float nan = std::numeric_limits<float>::quiet_NaN();
 			g.placed[0] = g.placed[1] = g.placed[2] = nan;
 			uint8_t dummyType = 0;
@@ -161,7 +164,7 @@ namespace loader::graphics::gameobjects
 			{
 				const bool moved = Distance2(m.position, placed.position) > 0.02f * 0.02f || Dot(m.forward, placed.forward) < 0.9995f * std::sqrt(Dot(m.forward, m.forward) * Dot(placed.forward, placed.forward)) ||
 				                   Dot(m.up, placed.up) < 0.9995f * std::sqrt(Dot(m.up, m.up) * Dot(placed.up, placed.up));
-				if (!moved && visible)
+				if (!moved && visible && d2 > kEveryWithin * kEveryWithin)
 					continue;
 				std::memcpy(g.placed, placed.position, sizeof(g.placed));
 			}

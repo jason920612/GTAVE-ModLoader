@@ -891,7 +891,9 @@ void UGTAVWorldSubsystem::ApplyObjects(const FVector& Center)
 			S = FObjectState();
 			S.Model = O.model;
 		}
-		// The map's copy of it (looked for once a second until found: it may not be drawn yet).
+		UStaticMeshComponent* C = ObjectComponents.FindRef(O.id);
+		// The map's copy of it (looked for once a second until found: it may not be drawn yet). One as the map has it
+		// (the near ones come however they are) leaves the map's copy be.
 		if (!FMath::IsNaN(O.placed[0]))
 		{
 			if (!S.Hides && Now - S.LastLook > 1.0)
@@ -899,12 +901,23 @@ void UGTAVWorldSubsystem::ApplyObjects(const FVector& Center)
 				S.LastLook = Now;
 				S.Hides = FindPlaced(O.model, FVector(O.placed[0] * 100.0, -O.placed[1] * 100.0, O.placed[2] * 100.0));
 			}
+			if (S.Hides && (O.flags & GTAVBridge::kObjectVisible))
+			{
+				const FTransform Map = EntityTransform(S.Hides), Game = ObjectTransform(O);
+				if (FVector::DistSquared(Map.GetLocation(), Game.GetLocation()) < 4.0 && Map.GetRotation().AngularDistance(Game.GetRotation()) < 0.02)
+				{
+					if (C && C->IsVisible())
+					{
+						C->SetVisibility(false);
+					}
+					continue;
+				}
+			}
 			if (S.Hides)
 			{
 				Hide.Add(S.Hides);
 			}
 		}
-		UStaticMeshComponent* C = ObjectComponents.FindRef(O.id);
 		if (!(O.flags & GTAVBridge::kObjectVisible) || !Shown(O.model))
 		{
 			if (C)
