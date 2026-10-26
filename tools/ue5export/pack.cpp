@@ -1127,6 +1127,8 @@ namespace ue5export
 	}
 
 	// groups.txt: the names of the map data groups the map has (their ymaps'): the game is asked by name which are on.
+	// lands.txt: the world builder's lands in it (the --extra packs: their folders' names, as the game has them) - a
+	// sector of the same place that is not one of them is shown by the game itself (the loader's graphics/bridge).
 	void WriteGroupNames(const mapdata::Map& map, const fs::path& dir)
 	{
 		std::ofstream out(dir / "groups.txt");
@@ -1137,6 +1139,9 @@ namespace ue5export
 				const size_t slash = file.find_last_of('/') + 1, dot = file.rfind('.');
 				out << Lower(file.substr(slash, dot - slash)) << '\n';
 			}
+		std::ofstream lands(dir / "lands.txt");
+		for (const fs::path& pack : GameFiles::extraPacks)
+			lands << pack.parent_path().filename().string() << '\n';
 	}
 
 	PackStats WritePack(const GameFiles& files, const mapdata::Map& map, const PackOptions& options, std::vector<std::string>& warnings)

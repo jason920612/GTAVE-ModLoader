@@ -21,6 +21,7 @@
 
 #include "../config.hpp"
 #include "../game/natives.hpp"
+#include "../game/sectors.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../state.hpp"
@@ -67,6 +68,12 @@ namespace loader::graphics::bridge
 
 		// Render threads: the picture shown, the size DLSS gives, the renderer's texture and fence on the game's device.
 		std::atomic_bool g_showing = false;
+		// The world builder's lands the pack was made with (its lands.txt; none: not known, any land goes): while a land
+		// there is not one of them - a sector of its own place, game/sectors - the game's own picture.
+		std::vector<std::string> g_packLands;
+		bool g_packLandsKnown = false;
+		std::string g_landsThere;
+		std::atomic_bool g_landsMatch = true;
 		std::atomic_bool g_restart = false; // the hotkey while the renderer is not running
 		std::atomic<uint32_t> g_width = 0, g_height = 0;
 		std::mutex g_renderMutex;
@@ -544,7 +551,7 @@ namespace loader::graphics::bridge
 			const D3D12_RESOURCE_DESC desc = target->GetDesc();
 			g_width = static_cast<uint32_t>(desc.Width);
 			g_height = desc.Height;
-			if (!g_showing || !g_shared || g_shared->rendererState != 1 || !g_shared->frameValue)
+			if (!g_showing || !g_landsMatch || !g_shared || g_shared->rendererState != 1 || !g_shared->frameValue)
 				return;
 			ID3D12CommandQueue* queue = ui::dx12::PresentQueue();
 			if (!queue)
@@ -954,7 +961,7 @@ namespace loader::graphics::bridge
 					log::Info("ue5 bridge: console commands sent ({} bytes)", text.size());
 				}
 			}
-			s.enabled = g_showing ? 1 : 0;
+			s.enabled = g_showing && g_landsMatch ? 1 : 0;
 			// Map data groups: twice a second.
 			if (g_tick % 30 == 0)
 			{
@@ -1035,6 +1042,13 @@ namespace loader::graphics::bridge
 			return;
 		g_key = KeyFromName(config::Get().ue5Key);
 		g_showing = true;
+		if (std::ifstream lands(Path(config::Get().ue5Pack) / "lands.txt"); lands)
+		{
+			g_packLandsKnown = true;
+			for (std::string line; std::getline(lands, line);)
+				if (!line.empty())
+					g_packLands.push_back(line.back() == '\r' ? line.substr(0, line.size() - 1) : line);
+		}
 		streamline::SetAfterDlss(&AfterDlss);
 		streamline::SetOnCamera(&OnCamera);
 		gamememory::Start();
@@ -1052,6 +1066,28 @@ namespace loader::graphics::bridge
 			RestoreGameSettings();
 		if (!config::Get().ue5Renderer || g_failed || !state::story || state::online)
 			return;
+		if (g_packLandsKnown)
+		{
+			const std::string there = game::sectors::Active();
+			if (there != g_landsThere)
+			{
+				g_landsThere = there;
+				std::string missing;
+				for (size_t a = 0; a < there.size();)
+				{
+					const size_t b = std::min(there.find(' ', a), there.size());
+					const std::string land = there.substr(a, b - a);
+					if (std::find(g_packLands.begin(), g_packLands.end(), land) == g_packLands.end())
+						missing += (missing.empty() ? "" : ", ") + land;
+					a = b + 1;
+				}
+				g_landsMatch = missing.empty();
+				if (!missing.empty())
+					log::Info("ue5 bridge: {} is not in the UE5 pack; the game's own picture there", missing);
+				else
+					log::Info("ue5 bridge: the lands there ({}) are in the UE5 pack", there.empty() ? "none" : there);
+			}
+		}
 		if (!g_shared)
 		{
 			// (the size comes from the game's first DLSS pass)
@@ -1145,7 +1181,7 @@ namespace loader::graphics::bridge
 
 	bool Showing()
 	{
-		return g_showing && g_shared && g_shared->rendererState == 1;
+		return g_showing && g_landsMatch && g_shared && g_shared->rendererState == 1;
 	}
 
 	void DumpDepth(const std::wstring& path)

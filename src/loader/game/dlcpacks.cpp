@@ -2,13 +2,16 @@
 
 #include "../convert/replace.hpp"
 #include "../convert/ypt.hpp"
+#include "../convert/resource.hpp"
 #include "char4.hpp"
 #include "datafiles.hpp"
+#include "sectors.hpp"
 
 #include <Windows.h>
 #include <intrin.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -76,6 +79,18 @@ namespace loader::game::dlcpacks
 		};
 
 		RegisterFn g_register = nullptr;
+		// A registered pack mounted as the game mounts them at its start (0xC28800, each pack): 0xC2A890 (the pack, the
+		// manager's +0x178): its dlc.rpf mounted for a moment and its setup2.xml read (+0x100: 1 then), true when so;
+		// 0xC2C290 (the pack, -, its device's name, +0x40): mounted for good, its content read (0: so; +0x100 set to 2
+		// after). The manager: +0x28 the packs (0x120 each: +0x80 the name's hash once the setup is read), +0x30 how many.
+		constexpr uintptr_t kMountSetup = 0xC2A890, kMountContent = 0xC2C290;
+		constexpr uint8_t kMountSetupBytes[] = {0x56, 0x57, 0x48, 0x83, 0xEC, 0x38, 0x48, 0x89, 0xCE, 0x8B, 0x89, 0x00, 0x01, 0x00, 0x00};
+		constexpr uint8_t kMountContentBytes[] = {0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xEC, 0x28, 0x31, 0xDB, 0x48, 0x83, 0x39, 0x00};
+		using MountSetupFn = bool (*)(uint8_t* pack, uint32_t order);
+		using MountContentFn = int (*)(uint8_t* pack, void* unused, const char* device);
+		MountSetupFn g_mountSetup = nullptr;
+		MountContentFn g_mountContent = nullptr;
+		void* g_manager = nullptr; // (as the list was processed)
 		DecryptFn g_decrypt = nullptr;
 		convert::Decryptor g_decryptor;
 		std::unordered_map<std::string, convert::PackResult> g_prepared; // by pack name, first processing only
@@ -91,6 +106,14 @@ namespace loader::game::dlcpacks
 		std::map<std::string, std::map<std::string, std::string>> g_renames; // pack name -> vehicle renames
 		std::vector<convert::VehicleClone> g_clones;
 		std::unordered_map<std::string, CacheEntry*> g_entries; // normalized archive path as the game opens it
+		// Archives inside a pack whose table is read when the game first opens them (a world builder's sector that waits
+		// may never be opened: a thousand of them would be read at the start for nothing): their pack's dlc.rpf, where in it
+		struct Later
+		{
+			std::filesystem::path file;
+			uint64_t offset;
+		};
+		std::unordered_map<std::string, Later> g_later;
 
 		std::string Utf8(const std::u8string& s)
 		{
@@ -283,6 +306,8 @@ namespace loader::game::dlcpacks
 				return;
 			}
 			std::unordered_map<std::string, CacheEntry*> found{{Normalize(pack.path + "dlc.rpf"), root}};
+			std::unordered_map<std::string, Later> later;
+			const bool lazy = std::filesystem::is_regular_file(pack.dir / L"land.json");
 			const auto files = ListFiles(*root);
 			const auto setup = std::find_if(files.begin(), files.end(), [](const TocFile& f) { return Normalize(f.path) == "setup2.xml"; });
 			const std::string device = setup == files.end() ? std::string() : XmlValue(ReadText(in, *setup), "deviceName");
@@ -299,13 +324,19 @@ namespace loader::game::dlcpacks
 						log::Warn("dlc pack {}: {} is compressed and cannot be opened", pack.name, file.path);
 						continue;
 					}
+					if (lazy)
+					{
+						later[Normalize(device) + ":/" + path] = {pack.dir / L"dlc.rpf", file.offset};
+						continue;
+					}
 					std::string nestedError;
 					if (CacheEntry* nested = LoadToc(in, file.offset, nestedError))
 						found[Normalize(device) + ":/" + path] = nested;
 				}
-			log::Info("dlc pack {}: {} unencrypted archive(s), device {}", pack.name, found.size(), device);
+			log::Info("dlc pack {}: {} unencrypted archive(s), device {}", pack.name, found.size() + later.size(), device);
 			std::lock_guard lock(g_mutex);
 			g_entries.merge(found);
+			g_later.merge(later);
 		}
 
 		// The loader's own pack (ModLoader\core, a replacement mod of the loader's): the SP stat every story save carries
@@ -397,8 +428,20 @@ namespace loader::game::dlcpacks
 			if (path)
 			{
 				std::lock_guard lock(g_mutex);
-				if (const auto it = g_entries.find(Normalize(path)); it != g_entries.end())
+				const std::string key = Normalize(path);
+				if (const auto it = g_entries.find(key); it != g_entries.end())
 					return it->second;
+				if (const auto it = g_later.find(key); it != g_later.end())
+				{
+					std::ifstream in(it->second.file, std::ios::binary);
+					std::string error;
+					CacheEntry* entry = LoadToc(in, it->second.offset, error);
+					if (!entry)
+						log::Warn("dlc archive {}: {}", key, error);
+					g_later.erase(it);
+					if (entry)
+						return g_entries[key] = entry;
+				}
 			}
 			return g_origLookup(device, path);
 		}
@@ -470,6 +513,13 @@ namespace loader::game::dlcpacks
 		void Prepare(Pack& pack)
 		{
 			auto it = g_prepared.find(pack.name);
+			if (it == g_prepared.end() && !pack.replacement && std::filesystem::is_regular_file(pack.source / L"land.json"))
+			{
+				// (a world builder's pack: made in the game's own formats, nothing to convert - not looked through)
+				convert::PackResult r;
+				r.dir = pack.source;
+				it = g_prepared.emplace(pack.name, std::move(r)).first;
+			}
 			if (it == g_prepared.end())
 			{
 				WatchdogPause pause;
@@ -644,13 +694,45 @@ namespace loader::game::dlcpacks
 			}
 		}
 
+		// A pack prepared, its archives indexed and handed to the game; whether the game took it.
+		bool Add(void* manager, Pack& pack)
+		{
+			const auto start = std::chrono::steady_clock::now();
+			Prepare(pack);
+			if (pack.state == convert::PackState::Failed || pack.empty)
+				return false;
+			// RAGE paths are UTF-8, use forward slashes and end with a separator.
+			pack.path = Utf8(pack.dir.generic_u8string()) + "/";
+			// The game processes the list again when a session starts: reuse what we read.
+			bool known;
+			{
+				std::lock_guard lock(g_mutex);
+				known = g_entries.contains(Normalize(pack.path + "dlc.rpf"));
+			}
+			if (!known)
+				IndexPack(pack);
+			pack.registered = g_register(manager, pack.path.c_str());
+			if (const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(); ms > 200)
+				log::Info("dlc pack {}: {:.0f} ms to open", pack.name, ms);
+			if (pack.registered)
+				log::Info("dlc pack {}: added", pack.name);
+			else
+				log::Error("dlc pack {}: the game rejected {}dlc.rpf", pack.name, pack.path);
+			return pack.registered;
+		}
+
 		void HookProcess(void* manager)
 		{
 			static std::once_flag debug;
 			std::call_once(debug, DebugConvert);
+			// (many packs take a while: the game's hang watchdog held off meanwhile)
+			WatchdogPause pause;
+			g_manager = manager;
+			const auto t0 = std::chrono::steady_clock::now();
 			auto packs = Discover();
 			static std::once_flag renames;
 			std::call_once(renames, [&] { FindRenames(packs); });
+			size_t heldBack = 0;
 			for (Pack& pack : packs)
 			{
 				if (!pack.enabled)
@@ -658,26 +740,21 @@ namespace loader::game::dlcpacks
 					log::Info("dlc pack {}: disabled", pack.name);
 					continue;
 				}
-				Prepare(pack);
-				if (pack.state == convert::PackState::Failed || pack.empty)
-					continue;
-				// RAGE paths are UTF-8, use forward slashes and end with a separator.
-				pack.path = Utf8(pack.dir.generic_u8string()) + "/";
-				// The game processes the list again when a session starts: reuse what we read.
-				bool known;
+				// (a world builder's sector that waits: mounted when it is first wanted - MountLater; one mounted so earlier
+				// this session the game has still)
+				if (g_mountSetup && sectors::Dormant(pack.name))
 				{
 					std::lock_guard lock(g_mutex);
-					known = g_entries.contains(Normalize(pack.path + "dlc.rpf"));
+					const auto old = std::find_if(g_packs.begin(), g_packs.end(), [&](const Pack& p) { return p.name == pack.name; });
+					pack.registered = old != g_packs.end() && old->registered;
+					pack.heldBack = !pack.registered;
+					heldBack += pack.heldBack;
+					continue;
 				}
-				if (!known)
-					IndexPack(pack);
-
-				pack.registered = g_register(manager, pack.path.c_str());
-				if (pack.registered)
-					log::Info("dlc pack {}: added", pack.name);
-				else
-					log::Error("dlc pack {}: the game rejected {}dlc.rpf", pack.name, pack.path);
+				Add(manager, pack);
 			}
+			if (heldBack)
+				log::Info("dlc packs: {} sector(s) that wait held back, mounted when wanted", heldBack);
 			static std::once_flag overrides;
 			std::call_once(overrides, [&] {
 				FindConflicts(packs);
@@ -733,6 +810,7 @@ namespace loader::game::dlcpacks
 				g_packs = std::move(packs);
 			}
 			g_origProcess(manager);
+			log::Info("dlc packs: processed in {:.0f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 		}
 
 		bool Hook(uintptr_t at, void* detour, void** original)
@@ -767,6 +845,16 @@ namespace loader::game::dlcpacks
 			g_watchdogPause = reinterpret_cast<volatile long*>(pattern::Rip(*watchdog + 2));
 		else
 			log::Warn("dlc packs: hang watchdog not found; converting large packs may crash the game");
+		// (mounting a pack later, the world builder's sectors': checked against the build, else they are all mounted at the start)
+		const auto base = module.base;
+		if (std::memcmp(reinterpret_cast<const void*>(base + kMountSetup), kMountSetupBytes, sizeof(kMountSetupBytes)) == 0 &&
+		    std::memcmp(reinterpret_cast<const void*>(base + kMountContent), kMountContentBytes, sizeof(kMountContentBytes)) == 0)
+		{
+			g_mountSetup = reinterpret_cast<MountSetupFn>(base + kMountSetup);
+			g_mountContent = reinterpret_cast<MountContentFn>(base + kMountContent);
+		}
+		else
+			log::Warn("dlc packs: the game's pack mounting differs from the build this was made for; every sector is mounted at the start");
 		if (!Hook(*lookup, reinterpret_cast<void*>(&HookLookup), reinterpret_cast<void**>(&g_origLookup)) ||
 		    !Hook(*process, reinterpret_cast<void*>(&HookProcess), reinterpret_cast<void**>(&g_origProcess)))
 		{
@@ -781,6 +869,56 @@ namespace loader::game::dlcpacks
 	{
 		std::lock_guard lock(g_mutex);
 		return g_packs;
+	}
+
+	std::string MountLater(const std::string& name)
+	{
+		Pack pack;
+		{
+			std::lock_guard lock(g_mutex);
+			const auto it = std::find_if(g_packs.begin(), g_packs.end(), [&](const Pack& p) { return p.name == name; });
+			if (it == g_packs.end())
+				return "no pack " + name;
+			if (it->registered)
+				return "";
+			pack = *it;
+		}
+		if (!g_manager || !g_mountSetup || !g_mountContent)
+			return "the game's pack mounting was not found";
+		WatchdogPause pause;
+		auto* manager = static_cast<uint8_t*>(g_manager);
+		const auto packs = [&] { return *reinterpret_cast<uint8_t**>(manager + 0x28); };
+		const auto count = [&] { return *reinterpret_cast<uint16_t*>(manager + 0x30); };
+		const uint16_t before = count();
+		if (!Add(g_manager, pack))
+			return "the game did not take " + pack.path + "dlc.rpf";
+		// (the record the game added for it - the last; one there already: the one of its name)
+		uint8_t* record = nullptr;
+		if (count() > before)
+			record = packs() + static_cast<size_t>(count() - 1) * 0x120;
+		else
+			for (uint16_t i = 0; i < count() && !record; ++i)
+				if (*reinterpret_cast<uint32_t*>(packs() + i * 0x120 + 0x80) == convert::Joaat(name))
+					record = packs() + i * 0x120;
+		if (!record)
+			return "the game has no record of it";
+		if (!g_mountSetup(record, *reinterpret_cast<uint32_t*>(manager + 0x178)))
+			return std::format("its setup2.xml was not read (state {})", *reinterpret_cast<uint32_t*>(record + 0x100));
+		if (*reinterpret_cast<uint32_t*>(record + 0x100) == 1)
+		{
+			const char* device = *reinterpret_cast<uint16_t*>(record + 0x48) ? *reinterpret_cast<const char**>(record + 0x40) : "";
+			if (const int r = g_mountContent(record, nullptr, device); r != 0)
+				return std::format("its content was not mounted ({})", r);
+			*reinterpret_cast<uint32_t*>(record + 0x100) = 2;
+		}
+		{
+			std::lock_guard lock(g_mutex);
+			for (Pack& p : g_packs)
+				if (p.name == name)
+					p = pack, p.registered = true, p.heldBack = false;
+		}
+		log::Info("dlc pack {}: mounted now", name);
+		return "";
 	}
 
 	const convert::Decryptor* Decryptor()

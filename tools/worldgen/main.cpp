@@ -2212,6 +2212,8 @@ int main(int argc, char** argv)
 			o.scan = g_options["scan"];
 		if (g_options.contains("aerial"))
 			o.aerial = g_options["aerial"];
+		if (g_options.contains("landcover"))
+			o.landcover = g_options["landcover"];
 		if (g_options.contains("datum"))
 			o.datum = std::stof(g_options["datum"]);
 		if (g_options.contains("waves"))
@@ -2222,6 +2224,7 @@ int main(int argc, char** argv)
 			o.roadsObj = g_options["roads-obj"];
 		o.lods = !g_options.contains("lods") || g_options["lods"] != "0";
 		o.navmesh = !g_options.contains("navmesh") || g_options["navmesh"] != "0";
+		o.navmeshNearOnly = g_options.contains("navmesh") && g_options["navmesh"] == "near"; // (--navmesh near: only where people go)
 		o.paths = !g_options.contains("paths") || g_options["paths"] != "0";
 		std::vector<worldgen::catalog::Item> catalog;
 		if (g_options.contains("catalog") && !worldgen::catalog::Load(g_options["catalog"], catalog, error))
@@ -2317,6 +2320,73 @@ int main(int argc, char** argv)
 		if (!worldgen::raster::WritePng(out / "world.png", g.nx, g.ny, rgb, error))
 			return Fail(error);
 		std::printf("world.png: %d x %d\n", g.nx, g.ny);
+		return 0;
+	}
+	if (command == "survey")
+	{
+		// a big extract read once, counted on the sectors' grid (tools/worldgen/sectors.py): --pbf <file.osm.pbf> --box
+		// south,west,north,east --grid lat0,lon0,dlat,dlon (cell (0, 0)'s south-west corner, a cell's size) --out <grid.tsv>:
+		// a line a cell with anything in it - column, row, coastline pieces, roads, buildings, water areas
+		double s = 0, w0 = 0, n = 0, e = 0, lat0 = 0, lon0 = 0, dlat = 0, dlon = 0;
+		char c = 0;
+		std::istringstream(g_options["box"]) >> s >> c >> w0 >> c >> n >> c >> e;
+		std::istringstream(g_options["grid"]) >> lat0 >> c >> lon0 >> c >> dlat >> c >> dlon;
+		if (!g_options.contains("pbf") || !g_options.contains("out") || n <= s || e <= w0 || dlat <= 0 || dlon <= 0)
+			return Fail("--pbf <file> --box s,w,n,e --grid lat0,lon0,dlat,dlon --out <grid.tsv> are needed");
+		const auto start = std::chrono::steady_clock::now();
+		worldgen::osm::Data data;
+		if (!worldgen::pbf::Load(g_options["pbf"], s, w0, n, e, 0, data, error))
+			return Fail(error);
+		std::printf("extract: %zu nodes, %zu ways (%.0f s)\n", data.nodes.size(), data.ways.size(),
+		    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+		struct Count
+		{
+			int coast = 0, roads = 0, buildings = 0, water = 0;
+		};
+		std::map<std::pair<int, int>, Count> cells;
+		const auto cellOf = [&](const worldgen::osm::Node& p) {
+			return std::make_pair(static_cast<int>(std::floor((p.lon - lon0) / dlon)), static_cast<int>(std::floor((p.lat - lat0) / dlat)));
+		};
+		for (const auto& [id, way] : data.ways)
+		{
+			const bool coast = worldgen::osm::Tag(way.tags, "natural") == "coastline";
+			const bool road = !worldgen::osm::Tag(way.tags, "highway").empty();
+			const bool building = !worldgen::osm::Tag(way.tags, "building").empty();
+			const bool water = worldgen::osm::Tag(way.tags, "natural") == "water";
+			if (!coast && !road && !building && !water)
+				continue;
+			// each cell the way passes through once (its pieces sampled every 1/8 of a cell: a coastline's straight runs
+			// can be long)
+			std::set<std::pair<int, int>> through;
+			const worldgen::osm::Node* last = nullptr;
+			for (const int64_t ref : way.nodes)
+			{
+				const auto it = data.nodes.find(ref);
+				if (it == data.nodes.end())
+					continue;
+				const auto& p = it->second;
+				if (last)
+				{
+					const int steps = static_cast<int>(std::max(std::abs(p.lat - last->lat) / dlat, std::abs(p.lon - last->lon) / dlon) * 8) + 1;
+					for (int k = 1; k < steps; ++k)
+						through.insert(cellOf({last->lat + (p.lat - last->lat) * k / steps, last->lon + (p.lon - last->lon) * k / steps}));
+				}
+				through.insert(cellOf(p));
+				last = &p;
+				if (building || water)
+					break; // (a building or a lake: where it starts)
+			}
+			for (const auto& at : through)
+			{
+				Count& k = cells[at];
+				k.coast += coast, k.roads += road, k.buildings += building, k.water += water;
+			}
+		}
+		std::ofstream out(g_options["out"]);
+		out << "column\trow\tcoast\troads\tbuildings\twater\n";
+		for (const auto& [at, k] : cells)
+			out << at.first << '\t' << at.second << '\t' << k.coast << '\t' << k.roads << '\t' << k.buildings << '\t' << k.water << '\n';
+		std::printf("%zu cells with something in them (%.0f s)\n", cells.size(), std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
 		return 0;
 	}
 	if (command == "catalog")

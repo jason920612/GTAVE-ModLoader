@@ -69,7 +69,10 @@ namespace loader::game::sea
 			float waves = 1;
 			std::string climate; // its weather (Climate below; empty: the game's)
 			bool there = true;   // (false: a sector that waits, game/sectors.hpp - refreshed each Tick)
-			// the water (water.bin): none when the pack has no mask
+			// the water (water.bin): none when the pack has no mask; read when the land is first there (a sector that waits
+			// may never be)
+			std::filesystem::path waterFile;
+			bool read = false;
 			bool water = false;
 			float x0 = 0, y0 = 0, cell = 4;
 			uint32_t nx = 0, ny = 0;
@@ -201,8 +204,8 @@ namespace loader::game::sea
 					land.there = !sectors::Dormant(name);
 					log::Info("sea: land {} ({:.0f}, {:.0f})..({:.0f}, {:.0f}), swell {:.2f} of the open ocean's", land.name, land.box[0], land.box[1],
 					    land.box[2], land.box[3], land.waves);
-					if (j.contains("water") && !ReadWater(land, entry.path() / j["water"].get<std::string>()))
-						log::Warn("sea: land {}: no usable water mask ({}); the sea stays under it", land.name, j["water"].get<std::string>());
+					if (j.contains("water"))
+						land.waterFile = entry.path() / j["water"].get<std::string>();
 					g_lands.push_back(std::move(land));
 				}
 				catch (const std::exception& e)
@@ -210,6 +213,19 @@ namespace loader::game::sea
 					log::Warn("sea: {}: land.json: {}", name, e.what());
 				}
 			}
+		}
+
+		// The water of the lands there not read yet (its rectangles worked out; until then - and if it is unusable - the land is
+		// left out where the water is drawn: `water` set last, the drawing threads look at it first).
+		void ReadThere()
+		{
+			for (Land& land : g_lands)
+				if (land.there && !land.read && !land.waterFile.empty())
+				{
+					land.read = true;
+					if (!ReadWater(land, land.waterFile))
+						log::Warn("sea: land {}: no usable water mask ({}); the sea stays under it", land.name, land.waterFile.filename().string());
+				}
 		}
 
 		// Whether the sea outside the game's grid is at a point (x, y, z): a land's mask in its box, else the sea.
@@ -554,12 +570,13 @@ namespace loader::game::sea
 	bool Install()
 	{
 		ReadLands();
-		if (std::none_of(g_lands.begin(), g_lands.end(), [](const Land& l) { return l.water; }))
+		if (std::none_of(g_lands.begin(), g_lands.end(), [](const Land& l) { return !l.waterFile.empty(); }))
 			return false;
 		g_patched = Patch();
 		if (!g_patched)
 			for (Land& land : g_lands)
-				land.water = false;
+				land.waterFile.clear();
+		ReadThere();
 		return g_patched;
 	}
 
@@ -577,6 +594,7 @@ namespace loader::game::sea
 		const Land* on = nullptr; // the land the camera is over
 		for (Land& land : g_lands)
 			land.there = !sectors::Dormant(land.name);
+		ReadThere();
 		for (const Land& land : g_lands)
 		{
 			if (!land.there)

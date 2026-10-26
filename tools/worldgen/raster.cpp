@@ -120,7 +120,9 @@ namespace worldgen::raster
 		constexpr int kStep = 16;
 		constexpr float kBand = 1000;
 		constexpr uint8_t kUnknown = 255;
-		const int maxRings = std::max(b.nx, b.ny);
+		// (searched only as far as the band reaches: past it a cell is unknown anyway - an inland sector's search for the
+		// nearest coastline far off had been most of its land and water step)
+		const int maxRings = static_cast<int>((kBand + kStep * land.cell + reach) / b.size) + 2;
 		bool anyKnown = false;
 		for (int j0 = 0; j0 < land.ny; j0 += kStep)
 			for (int i0 = 0; i0 < land.nx; i0 += kStep)

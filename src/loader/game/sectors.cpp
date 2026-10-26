@@ -15,6 +15,7 @@
 #include "../paths.hpp"
 #include "../pattern.hpp"
 #include "content.hpp"
+#include "dlcpacks.hpp"
 #include "minimap.hpp"
 #include "natives.hpp"
 
@@ -106,6 +107,7 @@ namespace loader::game::sectors
 		} g_switch;
 		ULONGLONG g_lastWatch = 0, g_ended = 0;
 		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
+		std::vector<std::string> g_unmountable; // (lands whose pack could not be mounted: not switched to again)
 
 		bool Overlap(const Land& a, const Land& b)
 		{
@@ -319,7 +321,9 @@ namespace loader::game::sectors
 						continue;
 					double lat, lon;
 					l.ToWorld(e.beyond[0], e.beyond[1], lat, lon);
-					const auto next = std::find_if(g_lands.begin(), g_lands.end(), [&](const Land& o) { return &o != &l && o.Covers(lat, lon); });
+					const auto next = std::find_if(g_lands.begin(), g_lands.end(), [&](const Land& o) {
+						return &o != &l && o.Covers(lat, lon) && std::find(g_unmountable.begin(), g_unmountable.end(), o.name) == g_unmountable.end();
+					});
 					if (next == g_lands.end())
 					{
 						const std::string key = l.name + e.side;
@@ -361,6 +365,14 @@ namespace loader::game::sectors
 		case Step::Fade:
 			if (natives::Invoke<int32_t>(kIsScreenFadedOut) || spent > 3000)
 			{
+				// (a land held back at the start: its pack mounted now; one that cannot be is not gone to again)
+				if (const std::string error = dlcpacks::MountLater(to->name); !error.empty())
+				{
+					log::Warn("sectors: {} could not be mounted ({}); the switch is given up", to->name, error);
+					g_unmountable.push_back(to->name);
+					Finish();
+					break;
+				}
 				Hold(player);
 				g_switch.step = Step::PutAway;
 				g_switch.since = now;

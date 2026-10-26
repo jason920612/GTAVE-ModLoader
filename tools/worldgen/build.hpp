@@ -29,12 +29,16 @@ namespace worldgen::build
 		std::array<float, 4> area{};    // only this part (x0, y0, x1, y1), for tests; all zero: everything
 		std::filesystem::path scan;     // laser-scan rasters (tools/worldgen/lidar.py): measured ground, buildings of our own
 		std::filesystem::path aerial;   // aerial pictures (tools/worldgen/aerial.py): the roofs' textures
+		std::filesystem::path landcover; // the land cover (tools/worldgen/nlcd.py): woods, wetlands, fields - trees and ground
 		float datum = 0.2f;             // added to the scan's heights (NAVD88, about the mean sea level in Miami; the game's sea is at 0)
 		float waves = 0.2f;             // the swell of the sea round the land (land.json: the loader's game/sea.cpp), the open ocean's 1
 		int roofTexture = 1024;         // a tile's roof picture (pixels a side)
 		std::filesystem::path roadsObj; // the roads' surfaces in the work box as an OBJ file (for checking)
 		bool lods = true;               // the buildings' LOD models (and the LOD maps they hang under)
 		bool buildings = true, navmesh = true, paths = true;
+		// navmeshes only in the squares with roads, paths, paving, buildings or beaches in them (a big rural land: its fields
+		// and woods are not walked by the game's pedestrians, and their navmeshes were most of a build's time)
+		bool navmeshNearOnly = false;
 	};
 
 	struct Stats

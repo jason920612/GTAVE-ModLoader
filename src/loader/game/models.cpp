@@ -111,8 +111,9 @@ namespace loader::game::models
 				if (it->is_regular_file(ec) && path.extension() == L".rpf")
 					out.emplace_back(path, "");
 			}
+			// (not a world builder's land: its own models only, never a vehicle's or a ped's - and a thousand sectors to read)
 			for (const auto& pack : dlcpacks::Snapshot())
-				if (pack.enabled)
+				if (pack.enabled && !std::filesystem::is_regular_file(pack.source / L"land.json", ec))
 					out.emplace_back(pack.source / L"dlc.rpf", pack.name);
 			std::sort(out.begin(), out.end());
 			return out;

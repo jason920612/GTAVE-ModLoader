@@ -23,6 +23,7 @@ namespace loader::game::dlcpacks
 		bool replacement = false; // a replacement mod: loose files / archives packed into a generated pack
 		bool enabled = true;
 		bool registered = false; // the game accepted it
+		bool heldBack = false;   // a world builder's sector that waits (game/sectors): mounted only when first wanted
 		bool empty = false;      // a replacement mod with nothing to load (e.g. only DLC packs in its .oiv)
 		convert::PackState state = convert::PackState::Native;
 		int convertedFiles = 0;
@@ -30,6 +31,12 @@ namespace loader::game::dlcpacks
 		std::vector<std::string> warnings;
 	};
 	std::vector<Pack> Snapshot();
+
+	// A world builder's sector held back at the start (a thousand of them would each be opened and read then) mounted now,
+	// as the game mounts packs at its start: its archives indexed, the pack registered, its setup read, its content
+	// mounted - its change sets are then the caller's to execute. Game thread. "" when it is there (also when it was
+	// already), else what went wrong.
+	std::string MountLater(const std::string& name);
 
 	// The game's NG decryption for reading archives, or nullptr when it was not found.
 	const convert::Decryptor* Decryptor();

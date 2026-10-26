@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 #include "convert/resource.hpp"
+#include "raster.hpp"
 
 namespace worldgen::trees
 {
@@ -160,6 +162,120 @@ namespace worldgen::trees
 						    palm ? 350.0f : 400.0f, scale});
 						++(palm ? stats.palms : stats.broadleaf);
 					}
+			}
+	}
+}
+
+namespace worldgen::trees
+{
+	namespace
+	{
+		struct Share
+		{
+			const char* name;
+			int percent;
+		};
+		// (the game's: pines of Paleto's forests, its oaks, figs and fan palms - cabbage palms, Florida's state tree, and
+		// for saw palmettos the small ones - its one cypress and its shrubs)
+		constexpr Share kNorthPines[] = {{"prop_tree_pine_02", 50}, {"prop_tree_pine_01", 30}, {"prop_palm_fan_03_b", 10}, {"prop_tree_eng_oak_01", 10}};
+		constexpr Share kSouthPines[] = {{"prop_tree_pine_02", 45}, {"prop_palm_fan_03_b", 20}, {"prop_palm_fan_03_a", 15}, {"prop_tree_oak_01", 10},
+		    {"prop_tree_lficus_05", 10}};
+		constexpr Share kNorthOaks[] = {{"prop_tree_oak_01", 40}, {"prop_tree_eng_oak_01", 40}, {"prop_tree_pine_02", 10}, {"prop_palm_fan_03_b", 10}};
+		constexpr Share kSouthOaks[] = {{"prop_tree_oak_01", 30}, {"prop_tree_eng_oak_01", 25}, {"prop_tree_lficus_05", 15}, {"prop_tree_lficus_03", 10},
+		    {"prop_palm_fan_03_b", 12}, {"prop_palm_fan_03_c", 8}};
+		constexpr Share kMixed[] = {{"prop_tree_pine_02", 30}, {"prop_tree_oak_01", 25}, {"prop_tree_eng_oak_01", 25}, {"prop_palm_fan_03_b", 20}};
+		constexpr Share kSwamp[] = {{"prop_tree_cypress_01", 55}, {"prop_palm_fan_03_a", 15}, {"prop_palm_fan_02_a", 10}, {"prop_bush_lrg_01", 12},
+		    {"prop_bush_lrg_03", 8}};
+		constexpr Share kScrub[] = {{"prop_bush_lrg_01", 30}, {"prop_bush_lrg_03", 30}, {"prop_bush_med_03", 20}, {"prop_palm_fan_02_a", 20}};
+		constexpr Share kNorthYards[] = {{"prop_tree_oak_01", 30}, {"prop_tree_eng_oak_01", 25}, {"prop_tree_pine_02", 20}, {"prop_palm_fan_03_b", 15},
+		    {"prop_palm_sm_01a", 10}};
+		constexpr Share kSouthYards[] = {{"prop_tree_oak_01", 20}, {"prop_tree_lficus_05", 20}, {"prop_tree_lficus_03", 10}, {"prop_palm_fan_03_b", 20},
+		    {"prop_palm_sm_01d", 15}, {"prop_palm_fan_03_c", 15}};
+
+		template <size_t N>
+		const char* Pick(const Share (&shares)[N], uint32_t roll)
+		{
+			int left = static_cast<int>(roll % 100);
+			for (const Share& s : shares)
+				if ((left -= s.percent) < 0)
+					return s.name;
+			return shares[0].name;
+		}
+
+		// A lattice point's tree by what covers the ground there (its NLCD class; 0 not known: the map's woods and
+		// wetlands, 1 and 2 below): how likely a tree is there (out of 100) and of which kind.
+		struct Kind
+		{
+			int chance;
+			const char* (*pick)(bool south, uint32_t roll);
+		};
+		Kind KindOf(uint8_t cover)
+		{
+			switch (cover)
+			{
+			case 1: // (the map's woods)
+			case 43:
+				return {100, [](bool, uint32_t r) { return Pick(kMixed, r); }};
+			case 42:
+				return {100, [](bool south, uint32_t r) { return south ? Pick(kSouthPines, r) : Pick(kNorthPines, r); }};
+			case 41:
+				return {100, [](bool south, uint32_t r) { return south ? Pick(kSouthOaks, r) : Pick(kNorthOaks, r); }};
+			case 2: // (the map's wetlands)
+			case 90:
+				return {70, [](bool, uint32_t r) { return Pick(kSwamp, r); }};
+			case 52:
+				return {35, [](bool, uint32_t r) { return Pick(kScrub, r); }};
+			case 21:
+				return {20, [](bool south, uint32_t r) { return south ? Pick(kSouthYards, r) : Pick(kNorthYards, r); }};
+			case 22:
+				return {15, [](bool south, uint32_t r) { return south ? Pick(kSouthYards, r) : Pick(kNorthYards, r); }};
+			case 23:
+				return {6, [](bool south, uint32_t r) { return south ? Pick(kSouthYards, r) : Pick(kNorthYards, r); }};
+			case 24:
+				return {2, [](bool south, uint32_t r) { return south ? Pick(kSouthYards, r) : Pick(kNorthYards, r); }};
+			case 81:
+				return {2, [](bool south, uint32_t r) { return south ? Pick(kSouthOaks, r) : Pick(kNorthOaks, r); }}; // (a pasture's lone oaks)
+			default:
+				return {0, nullptr};
+			}
+		}
+	}
+
+	void Fill(const std::vector<world::Area>& areas, const std::function<uint8_t(float, float)>& cover, double latitude,
+	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
+	    std::vector<props::Prop>& out, Stats& stats)
+	{
+		constexpr float kPi = 3.14159265f, kSpacing = 22;
+		// (the map's woods and wetlands, where the land cover is not known)
+		raster::Grid<uint8_t> mapped;
+		mapped.Init(box[0], box[1], box[2], box[3], kSpacing, 0);
+		for (const auto& a : areas)
+			if (a.kind == "wood" || a.kind == "wetland")
+			{
+				auto rings = a.outer;
+				rings.insert(rings.end(), a.inner.begin(), a.inner.end());
+				const uint8_t value = a.kind == "wood" ? 1 : 2;
+				raster::ForPolygon(mapped, rings, [&](int i, int j) { mapped.At(i, j) = std::max(mapped.At(i, j), value); });
+			}
+		const bool south = latitude < 27;
+		for (int j = 0; j < mapped.ny; ++j)
+			for (int i = 0; i < mapped.nx; ++i)
+			{
+				const auto c = mapped.Centre(i, j);
+				const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(c[0])) * 73856093u ^ static_cast<uint32_t>(std::lround(c[1])) * 19349663u);
+				const float x = c[0] + ((seed >> 8 & 255) / 255.0f - 0.5f) * 0.8f * kSpacing, y = c[1] + ((seed >> 16 & 255) / 255.0f - 0.5f) * 0.8f * kSpacing;
+				if (x < box[0] || y < box[1] || x >= box[2] || y >= box[3])
+					continue;
+				const uint8_t known = cover ? cover(x, y) : 0;
+				const Kind kind = KindOf(known ? known : mapped.At(i, j));
+				if (!kind.pick || static_cast<int>(seed % 100) >= kind.chance || !open(x, y))
+					continue;
+				const uint32_t roll = Mix(seed);
+				const char* name = kind.pick(south, roll);
+				const bool palm = std::string_view(name).starts_with("prop_palm"), bush = std::string_view(name).starts_with("prop_bush");
+				out.push_back({loader::convert::Joaat(name), {x, y, ground(x, y) - 0.2f}, static_cast<float>((roll >> 8) % 360) * kPi / 180,
+				    bush ? 150.0f : 350.0f, 0.8f + static_cast<float>((roll >> 20) % 36) / 100});
+				++(palm ? stats.palms : bush ? stats.bushes : stats.broadleaf);
 			}
 	}
 }

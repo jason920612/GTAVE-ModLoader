@@ -480,6 +480,32 @@ namespace worldgen::build
 			mask.write(reinterpret_cast<const char*>(bits.data()), static_cast<std::streamsize>(bits.size()));
 			built = {tx0, ty0, tx1, ty1};
 		}
+		// the land cover (tools/worldgen/nlcd.py's landcover.bin, 'WBLC' version 1: x0, y0, cell (float), nx, ny (uint32),
+		// then each cell's NLCD class, rows south to north): what the ground is where the map does not say
+		raster::Grid<uint8_t> landCover;
+		if (!o.landcover.empty())
+		{
+			std::ifstream in(o.landcover, std::ios::binary);
+			char magic[4]{};
+			uint32_t version = 0, nx = 0, ny = 0;
+			in.read(magic, 4);
+			in.read(reinterpret_cast<char*>(&version), 4);
+			in.read(reinterpret_cast<char*>(&landCover.x0), 4);
+			in.read(reinterpret_cast<char*>(&landCover.y0), 4);
+			in.read(reinterpret_cast<char*>(&landCover.cell), 4);
+			in.read(reinterpret_cast<char*>(&nx), 4);
+			in.read(reinterpret_cast<char*>(&ny), 4);
+			if (!in || std::memcmp(magic, "WBLC", 4) != 0 || version != 1 || landCover.cell <= 0 || !nx || !ny || nx > 65536 || ny > 65536)
+				return error = "not a land cover file: " + o.landcover.string(), false;
+			landCover.nx = static_cast<int>(nx), landCover.ny = static_cast<int>(ny);
+			landCover.v.resize(static_cast<size_t>(nx) * ny);
+			if (!in.read(reinterpret_cast<char*>(landCover.v.data()), static_cast<std::streamsize>(landCover.v.size())))
+				return error = "a land cover file cut short: " + o.landcover.string(), false;
+		}
+		const std::function<uint8_t(float, float)> landCoverAt = landCover.v.empty() ? std::function<uint8_t(float, float)>() : [&](float x, float y) {
+			const auto c = landCover.Cell({x, y});
+			return landCover.In(c[0], c[1]) ? landCover.At(c[0], c[1]) : uint8_t{0};
+		};
 		took("land and water");
 		// 2. heights: land rises gently from the shore (a beach lower), the sea floor deepens away from it
 		// (DistanceTo measures from the cells of a value to the nearest other cell)
@@ -652,6 +678,13 @@ namespace worldgen::build
 						what = kSandy;
 					else if (k == kPaved)
 						what = kPaving;
+					else if (landCoverAt && !photographed)
+					{
+						// (fields ploughed, broadleaf woods' and swamps' floors bare; barren land sand; pine flatwoods, grassland,
+						// pastures and yards grassy)
+						const uint8_t lc = landCoverAt(c[0], c[1]);
+						what = lc == 82 || lc == 41 || lc == 90 ? kBare : lc == 31 ? kSandy : kLawn;
+					}
 					else if (photographed)
 					{
 						float ndvi = 0, green = 0, brown = 0;
@@ -1051,6 +1084,13 @@ namespace worldgen::build
 				trees::Stats ts;
 				trees::Place(scan, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
 				std::printf("trees: %zu palms, %zu broadleaf, %zu bushes\n", ts.palms, ts.broadleaf, ts.bushes);
+			}
+			else
+			{
+				// (no scan: trees by the land cover, else the map's woods and wetlands)
+				trees::Stats ts;
+				trees::Fill(w.areas, landCoverAt, w.projection.lat0, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
+				std::printf("trees in woods and wetlands: %zu palms, %zu broadleaf and pines, %zu shrubs\n", ts.palms, ts.broadleaf, ts.bushes);
 			}
 			{
 				// nothing in the cars' way: trees and posts off the carriageways (the roads' and the junctions' asphalt, as their
@@ -2033,6 +2073,39 @@ namespace worldgen::build
 			for (size_t t = 0; t < navMesh.triangles.size(); ++t)
 				if (std::all_of(navMesh.triangles[t].begin(), navMesh.triangles[t].end(), [&](uint32_t v) { return navMesh.vertices[v][2] < -0.5f; }))
 					navSurfaces[t] = navgen::Surface::None;
+			if (o.navmeshNearOnly)
+			{
+				// (the navmesh grid's squares with something people walk to in them - pavements, buildings, beaches, paved
+				// ground; a country road's own carriageway not: no one walks along it - the ground and the roads elsewhere not
+				// walkable, each triangle by where its middle is)
+				const auto squareOf = [](float x, float y) {
+					return std::make_pair(static_cast<int>(std::floor((x + 6000) / 150)), static_cast<int>(std::floor((y + 6000) / 150)));
+				};
+				const auto middle = [&](size_t t) {
+					const auto& tri = navMesh.triangles[t];
+					return squareOf((navMesh.vertices[tri[0]][0] + navMesh.vertices[tri[1]][0] + navMesh.vertices[tri[2]][0]) / 3,
+					    (navMesh.vertices[tri[0]][1] + navMesh.vertices[tri[1]][1] + navMesh.vertices[tri[2]][1]) / 3);
+				};
+				std::set<std::pair<int, int>> wanted;
+				for (size_t t = 0; t < navMesh.triangles.size(); ++t)
+					if (navSurfaces[t] == navgen::Surface::Pavement)
+						wanted.insert(middle(t));
+				for (const auto& b : w.buildings)
+					if (!b.footprint.empty())
+						wanted.insert(squareOf(b.footprint.front()[0], b.footprint.front()[1]));
+				for (int j = 0; j < land.ny; ++j)
+					for (int i = 0; i < land.nx; ++i)
+						if (const uint8_t k = land.At(i, j); k == kBeach || k == kPaved) // (not parks: woods and wetlands are those too)
+						{
+							const P2 c = land.Centre(i, j);
+							wanted.insert(squareOf(c[0], c[1]));
+						}
+				size_t dropped = 0;
+				for (size_t t = 0; t < navMesh.triangles.size(); ++t)
+					if ((navSurfaces[t] == navgen::Surface::Ground || navSurfaces[t] == navgen::Surface::Road) && !wanted.contains(middle(t)))
+						navSurfaces[t] = navgen::Surface::None, ++dropped;
+				std::printf("navmeshes: %zu squares with pavements, buildings, beaches or paving; %zu ground and road triangles elsewhere left out\n", wanted.size(), dropped);
+			}
 			navgen::Result result;
 			if (!navgen::Build(navMesh, navSurfaces, {}, result, error))
 				return false;
