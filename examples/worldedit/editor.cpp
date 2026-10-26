@@ -332,10 +332,23 @@ namespace worldedit
 					out.push_back({a, b, c});
 				}
 			};
-			differ(will.asphalt, keys(was.asphalt), g_preview.asphalt);
+			// (the carriageways whatever they are made of, worn ones too)
+			const auto carriageways = [](const worldgen::roads::Surfaces& s) {
+				worldgen::roads::Mesh all;
+				for (const worldgen::roads::Mesh* m : {&s.paved[0], &s.paved[1], &s.paved[2], &s.paved[3], &s.paved[4], &s.paved[5], &s.paved[6], &s.paved[7], &s.worn})
+				{
+					const auto base = static_cast<uint32_t>(all.vertices.size());
+					all.vertices.insert(all.vertices.end(), m->vertices.begin(), m->vertices.end());
+					for (const uint32_t i : m->indices)
+						all.indices.push_back(base + i);
+				}
+				return all;
+			};
+			const worldgen::roads::Mesh wasRoads = carriageways(was), willRoads = carriageways(will);
+			differ(willRoads, keys(wasRoads), g_preview.asphalt);
 			differ(will.sidewalk, keys(was.sidewalk), g_preview.sidewalk);
 			differ(will.markings, keys(was.markings), g_preview.markings);
-			differ(was.asphalt, keys(will.asphalt), g_preview.gone);
+			differ(wasRoads, keys(willRoads), g_preview.gone);
 			differ(was.sidewalk, keys(will.sidewalk), g_preview.gone);
 		}
 
