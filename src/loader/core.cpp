@@ -31,6 +31,7 @@
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/navgrid.hpp"
+#include "game/playarea.hpp"
 #include "game/pathregions.hpp"
 #include "game/pools.hpp"
 #include "game/minimap.hpp"
@@ -254,6 +255,8 @@ namespace loader::core
 			if (config::Get().debugWatchFile)
 				debug::PollWatchFile();
 			debug::FlushHits();
+			game::pathregions::ReportGuards();
+			game::playarea::Tick();
 
 			game::scrThread* host = game::script::FindThread(kHostScript);
 			game::scrThread* landing = host ? nullptr : game::script::FindThread(kLandingScript);
@@ -342,7 +345,9 @@ namespace loader::core
 		game::fixes::InstallRiverCurrentFix();
 		game::pathregions::Install();
 		game::pathregions::AllowNewRegionFiles();
+		game::pathregions::GuardNextNodeLinks();
 		game::navgrid::Install();
+		game::playarea::Install();
 		game::sea::Install();
 		game::minimap::Install();
 		if (config::Get().ue5Renderer)

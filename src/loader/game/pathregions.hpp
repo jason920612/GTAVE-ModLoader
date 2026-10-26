@@ -23,4 +23,10 @@ namespace loader::game::pathregions
 	// loads. For the path store only, a placeholder that is neither loaded nor requested counts as a free slot: the file
 	// is registered like any new one. Always on (the game's own packs never add region files); research §61.7.
 	bool AllowNewRegionFiles();
+
+	// The vehicle AI's choice of the next node at a junction takes a link to a node past its region's count (or to a node
+	// of another area) on as a link with no node, and the game exits reading it (research/phase0.md §61.27): such links
+	// are passed over, as one into a region not loaded is. ReportGuards logs how many were (from the game's thread).
+	bool GuardNextNodeLinks();
+	void ReportGuards();
 }

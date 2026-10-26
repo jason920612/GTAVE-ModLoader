@@ -68,7 +68,7 @@ namespace worldgen::elevation
 		bool Open(const std::filesystem::path& folder, float offset = 0)
 		{
 			offset_ = offset;
-			return tiles_.Open(folder, "t_", 160);
+			return tiles_.Open(folder, "t_", 256);
 		}
 		bool Empty() const { return tiles_.Empty(); }
 		float Cell() const { return 0.5f; }
@@ -87,7 +87,7 @@ namespace worldgen::elevation
 	class Aerial
 	{
 	public:
-		bool Open(const std::filesystem::path& folder) { return tiles_.Open(folder, "a_", 48); }
+		bool Open(const std::filesystem::path& folder) { return tiles_.Open(folder, "a_", 128); }
 		bool Empty() const { return tiles_.Empty(); }
 		// bilinear; false where there is no picture
 		bool Sample(float x, float y, std::array<float, 4>& out);

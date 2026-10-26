@@ -83,6 +83,7 @@ namespace ue5export
 			std::map<std::string, bool> overlay;      // data file -> overlay
 			std::map<std::string, std::vector<std::string>> enable; // change set -> files
 			std::vector<std::string> startup;         // RPF data files not disabled: mounted with the pack
+			std::set<std::string> parents;            // GTXD_PARENTING_DATA files (texture dictionaries' parents)
 		};
 
 		Pack ReadPack(const std::string& setup, const std::string& content)
@@ -105,9 +106,18 @@ namespace ue5export
 			for (const std::string& item : Tags(content, "Item", files, filesEnd))
 			{
 				const auto name = Tags(item, "filename"), type = Tags(item, "fileType");
-				if (name.empty() || type.empty() || Trim(type[0]) != "RPF_FILE")
+				if (name.empty() || type.empty())
 					continue;
 				const std::string file = Lower(Trim(name[0]));
+				if (Trim(type[0]) == "GTXD_PARENTING_DATA")
+				{
+					p.parents.insert(file);
+					if (item.find("<disabled value=\"true\"") == std::string::npos)
+						p.startup.push_back(file);
+					continue;
+				}
+				if (Trim(type[0]) != "RPF_FILE")
+					continue;
 				p.overlay[file] = item.find("<overlay value=\"true\"") != std::string::npos;
 				if (item.find("<disabled value=\"true\"") == std::string::npos)
 					p.startup.push_back(file);
@@ -199,6 +209,7 @@ namespace ue5export
 		std::vector<std::string> items = Tags(std::string(listData.begin(), listData.end()), "Item");
 		for (const fs::path& extra : extraPacks)
 			items.push_back("extra:" + extra.string());
+		std::vector<std::pair<std::string, File>> parentFiles;
 		for (std::string item : items)
 		{
 			item = item.starts_with("extra:") ? item : Lower(Trim(item));
@@ -265,11 +276,21 @@ namespace ue5export
 			{
 				// "dlc_patchday3ng:/%platform%/levels/gta5/x.rpf" -> "x64/levels/gta5/x.rpf" in the pack.
 				const size_t colon = file.find(":/");
-				if (colon == std::string::npos || file.substr(0, colon) != p.device || !file.ends_with(".rpf") || !done.insert(file).second)
+				if (colon == std::string::npos || file.substr(0, colon) != p.device || !done.insert(file).second)
 					continue;
 				std::string inPack = file.substr(colon + 2);
 				if (inPack.starts_with("%platform%/"))
 					inPack = "x64/" + inPack.substr(11);
+				if (p.parents.contains(file))
+				{
+					// (the pack's texture parents: a data file of the pack itself, beside its archives)
+					if (const auto at = find(inPack))
+						parentFiles.emplace_back(Lower(inPack.substr(inPack.rfind('/') + 1)),
+						    File{std::get<0>(*at), std::get<1>(*at), std::get<2>(*at) + "/" + inPack});
+					continue;
+				}
+				if (!file.ends_with(".rpf"))
+					continue;
 				const auto at = find(inPack);
 				if (!at)
 				{
@@ -320,6 +341,12 @@ namespace ue5export
 			if (name.ends_with(".meta") || name.ends_with(".ymf") || name.ends_with(".xml") || name.ends_with("gtxd.ymt")) // (data files, every archive's manifest, the texture parents)
 				all_[name].push_back(file);
 			byName_[name] = file;
+		}
+		// (the packs' texture parents, each read with its pack)
+		for (auto& [name, file] : parentFiles)
+		{
+			all_[name].push_back(file);
+			byName_[name] = std::move(file);
 		}
 		activeArchives = order_.size();
 		return true;

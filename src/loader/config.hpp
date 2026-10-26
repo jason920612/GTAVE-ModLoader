@@ -89,6 +89,9 @@ namespace loader::config
 		// x 16050, north to y 10500; game/navgrid.cpp). The game's own navmeshes are renumbered as they load. Takes effect
 		// when the game starts.
 		bool worldNavGrid = false;
+		// World builder: the player's play area (out of it the game holds the player's vehicle) is the world box, +-16000 m
+		// in x and y, instead of (-8000, -8000)..(8000, 9000) (game/playarea.cpp). Takes effect when the game starts.
+		bool worldPlayArea = true;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

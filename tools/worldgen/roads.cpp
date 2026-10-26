@@ -438,6 +438,282 @@ namespace worldgen::roads
 					}
 			}
 		}
+
+		// Divided roads' medians (research/phase0.md §61.27). OpenStreetMap draws a road with a painted median or a centre
+		// turn lane as two one-way carriageways a few metres apart, often with short links across between them (its turn
+		// lanes and U-turns). The space between two such carriageways (one-way streets going opposite ways, nothing else
+		// between them, at most kMedian apart) is paved - each its half, up to the line between them - unless the ground
+		// there is mostly planted (a landscaped median); the links across a paved median are not drawn (the traffic keeps
+		// them: Paths has the whole network).
+		constexpr float kMedian = 7.0f;
+
+		// a carriageway of a divided road can be: a one-way street on the ground
+		bool Divides(const Edge& e) { return (e.forward > 0) != (e.backward > 0) && !Minor(e) && !e.bridge; }
+
+		// The paved width beyond each side of an edge (left and right of a -> b), sampled every `step` metres along it.
+		struct Median
+		{
+			float step = 2;
+			std::vector<float> left, right;
+
+			float At(bool leftSide, float s) const
+			{
+				const auto& w = leftSide ? left : right;
+				if (w.size() < 2)
+					return w.empty() ? 0.0f : w[0];
+				const float x = std::clamp(s / step, 0.0f, static_cast<float>(w.size() - 1));
+				const size_t i = std::min(static_cast<size_t>(x), w.size() - 2);
+				const float t = x - i;
+				// (no width creeping in from a sample without: a run's ends are square)
+				if (w[i] <= 0 || w[i + 1] <= 0)
+					return t < 0.5f ? w[i] : w[i + 1];
+				return w[i] + (w[i + 1] - w[i]) * t;
+			}
+		};
+
+		// The links across a divided road's median: both ends where the link meets a carriageway going on through (one
+		// piece in, one out, about straight on), the carriageways at the two ends going opposite ways; at most 70 m long.
+		std::vector<bool> Crossovers(const Network& n)
+		{
+			std::vector<bool> out(n.edges.size(), false);
+			// the carriageway going through vertex v besides edge x: its travel direction there
+			const auto through = [&](int v, int x, P2& dir) {
+				const auto& list = n.vertices[v].edges;
+				if (list.size() != 3)
+					return false;
+				std::vector<int> others;
+				for (const int ei : list)
+					if (ei != x)
+						others.push_back(ei);
+				if (others.size() != 2)
+					return false;
+				P2 t[2];
+				bool into[2];
+				for (int k = 0; k < 2; ++k)
+				{
+					const Edge& c = n.edges[others[k]];
+					if (!Divides(c) || c.a == c.b)
+						return false;
+					const bool atB = c.b == v;
+					const P2 d = atB ? Dir(c.points[c.points.size() - 2], c.points.back()) : Dir(c.points[0], c.points[1]);
+					const float sign = c.forward > 0 ? 1.0f : -1.0f;
+					t[k] = {d[0] * sign, d[1] * sign};
+					into[k] = (c.forward > 0) == atB;
+				}
+				if (into[0] == into[1] || t[0][0] * t[1][0] + t[0][1] * t[1][1] < 0.8f)
+					return false;
+				dir = Dir({0, 0}, {t[0][0] + t[1][0], t[0][1] + t[1][1]});
+				return true;
+			};
+			for (size_t x = 0; x < n.edges.size(); ++x)
+			{
+				const Edge& e = n.edges[x];
+				P2 da, db;
+				if (e.a == e.b || e.bridge || Length(e.points) > 70 || !through(e.a, static_cast<int>(x), da) || !through(e.b, static_cast<int>(x), db))
+					continue;
+				out[x] = da[0] * db[0] + da[1] * db[1] < -0.8f;
+			}
+			return out;
+		}
+
+		// Each carriageway's median sides (none for the other edges; `skip`: the links across, not looked at).
+		std::vector<Median> Medians(const Network& n, const std::vector<bool>& skip, const std::function<bool(float, float)>& planted)
+		{
+			const size_t ne = n.edges.size();
+			std::vector<Median> out(ne);
+			// every edge's segments by 16 m cell
+			constexpr float kCell = 16;
+			const auto key = [](int i, int j) { return static_cast<uint64_t>(static_cast<uint32_t>(i)) << 32 | static_cast<uint32_t>(j); };
+			std::unordered_map<uint64_t, std::vector<std::pair<int, int>>> cells;
+			for (size_t ei = 0; ei < ne; ++ei)
+			{
+				if (skip[ei])
+					continue;
+				const auto& p = n.edges[ei].points;
+				for (size_t k = 0; k + 1 < p.size(); ++k)
+					for (int j = static_cast<int>(std::floor(std::min(p[k][1], p[k + 1][1]) / kCell)); j <= static_cast<int>(std::floor(std::max(p[k][1], p[k + 1][1]) / kCell)); ++j)
+						for (int i = static_cast<int>(std::floor(std::min(p[k][0], p[k + 1][0]) / kCell)); i <= static_cast<int>(std::floor(std::max(p[k][0], p[k + 1][0]) / kCell));
+						     ++i)
+							cells[key(i, j)].push_back({static_cast<int>(ei), static_cast<int>(k)});
+			}
+			for (size_t ei = 0; ei < ne; ++ei)
+			{
+				const Edge& e = n.edges[ei];
+				if (skip[ei] || !Divides(e))
+					continue;
+				const float total = Length(e.points), h = e.HalfWidth(), sign = e.forward > 0 ? 1.0f : -1.0f;
+				Median& m = out[ei];
+				const int count = std::max(2, static_cast<int>(std::ceil(total / m.step)) + 1);
+				m.step = total / (count - 1);
+				m.left.assign(count, 0), m.right.assign(count, 0);
+				// per sample and side: the gap to the other carriageway (-1: none), whether the ground in it is planted
+				std::vector<float> gap[2] = {std::vector<float>(count, -1), std::vector<float>(count, -1)};
+				std::vector<bool> green[2] = {std::vector<bool>(count, false), std::vector<bool>(count, false)};
+				size_t seg = 0;
+				float segStart = 0;
+				for (int k = 0; k < count; ++k)
+				{
+					const float s = k * m.step;
+					while (seg + 2 < e.points.size() && segStart + Dist(e.points[seg], e.points[seg + 1]) < s)
+						segStart += Dist(e.points[seg], e.points[seg + 1]), ++seg;
+					const P2 &a = e.points[seg], &c = e.points[seg + 1];
+					const float l = Dist(a, c), t = l > 0 ? std::clamp((s - segStart) / l, 0.0f, 1.0f) : 0.0f;
+					const P2 q{a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t}, d = Dir(a, c), travel{d[0] * sign, d[1] * sign};
+					for (int side = 0; side < 2; ++side)
+					{
+						const P2 u = side == 0 ? Left(d) : P2{-Left(d)[0], -Left(d)[1]};
+						// the nearest road that way
+						const float reach = h + kMedian + 8.5f;
+						const P2 end{q[0] + u[0] * reach, q[1] + u[1] * reach};
+						float best = reach;
+						int hit = -1;
+						P2 hitDir{};
+						for (int j = static_cast<int>(std::floor(std::min(q[1], end[1]) / kCell)); j <= static_cast<int>(std::floor(std::max(q[1], end[1]) / kCell)); ++j)
+							for (int i = static_cast<int>(std::floor(std::min(q[0], end[0]) / kCell)); i <= static_cast<int>(std::floor(std::max(q[0], end[0]) / kCell)); ++i)
+							{
+								const auto it = cells.find(key(i, j));
+								if (it == cells.end())
+									continue;
+								for (const auto& [fi, fk] : it->second)
+								{
+									if (fi == static_cast<int>(ei))
+										continue;
+									const P2 &f0 = n.edges[fi].points[fk], &f1 = n.edges[fi].points[fk + 1];
+									const P2 w{f1[0] - f0[0], f1[1] - f0[1]};
+									const float den = u[0] * w[1] - u[1] * w[0];
+									if (std::fabs(den) < 1e-6f)
+										continue;
+									const P2 aq{f0[0] - q[0], f0[1] - q[1]};
+									const float tr = (aq[0] * w[1] - aq[1] * w[0]) / den, v = (aq[0] * u[1] - aq[1] * u[0]) / den;
+									if (v < 0 || v > 1 || tr <= 0 || tr >= best)
+										continue;
+									best = tr, hit = fi, hitDir = Dir(f0, f1);
+								}
+							}
+						if (hit < 0)
+							continue;
+						const Edge& o = n.edges[hit];
+						const float os = o.forward > 0 ? 1.0f : -1.0f;
+						if (!Divides(o) || (hitDir[0] * travel[0] + hitDir[1] * travel[1]) * os > -0.85f)
+							continue; // (not the other carriageway of a divided road)
+						const float g = best - h - o.HalfWidth();
+						if (g > kMedian)
+							continue;
+						gap[side][k] = std::max(0.0f, g);
+						if (planted && g > 0.1f)
+						{
+							const float mid = h + g / 2;
+							green[side][k] = planted(q[0] + u[0] * mid, q[1] + u[1] * mid);
+						}
+					}
+				}
+				// the sides' runs of samples with the other carriageway beside (gaps in them up to 6 m bridged): paved but
+				// where mostly planted, or shorter than 8 m
+				const int bridge = static_cast<int>(std::ceil(6.0f / m.step)), shortest = static_cast<int>(std::ceil(8.0f / m.step));
+				for (int side = 0; side < 2; ++side)
+				{
+					auto& width = side == 0 ? m.left : m.right;
+					for (int k = 0; k < count;)
+					{
+						if (gap[side][k] < 0)
+						{
+							++k;
+							continue;
+						}
+						int last = k, greenSamples = 0, samples = 0;
+						for (int x = k; x < count && x - last <= bridge; ++x)
+							if (gap[side][x] >= 0)
+							{
+								last = x, ++samples;
+								greenSamples += green[side][x];
+							}
+						if (last - k + 1 >= shortest && greenSamples * 2 <= samples)
+						{
+							// (the bridged samples take their neighbours' width)
+							float before = gap[side][k];
+							for (int x = k; x <= last; ++x)
+							{
+								if (gap[side][x] >= 0)
+									before = gap[side][x];
+								width[x] = before / 2;
+							}
+						}
+						k = last + 1;
+					}
+					// (no paving narrower than 10 cm)
+					for (float& x : width)
+						if (x < 0.05f)
+							x = 0;
+				}
+			}
+			return out;
+		}
+
+		// Of the links across (`crossover`), those inside the paved medians: every 2 m of them on a carriageway next to
+		// its ends or on its median paving.
+		std::vector<bool> Covered(const Network& n, const std::vector<bool>& crossover, const std::vector<Median>& medians)
+		{
+			std::vector<bool> out(n.edges.size(), false);
+			for (size_t x = 0; x < n.edges.size(); ++x)
+			{
+				if (!crossover[x])
+					continue;
+				const Edge& e = n.edges[x];
+				std::vector<int> beside;
+				for (const int v : {e.a, e.b})
+					for (const int c : n.vertices[v].edges)
+						if (c != static_cast<int>(x))
+							beside.push_back(c);
+				const float total = Length(e.points);
+				const int count = std::max(2, static_cast<int>(std::ceil(total / 2)) + 1);
+				bool all = true;
+				for (int k = 0; k < count && all; ++k)
+				{
+					// the point k / (count - 1) of the way along
+					float want = total * k / (count - 1), s = 0;
+					P2 q = e.points.back();
+					for (size_t i = 0; i + 1 < e.points.size(); ++i)
+					{
+						const float l = Dist(e.points[i], e.points[i + 1]);
+						if (s + l >= want)
+						{
+							const float t = l > 0 ? (want - s) / l : 0;
+							q = {e.points[i][0] + (e.points[i + 1][0] - e.points[i][0]) * t, e.points[i][1] + (e.points[i + 1][1] - e.points[i][1]) * t};
+							break;
+						}
+						s += l;
+					}
+					bool on = false;
+					for (const int c : beside)
+					{
+						// the nearest point of the carriageway: how far, which side, how far along
+						const Edge& ce = n.edges[c];
+						float bestD = 1e30f, bestS = 0, along = 0;
+						bool left = true;
+						for (size_t i = 0; i + 1 < ce.points.size(); ++i)
+						{
+							const P2 &a = ce.points[i], &b2 = ce.points[i + 1];
+							const float l = Dist(a, b2);
+							const P2 d = Dir(a, b2);
+							const float t = std::clamp(((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]), 0.0f, l);
+							const P2 f{a[0] + d[0] * t, a[1] + d[1] * t};
+							const float dist = Dist(f, q);
+							if (dist < bestD)
+								bestD = dist, bestS = along + t, left = d[0] * (q[1] - a[1]) - d[1] * (q[0] - a[0]) > 0;
+							along += l;
+						}
+						if (bestD <= ce.HalfWidth() + medians[c].At(left, bestS) + 0.75f)
+						{
+							on = true;
+							break;
+						}
+					}
+					all = on;
+				}
+				out[x] = all;
+			}
+			return out;
+		}
 	}
 
 	Network Build(const world::World& w)
@@ -599,9 +875,17 @@ namespace worldgen::roads
 		}
 	}
 
-	void Geometry(const Network& n, Surfaces& out)
+	void Geometry(const Network& source, Surfaces& out, const std::function<bool(float, float)>& planted)
 	{
 		Builder b{out};
+		// 0. divided roads' medians: paved where narrow and not planted, the links across those not drawn (gone from the
+		// vertices' lists: the carriageways go on through there)
+		const std::vector<bool> crossover = Crossovers(source);
+		const std::vector<Median> medians = Medians(source, crossover, planted);
+		const std::vector<bool> hidden = Covered(source, crossover, medians);
+		Network n = source;
+		for (Vertex& v : n.vertices)
+			std::erase_if(v.edges, [&](int ei) { return hidden[ei]; });
 		const size_t nv = n.vertices.size(), ne = n.edges.size();
 		// 1. what each vertex is: a junction (three roads or more, or a road meeting itself), a change of road (two
 		// roads not alike: the wider narrows to the other), a street going past driveways or alleys (two streets and minor
@@ -652,6 +936,9 @@ namespace worldgen::roads
 				cluster[root(e.a)] = root(e.b);
 			}
 		}
+		for (size_t ei = 0; ei < ne; ++ei)
+			if (hidden[ei])
+				inside[ei] = true; // (not drawn: a link across a paved median)
 		std::vector<P3> centre(nv, P3{0, 0, 0});
 		std::vector<int> members(nv, 0);
 		for (size_t v = 0; v < nv; ++v)
@@ -747,9 +1034,11 @@ namespace worldgen::roads
 			int edge;
 			bool atA;
 			P2 at, outward;
-			float half, walk; // the road's half width, the sidewalk's width (0: none)
+			float half;         // the road's half width
+			float walkL, walkR; // its sidewalks' widths (0: none), left and right of outward
 			float z;
 			bool crossing;
+			float fillL = 0, fillR = 0; // median paving beyond its edges
 		};
 		std::vector<std::vector<End>> ends(nv);
 		for (size_t ei = 0; ei < ne; ++ei)
@@ -828,6 +1117,12 @@ namespace worldgen::roads
 				}
 				halfAt[i] = h, walkAt[i] = wk, centreAt[i] = c;
 			}
+			// the median paving beyond each side at each point (and so no sidewalk there)
+			const Median& md = medians[ei];
+			std::vector<float> fillL(p.size()), fillR(p.size());
+			for (size_t i = 0; i < p.size(); ++i)
+				fillL[i] = md.At(true, s[i]), fillR[i] = md.At(false, s[i]);
+			std::vector<std::pair<float, float>> medianL, medianR; // (where it is paved: from, to along the edge)
 			std::vector<float> scale;
 			auto nrm = Normals(p, scale);
 			// at a change of road the two meet on the bisector of their directions (no wedge between them)
@@ -896,21 +1191,102 @@ namespace worldgen::roads
 				const float wear = paving::Wear(e.kind, e.smoothness, e.id);
 				const auto features = f1 - f0 > 3 ? paving::Features(pv, wear, seed, f0, f1, half, lines, major) : std::vector<paving::Feature>{};
 				Carriageway(b, out, pv, features, seed, p, z, s, nrm, scale, halfAt, wear >= 0.5f, !e.bridge);
+				// the median paving: from the carriageway's edge out to the line between the carriageways (rows at its points
+				// and every 2 m between them), the same surface, its picture from the middle of the lanes'
+				if (!md.left.empty())
+				{
+					Mesh& mm = pv == paving::Paving::Asphalt && wear >= 0.5f ? out.worn : out.paved[static_cast<size_t>(pv)];
+					const float tm = paving::TextureMetres(pv);
+					std::vector<float> rs;
+					for (size_t i = 0; i < p.size(); ++i)
+					{
+						rs.push_back(s[i]);
+						if (i + 1 < p.size())
+							for (float x = std::floor(s[i] / 2) * 2 + 2; x < s[i + 1] - 0.2f; x += 2)
+								if (x > s[i] + 0.2f)
+									rs.push_back(x);
+					}
+					for (const bool leftSide : {true, false})
+					{
+						std::vector<float> paved(rs.size());
+						for (size_t r = 0; r < rs.size(); ++r)
+							paved[r] = md.At(leftSide, rs[r]);
+						for (size_t r = 0; r + 1 < rs.size();)
+						{
+							if (paved[r] <= 0 && paved[r + 1] <= 0)
+							{
+								++r;
+								continue;
+							}
+							size_t last = r + 1;
+							while (last + 1 < rs.size() && (paved[last] > 0 || paved[last + 1] > 0))
+								++last;
+							std::vector<P3> inner, outer;
+							std::vector<std::array<float, 2>> uvI, uvO;
+							for (size_t k = r; k <= last; ++k)
+							{
+								size_t i = 0;
+								while (i + 2 < s.size() && s[i + 1] < rs[k])
+									++i;
+								const float t = s[i + 1] > s[i] ? std::clamp((rs[k] - s[i]) / (s[i + 1] - s[i]), 0.0f, 1.0f) : 0.0f;
+								const P2 c{p[i][0] + (p[i + 1][0] - p[i][0]) * t, p[i][1] + (p[i + 1][1] - p[i][1]) * t};
+								const P2 v{nrm[i][0] * scale[i] + (nrm[i + 1][0] * scale[i + 1] - nrm[i][0] * scale[i]) * t,
+								    nrm[i][1] * scale[i] + (nrm[i + 1][1] * scale[i + 1] - nrm[i][1] * scale[i]) * t};
+								const float h = halfAt[i] + (halfAt[i + 1] - halfAt[i]) * t, zz = z[i] + (z[i + 1] - z[i]) * t;
+								const float sign = leftSide ? 1.0f : -1.0f, o0 = sign * h, o1 = sign * (h + paved[k]);
+								inner.push_back({c[0] + v[0] * o0, c[1] + v[1] * o0, zz});
+								outer.push_back({c[0] + v[0] * o1, c[1] + v[1] * o1, zz});
+								uvI.push_back({0.4f, rs[k] / tm});
+								uvO.push_back({0.6f, rs[k] / tm});
+							}
+							if (leftSide)
+								b.Strip(mm, inner, outer, uvI, uvO, paving::Material(pv), true, 1);
+							else
+								b.Strip(mm, outer, inner, uvO, uvI, paving::Material(pv), true, 1);
+							(leftSide ? medianL : medianR).push_back({rs[r], rs[last]});
+							r = last;
+						}
+					}
+				}
 			}
 			if (e.sidewalks)
 			{
-				b.Strip(out.sidewalk, walkLi, walkLo, uvWi, uvWo, kPavement, !e.bridge, 2); // (left: inner on the right of its direction)
-				b.Strip(out.sidewalk, walkRo, walkRi, uvWo, uvWi, kPavement, !e.bridge, 2);
-				b.Wall(out.kerb, left, kKerb, false, kConcrete);  // facing the road (to the right of the left kerb's direction)
-				b.Wall(out.kerb, right, kKerb, true, kConcrete);
-				// the sidewalks' outer edges down to the ground below them
-				std::vector<P3> lo = walkLo, ro = walkRo;
-				for (P3& q : lo)
-					q[2] -= kKerb + 0.25f;
-				for (P3& q : ro)
-					q[2] -= kKerb + 0.25f;
-				b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0);
-				b.Wall(out.kerb, ro, kKerb + 0.25f, false, 0);
+				// (each side along its stretches without median paving)
+				const auto stretches = [&](const std::vector<float>& fill, auto&& f) {
+					for (size_t i = 0; i < p.size();)
+					{
+						if (fill[i] > 0)
+						{
+							++i;
+							continue;
+						}
+						size_t j = i;
+						while (j + 1 < p.size() && fill[j + 1] <= 0)
+							++j;
+						if (j > i)
+							f(i, j + 1);
+						i = j + 1;
+					}
+				};
+				const auto slice = [](const auto& v, size_t i0, size_t i1) { return std::decay_t<decltype(v)>(v.begin() + i0, v.begin() + i1); };
+				stretches(fillL, [&](size_t i0, size_t i1) {
+					b.Strip(out.sidewalk, slice(walkLi, i0, i1), slice(walkLo, i0, i1), slice(uvWi, i0, i1), slice(uvWo, i0, i1), kPavement, !e.bridge,
+					    2);                                                         // (left: inner on the right of its direction)
+					b.Wall(out.kerb, slice(left, i0, i1), kKerb, false, kConcrete); // facing the road (to the right of the left kerb's direction)
+					// the sidewalk's outer edge down to the ground below it
+					auto lo = slice(walkLo, i0, i1);
+					for (P3& q : lo)
+						q[2] -= kKerb + 0.25f;
+					b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0);
+				});
+				stretches(fillR, [&](size_t i0, size_t i1) {
+					b.Strip(out.sidewalk, slice(walkRo, i0, i1), slice(walkRi, i0, i1), slice(uvWo, i0, i1), slice(uvWi, i0, i1), kPavement, !e.bridge, 2);
+					b.Wall(out.kerb, slice(right, i0, i1), kKerb, true, kConcrete);
+					auto ro = slice(walkRo, i0, i1);
+					for (P3& q : ro)
+						q[2] -= kKerb + 0.25f;
+					b.Wall(out.kerb, ro, kKerb + 0.25f, false, 0);
+				});
 			}
 			// markings (on asphalt and concrete): between the directions (double yellow), between lanes (dashed white: a
 			// lane the next road has not ends where the taper starts), edge lines on the big roads; the stretch before a
@@ -953,6 +1329,14 @@ namespace worldgen::roads
 				    4.0f, sStart + clearA, sEnd - clearB);
 				line(offsets([&](size_t i) { return halfAt[i] - 0.45f; }), 0.2f, oneWay && !e.backward ? kYellowU0 : kWhiteU0, oneWay && !e.backward ? kYellowU1 : kWhiteU1,
 				    4.0f, sStart + clearA, sEnd - clearB);
+			}
+			else
+			{
+				// (a paved median's edges: yellow - the big roads have their edge lines already)
+				for (const auto& [from, to] : medianL)
+					line(offsets([&](size_t i) { return halfAt[i] - 0.3f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, std::max(from, sStart + clearA), std::min(to, sEnd - clearB));
+				for (const auto& [from, to] : medianR)
+					line(offsets([&](size_t i) { return -halfAt[i] + 0.3f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, std::max(from, sStart + clearA), std::min(to, sEnd - clearB));
 			}
 			// at a junction: the crossing (bars along the road, 3 m long, across its width) and the stop line of the
 			// lanes coming in behind it
@@ -1003,7 +1387,11 @@ namespace worldgen::roads
 				if (kind[v] != Kind::Junction)
 					continue;
 				const size_t i = atA ? 0 : p.size() - 1, j = atA ? 1 : p.size() - 2;
-				ends[root(v)].push_back({static_cast<int>(ei), atA, p[i], Dir(p[i], p[j]), halfAt[i], walkAt[i], z[i], true});
+				// (outward: along the edge at a - its left the edge's; against it at b)
+				const float fl = atA ? fillL[i] : fillR[i], fr = atA ? fillR[i] : fillL[i];
+				End x{static_cast<int>(ei), atA, p[i], Dir(p[i], p[j]), halfAt[i], fl > 0 ? 0 : walkAt[i], fr > 0 ? 0 : walkAt[i], z[i], true};
+				x.fillL = fl, x.fillR = fr;
+				ends[root(v)].push_back(x);
 			}
 		}
 		// 4. junctions: the asphalt inside the ends' cross-sections and the kerbs' curves between neighbouring ends
@@ -1060,8 +1448,10 @@ namespace worldgen::roads
 				const End& x = list[k];
 				const End& y = list[(k + 1) % list.size()];
 				const P2 lx = Left(x.outward), ly = Left(y.outward);
-				const P2 xr{x.at[0] - lx[0] * x.half, x.at[1] - lx[1] * x.half}, xl{x.at[0] + lx[0] * x.half, x.at[1] + lx[1] * x.half};
-				const P2 yr{y.at[0] - ly[0] * y.half, y.at[1] - ly[1] * y.half};
+				// (the edges with any median paving beyond)
+				const float xR = x.half + x.fillR, xL = x.half + x.fillL, yR = y.half + y.fillR;
+				const P2 xr{x.at[0] - lx[0] * xR, x.at[1] - lx[1] * xR}, xl{x.at[0] + lx[0] * xL, x.at[1] + lx[1] * xL};
+				const P2 yr{y.at[0] - ly[0] * yR, y.at[1] - ly[1] * yR};
 				ring.push_back(xr), ringZ.push_back(x.z);
 				ring.push_back(xl), ringZ.push_back(x.z);
 				float gap = angleOf(y) - angleOf(x);
@@ -1073,9 +1463,9 @@ namespace worldgen::roads
 				const auto kerb = straight ? std::vector<P2>{xl, yr} : curve(xl, in, yr, y.outward, 8);
 				for (size_t q = 1; q + 1 < kerb.size(); ++q)
 					ring.push_back(kerb[q]), ringZ.push_back(x.z + (y.z - x.z) * static_cast<float>(q) / (kerb.size() - 1));
-				if (x.walk <= 0 && y.walk <= 0)
+				if (x.walkL <= 0 && y.walkR <= 0)
 					continue;
-				const P2 xo{xl[0] + lx[0] * x.walk, xl[1] + lx[1] * x.walk}, yo{yr[0] - ly[0] * y.walk, yr[1] - ly[1] * y.walk};
+				const P2 xo{xl[0] + lx[0] * x.walkL, xl[1] + lx[1] * x.walkL}, yo{yr[0] - ly[0] * y.walkR, yr[1] - ly[1] * y.walkR};
 				Corner cr;
 				cr.kerb = kerb;
 				cr.outer = straight ? std::vector<P2>{xo, yo} : curve(xo, in, yo, y.outward, 8);
@@ -1215,7 +1605,9 @@ namespace worldgen::roads
 					}
 					// on its sidewalk a little in from the kerb, just past its crossing; or by this road's stop line
 					const End& at = y ? *y : x;
-					const float along = y ? 1.0f : 4.6f, off = at.half + (at.walk > 0 ? std::min(0.9f, at.walk * 0.35f) : 1.0f);
+					// (the side: the far road's right of outward, this road's left)
+					const float walk = y ? at.walkR : at.walkL, fill = y ? at.fillR : at.fillL;
+					const float along = y ? 1.0f : 4.6f, off = at.half + fill + (walk > 0 ? std::min(0.9f, walk * 0.35f) : 1.0f);
 					P2 q{at.at[0] + at.outward[0] * along + right[0] * off, at.at[1] + at.outward[1] * along + right[1] * off};
 					for (int k = 0; k < 8 && onAsphalt(q); ++k)
 						q = {q[0] + right[0] * 0.5f, q[1] + right[1] * 0.5f};

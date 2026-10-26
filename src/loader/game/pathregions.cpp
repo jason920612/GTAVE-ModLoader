@@ -46,6 +46,23 @@ namespace loader::game::pathregions
 		// mov edx,eax; and edx,2000000h; or edx,ebp (handle); je <new slot>. r10 is the slot, ebp its file handle.
 		constexpr uintptr_t kSlotExists = 0xCE356B;
 		constexpr uint8_t kSlotExistsBytes[] = {0x42, 0x8B, 0x44, 0xD6, 0x04, 0x89, 0xC2, 0x81, 0xE2, 0x00, 0x00, 0x00, 0x02, 0x09, 0xEA, 0x74, 0x54};
+
+		// The vehicle AI's choice of the next node (0x161B940) follows each link of the node it is at into the link's
+		// region (link: u16 area, u16 node): a region not loaded, the link is passed over (0x161BE50); a node number past
+		// the region's count (0x161BF6D) or a node that says another area (0x161BF7F) it takes on with no node and reads
+		// later (+0x20 at 0x161C854: the game exits). Those links are passed over the same way; what they were is kept for
+		// the log (research/phase0.md §61.27).
+		constexpr uintptr_t kBadIndex = 0x161BF6D, kBadArea = 0x161BF7F, kSkipLink = 0x161BE50;
+		constexpr uint8_t kBadIndexBytes[] = {0x31, 0xD2, 0x48, 0x89, 0x54, 0x24, 0x60, 0x31, 0xD2}; // xor edx,edx; mov [rsp+60h],rdx; xor edx,edx
+		constexpr uint8_t kBadAreaBytes[] = {0x31, 0xD2, 0x48, 0x89, 0x54, 0x24, 0x60, 0x31, 0xD2};
+		struct LinkGuard
+		{
+			volatile long count;
+			uint32_t link;        // area | node << 16
+			uint32_t regionCount; // the nodes the loaded region has
+			uint32_t nodeArea;    // what the node there says (0xFFFFFFFF: past the count)
+		};
+		LinkGuard* g_guard = nullptr;
 	}
 
 	bool Install()
@@ -215,6 +232,94 @@ namespace loader::game::pathregions
 		Write(site, jump, sizeof(jump));
 		log::Info("world path regions: road regions the game has no file for can be added (+{:#x})", kSlotExists);
 		return true;
+	}
+
+	bool GuardNextNodeLinks()
+	{
+		const auto module = pattern::Module::Main();
+		const uintptr_t paths = module.base + kThePaths;
+		const auto* ref = reinterpret_cast<const uint8_t*>(module.base + kThePathsRef);
+		if (std::memcmp(reinterpret_cast<const void*>(module.base + kBadIndex), kBadIndexBytes, sizeof(kBadIndexBytes)) != 0 ||
+		    std::memcmp(reinterpret_cast<const void*>(module.base + kBadArea), kBadAreaBytes, sizeof(kBadAreaBytes)) != 0 || ref[0] != 0x48 ||
+		    ref[1] != 0x8D || ref[2] != 0x0D || pattern::Rip(module.base + kThePathsRef + 3) != paths)
+		{
+			log::Warn("world path regions: the vehicle AI's next-node choice differs from the build this was made for; links to "
+			          "nodes that are not there are left as they are");
+			return false;
+		}
+		uint8_t* block = AllocateNear(module.base, 256);
+		if (!block)
+			return false;
+		g_guard = reinterpret_cast<LinkGuard*>(block + 192);
+		uint8_t* at = block;
+		const auto bytes = [&](std::initializer_list<uint8_t> list) {
+			for (const uint8_t b : list)
+				*at++ = b;
+		};
+		const auto rel32 = [&](uintptr_t target, int after = 0) { // (rip-relative: from the instruction's end, `after` bytes on)
+			const int32_t rel = static_cast<int32_t>(static_cast<intptr_t>(target) - reinterpret_cast<intptr_t>(at + 4 + after));
+			std::memcpy(at, &rel, 4);
+			at += 4;
+		};
+		const auto guard = reinterpret_cast<uintptr_t>(g_guard);
+		const auto stub = [&](bool badArea) {
+			uint8_t* start = at;
+			bytes({0xF0, 0xFF, 0x05}); // lock inc dword [count]
+			rel32(guard + offsetof(LinkGuard, count));
+			bytes({0x89, 0x05}); // mov [link],eax
+			rel32(guard + offsetof(LinkGuard, link));
+			bytes({0x8B, 0x51, 0x18, 0x89, 0x15}); // mov edx,[rcx+18h] (the region's node count); mov [regionCount],edx
+			rel32(guard + offsetof(LinkGuard, regionCount));
+			if (badArea)
+			{
+				bytes({0x89, 0x1D}); // mov [nodeArea],ebx
+				rel32(guard + offsetof(LinkGuard, nodeArea));
+				bytes({0x44, 0x89, 0xCB, 0x4D, 0x89, 0xD1, 0x44, 0x8B, 0x54, 0x24, 0x68}); // mov ebx,r9d; mov r9,r10; mov r10d,[rsp+68h]
+			}
+			else
+			{
+				bytes({0xC7, 0x05}); // mov dword [nodeArea],-1
+				rel32(guard + offsetof(LinkGuard, nodeArea), 4);
+				bytes({0xFF, 0xFF, 0xFF, 0xFF});
+			}
+			bytes({0x48, 0x8D, 0x35}); // lea rsi,[ThePaths]
+			rel32(paths);
+			bytes({0x48, 0x8B, 0xBC, 0x24, 0xA0, 0x00, 0x00, 0x00}); // mov rdi,[rsp+0A0h]
+			bytes({0xE9});                                           // jmp <the link passed over>
+			rel32(module.base + kSkipLink);
+			return start;
+		};
+		uint8_t* badIndex = stub(false);
+		uint8_t* badArea = stub(true);
+		FlushInstructionCache(GetCurrentProcess(), block, 256);
+		for (const auto& [site, target] : {std::pair{module.base + kBadIndex, badIndex}, std::pair{module.base + kBadArea, badArea}})
+		{
+			uint8_t jump[sizeof(kBadIndexBytes)];
+			std::memset(jump, 0x90, sizeof(jump));
+			jump[0] = 0xE9;
+			const int32_t rel = static_cast<int32_t>(reinterpret_cast<intptr_t>(target) - static_cast<intptr_t>(site + 5));
+			std::memcpy(jump + 1, &rel, 4);
+			Write(site, jump, sizeof(jump));
+		}
+		log::Info("world path regions: the vehicle AI passes over links to nodes that are not there (+{:#x}, +{:#x})", kBadIndex, kBadArea);
+		return true;
+	}
+
+	void ReportGuards()
+	{
+		static long reported = 0;
+		if (!g_guard || g_guard->count == reported)
+			return;
+		const long now = g_guard->count;
+		const uint32_t link = g_guard->link, nodeArea = g_guard->nodeArea;
+		if (nodeArea == 0xFFFFFFFF)
+			log::Warn("world path regions: {} link(s) to nodes that are not there passed over (the last: area {} node {}, the loaded region has {})",
+			    now - reported, link & 0xFFFF, link >> 16, g_guard->regionCount);
+		else
+			log::Warn("world path regions: {} link(s) to nodes that are not there passed over (the last: area {} node {}, a node of area {} there; "
+			          "the loaded region has {})",
+			    now - reported, link & 0xFFFF, link >> 16, nodeArea, g_guard->regionCount);
+		reported = now;
 	}
 
 	void SetOrigin(uint16_t area, int32_t x, int32_t y)

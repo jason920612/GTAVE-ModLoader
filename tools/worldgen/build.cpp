@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -297,6 +298,13 @@ namespace worldgen::build
 	bool Run(const ue5export::GameFiles& files, const world::World& w, const std::vector<catalog::Item>& catalog, const Options& o, Stats& stats,
 	    std::string& error)
 	{
+		// (how long each step took, for the log)
+		auto lap = std::chrono::steady_clock::now();
+		const auto took = [&](const char* step) {
+			const auto now = std::chrono::steady_clock::now();
+			std::printf("(%s: %.0f s)\n", step, std::chrono::duration<double>(now - lap).count());
+			lap = now;
+		};
 		const bool partial = o.area[2] > o.area[0];
 		const float bx0 = partial ? o.area[0] : w.min[0], by0 = partial ? o.area[1] : w.min[1], bx1 = partial ? o.area[2] : w.max[0],
 		            by1 = partial ? o.area[3] : w.max[1];
@@ -404,6 +412,7 @@ namespace worldgen::build
 			mask.write(reinterpret_cast<const char*>(bits.data()), static_cast<std::streamsize>(bits.size()));
 			built = {tx0, ty0, tx1, ty1};
 		}
+		took("land and water");
 		// 2. heights: land rises gently from the shore (a beach lower), the sea floor deepens away from it
 		// (DistanceTo measures from the cells of a value to the nearest other cell)
 		raster::Grid<uint8_t> dry = land, wet = land;
@@ -552,6 +561,7 @@ namespace worldgen::build
 			return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
 		};
 
+		took("heights");
 		// what covers the ground (research/phase0.md §61.25): lawn, paving, sand or bare earth, from the map's classes and,
 		// where there is an aerial picture, what it shows - its near infrared (vegetation: NDVI 0.12 and more, or green
 		// to the eye: artificial turf) in built-up land, parks and the rest; on land, lawns from 14 m off the water
@@ -636,6 +646,7 @@ namespace worldgen::build
 			return lawnDepth.In(c[0], c[1]) ? lawnDepth.At(c[0], c[1]) : 0.0f;
 		};
 
+		took("ground cover");
 		// 3. roads (those reaching into the grids)
 		world::World near = w;
 		std::erase_if(near.roads, [&](const world::Road& r) {
@@ -644,7 +655,27 @@ namespace worldgen::build
 		roads::Network network = roads::Build(near);
 		roads::Heights(network, ground);
 		roads::Surfaces surfaces;
-		roads::Geometry(network, surfaces);
+		{
+			// (a divided road's median: planted where the aerial picture shows vegetation, as the ground cover - but on the
+			// picture itself, the cover's 4 m cells being as wide as the median)
+			elevation::Aerial photo;
+			std::function<bool(float, float)> planted;
+			if (!o.aerial.empty() && photo.Open(o.aerial))
+				planted = [&](float x, float y) {
+					int green = 0, n = 0;
+					for (int k = 0; k < 5; ++k)
+					{
+						std::array<float, 4> px{};
+						if (!photo.Sample(x + (k == 1 ? 0.6f : k == 2 ? -0.6f : 0.0f), y + (k == 3 ? 0.6f : k == 4 ? -0.6f : 0.0f), px))
+							continue;
+						const float ndvi = (px[3] - px[0]) / std::max(1.0f, px[3] + px[0]);
+						green += ndvi >= 0.12f || px[1] - (px[0] + px[2]) / 2 > 8;
+						++n;
+					}
+					return n > 0 && green * 2 > n;
+				};
+			roads::Geometry(network, surfaces, planted);
+		}
 		stats.roadEdges = network.edges.size();
 		{
 			// (the roads' wear, for checking: kind (0 pothole, 1 patch, 2 broken edge), x, y, z)
@@ -709,6 +740,7 @@ namespace worldgen::build
 					floor.At(i, j) = std::min(floor.At(i, j), z);
 		}
 
+		took("roads");
 		// buildings: with a scan, of our own (each footprint's measured shape, walls in a style picked by its kind and
 		// size); without, the game's models on the footprints (the ground under each no higher than its floor)
 		std::vector<structures::Shape> shapes;
@@ -742,6 +774,13 @@ namespace worldgen::build
 				all.push_back(&b);
 			for (const auto& b : found)
 				all.push_back(&b);
+			// (a scan tile at a time: in the map's order the buildings jump about the city and the scan's tiles, read as they
+			// are asked for, were read again and again - 96 GB for the whole of Miami)
+			const auto scanTile = [](const world::Building* b) {
+				return b->footprint.empty() ? std::make_pair(0, 0)
+				                            : std::make_pair(static_cast<int>(std::floor(b->footprint[0][1] / 256)), static_cast<int>(std::floor(b->footprint[0][0] / 256)));
+			};
+			std::stable_sort(all.begin(), all.end(), [&](const world::Building* a, const world::Building* b) { return scanTile(a) < scanTile(b); });
 			for (const world::Building* pb : all)
 			{
 				const world::Building& b = *pb;
@@ -806,6 +845,7 @@ namespace worldgen::build
 			std::printf("buildings: %zu placed, %zu without a model that fits (%zu models to choose from)\n", placed.size(), unmatched, matcher.Candidates());
 		}
 
+		took("buildings");
 		// street furniture and trees: off the asphalt, outside buildings
 		std::vector<props::Prop> furniture;
 		{
@@ -838,6 +878,7 @@ namespace worldgen::build
 			}
 		}
 
+		took("props and trees");
 		// the game's map of the land (research/phase0.md §61.26): the radar's tiles and the pause map's pictures; land.json
 		// with what the loader needs of them
 		{
@@ -869,6 +910,7 @@ namespace worldgen::build
 			    built[0], built[1], built[2], built[3], o.waves, w.climate, o.name, radar, pictures);
 		}
 
+		took("map");
 		// 4. tiles: terrain and roads, their collision; entities and archetypes
 		ydr::Material ground3, asphalt, sidewalk, kerb, marking;
 		// (terrain_cb_4lyr: the terrain shader without the rain's puddles, which on flat ground mirror the sky in blue patches)
@@ -1581,6 +1623,7 @@ namespace worldgen::build
 				g << "    <Item>\n      <parent>" << parent << "</parent>\n      <child>" << child << "</child>\n    </Item>\n";
 			g << "  </txdRelationships>\n</CMapParentTxds>\n";
 		}
+		took("tiles");
 		// 5. archetypes and maps. The game's models placed here are defined in archetype files the game loads only with
 		// their own areas' maps: the pack asks for those to be kept loaded (requests.txt: their paths, for worldgen pack's
 		// DLC_ITYP_REQUEST entries; under a new name a model is not found: the game looks its model up by the
@@ -1667,6 +1710,7 @@ namespace worldgen::build
 		for (const auto& [cell, entities] : nearCells)
 			if (!writeMaps(std::format("{}_n_{}_{}", o.name, cell.first, cell.second), entities, {}))
 				return false;
+		took("archetypes and maps");
 		// 6. pedestrians' navmeshes (the sea floor half a metre down and more left out)
 		if (o.navmesh && !navMesh.triangles.empty())
 		{
@@ -1685,6 +1729,7 @@ namespace worldgen::build
 			}
 			stats.navmeshes = result.navmeshes.size();
 		}
+		took("navmeshes");
 		// 7. traffic: the road graph's nodes, written with the game's regions
 		if (o.paths)
 		{
@@ -1710,6 +1755,7 @@ namespace worldgen::build
 				return false;
 			stats.pathNodes = ps.newNodes, stats.regions = ps.regions;
 		}
+		took("traffic");
 		// 8. population zones: 1 km blocks of land, bound like a game zone of their kind (beach, built-up, the rest)
 		if (!o.zonesOut.empty())
 		{
@@ -1756,6 +1802,7 @@ namespace worldgen::build
 			std::ofstream(o.zonesOut / "popzone.ipl", std::ios::binary) << ipl;
 			std::ofstream(o.zonesOut / "zonebind.ymt", std::ios::binary).write(binds.data(), static_cast<std::streamsize>(binds.size()));
 		}
+		took("zones");
 		return true;
 	}
 }

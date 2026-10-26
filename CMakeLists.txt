@@ -56,6 +56,7 @@ add_library(loader SHARED
     src/loader/game/fixes.cpp
     src/loader/game/pathregions.cpp
     src/loader/game/navgrid.cpp
+    src/loader/game/playarea.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp

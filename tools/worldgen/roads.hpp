@@ -93,7 +93,9 @@ namespace worldgen::roads
 
 	constexpr float kSidewalk = 2.6f, kKerb = 0.15f;
 
-	void Geometry(const Network& n, Surfaces& out);
+	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
+	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).
+	void Geometry(const Network& n, Surfaces& out, const std::function<bool(float, float)>& planted = {});
 
 	// The traffic graph: nodes (junction nodes where three roads or more meet) and links with their lanes.
 	struct PathNode

@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <chrono>
@@ -564,6 +565,241 @@ namespace
 		    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
 		return 0;
 	}
+	// One DLC pack of these files (one archive: the offsets in its table count 512-byte blocks in 23 bits, 4 GB) at `out`.
+	// Its streaming archives are plain ones (not overlays): files the game does not have are registered as new (a map is
+	// then loaded where it is). A plain archive's file with a name the game has (`gameHas`: the road network's regions,
+	// navmeshes where the game has its own) is refused, the game's kept - those go in an overlay archive, on from the
+	// start (research/phase0.md §61.27). `parentTxds` (gtxd.meta) and `requestsFile` (the game's archetype files to keep
+	// loaded) for the first pack only.
+	bool WritePack(const std::string& name, std::vector<loader::convert::WriteNode> files, const std::string& parentTxds,
+	    const fs::path& requestsFile, const std::function<bool(const std::string&)>& gameHas, const fs::path& out, std::string& error)
+	{
+		const std::string device = "dlc_" + name;
+		const size_t count = files.size();
+		std::vector<loader::convert::WriteNode> replacing;
+		for (auto it = files.begin(); it != files.end();)
+			if (gameHas(it->name))
+				replacing.push_back(std::move(*it)), it = files.erase(it);
+			else
+				++it;
+		const std::string startupSet = name + "_STARTUP";
+		// The archive is a map change set of story mode (GROUP_MAP_SP), as the game's own DLC maps are: the game then reads
+		// the pack's map cache (x64\data\cacheloaderdata_dlc\<pack>_<change set hash>_cache_y.dat) for where each map and
+		// collision file lies. Without it a new map is registered disabled and without its box, and never loaded.
+		const std::string changeSet = name + "_MAP";
+		// The streaming files in archives of at most 1800 files and 48 KB of names (an archive's name table is
+		// addressed with 16 bits): <name>.rpf, <name>_1.rpf, ...
+		std::vector<std::vector<size_t>> groups(1);
+		std::vector<std::string> archiveNames{name};
+		std::map<std::string, std::string> archiveOf;
+		{
+			size_t names = 0;
+			for (size_t i = 0; i < files.size(); ++i)
+			{
+				const size_t length = files[i].name.size() + 1;
+				if (groups.back().size() >= 1800 || names + length > 48000)
+				{
+					groups.emplace_back();
+					archiveNames.push_back(std::format("{}_{}", name, groups.size() - 1));
+					names = 0;
+				}
+				groups.back().push_back(i);
+				names += length;
+				archiveOf[files[i].name] = archiveNames.back();
+			}
+		}
+		std::string rpfItems, rpfEnables;
+		for (const std::string& a : archiveNames)
+		{
+			rpfItems += std::format("    <Item>\n      <filename>{}:/%PLATFORM%/levels/gta5/{}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
+			                        "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n"
+			                        "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n",
+			    device, a);
+			rpfEnables += std::format("            <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n", device, a);
+		}
+		// (the files replacing the game's: an overlay archive, the start-up change set's)
+		std::string startupSets, startupGroup;
+		const std::string overlayArchive = name + "_over";
+		if (!replacing.empty())
+		{
+			rpfItems += std::format("    <Item>\n      <filename>{}:/%PLATFORM%/levels/gta5/{}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
+			                        "      <overlay value=\"true\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+			    device, overlayArchive);
+			startupSets = std::format("    <Item>\n      <changeSetName>{}</changeSetName>\n      <filesToDisable />\n      <filesToEnable>\n"
+			                          "        <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n      </filesToEnable>\n      <txdToLoad />\n"
+			                          "      <txdToUnload />\n      <residentResources />\n      <unregisterResources />\n    </Item>\n",
+			    startupSet, device, overlayArchive);
+			startupGroup = std::format("    <Item>\n      <NameHash>GROUP_STARTUP</NameHash>\n      <ContentChangeSets>\n        <Item>{}</Item>\n"
+			                           "      </ContentChangeSets>\n    </Item>\n",
+			    startupSet);
+		}
+		// Archetype files (.ytyp): requested with the change set (DLC_ITYP_REQUEST), kept while it is on.
+		std::string typeItems, typeEnables;
+		for (const auto& child : files)
+			if (child.name.ends_with(".ytyp"))
+			{
+				const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, archiveOf[child.name], child.name);
+				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
+				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+				    path);
+				typeEnables += std::format("            <Item>{}</Item>\n", path);
+			}
+		// (requests.txt in the input: the game's own archetype files to keep loaded, one path a line, "platform:/..." -
+		// those of the game's models the world places)
+		{
+			std::ifstream requests(requestsFile);
+			for (std::string path; std::getline(requests, path);)
+			{
+				while (!path.empty() && (path.back() == '\r' || path.back() == ' '))
+					path.pop_back();
+				if (path.empty() || path[0] == '#')
+					continue;
+				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
+				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+				    path);
+				typeEnables += std::format("            <Item>{}</Item>\n", path);
+			}
+		}
+		// texture dictionaries' parents (gtxd.meta in the input): GTXD_PARENTING_DATA, on with the change set
+		if (!parentTxds.empty())
+		{
+			typeItems += std::format("    <Item>\n      <filename>{}:/common/data/gtxd.meta</filename>\n      <fileType>GTXD_PARENTING_DATA</fileType>\n"
+			                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"false\" />\n    </Item>\n",
+			    device);
+			typeEnables += std::format("            <Item>{}:/common/data/gtxd.meta</Item>\n", device);
+		}
+		const std::string content = std::format(
+		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CDataFileMgr__ContentsOfDataFileXml>\n  <disabledFiles />\n  <includedXmlFiles />\n"
+		    "  <includedDataFiles />\n  <dataFiles>\n{1}{3}  </dataFiles>\n"
+		    "  <contentChangeSets>\n    <Item>\n      <changeSetName>{2}</changeSetName>\n      <mapChangeSetData>\n        <Item>\n"
+		    "          <associatedMap>MO_JIM_L11</associatedMap>\n          <filesToInvalidate />\n          <filesToEnable>\n"
+		    "{5}{4}          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
+		    "      <requiresLoadingScreen value=\"true\" />\n      <loadingScreenContext>LOADINGSCREEN_CONTEXT_LAST_FRAME</loadingScreenContext>\n"
+		    "      <useCacheLoader value=\"true\" />\n    </Item>\n{6}  </contentChangeSets>\n  <patchFiles />\n"
+		    "</CDataFileMgr__ContentsOfDataFileXml>\n",
+		    device, rpfItems, changeSet, typeItems, typeEnables, rpfEnables, startupSets);
+		const std::string setup = std::format(
+		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SSetupData>\n  <deviceName>{}</deviceName>\n  <datFile>content.xml</datFile>\n"
+		    "  <timeStamp>00/00/0000 00:00:00</timeStamp>\n  <nameHash>{}</nameHash>\n  <contentChangeSets />\n  <contentChangeSetGroups>\n"
+		    "{}    <Item>\n      <NameHash>GROUP_MAP_SP</NameHash>\n      <ContentChangeSets>\n        <Item>{}</Item>\n      </ContentChangeSets>\n"
+		    "    </Item>\n  </contentChangeSetGroups>\n  <type>EXTRACONTENT_COMPAT_PACK</type>\n  <order value=\"999\" />\n</SSetupData>\n",
+		    device, name, startupGroup, changeSet);
+		// The cache (version 46): a header, <fileDates> (each archive: hash of its path, a file time), then per module its
+		// entries after their byte count. fwMapDataStore, 64 bytes a map: name, parent, content flags, streaming box, entities
+		// box, flags (1: streamed like the game's own maps). BoundsStore, 32 bytes a collision file: name, box, flags (0).
+		Bytes cache(0x64, 0);
+		const std::string head = "[VERSION]\n46\n";
+		std::memcpy(cache.data(), head.data(), head.size());
+		const auto append = [&](const std::string& s) { cache.insert(cache.end(), s.begin(), s.end()); };
+		append("<fileDates>\n</fileDates>\n");
+		Bytes maps, bounds;
+		const auto put32 = [](Bytes& b, uint32_t v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
+		const auto putf = [](Bytes& b, float v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
+		for (const auto& child : files)
+		{
+			const std::string base = child.name.substr(0, child.name.rfind('.'));
+			if (child.name.ends_with(".ymap"))
+			{
+				ue5export::meta::Meta mm;
+				if (!mm.Read(child.data, error))
+					return error = child.name + ": " + error, false;
+				using ue5export::meta::Hash;
+				const auto r = mm.Root();
+				put32(maps, loader::convert::Joaat(base));
+				put32(maps, r.Get<uint32_t>(Hash("parent")));
+				put32(maps, r.Get<uint32_t>(Hash("contentFlags")));
+				for (const char* field : {"streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax"})
+				{
+					const auto v = r.Get<std::array<float, 4>>(Hash(field));
+					for (int a = 0; a < 3; ++a)
+						putf(maps, v[a]);
+				}
+				put32(maps, 1); // (always loaded where it is; 0: an IPL group's, off until a script asks for it)
+			}
+			else if (child.name.ends_with(".ybn"))
+			{
+				loader::convert::Resource res;
+				if (!loader::convert::Read(child.data, res, error))
+					return error = child.name + ": " + error, false;
+				const ue5export::drawable::View view(res);
+				put32(bounds, loader::convert::Joaat(base));
+				for (const uint64_t at : {ue5export::drawable::View::kRoot + 0x30, ue5export::drawable::View::kRoot + 0x20})
+					for (int a = 0; a < 3; ++a)
+						putf(bounds, view.Get<float>(at + 4 * a));
+				put32(bounds, 0);
+			}
+		}
+		for (const auto& [module, payload] : {std::pair<const char*, const Bytes*>{"fwMapDataStore", &maps}, {"CInteriorProxy", nullptr}, {"BoundsStore", &bounds}})
+		{
+			append(std::format("<module>\n{}\n", module));
+			put32(cache, payload ? static_cast<uint32_t>(payload->size()) : 0);
+			if (payload)
+				cache.insert(cache.end(), payload->begin(), payload->end());
+			append("</module>\n");
+		}
+		loader::convert::WriteNode root, platform;
+		const auto text = [](const char* file, const std::string& s) {
+			loader::convert::WriteNode n;
+			n.name = file;
+			n.kind = loader::convert::WriteNode::Kind::File;
+			n.data.assign(s.begin(), s.end());
+			return n;
+		};
+		root.children.push_back(text("content.xml", content));
+		root.children.push_back(text("setup2.xml", setup));
+		if (!parentTxds.empty())
+		{
+			loader::convert::WriteNode common, commonData;
+			common.name = "common";
+			commonData.name = "data";
+			commonData.children.push_back(text("gtxd.meta", parentTxds));
+			common.children.push_back(std::move(commonData));
+			root.children.push_back(std::move(common));
+		}
+		std::string lowerName = name;
+		std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		loader::convert::WriteNode data, loaderData, cacheFile;
+		data.name = "data";
+		loaderData.name = "cacheloaderdata_dlc";
+		cacheFile.name = std::format("{}_{}_cache_y.dat", lowerName, loader::convert::Joaat(changeSet));
+		cacheFile.kind = loader::convert::WriteNode::Kind::File;
+		cacheFile.data = std::move(cache);
+		loaderData.children.push_back(std::move(cacheFile));
+		data.children.push_back(std::move(loaderData));
+		platform.children.push_back(std::move(data));
+		// (where the game's own map archives are: x64\levels\gta5)
+		loader::convert::WriteNode levels, gta5;
+		levels.name = "levels";
+		gta5.name = "gta5";
+		for (size_t g = 0; g < groups.size(); ++g)
+		{
+			loader::convert::WriteNode a;
+			a.name = archiveNames[g] + ".rpf";
+			a.kind = loader::convert::WriteNode::Kind::Archive;
+			for (const size_t i : groups[g])
+				a.children.push_back(std::move(files[i]));
+			gta5.children.push_back(std::move(a));
+		}
+		if (!replacing.empty())
+		{
+			loader::convert::WriteNode a;
+			a.name = overlayArchive + ".rpf";
+			a.kind = loader::convert::WriteNode::Kind::Archive;
+			a.children = std::move(replacing);
+			gta5.children.push_back(std::move(a));
+		}
+		levels.children.push_back(std::move(gta5));
+		platform.name = "x64";
+		platform.children.push_back(std::move(levels));
+		root.children.push_back(std::move(platform));
+		Bytes packed;
+		if (!loader::convert::BuildArchive(root, packed, error))
+			return false;
+		fs::create_directories(out.parent_path());
+		std::ofstream(out, std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), static_cast<std::streamsize>(packed.size()));
+		std::printf("%s: %zu files in %zu archive(s) (%zu bytes)\n", out.string().c_str(), count, archiveNames.size(), packed.size());
+		return true;
+	}
 }
 
 int main(int argc, char** argv)
@@ -685,6 +921,67 @@ int main(int argc, char** argv)
 	const std::string command = argv[1];
 	if (command == "roundtrip")
 		return Roundtrip(files);
+	if (command == "check-paths")
+	{
+		// every road-network region (those in --dir, or the ones the game uses) checked as the game's code takes them: each
+		// node's own area and index, its links inside the file's table, each link's target node there (in its region's
+		// file, its index under that file's count, its own area the link's) - a link that is not crashed the vehicle AI's
+		// choice of the next node (research/phase0.md §61.27)
+		std::map<uint32_t, worldgen::ynd::Region> regions;
+		for (uint32_t i = 0; i < 2048; ++i)
+		{
+			Bytes data;
+			if (g_options.contains("dir"))
+			{
+				const fs::path f = fs::path(g_options["dir"]) / ("nodes" + std::to_string(i) + ".ynd");
+				if (!fs::exists(f))
+					continue;
+				std::ifstream in(f, std::ios::binary);
+				data.assign(std::istreambuf_iterator<char>(in), {});
+			}
+			else if (const auto* f = files.Find("nodes" + std::to_string(i) + ".ynd"))
+			{
+				if (!files.Read(*f, data, error))
+					return Fail(error);
+			}
+			else
+				continue;
+			worldgen::ynd::Region r;
+			if (!worldgen::ynd::Read(data, r, error))
+				return Fail(std::format("nodes{}.ynd: {}", i, error));
+			regions.emplace(i, std::move(r));
+		}
+		size_t nodes = 0, links = 0, bad = 0;
+		const auto report = [&](const std::string& what) {
+			if (++bad <= 40)
+				std::printf("%s\n", what.c_str());
+		};
+		for (const auto& [area, r] : regions)
+			for (size_t k = 0; k < r.nodes.size(); ++k)
+			{
+				const auto& n = r.nodes[k];
+				++nodes;
+				if (n.Area() != area || n.Index() != k)
+					report(std::format("nodes{}.ynd node {}: says it is area {} node {}", area, k, n.Area(), n.Index()));
+				if (n.FirstLink() + n.LinkCount() > r.links.size())
+					report(std::format("nodes{}.ynd node {}: links {}+{} past the table ({})", area, k, n.FirstLink(), n.LinkCount(), r.links.size()));
+				for (uint32_t l = 0; l < n.LinkCount() && n.FirstLink() + l < r.links.size(); ++l)
+				{
+					const auto& link = r.links[n.FirstLink() + l];
+					++links;
+					const auto t = regions.find(link.area);
+					if (t == regions.end())
+						report(std::format("nodes{}.ynd node {} ({:.1f}, {:.1f}): link to area {} (no file)", area, k, n.X() / 4.0, n.Y() / 4.0, link.area));
+					else if (link.node >= t->second.nodes.size())
+						report(std::format("nodes{}.ynd node {}: link to area {} node {} (it has {})", area, k, link.area, link.node, t->second.nodes.size()));
+					else if (t->second.nodes[link.node].Area() != link.area)
+						report(std::format("nodes{}.ynd node {}: link to area {} node {}, which says area {}", area, k, link.area, link.node,
+						    t->second.nodes[link.node].Area()));
+				}
+			}
+		std::printf("%zu regions, %zu nodes, %zu links: %zu wrong\n", regions.size(), nodes, links, bad);
+		return bad ? 1 : 0;
+	}
 	if (command == "extract-ynd")
 	{
 		// the road-network files the game uses, as they are (to compare against)
@@ -1381,16 +1678,15 @@ int main(int argc, char** argv)
 	}
 	if (command == "pack")
 	{
-		// a DLC pack of the files in --in (maps, navmeshes, models...): ModLoader\mods\<name>\dlc.rpf. Its streaming archive is
-		// a plain one (not an overlay): files the game does not have are registered as new (a map is then loaded where it is)
+		// DLC packs of the files in --in (maps, navmeshes, models...): ModLoader\mods\<name>\dlc.rpf, and when they come
+		// to more than one archive holds the rest in packs of their own beside it, <name>_2, <name>_3... (in the order the
+		// files come; the game's stores are shared: a map in one pack finds its models, archetypes and parent map in another).
 		if (!g_options.contains("in") || !g_options.contains("out") || !g_options.contains("name"))
 			return Fail("--in <dir> --out <dlc.rpf> --name <pack name> are needed");
-		const std::string name = g_options["name"], device = "dlc_" + name;
-		loader::convert::WriteNode stream;
+		const std::string name = g_options["name"];
+		const fs::path out = g_options["out"];
+		std::vector<loader::convert::WriteNode> nodes;
 		std::string parentTxds;
-		stream.name = name + ".rpf";
-		stream.kind = loader::convert::WriteNode::Kind::Archive;
-		size_t count = 0;
 		for (const auto& entry : fs::directory_iterator(g_options["in"]))
 		{
 			if (!entry.is_regular_file())
@@ -1399,9 +1695,9 @@ int main(int argc, char** argv)
 			std::transform(file.begin(), file.end(), file.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 			if (file == "land.json" || file == "water.bin")
 			{
-				// (the loader's, next to the pack: game/sea.cpp)
+				// (the loader's, next to the pack: game/sea.cpp, game/minimap.cpp)
 				std::error_code ec;
-				fs::copy_file(entry.path(), fs::path(g_options["out"]).parent_path() / file, fs::copy_options::overwrite_existing, ec);
+				fs::copy_file(entry.path(), out.parent_path() / file, fs::copy_options::overwrite_existing, ec);
 				continue;
 			}
 			if (file.ends_with(".txt") || file.ends_with(".png") || file.ends_with(".json"))
@@ -1419,200 +1715,32 @@ int main(int argc, char** argv)
 			n.data.assign(std::istreambuf_iterator<char>(in), {});
 			n.kind = n.data.size() >= 4 && std::memcmp(n.data.data(), "RSC7", 4) == 0 ? loader::convert::WriteNode::Kind::Resource
 			                                                                          : loader::convert::WriteNode::Kind::File;
-			stream.children.push_back(std::move(n));
-			++count;
+			nodes.push_back(std::move(n));
 		}
-		// The archive is a map change set of story mode (GROUP_MAP_SP), as the game's own DLC maps are: the game then reads
-		// the pack's map cache (x64\data\cacheloaderdata_dlc\<pack>_<change set hash>_cache_y.dat) for where each map and
-		// collision file lies. Without it a new map is registered disabled and without its box, and never loaded.
-		const std::string changeSet = name + "_MAP";
-		// The streaming files in archives of at most 1800 files and 48 KB of names (an archive's name table is
-		// addressed with 16 bits): <name>.rpf, <name>_1.rpf, ...
-		std::vector<std::vector<size_t>> groups(1);
-		std::vector<std::string> archiveNames{name};
-		std::map<std::string, std::string> archiveOf;
+		// (3.5 GB a pack, the rest of the 4 GB its archive can hold for its table and its inner archives' own)
+		constexpr size_t kPackBytes = size_t{3500} << 20;
+		std::vector<std::vector<loader::convert::WriteNode>> packs(1);
+		size_t bytes = 0;
+		for (auto& n : nodes)
 		{
-			size_t names = 0;
-			for (size_t i = 0; i < stream.children.size(); ++i)
+			const size_t size = (n.data.size() + 511) / 512 * 512;
+			if (!packs.back().empty() && bytes + size > kPackBytes)
 			{
-				const size_t length = stream.children[i].name.size() + 1;
-				if (groups.back().size() >= 1800 || names + length > 48000)
-				{
-					groups.emplace_back();
-					archiveNames.push_back(std::format("{}_{}", name, groups.size() - 1));
-					names = 0;
-				}
-				groups.back().push_back(i);
-				names += length;
-				archiveOf[stream.children[i].name] = archiveNames.back();
+				packs.emplace_back();
+				bytes = 0;
 			}
+			bytes += size;
+			packs.back().push_back(std::move(n));
 		}
-		std::string rpfItems, rpfEnables;
-		for (const std::string& a : archiveNames)
-		{
-			rpfItems += std::format("    <Item>\n      <filename>{}:/%PLATFORM%/levels/gta5/{}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
-			                        "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n"
-			                        "      <contents>CONTENTS_DLC_MAP_DATA</contents>\n    </Item>\n",
-			    device, a);
-			rpfEnables += std::format("            <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n", device, a);
-		}
-		// Archetype files (.ytyp): requested with the change set (DLC_ITYP_REQUEST), kept while it is on.
-		std::string typeItems, typeEnables;
-		for (const auto& child : stream.children)
-			if (child.name.ends_with(".ytyp"))
-			{
-				const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, archiveOf[child.name], child.name);
-				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
-				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
-				    path);
-				typeEnables += std::format("            <Item>{}</Item>\n", path);
-			}
-		// (requests.txt in the input: the game's own archetype files to keep loaded, one path a line, "platform:/..." -
-		// those of the game's models the world places)
-		{
-			std::ifstream requests(fs::path(g_options["in"]) / "requests.txt");
-			for (std::string path; std::getline(requests, path);)
-			{
-				while (!path.empty() && (path.back() == '\r' || path.back() == ' '))
-					path.pop_back();
-				if (path.empty() || path[0] == '#')
-					continue;
-				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
-				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
-				    path);
-				typeEnables += std::format("            <Item>{}</Item>\n", path);
-			}
-		}
-		// texture dictionaries' parents (gtxd.meta in the input): GTXD_PARENTING_DATA, on with the change set
-		if (!parentTxds.empty())
-		{
-			typeItems += std::format("    <Item>\n      <filename>{}:/common/data/gtxd.meta</filename>\n      <fileType>GTXD_PARENTING_DATA</fileType>\n"
-			                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"false\" />\n    </Item>\n",
-			    device);
-			typeEnables += std::format("            <Item>{}:/common/data/gtxd.meta</Item>\n", device);
-		}
-		const std::string content = std::format(
-		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CDataFileMgr__ContentsOfDataFileXml>\n  <disabledFiles />\n  <includedXmlFiles />\n"
-		    "  <includedDataFiles />\n  <dataFiles>\n{1}{3}  </dataFiles>\n"
-		    "  <contentChangeSets>\n    <Item>\n      <changeSetName>{2}</changeSetName>\n      <mapChangeSetData>\n        <Item>\n"
-		    "          <associatedMap>MO_JIM_L11</associatedMap>\n          <filesToInvalidate />\n          <filesToEnable>\n"
-		    "{5}{4}          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
-		    "      <requiresLoadingScreen value=\"true\" />\n      <loadingScreenContext>LOADINGSCREEN_CONTEXT_LAST_FRAME</loadingScreenContext>\n"
-		    "      <useCacheLoader value=\"true\" />\n    </Item>\n  </contentChangeSets>\n  <patchFiles />\n"
-		    "</CDataFileMgr__ContentsOfDataFileXml>\n",
-		    device, rpfItems, changeSet, typeItems, typeEnables, rpfEnables);
-		const std::string setup = std::format(
-		    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SSetupData>\n  <deviceName>{}</deviceName>\n  <datFile>content.xml</datFile>\n"
-		    "  <timeStamp>00/00/0000 00:00:00</timeStamp>\n  <nameHash>{}</nameHash>\n  <contentChangeSets />\n  <contentChangeSetGroups>\n"
-		    "    <Item>\n      <NameHash>GROUP_MAP_SP</NameHash>\n      <ContentChangeSets>\n        <Item>{}</Item>\n      </ContentChangeSets>\n"
-		    "    </Item>\n  </contentChangeSetGroups>\n  <type>EXTRACONTENT_COMPAT_PACK</type>\n  <order value=\"999\" />\n</SSetupData>\n",
-		    device, name, changeSet);
-		// The cache (version 46): a header, <fileDates> (each archive: hash of its path, a file time), then per module its
-		// entries after their byte count. fwMapDataStore, 64 bytes a map: name, parent, content flags, streaming box, entities
-		// box, flags (1: streamed like the game's own maps). BoundsStore, 32 bytes a collision file: name, box, flags (0).
-		Bytes cache(0x64, 0);
-		const std::string head = "[VERSION]\n46\n";
-		std::memcpy(cache.data(), head.data(), head.size());
-		const auto append = [&](const std::string& s) { cache.insert(cache.end(), s.begin(), s.end()); };
-		append("<fileDates>\n</fileDates>\n");
-		Bytes maps, bounds;
-		const auto put32 = [](Bytes& b, uint32_t v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
-		const auto putf = [](Bytes& b, float v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
-		for (const auto& child : stream.children)
-		{
-			const std::string base = child.name.substr(0, child.name.rfind('.'));
-			if (child.name.ends_with(".ymap"))
-			{
-				ue5export::meta::Meta mm;
-				if (!mm.Read(child.data, error))
-					return Fail(child.name + ": " + error);
-				using ue5export::meta::Hash;
-				const auto r = mm.Root();
-				put32(maps, loader::convert::Joaat(base));
-				put32(maps, r.Get<uint32_t>(Hash("parent")));
-				put32(maps, r.Get<uint32_t>(Hash("contentFlags")));
-				for (const char* field : {"streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax"})
-				{
-					const auto v = r.Get<std::array<float, 4>>(Hash(field));
-					for (int a = 0; a < 3; ++a)
-						putf(maps, v[a]);
-				}
-				put32(maps, 1); // (always loaded where it is; 0: an IPL group's, off until a script asks for it)
-			}
-			else if (child.name.ends_with(".ybn"))
-			{
-				loader::convert::Resource res;
-				if (!loader::convert::Read(child.data, res, error))
-					return Fail(child.name + ": " + error);
-				const ue5export::drawable::View view(res);
-				put32(bounds, loader::convert::Joaat(base));
-				for (const uint64_t at : {ue5export::drawable::View::kRoot + 0x30, ue5export::drawable::View::kRoot + 0x20})
-					for (int a = 0; a < 3; ++a)
-						putf(bounds, view.Get<float>(at + 4 * a));
-				put32(bounds, 0);
-			}
-		}
-		for (const auto& [module, payload] : {std::pair<const char*, const Bytes*>{"fwMapDataStore", &maps}, {"CInteriorProxy", nullptr}, {"BoundsStore", &bounds}})
-		{
-			append(std::format("<module>\n{}\n", module));
-			put32(cache, payload ? static_cast<uint32_t>(payload->size()) : 0);
-			if (payload)
-				cache.insert(cache.end(), payload->begin(), payload->end());
-			append("</module>\n");
-		}
-		loader::convert::WriteNode root, platform;
-		const auto text = [](const char* file, const std::string& s) {
-			loader::convert::WriteNode n;
-			n.name = file;
-			n.kind = loader::convert::WriteNode::Kind::File;
-			n.data.assign(s.begin(), s.end());
-			return n;
-		};
-		root.children.push_back(text("content.xml", content));
-		root.children.push_back(text("setup2.xml", setup));
-		if (!parentTxds.empty())
-		{
-			loader::convert::WriteNode common, commonData;
-			common.name = "common";
-			commonData.name = "data";
-			commonData.children.push_back(text("gtxd.meta", parentTxds));
-			common.children.push_back(std::move(commonData));
-			root.children.push_back(std::move(common));
-		}
-		std::string lowerName = name;
-		std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-		loader::convert::WriteNode data, loaderData, cacheFile;
-		data.name = "data";
-		loaderData.name = "cacheloaderdata_dlc";
-		cacheFile.name = std::format("{}_{}_cache_y.dat", lowerName, loader::convert::Joaat(changeSet));
-		cacheFile.kind = loader::convert::WriteNode::Kind::File;
-		cacheFile.data = std::move(cache);
-		loaderData.children.push_back(std::move(cacheFile));
-		data.children.push_back(std::move(loaderData));
-		platform.children.push_back(std::move(data));
-		// (where the game's own map archives are: x64\levels\gta5)
-		loader::convert::WriteNode levels, gta5;
-		levels.name = "levels";
-		gta5.name = "gta5";
-		for (size_t g = 0; g < groups.size(); ++g)
-		{
-			loader::convert::WriteNode a;
-			a.name = archiveNames[g] + ".rpf";
-			a.kind = loader::convert::WriteNode::Kind::Archive;
-			for (const size_t i : groups[g])
-				a.children.push_back(std::move(stream.children[i]));
-			gta5.children.push_back(std::move(a));
-		}
-		levels.children.push_back(std::move(gta5));
-		platform.name = "x64";
-		platform.children.push_back(std::move(levels));
-		root.children.push_back(std::move(platform));
-		Bytes packed;
-		if (!loader::convert::BuildArchive(root, packed, error))
-			return Fail(error);
-		fs::create_directories(fs::path(g_options["out"]).parent_path());
-		std::ofstream(g_options["out"], std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), packed.size());
-		std::printf("%s: %zu files in %zu archive(s) (%zu bytes)\n", g_options["out"].c_str(), count, archiveNames.size(), packed.size());
+		// (packs an earlier build needed past these: written empty - the game holds an enabled pack's archive open)
+		const fs::path mods = out.parent_path().parent_path();
+		const auto packName = [&](size_t p) { return p ? std::format("{}_{}", name, p + 1) : name; };
+		for (size_t p = packs.size(); fs::is_directory(mods / packName(p)); ++p)
+			packs.emplace_back();
+		for (size_t p = 0; p < packs.size(); ++p)
+			if (!WritePack(packName(p), std::move(packs[p]), p ? std::string() : parentTxds, p ? fs::path() : fs::path(g_options["in"]) / "requests.txt",
+			        [&](const std::string& file) { return files.Find(file) != nullptr; }, p ? mods / packName(p) / out.filename() : out, error))
+				return Fail(packName(p) + ": " + error);
 		return 0;
 	}
 	if (command == "testterrain")

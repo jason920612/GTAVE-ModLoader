@@ -7,8 +7,10 @@ minutes some seconds are recorded as video; all along, the frame rate and the sl
 renderer's own timings are logged.
 
 usage: ue5soak.py <out folder> [minutes] [--video-every <minutes>] [--seed <n>] [--hour <h>] [--weather <first weather>]
-                  [--profile-over <GPU ms>]
+                  [--profile-over <GPU ms>] [--places <file>] [--no-inside]
        (the game running with test control: gtactl.py launch)
+--places: the long drives go to these instead (lines "x y heading": the world builder's new land; the ground found
+there by the game) and the soak starts at one; --no-inside: never into the game's interiors (they are all in Los Santos).
 Writes <out>/soak.csv (every 15 s), <out>/events.txt, <out>/v###_<what>.mp4, and prints a summary. With --profile-over,
 where the renderer's GPU time (its 10 s average) comes to that many ms, a GPU profile of a frame there (at most one in
 two minutes): <out>/profile_<t>.txt, its passes of 0.3 ms or more.
@@ -111,6 +113,30 @@ class Game:
         print(line, flush=True)
         self.events.write(line + "\n")
         self.events.flush()
+
+
+FREEZE_ENTITY_POSITION, GET_GROUND_Z_FOR_3D_COORD = 0x428CA6DBD1094446, 0xC906A7DAB05C8D2B
+
+
+def place_car(g, car, x, y, z, h):
+    """The car (and the player in it) at a place; without a height there, set down on the ground the game finds once
+    the place has streamed in (held high and frozen meanwhile)."""
+    if z is None:
+        g.native(FREEZE_ENTITY_POSITION, car, 1)
+        g.native(SET_ENTITY_COORDS, car, float(x), float(y), 200.0, 0, 0, 0, 0)
+        for _ in range(20):
+            time.sleep(0.5)
+            r = g.native(GET_GROUND_Z_FOR_3D_COORD, float(x), float(y), 500.0, OUT, 0, 0)
+            if r and r[0] and len(r) > 3:
+                z = r[3][0][1] + 1.0
+                break
+        g.native(FREEZE_ENTITY_POSITION, car, 0)
+        if z is None:
+            g.log(f"no ground at {x} {y}")
+            z = 10.0
+    g.native(SET_ENTITY_COORDS, car, float(x), float(y), float(z), 0, 0, 0, 0)
+    g.native(SET_ENTITY_HEADING, car, float(h))
+    g.native(SET_VEHICLE_ON_GROUND_PROPERLY, car, 5.0)
 
 
 def ensure_car(g, state):
@@ -278,6 +304,9 @@ def main(args):
     hour = int(args[args.index("--hour") + 1]) if "--hour" in args else 7
     first_weather = args[args.index("--weather") + 1] if "--weather" in args else None
     profile_over = float(args[args.index("--profile-over") + 1]) if "--profile-over" in args else None
+    places = [(float(a), float(b), None, float(c)) for a, b, c in (line.split()[:3] for line in open(args[args.index("--places") + 1])
+                                                                   if len(line.split()) >= 3)] if "--places" in args else ROADS
+    inside = "--no-inside" not in args
     os.makedirs(out_dir, exist_ok=True)
     events = open(os.path.join(out_dir, "events.txt"), "a", encoding="utf-8")
     g = Game(events)
@@ -287,6 +316,10 @@ def main(args):
     calm(g)
     g.send(f"time {hour} 0 run")
     g.send(f"weather {first_weather or random.choice(WEATHERS[:3])}")
+    if places is not ROADS:
+        x, y, z, h = random.choice(places)
+        place_car(g, ensure_car(g, state), x, y, z, h)
+        g.log(f"start at {x} {y}")
     start = time.time()
     next_video = start + 60
     next_weather = start + 8 * 60
@@ -304,10 +337,8 @@ def main(args):
                 what, seconds = "drive", random.uniform(60, 150)
                 car = ensure_car(g, state)
                 if random.random() < 0.35:
-                    x, y, z, h = random.choice(ROADS)
-                    g.native(SET_ENTITY_COORDS, car, float(x), float(y), float(z), 0, 0, 0, 0)
-                    g.native(SET_ENTITY_HEADING, car, float(h))
-                    g.native(SET_VEHICLE_ON_GROUND_PROPERLY, car, 5.0)
+                    x, y, z, h = random.choice(places)
+                    place_car(g, car, x, y, z, h)
                     g.log(f"far away: {x} {y}")
                 ped = g.ped()
                 g.native(TASK_VEHICLE_DRIVE_WANDER, ped, car, random.uniform(18.0, 35.0), 786603 if random.random() < 0.5 else 1074528293)
@@ -321,7 +352,7 @@ def main(args):
                     time.sleep(3)
                 g.native(TASK_WANDER_STANDARD, ped, 10.0, 10)
                 g.native(SET_FOLLOW_PED_CAM_VIEW_MODE, random.choice([1, 1, 2, 4]))
-            elif roll < 0.9:
+            elif roll < 0.9 or not inside:
                 what, seconds = "mayhem", random.uniform(25, 45)
                 # (on foot: shooting about, fires and explosions some metres off; nobody minds, nothing hurts the player)
                 ped = g.ped()

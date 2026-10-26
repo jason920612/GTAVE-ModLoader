@@ -78,49 +78,61 @@ namespace ue5export
 				if (const size_t tab = line.find('\t'); tab != std::string::npos)
 					(*index)[line.substr(0, tab)] = static_cast<uint32_t>(std::stoul(line.substr(tab + 1), nullptr, 16));
 		}
-		if (!index->empty())
-			return index;
-		std::vector<std::string> names;
+		// (the game's dictionaries once, into the cache; mods' packs (--extra) every time, over the game's: they change
+		// from one export to the next)
+		const auto fromMod = [](const GameFiles::File& f) {
+			for (const auto& pack : GameFiles::extraPacks)
+				if (f.path.starts_with(pack.generic_string()))
+					return true;
+			return false;
+		};
+		const bool cached = !index->empty();
+		std::vector<std::string> game, mods;
 		for (const auto& [name, file] : files.Files())
 			if (name.ends_with(".ytd"))
-				names.push_back(name);
-		std::atomic<size_t> next = 0;
-		std::mutex mutex;
-		std::vector<std::thread> threads;
-		for (unsigned w = 0; w < std::max(1u, workers); ++w)
-			threads.emplace_back([&] {
-				GameFiles own;
-				std::string error;
-				if (!own.Open(gameDir, decrypt, error))
-					return;
-				for (size_t i; (i = next++) < names.size();)
-				{
-					const GameFiles::File* f = own.Find(names[i]);
-					Bytes data;
-					loader::convert::Resource resource;
-					if (!f || !own.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
-						continue;
-					const drawable::View view(resource);
-					const uint32_t dictionary = Joaat(names[i].substr(0, names[i].size() - 4));
-					const bool hi = names[i].find('+') != std::string::npos;
-					std::lock_guard lock(mutex);
-					for (const auto& t : drawable::Textures(view, drawable::View::kRoot))
+				(fromMod(file) ? mods : game).push_back(name);
+		const auto add = [&](const std::vector<std::string>& names, bool replace) {
+			std::atomic<size_t> next = 0;
+			std::mutex mutex;
+			std::vector<std::thread> threads;
+			for (unsigned w = 0; w < std::max(1u, workers); ++w)
+				threads.emplace_back([&] {
+					GameFiles own;
+					std::string error;
+					if (!own.Open(gameDir, decrypt, error))
+						return;
+					for (size_t i; (i = next++) < names.size();)
 					{
-						// (the plain dictionary rather than its +hi / +hidr twin: the lookup tries +hi itself)
-						auto [it, added] = index->try_emplace(Lower(t.name), dictionary);
-						if (!added && !hi && names[i].find('+') == std::string::npos)
+						const GameFiles::File* f = own.Find(names[i]);
+						Bytes data;
+						loader::convert::Resource resource;
+						if (!f || !own.Read(*f, data, error) || !loader::convert::Read(data, resource, error))
 							continue;
-						if (!added && hi)
-							continue;
-						it->second = dictionary;
+						const drawable::View view(resource);
+						const uint32_t dictionary = Joaat(names[i].substr(0, names[i].size() - 4));
+						const bool hi = names[i].find('+') != std::string::npos;
+						std::lock_guard lock(mutex);
+						for (const auto& t : drawable::Textures(view, drawable::View::kRoot))
+						{
+							// (the plain dictionary rather than its +hi / +hidr twin: the lookup tries +hi itself)
+							auto [it, added] = index->try_emplace(Lower(t.name), dictionary);
+							if (!added && (hi || !replace))
+								continue;
+							it->second = dictionary;
+						}
 					}
-				}
-			});
-		for (auto& t : threads)
-			t.join();
-		std::ofstream out(cache);
-		for (const auto& [name, dictionary] : *index)
-			out << name << '\t' << std::hex << dictionary << std::dec << '\n';
+				});
+			for (auto& t : threads)
+				t.join();
+		};
+		if (!cached)
+		{
+			add(game, false);
+			std::ofstream out(cache);
+			for (const auto& [name, dictionary] : *index)
+				out << name << '\t' << std::hex << dictionary << std::dec << '\n';
+		}
+		add(mods, true);
 		return index;
 	}
 
@@ -217,7 +229,7 @@ namespace ue5export
 	}
 
 	// gtxd: the base game's binary table (RBF: string values "FD FF <u16 length> <u16> text\0", parent then child) and
-	// the DLC packs' gtxd.meta (<parent>, <child>).
+	// the DLC packs' gtxd.meta (<parent>, <child>; a pack's own, beside its archives: the world builder's).
 	void Resolver::ReadParents()
 	{
 		auto& names = byHash_["ytd"];
@@ -228,16 +240,23 @@ namespace ue5export
 		};
 		Bytes data;
 		std::string error;
-		// (every version of every *gtxd.ymt: the base game's, the DLCs' (mph4_gtxd.ymt), not just the one Find gives)
-		std::vector<GameFiles::File> ymts;
+		// (every version of every *gtxd.ymt / *gtxd.meta: the base game's, the DLCs' (mph4_gtxd.ymt), not just the one Find gives)
+		std::vector<GameFiles::File> tables;
 		for (const auto& [name, file] : files_.Files())
-			if (name.ends_with("gtxd.ymt"))
+			if (name.ends_with("gtxd.ymt") || name.ends_with("gtxd.meta"))
 				for (const GameFiles::File& v : files_.AllOf(name))
-					ymts.push_back(v);
-		for (const GameFiles::File& f : ymts)
+					tables.push_back(v);
+		for (const GameFiles::File& f : tables)
 		{
 			if (!files_.Read(f, data, error))
 				continue;
+			const std::string xml(data.begin(), data.end());
+			for (size_t at = xml.find("<parent>"); at != std::string::npos; at = xml.find("<parent>", at + 1))
+			{
+				const size_t end = xml.find("</parent>", at), child = xml.find("<child>", at), childEnd = xml.find("</child>", at);
+				if (end != std::string::npos && child != std::string::npos && childEnd != std::string::npos)
+					add(xml.substr(at + 8, end - at - 8), xml.substr(child + 7, childEnd - child - 7));
+			}
 			std::vector<std::string> values;
 			for (size_t i = 0; i + 6 < data.size(); ++i)
 				if (data[i] == 0xFD && data[i + 1] == 0xFF)
@@ -251,18 +270,6 @@ namespace ue5export
 				}
 			for (size_t k = 0; k + 1 < values.size(); k += 2)
 				add(values[k], values[k + 1]);
-		}
-		for (const GameFiles::File& f : files_.AllOf("gtxd.meta"))
-		{
-			if (!files_.Read(f, data, error))
-				continue;
-			const std::string xml(data.begin(), data.end());
-			for (size_t at = xml.find("<parent>"); at != std::string::npos; at = xml.find("<parent>", at + 1))
-			{
-				const size_t end = xml.find("</parent>", at), child = xml.find("<child>", at), childEnd = xml.find("</child>", at);
-				if (end != std::string::npos && child != std::string::npos && childEnd != std::string::npos)
-					add(xml.substr(at + 8, end - at - 8), xml.substr(child + 7, childEnd - child - 7));
-			}
 		}
 	}
 
