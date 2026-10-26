@@ -108,6 +108,13 @@ for a in (0xCDD6B9, 0xCDD92B, 0xCDDA1D, 0xCDDA8B, 0xCDDA95, 0xCDDAC3, 0xCDDB1B):
 # (+0xBC): the same while the grid was square
 for a in (0xCF8F7B, 0xCF93BA):
     site(a, 0xC0, 4, 0xBC, "row-length")
+# leaf functions (no unwind data, so not in the exception table the scan above walks): the navmesh store's GetPtr
+# (0xCDD8B0, its streaming module's vtable +0x70: an index from 10000 up looked for among the dynamic navmeshes - null
+# for the grid's squares past 10000, and the session's reset then stopped at 0xCE4CD0's int3 removing one), and the
+# navmesh by index and kind (0x112D150: the special one, the store's slots, the dynamic ones at index - 10000)
+site(0xCDD8B0, 0x2710, 4, DYN, "dyn-base")
+site(0x112D150, 0x2774, 4, SPECIAL, "special")
+site(0x112D1BB, -0x2710, 4, -DYN, "dyn-check")
 # nav.dat's reader: the squares (W and H as two dwords); MAX_NUM_NAVMESHES_IN_ANY_LEVEL's value replaced by the last index
 site(0x112BD5A, 0x6400000064, 8, (H << 32) | W, "grid-size")
 max_raw = d[0x112BE30:0x112BE37]

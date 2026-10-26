@@ -20,6 +20,7 @@
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../pattern.hpp"
+#include "sectors.hpp"
 
 namespace loader::game::minimap
 {
@@ -78,20 +79,28 @@ namespace loader::game::minimap
 		ReleaseFn g_release = nullptr;
 		InitFn g_pictureInit = nullptr;
 		ReachFn g_reach = nullptr;
-		std::vector<std::array<float, 4>> g_lands; // each land's box (min x, min y, max x, max y)
+		// each land: its pack's folder, its box (min x, min y, max x, max y)
+		struct Land
+		{
+			std::string folder;
+			std::array<float, 4> box{};
+		};
+		std::vector<Land> g_lands;
 
 		// a land's supertile: its place on the lattice and its entry (ours, as the game's)
 		struct Supertile
 		{
 			int column = 0, row = 0;
 			uint8_t* entry = nullptr;
+			std::vector<std::string> owners; // (the lands that have it - sectors sharing a place: only the one there draws)
 		};
 		std::vector<Supertile> g_supertiles;
 		std::vector<uint8_t> g_entries;
 
-		// the pause map: the lands' squares (row, column on the lattice) -> the land's name; the open sea's (a land's)
-		std::map<std::pair<int, int>, std::string> g_pictures;
-		std::string g_openSea;
+		// the pause map: the lands' squares (row, column on the lattice) -> the lands that have a picture of it (their pack's
+		// folder, the pictures' name); the open sea's (the first land with pictures that is there)
+		std::map<std::pair<int, int>, std::vector<std::pair<std::string, std::string>>> g_pictures;
+		std::vector<std::pair<std::string, std::string>> g_seas;
 		// the game's grid as minimap.ymt has it, ours, and the lattice's place of our grid's first square
 		struct Grid
 		{
@@ -133,7 +142,8 @@ namespace loader::game::minimap
 			          columnTo = FloorSixth(static_cast<int>(std::ceil(middle[0] + half[0])));
 			for (Supertile& s : g_supertiles)
 			{
-				const uint8_t want = !none && s.row >= rowFrom && s.row <= rowTo && s.column >= columnFrom && s.column <= columnTo;
+				const bool there = std::any_of(s.owners.begin(), s.owners.end(), [](const std::string& o) { return !sectors::Dormant(o); });
+				const uint8_t want = !none && there && s.row >= rowFrom && s.row <= rowTo && s.column >= columnFrom && s.column <= columnTo;
 				uint8_t* e = s.entry;
 				if (e[0x72] != want)
 				{
@@ -216,13 +226,28 @@ namespace loader::game::minimap
 		void Reach(void* a, float* northWest, float* southEast, uint64_t d)
 		{
 			g_reach(a, northWest, southEast, d);
-			for (const auto& box : g_lands)
+			for (const Land& land : g_lands)
 			{
+				if (sectors::Dormant(land.folder))
+					continue;
+				const auto& box = land.box;
 				northWest[0] = std::min(northWest[0], box[0] - kReachMargin);
 				northWest[1] = std::max(northWest[1], box[3] + kReachMargin);
 				southEast[0] = std::max(southEast[0], box[2] + kReachMargin);
 				southEast[1] = std::min(southEast[1], box[1] - kReachMargin);
 			}
+		}
+
+		// The pictures' name of the land there (not a sector that waits) with a picture of that square, or null.
+		const std::string* There(const std::map<std::pair<int, int>, std::vector<std::pair<std::string, std::string>>>& pictures, std::pair<int, int> at)
+		{
+			const auto it = pictures.find(at);
+			if (it == pictures.end())
+				return nullptr;
+			for (const auto& [folder, name] : it->second)
+				if (!sectors::Dormant(folder))
+					return &name;
+			return nullptr;
 		}
 
 		// A square's dictionary: the land's picture of it, the game's own, or the open sea's.
@@ -233,12 +258,15 @@ namespace loader::game::minimap
 			std::string name;
 			if (!g_gridKnown)
 				name = std::format("{}_{}_{}", layer, row, column); // (the grid not widened: the game's own names)
-			else if (const auto it = g_pictures.find({r, c}); it != g_pictures.end())
-				name = std::format("{}_{}_{}_{}", layer, it->second, r, c);
+			else if (const auto* land = There(g_pictures, {r, c}))
+				name = std::format("{}_{}_{}_{}", layer, *land, r, c);
 			else if (r >= 0 && r < g_game.rows && c >= 0 && c < g_game.columns)
 				name = std::format("{}_{}_{}", layer, r, c);
 			else
-				name = std::format("{}_{}_sea", layer, g_openSea);
+			{
+				const auto sea = std::find_if(g_seas.begin(), g_seas.end(), [](const auto& s) { return !sectors::Dormant(s.first); });
+				name = std::format("{}_{}_sea", layer, sea != g_seas.end() ? sea->second : g_seas.empty() ? std::string() : g_seas.front().second);
+			}
 			const size_t n = std::min<size_t>(name.size(), 49); // (the game's buffer: 50)
 			std::memcpy(buffer, name.data(), n);
 			buffer[n] = 0;
@@ -268,23 +296,24 @@ namespace loader::game::minimap
 					for (const auto& rc : map.value("radar", nlohmann::json::array()))
 					{
 						const int column = rc.at(0).get<int>(), row = rc.at(1).get<int>();
-						if (std::any_of(g_supertiles.begin(), g_supertiles.end(), [&](const Supertile& s) { return s.column == column && s.row == row; }))
-						{
-							log::Warn("minimap: land {}: radar supertile {} {} is another land's too; that one is used", folder, column, row);
-							continue;
-						}
-						g_supertiles.push_back({column, row});
+						// (a supertile other lands have too - sectors sharing a place - is one entry: the same file name, the
+						// file of the land there)
+						const auto same = std::find_if(g_supertiles.begin(), g_supertiles.end(), [&](const Supertile& s) { return s.column == column && s.row == row; });
+						if (same != g_supertiles.end())
+							same->owners.push_back(folder);
+						else
+							g_supertiles.push_back({column, row, nullptr, {folder}});
 						++radar;
 					}
 					for (const auto& rc : map.value("pictures", nlohmann::json::array()))
 					{
-						if (g_pictures.emplace(std::make_pair(rc.at(0).get<int>(), rc.at(1).get<int>()), name).second)
-							++pictures;
+						g_pictures[std::make_pair(rc.at(0).get<int>(), rc.at(1).get<int>())].push_back({folder, name});
+						++pictures;
 					}
-					if (g_openSea.empty() && pictures)
-						g_openSea = name;
+					if (pictures)
+						g_seas.push_back({folder, name});
 					if (j.contains("box"))
-						g_lands.push_back({j.at("box").at(0).get<float>(), j.at("box").at(1).get<float>(), j.at("box").at(2).get<float>(), j.at("box").at(3).get<float>()});
+						g_lands.push_back({folder, {j.at("box").at(0).get<float>(), j.at("box").at(1).get<float>(), j.at("box").at(2).get<float>(), j.at("box").at(3).get<float>()}});
 					log::Info("minimap: land {}: {} radar supertiles, {} pause map pictures", folder, radar, pictures);
 				}
 				catch (const std::exception& e)

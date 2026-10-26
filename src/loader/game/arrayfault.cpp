@@ -121,6 +121,14 @@ namespace loader::game::arrayfault
 			}
 			log::Warn("exception {:#x} at rva {:#x} (address {:#x}); script {} (saved ip {}), r13-r14 {:#x}; stack{}", code, c.Rip - g_moduleBase,
 			    e->ExceptionRecord->NumberParameters > 1 ? e->ExceptionRecord->ExceptionInformation[1] : 0, script, ip, c.R13 - c.R14, stack);
+			// (the registers, and the stack's first words as they are)
+			std::string words;
+			if (code != EXCEPTION_STACK_OVERFLOW)
+				for (int i = 0; i < 24; ++i)
+					words += std::format(" {:#x}", reinterpret_cast<const uintptr_t*>(c.Rsp)[i]);
+			log::Warn("  rax {:#x} rbx {:#x} rcx {:#x} rdx {:#x} rsi {:#x} rdi {:#x} rbp {:#x} rsp {:#x} r8 {:#x} r9 {:#x} r10 {:#x} r11 {:#x} r12 {:#x} r13 {:#x} "
+			          "r14 {:#x} r15 {:#x}; [rsp]{}",
+			    c.Rax, c.Rbx, c.Rcx, c.Rdx, c.Rsi, c.Rdi, c.Rbp, c.Rsp, c.R8, c.R9, c.R10, c.R11, c.R12, c.R13, c.R14, c.R15, words);
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
 

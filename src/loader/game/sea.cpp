@@ -18,6 +18,7 @@
 #include "../paths.hpp"
 #include "../pattern.hpp"
 #include "natives.hpp"
+#include "sectors.hpp"
 
 namespace loader::game::sea
 {
@@ -67,6 +68,7 @@ namespace loader::game::sea
 			float box[4]{}; // min x, min y, max x, max y
 			float waves = 1;
 			std::string climate; // its weather (Climate below; empty: the game's)
+			bool there = true;   // (false: a sector that waits, game/sectors.hpp - refreshed each Tick)
 			// the water (water.bin): none when the pack has no mask
 			bool water = false;
 			float x0 = 0, y0 = 0, cell = 4;
@@ -196,6 +198,7 @@ namespace loader::game::sea
 						land.box[k] = j.at("box").at(k).get<float>();
 					land.waves = std::clamp(j.value("waves", 1.0f), 0.0f, 1.0f);
 					land.climate = j.value("climate", "");
+					land.there = !sectors::Dormant(name);
 					log::Info("sea: land {} ({:.0f}, {:.0f})..({:.0f}, {:.0f}), swell {:.2f} of the open ocean's", land.name, land.box[0], land.box[1],
 					    land.box[2], land.box[3], land.waves);
 					if (j.contains("water") && !ReadWater(land, entry.path() / j["water"].get<std::string>()))
@@ -213,7 +216,7 @@ namespace loader::game::sea
 		bool __fastcall SeaAt(const float* p)
 		{
 			for (const Land& land : g_lands)
-				if (land.water && p[0] >= land.x0 && p[1] >= land.y0)
+				if (land.water && land.there && p[0] >= land.x0 && p[1] >= land.y0)
 				{
 					const auto i = static_cast<uint32_t>((p[0] - land.x0) / land.cell), j = static_cast<uint32_t>((p[1] - land.y0) / land.cell);
 					if (i < land.nx && j < land.ny)
@@ -279,7 +282,7 @@ namespace loader::game::sea
 			std::vector<Rect> pieces{strip};
 			for (const Land& land : g_lands)
 			{
-				if (!land.water)
+				if (!land.water || !land.there)
 					continue;
 				const Rect& b = land.area;
 				std::vector<Rect> rest;
@@ -572,8 +575,12 @@ namespace loader::game::sea
 		const auto camera = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
 		float want = 1;
 		const Land* on = nullptr; // the land the camera is over
+		for (Land& land : g_lands)
+			land.there = !sectors::Dormant(land.name);
 		for (const Land& land : g_lands)
 		{
+			if (!land.there)
+				continue;
 			const float dx = std::max({land.box[0] - camera.x, 0.0f, camera.x - land.box[2]});
 			const float dy = std::max({land.box[1] - camera.y, 0.0f, camera.y - land.box[3]});
 			const float t = std::clamp(std::hypot(dx, dy) / kReach, 0.0f, 1.0f);

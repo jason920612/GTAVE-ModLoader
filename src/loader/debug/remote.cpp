@@ -13,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <format>
 #include <fstream>
 #include <map>
@@ -25,7 +26,10 @@
 #include <vector>
 
 #include "../config.hpp"
+#include "../convert/resource.hpp"
+#include "../game/content.hpp"
 #include "../game/natives.hpp"
+#include "../game/sectors.hpp"
 #include "../graphics/bridge.hpp"
 #include "../graphics/particles.hpp"
 #include "../log.hpp"
@@ -96,6 +100,14 @@ namespace loader::debug::remote
 			bool done = false, ok = false;
 		};
 		std::deque<std::shared_ptr<NativeCall>> g_calls;
+		// "dlc": work the game thread does for the tester, its answer back
+		struct Job
+		{
+			std::function<std::string()> run;
+			std::string result;
+			bool done = false;
+		};
+		std::deque<std::shared_ptr<Job>> g_jobs;
 		std::vector<std::pair<std::shared_ptr<NativeCall>, ULONGLONG>> g_repeats; // ("every": until then, each frame)
 		std::condition_variable g_callDone;
 		int32_t g_camHandle = 0;
@@ -795,6 +807,77 @@ namespace loader::debug::remote
 				in >> how;
 				return Window(how);
 			}
+			if (cmd == "sector")
+			{
+				// sector: the world builder's lands and which are there; sector <name> [x y]: that land there instead of the
+				// one in its place, the player then at x y (game/sectors.hpp; the game restarts the session for it: the switch
+				// runs on after this answer)
+				std::string to;
+				float at[2]{};
+				in >> to;
+				const bool place = static_cast<bool>(in >> at[0] >> at[1]);
+				if (to.empty())
+				{
+					std::string all;
+					for (const std::string& l : game::sectors::Lands())
+						all += (all.empty() ? "" : " ") + l;
+					return "ok lands " + all + " | there " + game::sectors::Active();
+				}
+				auto job = std::make_shared<Job>();
+				job->run = [to, at, place] {
+					const std::string error = game::sectors::Switch(to, place ? at : nullptr);
+					return error.empty() ? std::string("switching") : error;
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
+			if (cmd == "dlc")
+			{
+				// dlc packs | dlc execute|revert <pack> <group> [execute|revert <pack> <group> ...]: the DLC content
+				// manager's packs (their change set groups, what of them is executed; one line, packs split by ';'), and
+				// packs' groups of change sets executed or reverted on the game thread, all in one go (names or 0x hashes;
+				// research/phase0.md §62)
+				std::string what;
+				in >> what;
+				const auto hashOf = [](const std::string& s) {
+					return s.starts_with("0x") ? static_cast<uint32_t>(std::stoul(s, nullptr, 16)) : convert::Joaat(s);
+				};
+				auto job = std::make_shared<Job>();
+				if (what == "packs")
+					job->run = [] {
+						std::string d = game::content::Describe();
+						std::replace(d.begin(), d.end(), '\n', ';');
+						return d;
+					};
+				else
+				{
+					struct Step
+					{
+						bool execute;
+						uint32_t pack, group;
+					};
+					std::vector<Step> steps;
+					for (std::string op = what, pack, group; (op == "execute" || op == "revert") && in >> pack >> group; op.clear(), in >> op)
+						steps.push_back({op == "execute", hashOf(pack), hashOf(group)});
+					if (steps.empty())
+						return "err dlc packs | dlc execute|revert <pack> <group> [...]";
+					job->run = [steps] {
+						std::string out = "done";
+						for (const Step& s : steps)
+							if (!(s.execute ? game::content::Execute(s.pack, s.group) : game::content::Revert(s.pack, s.group)))
+								out += std::format(" (no pack {:08x} group {:08x})", s.pack, s.group);
+						return out;
+					};
+				}
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
 			return "err unknown command";
 		}
 
@@ -936,6 +1019,14 @@ namespace loader::debug::remote
 			}
 			game::natives::Invoke<int>(kSetControlValueNextFrame, 0, it->first, it->second.value);
 			++it;
+		}
+		while (!g_jobs.empty())
+		{
+			const std::shared_ptr<Job> job = g_jobs.front();
+			g_jobs.pop_front();
+			job->result = job->run();
+			job->done = true;
+			g_callDone.notify_all();
 		}
 		while (!g_calls.empty())
 		{

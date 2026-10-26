@@ -617,18 +617,40 @@ namespace
 			    device, a);
 			rpfEnables += std::format("            <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n", device, a);
 		}
-		// (the files replacing the game's: an overlay archive, the start-up change set's)
+		// (the files replacing the game's, and the navmeshes: overlay archives, the start-up change set's - as the others,
+		// at most 1800 files and 48 KB of names each: <name>_over.rpf, <name>_over_1.rpf, ...)
 		std::string startupSets, startupGroup;
-		const std::string overlayArchive = name + "_over";
+		std::vector<std::vector<size_t>> overlayGroups;
+		std::vector<std::string> overlayNames;
+		{
+			size_t names = 0;
+			for (size_t i = 0; i < replacing.size(); ++i)
+			{
+				const size_t length = replacing[i].name.size() + 1;
+				if (overlayGroups.empty() || overlayGroups.back().size() >= 1800 || names + length > 48000)
+				{
+					overlayGroups.emplace_back();
+					overlayNames.push_back(overlayNames.empty() ? name + "_over" : std::format("{}_over_{}", name, overlayNames.size()));
+					names = 0;
+				}
+				overlayGroups.back().push_back(i);
+				names += length;
+			}
+		}
 		if (!replacing.empty())
 		{
-			rpfItems += std::format("    <Item>\n      <filename>{}:/%PLATFORM%/levels/gta5/{}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
-			                        "      <overlay value=\"true\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
-			    device, overlayArchive);
+			std::string enables;
+			for (const std::string& a : overlayNames)
+			{
+				rpfItems += std::format("    <Item>\n      <filename>{}:/%PLATFORM%/levels/gta5/{}.rpf</filename>\n      <fileType>RPF_FILE</fileType>\n"
+				                        "      <overlay value=\"true\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+				    device, a);
+				enables += std::format("        <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n", device, a);
+			}
 			startupSets = std::format("    <Item>\n      <changeSetName>{}</changeSetName>\n      <filesToDisable />\n      <filesToEnable>\n"
-			                          "        <Item>{}:/%PLATFORM%/levels/gta5/{}.rpf</Item>\n      </filesToEnable>\n      <txdToLoad />\n"
+			                          "{}      </filesToEnable>\n      <txdToLoad />\n"
 			                          "      <txdToUnload />\n      <residentResources />\n      <unregisterResources />\n    </Item>\n",
-			    startupSet, device, overlayArchive);
+			    startupSet, enables);
 			startupGroup = std::format("    <Item>\n      <NameHash>GROUP_STARTUP</NameHash>\n      <ContentChangeSets>\n        <Item>{}</Item>\n"
 			                           "      </ContentChangeSets>\n    </Item>\n",
 			    startupSet);
@@ -780,12 +802,13 @@ namespace
 				a.children.push_back(std::move(files[i]));
 			gta5.children.push_back(std::move(a));
 		}
-		if (!replacing.empty())
+		for (size_t g = 0; g < overlayGroups.size(); ++g)
 		{
 			loader::convert::WriteNode a;
-			a.name = overlayArchive + ".rpf";
+			a.name = overlayNames[g] + ".rpf";
 			a.kind = loader::convert::WriteNode::Kind::Archive;
-			a.children = std::move(replacing);
+			for (const size_t i : overlayGroups[g])
+				a.children.push_back(std::move(replacing[i]));
 			gta5.children.push_back(std::move(a));
 		}
 		levels.children.push_back(std::move(gta5));
@@ -1895,8 +1918,12 @@ int main(int argc, char** argv)
 		for (size_t p = packs.size(); fs::is_directory(mods / packName(p)); ++p)
 			packs.emplace_back();
 		for (size_t p = 0; p < packs.size(); ++p)
+			// (the overlay - the start-up change set's - also has all the navmeshes: a land that shares its place with
+			// others (game/sectors.hpp) puts its maps away first, the game's session restart lets its navmeshes go, then its
+			// overlay; a map archive's navmesh still loaded when it is taken away stops the game)
 			if (!WritePack(packName(p), std::move(packs[p]), p ? std::string() : parentTxds, p ? fs::path() : fs::path(g_options["in"]) / "requests.txt",
-			        [&](const std::string& file) { return files.Find(file) != nullptr; }, p ? mods / packName(p) / out.filename() : out, error))
+			        [&](const std::string& file) { return files.Find(file) != nullptr || file.ends_with(".ynv"); }, p ? mods / packName(p) / out.filename() : out,
+			        error))
 				return Fail(packName(p) + ": " + error);
 		return 0;
 	}

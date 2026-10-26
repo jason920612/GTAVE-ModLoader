@@ -4,6 +4,7 @@
 0xcdd30f	7	4	10100	16270	special	41c7854001000074270000	mov dword ptr [r13 + 0x140], 0x2774
 0xcdd56b	1	4	661913600	1066270720	special<<16	0500007427	add eax, 0x27740000
 0xcdd6b9	2	4	80260	131332	store-count	c7868439010000000000	mov dword ptr [rsi + 0x13984], 0
+0xcdd8b0	2	4	10000	16170	dyn-base	81fa10270000	cmp edx, 0x2710
 0xcdd92b	2	4	80260	131332	store-count	8b8f84390100	mov ecx, dword ptr [rdi + 0x13984]
 0xcdd96d	3	4	9999	16169	grid-last	4881f90f270000	cmp rcx, 0x270f
 0xcdda1d	2	4	80260	131332	store-count	c7818439010000000000	mov dword ptr [rcx + 0x13984], 0
@@ -40,6 +41,8 @@
 0x112be30	0	7	0	16269	max-index	8b442434894714	mov dword [rdi+14h], 16269 (was the file's value)
 0x112d088	3	4	10100	16270	special	4881ff74270000	cmp rdi, 0x2774
 0x112d0e0	2	4	-10000	-16170	dyn-check	81c7f0d8ffff	add edi, 0xffffd8f0
+0x112d150	2	4	10100	16270	special	81f974270000	cmp ecx, 0x2774
+0x112d1bb	2	4	-10000	-16170	dyn-check	81c1f0d8ffff	add ecx, 0xffffd8f0
 0x11320ff	1	4	10100	16270	special	3d74270000	cmp eax, 0x2774
 0x1132162	1	4	-10000	-16170	dyn-check	05f0d8ffff	add eax, 0xffffd8f0
 0x1132282	1	4	10100	16270	special	3d74270000	cmp eax, 0x2774

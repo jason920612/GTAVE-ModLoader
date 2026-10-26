@@ -31,7 +31,9 @@
 #include "game/datafiles.hpp"
 #include "game/fixes.hpp"
 #include "game/navgrid.hpp"
+#include "game/content.hpp"
 #include "game/playarea.hpp"
+#include "game/sectors.hpp"
 #include "game/pathregions.hpp"
 #include "game/pools.hpp"
 #include "game/minimap.hpp"
@@ -300,6 +302,8 @@ namespace loader::core
 			if (!state::online)
 				game::sea::Tick();
 			if (!state::online)
+				game::sectors::Tick();
+			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)
 				debug::remote::Tick();
@@ -348,6 +352,8 @@ namespace loader::core
 		game::pathregions::GuardNextNodeLinks();
 		game::navgrid::Install();
 		game::playarea::Install();
+		game::sectors::Install();
+		game::content::Install();
 		game::sea::Install();
 		game::minimap::Install();
 		if (config::Get().ue5Renderer)

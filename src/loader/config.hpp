@@ -92,6 +92,10 @@ namespace loader::config
 		// World builder: the player's play area (out of it the game holds the player's vehicle) is the world box, +-16000 m
 		// in x and y, instead of (-8000, -8000)..(8000, 9000) (game/playarea.cpp). Takes effect when the game starts.
 		bool worldPlayArea = true;
+		// World builder: which of the new lands that share a place (sectors, each a pack with a land.json) is there at the
+		// start (its folder name in ModLoader\mods; empty: the first by name) - the others wait, dormant, for a switch
+		// (game/sectors.cpp). The last one switched to is kept here.
+		std::string worldSector;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.
