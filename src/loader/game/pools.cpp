@@ -82,7 +82,7 @@ namespace loader::game::pools
 		// (10030 of 0x70 bytes; fwBasePool::New, +0x15A7C0, breaks into int3 when no slot is free) took the game down as
 		// the camera came to a palm-lined street (research/phase0.md §61.20). Raising "Dummy Object" or "Building" much
 		// further (40000 / 100000) made the game fail at start: their memory comes from a fixed budget.
-		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"StaticBounds", 26700}, {"MapDataStore", 13020}, {"MapTypesStore", 2700},
+		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"StaticBounds", 26700}, {"MapDataStore", 16020}, {"MapTypesStore", 2700},
 		    {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}};
 
 		// Stores that need a size of their own (SetMinimum), by name.

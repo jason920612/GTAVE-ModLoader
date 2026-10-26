@@ -1373,32 +1373,49 @@ namespace worldgen::build
 				return false;
 			WriteFile(o.out / (mname + ".ymap"), map);
 		}
-		// A block's maps: what has a LOD parent (the buildings' HD models) in maps of their own, children of the block's LOD
-		// map; the rest (terrain, roads, props, trees: no parent) in others. Mixed, the game took the others for coarser
-		// objects and looked for the buildings' parents among them (their parentIndex then named a terrain tile, which the
-		// game hid while the buildings showed: a hole in the ground near the camera; research/phase0.md §61.21).
-		for (const auto& [block, all] : blocks)
-			for (const bool children : {false, true})
+		// The maps, by how far their entities are seen (a map streams in once the camera is within its entities' lodDist of
+		// them, so near things must not share a map with far ones): far (terrain, roads: lodDist 1 km and more) in 1 km
+		// blocks; the buildings' HD models (with a LOD parent) in maps of their own per block, children of the block's LOD
+		// map - mixed with parentless entities, the game took those for coarser objects and looked for the buildings'
+		// parents among them (their parentIndex named a terrain tile, hidden while the buildings showed: a hole near the
+		// camera; research/phase0.md §61.21); near (trees, props: a few hundred metres) in 250 m cells, so that only those
+		// round the camera are loaded (a whole city's trees would not fit the game's entity pools).
+		std::map<std::pair<int, int>, std::vector<mapfiles::Entity>> nearCells;
+		const auto writeMaps = [&](const std::string& base, const std::vector<mapfiles::Entity>& entities, const mapfiles::MapInfo& info) {
+			for (size_t first = 0, k = 0; first < entities.size(); first += kPerFile, ++k)
 			{
-				std::vector<mapfiles::Entity> entities;
-				for (const auto& e : all)
-					if ((e.parentIndex >= 0) == children)
-						entities.push_back(e);
-				for (size_t first = 0, k = 0; first < entities.size(); first += kPerFile, ++k)
-				{
-					const std::vector<mapfiles::Entity> part(entities.begin() + static_cast<ptrdiff_t>(first),
-					    entities.begin() + static_cast<ptrdiff_t>(std::min(entities.size(), first + kPerFile)));
-					Bytes map;
-					const std::string base = std::format("{}{}_{}_{}", o.name, children ? "_hd" : "", block.first, block.second);
-					const std::string mname = k ? std::format("{}_{}", base, k) : base;
-					mapfiles::MapInfo info;
-					if (children)
-						info.parent = loader::convert::Joaat(std::format("{}_lod_{}_{}", o.name, block.first, block.second));
-					if (!mapfiles::WriteMap(files, mname, part, map, error, info))
-						return false;
-					WriteFile(o.out / (mname + ".ymap"), map);
-				}
+				const std::vector<mapfiles::Entity> part(entities.begin() + static_cast<ptrdiff_t>(first),
+				    entities.begin() + static_cast<ptrdiff_t>(std::min(entities.size(), first + kPerFile)));
+				Bytes map;
+				const std::string mname = k ? std::format("{}_{}", base, k) : base;
+				if (!mapfiles::WriteMap(files, mname, part, map, error, info))
+					return false;
+				WriteFile(o.out / (mname + ".ymap"), map);
 			}
+			return true;
+		};
+		for (const auto& [block, all] : blocks)
+		{
+			std::vector<mapfiles::Entity> far, children;
+			for (const auto& e : all)
+			{
+				if (e.parentIndex >= 0)
+					children.push_back(e);
+				else if (e.lodDist >= 1000)
+					far.push_back(e);
+				else
+					nearCells[{static_cast<int>(std::floor((e.position[0] - w.min[0]) / 250)), static_cast<int>(std::floor((e.position[1] - w.min[1]) / 250))}]
+					    .push_back(e);
+			}
+			mapfiles::MapInfo hd;
+			hd.parent = loader::convert::Joaat(std::format("{}_lod_{}_{}", o.name, block.first, block.second));
+			if (!writeMaps(std::format("{}_{}_{}", o.name, block.first, block.second), far, {}) ||
+			    !writeMaps(std::format("{}_hd_{}_{}", o.name, block.first, block.second), children, hd))
+				return false;
+		}
+		for (const auto& [cell, entities] : nearCells)
+			if (!writeMaps(std::format("{}_n_{}_{}", o.name, cell.first, cell.second), entities, {}))
+				return false;
 		// 6. pedestrians' navmeshes (the sea floor half a metre down and more left out)
 		if (o.navmesh && !navMesh.triangles.empty())
 		{
