@@ -38,10 +38,13 @@ namespace loader::game::sea
 		// just stored at [r8], then xorps xmm1,xmm1; roundss xmm1,xmm0,9 (is it in this block); the next block at 0x35A270.
 		constexpr uintptr_t kSegmentHit = 0x35A3C8, kSegmentHitBack = 0x35A3D1, kSegmentNext = 0x35A270;
 		constexpr uint8_t kSegmentHitBytes[] = {0x0F, 0x57, 0xC9, 0x66, 0x0F, 0x3A, 0x0A, 0xC8, 0x09};
-		// The sea outside the grid drawn (0x36cc60): up to four strips round the grid, cut to the view, each a call of the
-		// water quad drawing 0x36d3b0 (x0, x1, y0, y1, level, the four corners' alpha, a triangle's slope and offset: 0).
+		// The sea outside the grid drawn: up to four strips round the grid, cut to the view (0x36cc60: the far, flat water)
+		// and the parts of the detailed region round the camera outside the grid (0x36f990, west, east, south, north, in its
+		// two passes: the water with waves), each a call of the water quad drawing 0x36d3b0 (x0, x1, y0, y1, level, the
+		// four corners' alpha, a triangle's slope and offset: 0).
 		constexpr uintptr_t kDrawQuad = 0x36D3B0;
-		constexpr uintptr_t kStripCalls[] = {0x36CF9B, 0x36D011, 0x36D067, 0x36D0E2};
+		constexpr uintptr_t kStripCalls[] = {0x36CF9B, 0x36D011, 0x36D067, 0x36D0E2, 0x3704FB, 0x370684, 0x3705D5, 0x370795, 0x370842, 0x370946, 0x3708D7,
+		    0x370A13};
 		constexpr uintptr_t kDefaultLevel = 0x2FAA758;
 		// where the water is drawn in detail this frame (round the camera): min x, max x, min y, max y
 		constexpr uintptr_t kDetailRegion = 0x2FAA770;

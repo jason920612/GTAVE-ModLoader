@@ -626,7 +626,7 @@ namespace worldgen::build
 				return blocked.In(c[0], c[1]) && !blocked.At(c[0], c[1]);
 			};
 			// (with a scan the trees stand where it saw them; the map's tree points and the avenues' palms then not)
-			props::Place(near, network, open, ground, {bx0, by0, bx1, by1}, furniture, !scanned);
+			props::Place(near, network, surfaces.signals, open, ground, {bx0, by0, bx1, by1}, furniture, !scanned);
 			std::printf("props: %zu (palms, street lights, signals)\n", furniture.size());
 			if (scanned)
 			{
@@ -1213,19 +1213,31 @@ namespace worldgen::build
 				return false;
 			WriteFile(o.out / (mname + ".ymap"), map);
 		}
-		for (const auto& [block, entities] : blocks)
-			for (size_t first = 0, k = 0; first < entities.size(); first += kPerFile, ++k)
+		// A block's maps: what has a LOD parent (the buildings' HD models) in maps of their own, children of the block's LOD
+		// map; the rest (terrain, roads, props, trees: no parent) in others. Mixed, the game took the others for coarser
+		// objects and looked for the buildings' parents among them (their parentIndex then named a terrain tile, which the
+		// game hid while the buildings showed: a hole in the ground near the camera; research/phase0.md §61.21).
+		for (const auto& [block, all] : blocks)
+			for (const bool children : {false, true})
 			{
-				const std::vector<mapfiles::Entity> part(entities.begin() + static_cast<ptrdiff_t>(first),
-				    entities.begin() + static_cast<ptrdiff_t>(std::min(entities.size(), first + kPerFile)));
-				Bytes map;
-				const std::string mname = k ? std::format("{}_{}_{}_{}", o.name, block.first, block.second, k) : std::format("{}_{}_{}", o.name, block.first, block.second);
-				mapfiles::MapInfo info;
-				if (lodBlocks.contains(block))
-					info.parent = loader::convert::Joaat(std::format("{}_lod_{}_{}", o.name, block.first, block.second));
-				if (!mapfiles::WriteMap(files, mname, part, map, error, info))
-					return false;
-				WriteFile(o.out / (mname + ".ymap"), map);
+				std::vector<mapfiles::Entity> entities;
+				for (const auto& e : all)
+					if ((e.parentIndex >= 0) == children)
+						entities.push_back(e);
+				for (size_t first = 0, k = 0; first < entities.size(); first += kPerFile, ++k)
+				{
+					const std::vector<mapfiles::Entity> part(entities.begin() + static_cast<ptrdiff_t>(first),
+					    entities.begin() + static_cast<ptrdiff_t>(std::min(entities.size(), first + kPerFile)));
+					Bytes map;
+					const std::string base = std::format("{}{}_{}_{}", o.name, children ? "_hd" : "", block.first, block.second);
+					const std::string mname = k ? std::format("{}_{}", base, k) : base;
+					mapfiles::MapInfo info;
+					if (children)
+						info.parent = loader::convert::Joaat(std::format("{}_lod_{}_{}", o.name, block.first, block.second));
+					if (!mapfiles::WriteMap(files, mname, part, map, error, info))
+						return false;
+					WriteFile(o.out / (mname + ".ymap"), map);
+				}
 			}
 		// 6. pedestrians' navmeshes (the sea floor half a metre down and more left out)
 		if (o.navmesh && !navMesh.triangles.empty())

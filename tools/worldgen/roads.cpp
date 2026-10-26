@@ -41,6 +41,13 @@ namespace worldgen::roads
 			       x.kind == y.kind;
 		}
 
+		// a road that is not a street: a driveway, alley or parking lane (service), a track, a path
+		bool Minor(const Edge& e)
+		{
+			return e.kind == "service" || e.kind == "track" || e.kind == "footway" || e.kind == "path" || e.kind == "cycleway" || e.kind == "pedestrian" ||
+			       e.kind == "steps";
+		}
+
 		void Reverse(Edge& e)
 		{
 			std::reverse(e.points.begin(), e.points.end());
@@ -334,17 +341,25 @@ namespace worldgen::roads
 				out.vertices[ed.b].edges.push_back(eMap[e]);
 				out.edges.push_back(std::move(ed));
 			}
-		// traffic signals: at the junction nearest each signal node (within 25 m)
+		// traffic signals: at the junction nearest each signal node (within 25 m; OpenStreetMap puts them at the junction or
+		// on the roads coming in), a junction of three streets or more before one of a street and driveways
 		for (const auto& p : w.points)
 		{
 			if (p.kind != "traffic_signals")
 				continue;
 			int best = -1;
 			float bestD = 25;
+			bool bestStreets = false;
 			for (size_t v = 0; v < out.vertices.size(); ++v)
-				if (out.vertices[v].edges.size() >= 3)
-					if (const float d = Dist(out.vertices[v].p, p.position); d < bestD)
-						bestD = d, best = static_cast<int>(v);
+			{
+				const auto& list = out.vertices[v].edges;
+				if (list.size() < 3)
+					continue;
+				const bool streets = std::count_if(list.begin(), list.end(), [&](int ei) { return !Minor(out.edges[ei]); }) >= 3;
+				const float d = Dist(out.vertices[v].p, p.position);
+				if (d < 25 && ((streets && !bestStreets) || (streets == bestStreets && d < bestD)))
+					bestD = d, best = static_cast<int>(v), bestStreets = streets;
+			}
 			if (best >= 0)
 				out.vertices[best].signals = true;
 		}
@@ -403,18 +418,32 @@ namespace worldgen::roads
 		Builder b{out};
 		const size_t nv = n.vertices.size(), ne = n.edges.size();
 		// 1. what each vertex is: a junction (three roads or more, or a road meeting itself), a change of road (two
-		// roads not alike: the wider narrows to the other), or a dead end
-		enum class Kind : uint8_t { None, End, Change, Junction };
+		// roads not alike: the wider narrows to the other), a street going past driveways or alleys (two streets and minor
+		// roads: the street goes on through, its sidewalks too, as in a real street; the minor roads end at the
+		// sidewalk's outer edge, without crossings, stop lines or signals), or a dead end
+		enum class Kind : uint8_t { None, End, Change, Driveway, Junction };
 		std::vector<Kind> kind(nv, Kind::None);
 		std::vector<float> reach(nv, 0);
+		std::vector<int> streets(nv, 0); // roads at the vertex that are not minor
 		for (size_t v = 0; v < nv; ++v)
 		{
 			const auto& list = n.vertices[v].edges;
 			kind[v] = list.size() >= 3 || (list.size() == 2 && list[0] == list[1]) ? Kind::Junction : list.size() == 2 ? Kind::Change : list.size() == 1 ? Kind::End
 			                                                                                                                                              : Kind::None;
+			std::vector<int> through;
+			for (const int ei : list)
+				if (!Minor(n.edges[ei]))
+					through.push_back(ei);
+			streets[v] = static_cast<int>(through.size());
+			if (kind[v] == Kind::Junction && list.size() >= 3 && through.size() == 2 && through[0] != through[1])
+				kind[v] = Kind::Driveway;
 			for (const int ei : list)
 				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0));
 		}
+		// (an edge's direction leaving vertex v)
+		const auto away = [&](const Edge& e, int v) {
+			return e.a == v ? Dir(e.points[0], e.points[1]) : Dir(e.points.back(), e.points[e.points.size() - 2]);
+		};
 		// 2. junctions joined by a road too short to show between them are one junction (offset crossings, the two
 		// carriageways of a divided road)
 		std::vector<int> cluster(nv);
@@ -461,6 +490,23 @@ namespace worldgen::roads
 			for (const bool atA : {true, false})
 			{
 				const int v = atA ? e.a : e.b;
+				if (kind[v] == Kind::Driveway && Minor(e))
+				{
+					// a driveway or alley: to the outer edge of the street's sidewalk (at its angle to the street)
+					float half = 0, walk = 0;
+					P2 along{1, 0};
+					for (const int s : n.vertices[v].edges)
+						if (!Minor(n.edges[s]))
+						{
+							half = std::max(half, n.edges[s].HalfWidth());
+							walk = std::max(walk, n.edges[s].sidewalks ? kSidewalk : 0.0f);
+							along = away(n.edges[s], v);
+						}
+					const P2 d = away(e, v);
+					const float sine = std::fabs(d[0] * along[1] - d[1] * along[0]);
+					(atA ? trimA : trimB)[ei] = std::min((half + walk) / std::max(0.4f, sine) + 0.05f, 0.45f * total);
+					continue;
+				}
 				if (kind[v] != Kind::Junction)
 					continue;
 				// (from a merged junction's middle: past the whole of it)
@@ -483,10 +529,18 @@ namespace worldgen::roads
 			Next x;
 			const Edge& e = n.edges[ei];
 			const int v = atA ? e.a : e.b;
-			if (kind[v] != Kind::Change)
+			if (kind[v] != Kind::Change && (kind[v] != Kind::Driveway || Minor(e)))
 				return x;
 			const auto& list = n.vertices[v].edges;
-			const int other = list[0] == static_cast<int>(ei) ? list[1] : list[0];
+			int other = -1;
+			if (kind[v] == Kind::Change)
+				other = list[0] == static_cast<int>(ei) ? list[1] : list[0];
+			else
+				for (const int s : list)
+					if (s != static_cast<int>(ei) && !Minor(n.edges[s]))
+						other = s; // (the street going on past the driveway)
+			if (other < 0)
+				return x;
 			const Edge& o = n.edges[other];
 			x.any = true;
 			x.other = other;
@@ -729,11 +783,12 @@ namespace worldgen::roads
 				std::vector<float> lz{qz, qz}, ls{0, o1 - o0};
 				b.Marking(stopLine, lz, ls, std::vector<float>(2, 0.0f), 0.5f, kStripeU0, kStripeU1, 2.0f);
 			};
-			// (crossings where people walk: roads with sidewalks, not service roads)
-			const bool walked = e.sidewalks && e.kind != "service" && e.kind != "track";
-			if (walked && crossB && n.vertices[e.b].edges.size() >= 3)
+			// (crossings where people walk: streets with sidewalks, at junctions of three streets or more - not where a
+			// street meets only driveways, alleys or parking lanes)
+			const bool walked = e.sidewalks && !Minor(e);
+			if (walked && crossB && streets[e.b] >= 3)
 				crossing(true);
-			if (walked && crossA && n.vertices[e.a].edges.size() >= 3)
+			if (walked && crossA && streets[e.a] >= 3)
 				crossing(false);
 			// this edge's ends at junctions
 			for (const bool atA : {true, false})
@@ -879,6 +934,82 @@ namespace worldgen::roads
 				for (P3& q : outerFoot)
 					q[2] -= kKerb + 0.25f;
 				b.Wall(out.kerb, outerFoot, kKerb + 0.25f, false, 0);
+			}
+		}
+		// 5. traffic signals at the signalled junctions: for each road coming in, a mast at the right corner of the far side
+		// (as in the US: the heads hang over the far side of the junction, in the drivers' view from the stop line), its arm
+		// across the lanes; a road with nothing straight across (the stem of a T) has it by its own stop line. Never on the
+		// asphalt (moved out over the sidewalk, or none), one to a corner; the roads inside a merged junction (between the
+		// carriageways of a divided road) have none.
+		{
+			std::vector<bool> signalled(nv, false);
+			for (size_t v = 0; v < nv; ++v)
+				if (n.vertices[v].signals && kind[v] == Kind::Junction)
+					signalled[root(static_cast<int>(v))] = true;
+			// the asphalt's triangles by 8 m cell
+			const Collision& col = out.collision;
+			const auto cellKey = [](int i, int j) { return static_cast<uint64_t>(static_cast<uint32_t>(i)) << 32 | static_cast<uint32_t>(j); };
+			std::unordered_map<uint64_t, std::vector<uint32_t>> cells;
+			for (uint32_t t = 0; t < col.triangles.size(); ++t)
+			{
+				if (col.materials[t] != kTarmac)
+					continue;
+				float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+				for (const uint32_t k : col.triangles[t])
+					x0 = std::min(x0, col.vertices[k][0]), y0 = std::min(y0, col.vertices[k][1]), x1 = std::max(x1, col.vertices[k][0]),
+					y1 = std::max(y1, col.vertices[k][1]);
+				for (int j = static_cast<int>(std::floor(y0 / 8)); j <= static_cast<int>(std::floor(y1 / 8)); ++j)
+					for (int i = static_cast<int>(std::floor(x0 / 8)); i <= static_cast<int>(std::floor(x1 / 8)); ++i)
+						cells[cellKey(i, j)].push_back(t);
+			}
+			const auto onAsphalt = [&](const P2& q) {
+				const auto it = cells.find(cellKey(static_cast<int>(std::floor(q[0] / 8)), static_cast<int>(std::floor(q[1] / 8))));
+				if (it == cells.end())
+					return false;
+				for (const uint32_t t : it->second)
+				{
+					const P3 &a = col.vertices[col.triangles[t][0]], &b = col.vertices[col.triangles[t][1]], &c = col.vertices[col.triangles[t][2]];
+					const auto side = [&](const P3& p0, const P3& p1) { return (p1[0] - p0[0]) * (q[1] - p0[1]) - (p1[1] - p0[1]) * (q[0] - p0[0]); };
+					const float s0 = side(a, b), s1 = side(b, c), s2 = side(c, a);
+					if ((s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0))
+						return true;
+				}
+				return false;
+			};
+			for (size_t v = 0; v < nv; ++v)
+			{
+				if (!signalled[v] || ends[v].size() < 3)
+					continue;
+				std::vector<P2> placed;
+				for (const End& x : ends[v])
+				{
+					const Edge& e = n.edges[x.edge];
+					const int lanesIn = x.atA ? e.backward : e.forward;
+					if (!lanesIn || Minor(e))
+						continue;
+					const P2 d{-x.outward[0], -x.outward[1]}, right{d[1], -d[0]};
+					// the road straight across (within about 35 degrees) that traffic leaves by (of a divided road's two
+					// carriageways, the one going away: the other's right side is the median)
+					const End* y = nullptr;
+					float best = 0.82f;
+					for (const End& o : ends[v])
+					{
+						const Edge& oe = n.edges[o.edge];
+						if (&o != &x && (o.atA ? oe.forward : oe.backward) > 0)
+							if (const float c = o.outward[0] * d[0] + o.outward[1] * d[1]; c > best)
+								best = c, y = &o;
+					}
+					// on its sidewalk a little in from the kerb, just past its crossing; or by this road's stop line
+					const End& at = y ? *y : x;
+					const float along = y ? 1.0f : 4.6f, off = at.half + (at.walk > 0 ? std::min(0.9f, at.walk * 0.35f) : 1.0f);
+					P2 q{at.at[0] + at.outward[0] * along + right[0] * off, at.at[1] + at.outward[1] * along + right[1] * off};
+					for (int k = 0; k < 8 && onAsphalt(q); ++k)
+						q = {q[0] + right[0] * 0.5f, q[1] + right[1] * 0.5f};
+					if (onAsphalt(q) || std::any_of(placed.begin(), placed.end(), [&](const P2& p) { return Dist(p, q) < 3; }))
+						continue;
+					placed.push_back(q);
+					out.signals.push_back({{q[0], q[1], at.z + kKerb}, std::atan2(-d[0], d[1]), lanesIn * e.laneWidth + off - at.half});
+				}
 			}
 		}
 	}

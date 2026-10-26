@@ -54,7 +54,7 @@ namespace worldgen::props
 		}
 	}
 
-	void Place(const world::World& w, const roads::Network& n, const std::function<bool(float, float)>& open,
+	void Place(const world::World& w, const roads::Network& n, const std::vector<roads::Signal>& signals, const std::function<bool(float, float)>& open,
 	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<Prop>& out, bool palms)
 	{
 		// palms of a few sizes (Miami's mix: mostly fan palms, some tall ones)
@@ -116,35 +116,11 @@ namespace worldgen::props
 						addPalm(q[0], q[1], z + roads::kKerb + 0.2f);
 				}
 		}
-		// traffic signal masts: at a signalled junction, at the right of each road coming in, the arm (the model's -x)
-		// across its lanes
-		for (const auto& v : n.vertices)
-		{
-			if (!v.signals || !In(box, v.p[0], v.p[1]))
-				continue;
-			for (const int ei : v.edges)
-			{
-				const roads::Edge& e = n.edges[ei];
-				const bool atB = &n.vertices[e.b] == &v;
-				const int lanesIn = atB ? e.forward : e.backward;
-				if (!lanesIn || e.points.size() < 2)
-					continue;
-				// the incoming direction near the junction, and the stop line's distance back from it
-				const P2& a = atB ? e.points[e.points.size() - 2] : e.points[1];
-				const P2& b = atB ? e.points.back() : e.points.front();
-				const float l = std::hypot(b[0] - a[0], b[1] - a[1]);
-				if (l < 1)
-					continue;
-				const P2 d{(b[0] - a[0]) / l, (b[1] - a[1]) / l};
-				float reach = 0;
-				for (const int ej : v.edges)
-					reach = std::max(reach, n.edges[ej].HalfWidth() + (n.edges[ej].sidewalks ? roads::kSidewalk : 0));
-				const float back = std::min(reach * 1.15f + 0.5f, l * 0.9f);
-				const P2 right{d[1], -d[0]};
-				const float o = e.HalfWidth() + 1.0f;
-				const P2 q{b[0] - d[0] * back + right[0] * o, b[1] - d[1] * back + right[1] * o};
-				out.push_back({signal, {q[0], q[1], v.z + roads::kKerb}, std::atan2(-d[0], d[1]), 300});
-			}
-		}
+		// traffic signal masts where the junctions' geometry put them (roads::Geometry): the long arm (9.8 m) where the lanes
+		// coming in are wider than the short one (5 m) reaches
+		const uint32_t longSignal = loader::convert::Joaat("prop_traffic_01b");
+		for (const roads::Signal& s : signals)
+			if (In(box, s.p[0], s.p[1]))
+				out.push_back({s.reach > 5.5f ? longSignal : signal, s.p, s.heading, 300});
 	}
 }

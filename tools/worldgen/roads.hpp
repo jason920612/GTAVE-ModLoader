@@ -64,12 +64,23 @@ namespace worldgen::roads
 		std::vector<uint8_t> materials; // per triangle: a row of materials.dat
 	};
 
+	// A traffic signal mast at a signalled junction: where it stands (on the sidewalk), its heading (radians: the model's
+	// x axis from east, anticlockwise; its arm, the model's -x, reaches left across the lanes, the heads facing the traffic
+	// coming in) and how far the arm has to reach (m).
+	struct Signal
+	{
+		P3 p{};
+		float heading = 0;
+		float reach = 0;
+	};
+
 	struct Surfaces
 	{
 		Mesh asphalt, sidewalk, kerb, markings;
 		Collision collision;
 		// the ground under the roads: footprints (asphalt and sidewalks) for lowering the terrain below them
 		std::vector<std::array<P3, 3>> footprint;
+		std::vector<Signal> signals;
 	};
 
 	constexpr float kSidewalk = 2.6f, kKerb = 0.15f;

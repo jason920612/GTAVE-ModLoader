@@ -1033,6 +1033,63 @@ int main(int argc, char** argv)
 		    triangles, back.triangles.size(), worst, file.size());
 		return 0;
 	}
+	if (command == "hash-find")
+	{
+		// the game's files whose name (without the extension) has one of these hashes: --hash 0x...,0x...
+		std::set<uint32_t> wanted;
+		std::istringstream list(g_options["hash"]);
+		for (std::string h; std::getline(list, h, ',');)
+			wanted.insert(static_cast<uint32_t>(std::stoul(h, nullptr, 16)));
+		for (const auto& [name, f] : files.Files())
+		{
+			const auto slash = name.find_last_of('/');
+			std::string stem = name.substr(slash == std::string::npos ? 0 : slash + 1);
+			if (const auto dot = stem.find('.'); dot != std::string::npos)
+				stem.resize(dot);
+			if (wanted.contains(loader::convert::Joaat(stem)))
+				std::printf("%08x %s\n", loader::convert::Joaat(stem), name.c_str());
+		}
+		return 0;
+	}
+	if (command == "ydr-stats")
+	{
+		// a model file on disk (ours, for checking): each section's vertices, heights and vertex colours: --file <file.ydr>
+		std::ifstream in(g_options["file"], std::ios::binary);
+		Bytes data((std::istreambuf_iterator<char>(in)), {});
+		loader::convert::Resource res;
+		if (data.empty() || !loader::convert::Read(data, res, error))
+			return Fail("cannot read " + g_options["file"] + ": " + error);
+		const ue5export::drawable::View view(res);
+		ue5export::drawable::Model model;
+		if (!ue5export::drawable::Read(view, ue5export::drawable::View::kRoot, model, error))
+			return Fail(error);
+		for (const auto& m : model.materials)
+			std::printf("material effect %08x, %zu textures, bucket %u\n", m.effect, m.textures.size(), m.drawBucket);
+		for (const auto& s : model.sections)
+		{
+			float zMin = 1e9f, zMax = -1e9f;
+			for (size_t v = 0; v < s.vertices; ++v)
+				zMin = std::min(zMin, s.position[v * 3 + 2]), zMax = std::max(zMax, s.position[v * 3 + 2]);
+			std::printf("section: material %u, %u vertices, %zu triangles, z %.2f..%.2f\n", s.material, s.vertices, s.indices.size() / 3, zMin, zMax);
+			for (const auto* colours : {&s.color0, &s.color1})
+			{
+				if (colours->size() < static_cast<size_t>(s.vertices) * 4)
+					continue;
+				for (int c = 0; c < 4; ++c)
+				{
+					int lo = 255, hi = 0;
+					double sum = 0;
+					for (size_t v = 0; v < s.vertices; ++v)
+					{
+						const int x = (*colours)[v * 4 + c];
+						lo = std::min(lo, x), hi = std::max(hi, x), sum += x;
+					}
+					std::printf("  colour%d %c: %d..%d, mean %.1f\n", colours == &s.color0 ? 0 : 1, "RGBA"[c], lo, hi, sum / s.vertices);
+				}
+			}
+		}
+		return 0;
+	}
 	if (command == "material-dump")
 	{
 		// a game model's shader as worldgen reads it for its own models: --model <file.ydr> --index <n>
