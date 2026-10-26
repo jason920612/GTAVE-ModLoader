@@ -21,8 +21,9 @@ namespace worldgen::trees
 		    {"prop_palm_sm_01f", 15.9f, 8.5f}, {"prop_palm_fan_04_c", 19.5f, 5.7f}, {"prop_palm_sm_01e", 19.6f, 10.1f}, {"prop_palm_fan_03_c", 21.5f, 6.7f},
 		    {"prop_palm_fan_04_d", 25.1f, 6.2f}, {"prop_palm_med_01a", 27.7f, 13.6f}, {"prop_palm_med_01b", 28.0f, 10.9f}};
 		// broadleaf trees (figs first: the commonest shade trees there)
+		// (no jacarandas: their purple flowers are rare there)
 		constexpr Model kBroadleaf[] = {{"prop_tree_mquite_01", 5.2f, 5.6f}, {"prop_tree_maple_02", 8.2f, 9.8f}, {"prop_tree_lficus_03", 9.4f, 8.1f},
-		    {"prop_tree_jacada_02", 11.2f, 11.0f}, {"prop_tree_jacada_01", 14.3f, 14.2f}, {"prop_tree_lficus_05", 14.7f, 15.2f},
+		    {"prop_tree_lficus_05", 14.7f, 15.2f},
 		    {"prop_tree_lficus_06", 15.5f, 13.9f}, {"prop_tree_lficus_02", 16.6f, 19.4f}, {"prop_tree_olive_01", 17.2f, 17.8f},
 		    {"prop_tree_eng_oak_01", 17.5f, 15.9f}, {"prop_tree_oak_01", 23.4f, 29.7f}};
 		constexpr Model kBushes[] = {{"prop_bush_med_06", 2.0f, 3.1f}, {"prop_bush_med_03", 2.5f, 3.1f}, {"prop_bush_lrg_01", 2.6f, 6.1f},

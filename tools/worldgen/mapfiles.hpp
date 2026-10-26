@@ -25,7 +25,9 @@ namespace worldgen::mapfiles
 	};
 
 	// An entity: rotation as the entity is turned (the file stores its inverse), lodLevel 5 = an HD entity with no
-	// LOD parent.
+	// LOD parent. In a LOD hierarchy (as the game's maps: sm_14_strm_0 -> sm_14 -> sm_lod) an HD entity (lodLevel 0)
+	// names its LOD by the index among the parent map's entities; the LOD (lodLevel 1) counts its children and is
+	// swapped for them within childLodDist.
 	struct Entity
 	{
 		uint32_t archetype = 0;
@@ -34,7 +36,16 @@ namespace worldgen::mapfiles
 		float scaleXY = 1, scaleZ = 1, lodDist = 500;
 		uint32_t flags = 0, lodLevel = 5;
 		int32_t parentIndex = -1;
+		uint32_t numChildren = 0;
+		float childLodDist = 0;
 		float radius = 0; // how far it reaches from its position (for the map's boxes)
+	};
+
+	// A map file's own fields: its parent map (the one holding its entities' LODs), flags (2: a LOD map) and content
+	// (1 HD, 2 LOD, 0x40 collision...).
+	struct MapInfo
+	{
+		uint32_t parent = 0, flags = 0, contentFlags = 0x41;
 	};
 
 	// One of the game's archetypes by name (every archetype file is searched).
@@ -43,5 +54,5 @@ namespace worldgen::mapfiles
 	bool WriteTypes(const ue5export::GameFiles& files, const std::string& name, const std::vector<Archetype>& archetypes, loader::convert::Bytes& out,
 	    std::string& error);
 	bool WriteMap(const ue5export::GameFiles& files, const std::string& name, const std::vector<Entity>& entities, loader::convert::Bytes& out,
-	    std::string& error);
+	    std::string& error, const MapInfo& info = {});
 }

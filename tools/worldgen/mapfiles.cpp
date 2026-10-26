@@ -165,7 +165,8 @@ namespace worldgen::mapfiles
 		return w.Write(w.AddBlock(meta::Hash("CMapTypes"), std::move(root.data)), out, error);
 	}
 
-	bool WriteMap(const ue5export::GameFiles& files, const std::string& name, const std::vector<Entity>& entities, Bytes& out, std::string& error)
+	bool WriteMap(const ue5export::GameFiles& files, const std::string& name, const std::vector<Entity>& entities, Bytes& out, std::string& error,
+	    const MapInfo& info)
 	{
 		meta::Writer w;
 		if (!Template(files, "cs1_10_strm_0.ymap", w, error))
@@ -189,8 +190,9 @@ namespace worldgen::mapfiles
 			f.Set<float>("scaleZ", e.scaleZ);
 			f.Set<int32_t>("parentIndex", e.parentIndex);
 			f.Set<float>("lodDist", e.lodDist);
-			f.Set<float>("childLodDist", 0);
+			f.Set<float>("childLodDist", e.childLodDist);
 			f.Set<uint32_t>("lodLevel", e.lodLevel);
+			f.Set<uint32_t>("numChildren", e.numChildren);
 			f.Set<uint32_t>("ambientOcclusionMultiplier", 255);
 			f.Set<uint32_t>("artificialAmbientOcclusion", 255);
 			for (int a = 0; a < 3; ++a)
@@ -205,9 +207,9 @@ namespace worldgen::mapfiles
 			return false;
 		Fields root(w, "CMapData");
 		root.Set<uint32_t>("name", mapHash);
-		root.Set<uint32_t>("parent", 0);
-		root.Set<uint32_t>("flags", 0);
-		root.Set<uint32_t>("contentFlags", 0x41); // HD entities, with collision
+		root.Set<uint32_t>("parent", info.parent);
+		root.Set<uint32_t>("flags", info.flags);
+		root.Set<uint32_t>("contentFlags", info.contentFlags);
 		root.Vec("streamingExtentsMin", streamLo);
 		root.Vec("streamingExtentsMax", streamHi);
 		root.Vec("entitiesExtentsMin", lo);

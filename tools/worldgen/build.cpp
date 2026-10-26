@@ -1,6 +1,7 @@
 #include "build.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <format>
 #include <fstream>
@@ -8,6 +9,7 @@
 #include <map>
 #include <set>
 
+#include "../ue5export/drawable.hpp"
 #include "bounds.hpp"
 #include "buildings.hpp"
 #include "convert/pso.hpp"
@@ -100,6 +102,42 @@ namespace worldgen::build
 				}
 			}
 			return out;
+		}
+
+		// A texture of the game's (its pixels as stored: format, mips) under a new name, for a dictionary of our own.
+		bool CopyTexture(const ue5export::GameFiles& files, const std::string& dictionary, const std::string& texture, const std::string& name,
+		    loader::convert::DictionaryTexture& out, std::string& error)
+		{
+			Bytes data;
+			loader::convert::Resource res;
+			const auto* f = files.Find(dictionary);
+			if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
+				return error = "cannot read " + dictionary + ": " + error, false;
+			for (const auto& t : ue5export::drawable::Textures(ue5export::drawable::View(res), ue5export::drawable::View::kRoot))
+			{
+				std::string lower = t.name;
+				std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (lower != texture)
+					continue;
+				const bool small = t.dxgi == 71 || t.dxgi == 72 || t.dxgi == 80 || t.dxgi == 81;
+				out = {};
+				out.name = name;
+				out.width = t.width, out.height = t.height, out.depth = 1, out.mips = t.mips;
+				out.format = {t.dxgi, small ? 8u : 16u, true};
+				out.pixels.assign(t.data.begin(), t.data.end());
+				out.map = true;
+				return true;
+			}
+			return error = texture + " is not in " + dictionary, false;
+		}
+
+		// The name of the game's texture dictionary with this hash (its file's).
+		std::string DictionaryName(const ue5export::GameFiles& files, uint32_t hash)
+		{
+			for (const auto& [name, f] : files.Files())
+				if (name.ends_with(".ytd") && loader::convert::Joaat(name.substr(0, name.size() - 4)) == hash)
+					return name.substr(0, name.size() - 4);
+			return {};
 		}
 
 		// The parameters of the game's map shaders as their files name them.
@@ -414,6 +452,37 @@ namespace worldgen::build
 		roads::Surfaces surfaces;
 		roads::Geometry(network, surfaces);
 		stats.roadEdges = network.edges.size();
+		if (!o.roadsObj.empty())
+		{
+			// (the surfaces' triangles in the work box, a group each)
+			std::ofstream obj(o.roadsObj);
+			size_t next = 1;
+			for (const auto& [group, mesh] : {std::pair<const char*, const roads::Mesh*>{"asphalt", &surfaces.asphalt}, {"sidewalk", &surfaces.sidewalk},
+			         {"kerb", &surfaces.kerb}, {"markings", &surfaces.markings}})
+			{
+				obj << "g " << group << "\n";
+				std::vector<int> index(mesh->vertices.size(), -1);
+				for (size_t t = 0; t + 2 < mesh->indices.size(); t += 3)
+				{
+					const auto& a = mesh->vertices[mesh->indices[t]].position;
+					if (a[0] < bx0 || a[0] > bx1 || a[1] < by0 || a[1] > by1)
+						continue;
+					std::string face = "f";
+					for (int k = 0; k < 3; ++k)
+					{
+						const uint32_t i = mesh->indices[t + k];
+						if (index[i] < 0)
+						{
+							const auto& v = mesh->vertices[i];
+							obj << std::format("v {:.2f} {:.2f} {:.2f} {:.3f} {:.3f}\n", v.position[0], v.position[2], -v.position[1], v.uv[0][0], v.uv[0][1]);
+							index[i] = static_cast<int>(next++);
+						}
+						face += " " + std::to_string(index[i]);
+					}
+					obj << face << "\n";
+				}
+			}
+		}
 		// the ground under them: lowered below their surfaces (a grid of the lowest road surface over each cell)
 		raster::Grid<float> floor;
 		floor.x0 = land.x0, floor.y0 = land.y0, floor.cell = land.cell, floor.nx = land.nx, floor.ny = land.ny;
@@ -556,6 +625,25 @@ namespace worldgen::build
 		const bool pictured = !shapes.empty() && !o.aerial.empty() && aerial.Open(o.aerial);
 		const std::string facadeDictionary = o.name + "_facades";
 		std::vector<std::pair<std::string, std::string>> parents; // child dictionary, parent
+		// the roads' asphalt: a plain one of the game's (the road model's own has a lane line painted in: across our roads
+		// and junctions it drew white dashes everywhere), a flat normal map and an even shine; in our dictionary, whose
+		// parent is the road model's (its kerb, sidewalk and marking textures)
+		std::vector<loader::convert::DictionaryTexture> shared;
+		{
+			loader::convert::DictionaryTexture t;
+			if (!CopyTexture(files, "ch2_roadsa_roads+hi.ytd", "im_road_008_new", o.name + "_asphalt", t, error))
+				return false;
+			shared.push_back(std::move(t));
+			shared.push_back(texture::Make(o.name + "_flat_n", texture::Image(4, 4, {128, 128, 255, 255}), texture::Format::Bc1));
+			shared.push_back(texture::Make(o.name + "_asphalt_s", texture::Image(4, 4, {48, 48, 48, 255}), texture::Format::Bc1));
+			asphalt.Texture(kDiffuseTex, o.name + "_asphalt");
+			asphalt.Texture(kBumpTex, o.name + "_flat_n");
+			asphalt.Texture(kSpecularTex, o.name + "_asphalt_s");
+			const std::string roadDictionary = DictionaryName(files, roadTypes.textureDictionary);
+			if (roadDictionary.empty())
+				return error = "the road model's texture dictionary has no file", false;
+			parents.push_back({facadeDictionary, roadDictionary});
+		}
 		if (!shapes.empty())
 		{
 			ydr::Material wallTemplate;
@@ -569,12 +657,15 @@ namespace worldgen::build
 				m.Texture(kSpecularTex, style.specular);
 				wallMaterials.push_back(m);
 			}
-			Bytes txd;
-			if (!loader::convert::WriteTextureDictionary(facadeSet.textures, txd, error))
-				return error = facadeDictionary + ": " + error, false;
-			WriteFile(o.out / (facadeDictionary + ".ytd"), txd);
+			shared.insert(shared.end(), facadeSet.textures.begin(), facadeSet.textures.end());
 			if (!o.aerial.empty() && !pictured)
 				std::printf("warning: no aerial pictures in %s (roofs get the gravel texture)\n", o.aerial.string().c_str());
+		}
+		{
+			Bytes txd;
+			if (!loader::convert::WriteTextureDictionary(shared, txd, error))
+				return error = facadeDictionary + ": " + error, false;
+			WriteFile(o.out / (facadeDictionary + ".ytd"), txd);
 		}
 		const int gravelStyle = shapes.empty() ? 0 : facades::Find(facadeSet, facades::Kind::Roof);
 		const int per = std::max(1, static_cast<int>(std::lround(o.tile / o.cell)));
@@ -582,6 +673,7 @@ namespace worldgen::build
 		const int ti1 = static_cast<int>(std::ceil((bx1 - w.min[0]) / o.tile)), tj1 = static_cast<int>(std::ceil((by1 - w.min[1]) / o.tile));
 		std::vector<mapfiles::Archetype> archetypes;
 		std::map<std::pair<int, int>, std::vector<mapfiles::Entity>> blocks; // 1 km blocks of entities
+		std::map<std::pair<int, int>, std::vector<mapfiles::Entity>> lodBlocks; // their LOD maps' (the buildings' LODs)
 		bounds::Mesh navMesh;
 		std::vector<navgen::Surface> navSurfaces;
 		for (int tj = tj0; tj < tj1; ++tj)
@@ -754,6 +846,7 @@ namespace worldgen::build
 					{
 						const std::string bname = std::format("{}_b_{}_{}", o.name, ti, tj);
 						std::string txd = facadeDictionary;
+						texture::Image lodRoof;
 						if (meshes.contains(aerialKey))
 						{
 							// the tile's roof picture
@@ -774,6 +867,17 @@ namespace worldgen::build
 								}
 							if (any)
 							{
+								// (the LOD's: a quarter of the size)
+								lodRoof = texture::Image(img.width / 4, img.height / 4);
+								for (int y = 0; y < lodRoof.height; ++y)
+									for (int x = 0; x < lodRoof.width; ++x)
+										for (int ch = 0; ch < 4; ++ch)
+										{
+											int sum = 0;
+											for (int k = 0; k < 16; ++k)
+												sum += img.At(x * 4 + (k & 3), y * 4 + (k >> 2))[ch];
+											lodRoof.At(x, y)[ch] = static_cast<uint8_t>(sum / 16);
+										}
 								txd = std::format("{}_rt_{}_{}", o.name, ti, tj);
 								Bytes ytd;
 								if (!loader::convert::WriteTextureDictionary({texture::Make(std::format("{}_roof_{}_{}", o.name, ti, tj), img, texture::Format::Bc1)}, ytd, error))
@@ -817,8 +921,9 @@ namespace worldgen::build
 						mapfiles::Archetype ba;
 						ba.name = bname;
 						ba.textureDictionary = loader::convert::Joaat(txd);
-						// (tall buildings seen from far: the skyline)
-						ba.lodDist = std::clamp(tallest * 30, 600.0f, 3000.0f);
+						// (near: the full model; past it its LOD - one material, small pictures - out to the skyline's
+						// distance, as the game's own maps do: the HD entity names its LOD in the block's LOD map)
+						ba.lodDist = std::clamp(300 + tallest * 6, 300.0f, 900.0f);
 						ba.hdTextureDist = 300;
 						ydr::Box(bd, ba.min, ba.max);
 						archetypes.push_back(ba);
@@ -827,6 +932,83 @@ namespace worldgen::build
 						be.position = {cx, cy, 0};
 						be.lodDist = ba.lodDist;
 						be.radius = std::hypot(ba.max[0] - ba.min[0], ba.max[1] - ba.min[1], ba.max[2] - ba.min[2]) / 2;
+						{
+							// the LOD model: the same walls (their textures are the shared dictionary's, there already), the roofs'
+							// picture a quarter of the size, small sheds left out
+							std::map<uint32_t, roads::Mesh> lodMeshes;
+							std::vector<P3> unusedV;
+							std::vector<std::array<uint32_t, 3>> unusedT;
+							for (size_t k = 0; k < shapes.size(); ++k)
+							{
+								const P2& c = shapeCentre[k];
+								if (c[0] < x0 || c[0] >= x1 || c[1] < y0 || c[1] >= y1)
+									continue;
+								const auto& s = shapes[k];
+								double area = 0;
+								for (const auto& t : s.roof)
+								{
+									const auto& a = s.vertices[t[0]];
+									const auto& b2 = s.vertices[t[1]];
+									const auto& c2 = s.vertices[t[2]];
+									area += ((b2[0] - a[0]) * (c2[1] - a[1]) - (b2[1] - a[1]) * (c2[0] - a[0])) / 2;
+								}
+								if (area < 40 && s.top < 6)
+									continue;
+								const bool fromPicture = lodRoof.width > 0 && s.top < 25;
+								AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
+								    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), lodMeshes, unusedV, unusedT);
+							}
+							const std::string lname = std::format("{}_bl_{}_{}", o.name, ti, tj);
+							ydr::Drawable ld;
+							ld.name = lname;
+							std::string ltxd = facadeDictionary;
+							for (const auto& [key, mesh] : lodMeshes)
+							{
+								if (mesh.indices.empty())
+									continue;
+								if (key == aerialKey)
+								{
+									ltxd = std::format("{}_rl_{}_{}", o.name, ti, tj);
+									const std::string rname2 = std::format("{}_roofl_{}_{}", o.name, ti, tj);
+									Bytes ytd;
+									if (!loader::convert::WriteTextureDictionary({texture::Make(rname2, lodRoof, texture::Format::Bc1)}, ytd, error))
+										return error = ltxd + ": " + error, false;
+									WriteFile(o.out / (ltxd + ".ytd"), ytd);
+									parents.push_back({ltxd, facadeDictionary});
+									ydr::Material m = roofMaterial;
+									m.Texture(kDiffuseTex, rname2);
+									ld.materials.push_back(m);
+								}
+								else
+									ld.materials.push_back(wallMaterials[key]);
+								AddMeshes(ld, static_cast<uint32_t>(ld.materials.size() - 1), mesh);
+							}
+							if (!ld.materials.empty())
+							{
+								if (!ydr::Write(ld, file, error))
+									return error = lname + ": " + error, false;
+								WriteFile(o.out / (lname + ".ydr"), file);
+								mapfiles::Archetype la;
+								la.name = lname;
+								la.textureDictionary = loader::convert::Joaat(ltxd);
+								la.lodDist = std::clamp(1500 + tallest * 40, 1500.0f, 6000.0f);
+								la.hdTextureDist = 0;
+								ydr::Box(ld, la.min, la.max);
+								archetypes.push_back(la);
+								mapfiles::Entity le;
+								le.archetype = loader::convert::Joaat(lname);
+								le.position = {cx, cy, 0};
+								le.lodDist = la.lodDist;
+								le.lodLevel = 1;
+								le.numChildren = 1;
+								le.childLodDist = be.lodDist;
+								le.radius = be.radius;
+								auto& lods = lodBlocks[{bi, bj}];
+								be.lodLevel = 0;
+								be.parentIndex = static_cast<int32_t>(lods.size());
+								lods.push_back(le);
+							}
+						}
 						blocks[{bi, bj}].push_back(be);
 						stats.generatedTiles += 1;
 						// collision (concrete), in parts of at most 1000 triangles
@@ -918,7 +1100,7 @@ namespace worldgen::build
 					WriteFile(o.out / (rname + ".ydr"), file);
 					mapfiles::Archetype ra;
 					ra.name = rname;
-					ra.textureDictionary = roadTypes.textureDictionary;
+					ra.textureDictionary = loader::convert::Joaat(facadeDictionary);
 					ra.lodDist = 1200;
 					ydr::Box(rd, ra.min, ra.max);
 					archetypes.push_back(ra);
@@ -972,6 +1154,17 @@ namespace worldgen::build
 				return false;
 			WriteFile(o.out / (tname + ".ytyp"), types);
 		}
+		// (a block's LOD map: one file - its entities are the HD maps' parents by index)
+		for (const auto& [block, entities] : lodBlocks)
+		{
+			if (entities.size() > 0xFFFF)
+				return error = "a block's LOD map is too big", false;
+			Bytes map;
+			const std::string mname = std::format("{}_lod_{}_{}", o.name, block.first, block.second);
+			if (!mapfiles::WriteMap(files, mname, entities, map, error, {0, 2, 2}))
+				return false;
+			WriteFile(o.out / (mname + ".ymap"), map);
+		}
 		for (const auto& [block, entities] : blocks)
 			for (size_t first = 0, k = 0; first < entities.size(); first += kPerFile, ++k)
 			{
@@ -979,7 +1172,10 @@ namespace worldgen::build
 				    entities.begin() + static_cast<ptrdiff_t>(std::min(entities.size(), first + kPerFile)));
 				Bytes map;
 				const std::string mname = k ? std::format("{}_{}_{}_{}", o.name, block.first, block.second, k) : std::format("{}_{}_{}", o.name, block.first, block.second);
-				if (!mapfiles::WriteMap(files, mname, part, map, error))
+				mapfiles::MapInfo info;
+				if (lodBlocks.contains(block))
+					info.parent = loader::convert::Joaat(std::format("{}_lod_{}_{}", o.name, block.first, block.second));
+				if (!mapfiles::WriteMap(files, mname, part, map, error, info))
 					return false;
 				WriteFile(o.out / (mname + ".ymap"), map);
 			}

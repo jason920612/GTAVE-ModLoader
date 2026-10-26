@@ -230,7 +230,11 @@ namespace worldgen::world
 				if (oneway == "-1")
 					std::reverse(r.points.begin(), r.points.end());
 				const int lanes = static_cast<int>(Number(Tag(t, "lanes")));
-				const int defaultLanes = base == "motorway" ? (one ? 3 : 6) : base == "trunk" || base == "primary" ? (one ? 2 : 4) : link ? 1 : 2;
+				// (untagged: a one-way street of the small kinds has one lane, as most have)
+				const int defaultLanes = base == "motorway" ? (one ? 3 : 6) : base == "trunk" || base == "primary" ? (one ? 2 : 4) : link ? 1
+				                         : one && (base == "residential" || base == "service" || base == "unclassified" || base == "living_street" || base == "road")
+				                             ? 1
+				                             : 2;
 				const int total = lanes > 0 ? lanes : defaultLanes;
 				if (one)
 					r.forward = std::max(1, total), r.backward = 0;

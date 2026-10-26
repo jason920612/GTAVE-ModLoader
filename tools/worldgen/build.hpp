@@ -29,6 +29,7 @@ namespace worldgen::build
 		std::filesystem::path aerial;   // aerial pictures (tools/worldgen/aerial.py): the roofs' textures
 		float datum = 0.6f;             // added to the scan's heights (NAVD88; the game's sea is at 0)
 		int roofTexture = 1024;         // a tile's roof picture (pixels a side)
+		std::filesystem::path roadsObj; // the roads' surfaces in the work box as an OBJ file (for checking)
 		bool buildings = true, navmesh = true, paths = true;
 	};
 

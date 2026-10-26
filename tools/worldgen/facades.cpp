@@ -187,6 +187,12 @@ namespace worldgen::facades
 			Canvas c(size, size, w, h);
 			draw(c);
 			Finish(c, s.diffuse, first ? s.normal : std::string(), s.specular, detail, bump, set.textures);
+			Rgb mean{};
+			for (const Rgb& p : c.albedo)
+				for (int k = 0; k < 3; ++k)
+					mean[k] += p[k] / static_cast<float>(c.albedo.size());
+			for (int k = 0; k < 3; ++k)
+				s.average[k] = static_cast<uint8_t>(std::clamp(mean[k], 0.0f, 255.0f));
 			set.styles.push_back(s);
 		};
 		uint32_t seed = 1;
@@ -332,7 +338,24 @@ namespace worldgen::facades
 						c.albedo[i] = Mix(c.albedo[i], {214, 214, 210}, 0.7f);
 				}
 		}, true, 3);
+		// the palette for the LOD models' walls
+		set.palette = prefix + "lod";
+		texture::Image pal(128, 8 * static_cast<int>((set.styles.size() + 15) / 16));
+		for (size_t k = 0; k < set.styles.size(); ++k)
+			for (int y = 0; y < 8; ++y)
+				for (int x = 0; x < 8; ++x)
+				{
+					const auto& a = set.styles[k].average;
+					pal.At(static_cast<int>(k % 16) * 8 + x, static_cast<int>(k / 16) * 8 + y) = {a[0], a[1], a[2], 255};
+				}
+		set.textures.push_back(texture::Make(set.palette, pal, texture::Format::Bgra));
 		return set;
+	}
+
+	std::array<float, 2> Set::PaletteUv(size_t style) const
+	{
+		const float rows = static_cast<float>((styles.size() + 15) / 16);
+		return {(static_cast<float>(style % 16) * 8 + 4) / 128.0f, (static_cast<float>(style / 16) * 8 + 4) / (8 * rows)};
 	}
 
 	int Find(const Set& set, Kind kind)

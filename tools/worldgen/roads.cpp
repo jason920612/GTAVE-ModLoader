@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "convert/resource.hpp"
+#include "polygon.hpp"
 
 namespace worldgen::roads
 {
@@ -190,10 +191,11 @@ namespace worldgen::roads
 						Collide(centre, ring[i], ring[j], material, ground);
 				}
 			}
-			// A marking ribbon along a polyline at offset `o` (left positive), `width` wide, from the atlas column u0..u1
-			// repeating every `repeat` metres along v; dashed: `dash` metres every `period`.
-			void Marking(const std::vector<P2>& p, const std::vector<float>& z, const std::vector<float>& sAlong, float o, float width, float u0, float u1,
-			    float repeat, float dash = 0, float period = 0, float v0 = 0, float v1 = 1)
+			// A marking ribbon along a polyline at offset `o` (per point, left positive), `width` wide, from the atlas
+			// column u0..u1 repeating every `repeat` metres along v; dashed: `dash` metres every `period`; only between
+			// distances `from` and `to` along it.
+			void Marking(const std::vector<P2>& p, const std::vector<float>& z, const std::vector<float>& sAlong, const std::vector<float>& o, float width,
+			    float u0, float u1, float repeat, float dash = 0, float period = 0, float v0 = 0, float v1 = 1, float from = -1e30f, float to = 1e30f)
 			{
 				std::vector<float> scale;
 				const auto n = Normals(p, scale);
@@ -206,10 +208,13 @@ namespace worldgen::roads
 					const P2 q{p[i][0] + (p[i + 1][0] - p[i][0]) * t, p[i][1] + (p[i + 1][1] - p[i][1]) * t};
 					const P2 nn = Dir({0, 0}, {n[i][0] + (n[i + 1][0] - n[i][0]) * t, n[i][1] + (n[i + 1][1] - n[i][1]) * t});
 					const float qz = z[i] + (z[i + 1] - z[i]) * t + 0.03f;
-					l = {q[0] + nn[0] * (o + width / 2), q[1] + nn[1] * (o + width / 2), qz};
-					r = {q[0] + nn[0] * (o - width / 2), q[1] + nn[1] * (o - width / 2), qz};
+					const float oo = o[i] + (o[i + 1] - o[i]) * t;
+					l = {q[0] + nn[0] * (oo + width / 2), q[1] + nn[1] * (oo + width / 2), qz};
+					r = {q[0] + nn[0] * (oo - width / 2), q[1] + nn[1] * (oo - width / 2), qz};
 				};
-				const float s0 = sAlong.front(), s1 = sAlong.back();
+				const float s0 = std::max(sAlong.front(), from), s1 = std::min(sAlong.back(), to);
+				if (s1 - s0 < 0.05f)
+					return;
 				const std::array<uint8_t, 4> colour{255, 253, 0, 255};
 				const P3 up{0, 0, 1};
 				Mesh& m = surfaces.markings;
@@ -396,66 +401,235 @@ namespace worldgen::roads
 	void Geometry(const Network& n, Surfaces& out)
 	{
 		Builder b{out};
-		// how far each edge stops short of its junctions
-		std::vector<float> trimA(n.edges.size(), 0), trimB(n.edges.size(), 0);
-		std::vector<bool> junction(n.vertices.size());
-		for (size_t v = 0; v < n.vertices.size(); ++v)
+		const size_t nv = n.vertices.size(), ne = n.edges.size();
+		// 1. what each vertex is: a junction (three roads or more, or a road meeting itself), a change of road (two
+		// roads not alike: the wider narrows to the other), or a dead end
+		enum class Kind : uint8_t { None, End, Change, Junction };
+		std::vector<Kind> kind(nv, Kind::None);
+		std::vector<float> reach(nv, 0);
+		for (size_t v = 0; v < nv; ++v)
 		{
 			const auto& list = n.vertices[v].edges;
-			junction[v] = list.size() >= 3 || (list.size() == 2 && (list[0] == list[1] || !Alike(n.edges[list[0]], n.edges[list[1]]) ||
-			                                                          n.edges[list[0]].HalfWidth() != n.edges[list[1]].HalfWidth()));
-			if (!junction[v])
+			kind[v] = list.size() >= 3 || (list.size() == 2 && list[0] == list[1]) ? Kind::Junction : list.size() == 2 ? Kind::Change : list.size() == 1 ? Kind::End
+			                                                                                                                                              : Kind::None;
+			for (const int ei : list)
+				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0));
+		}
+		// 2. junctions joined by a road too short to show between them are one junction (offset crossings, the two
+		// carriageways of a divided road)
+		std::vector<int> cluster(nv);
+		for (size_t v = 0; v < nv; ++v)
+			cluster[v] = static_cast<int>(v);
+		const auto root = [&](int v) {
+			while (cluster[v] != v)
+				v = cluster[v] = cluster[cluster[v]];
+			return v;
+		};
+		std::vector<bool> inside(ne, false);
+		for (size_t ei = 0; ei < ne; ++ei)
+		{
+			const Edge& e = n.edges[ei];
+			if (e.a == e.b || kind[e.a] != Kind::Junction || kind[e.b] != Kind::Junction)
 				continue;
-			float reach = 0;
-			for (const int ei : list)
-				reach = std::max(reach, n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0));
-			for (const int ei : list)
+			if (Length(e.points) < (reach[e.a] + reach[e.b]) * 1.25f + 2)
 			{
-				const Edge& e = n.edges[ei];
-				const float d = std::min(reach * 1.15f + 0.5f, 0.45f * Length(e.points));
-				if (e.a == static_cast<int>(v))
-					trimA[ei] = d;
-				if (e.b == static_cast<int>(v))
-					trimB[ei] = d;
+				inside[ei] = true;
+				cluster[root(e.a)] = root(e.b);
 			}
 		}
-		// edge ends at junctions: (vertex, outward direction angle, road corners right / left, sidewalk corners, z, sidewalks)
+		std::vector<P3> centre(nv, P3{0, 0, 0});
+		std::vector<int> members(nv, 0);
+		for (size_t v = 0; v < nv; ++v)
+		{
+			if (kind[v] != Kind::Junction)
+				continue;
+			const int r = root(static_cast<int>(v));
+			centre[r][0] += n.vertices[v].p[0], centre[r][1] += n.vertices[v].p[1], centre[r][2] += n.vertices[v].z;
+			++members[r];
+		}
+		for (size_t v = 0; v < nv; ++v)
+			if (members[v])
+				centre[v] = {centre[v][0] / members[v], centre[v][1] / members[v], centre[v][2] / members[v]};
+		// 3. how far each edge stops short of its junctions (changes of road: not at all)
+		std::vector<float> trimA(ne, 0), trimB(ne, 0);
+		for (size_t ei = 0; ei < ne; ++ei)
+		{
+			const Edge& e = n.edges[ei];
+			if (inside[ei])
+				continue;
+			const float total = Length(e.points);
+			for (const bool atA : {true, false})
+			{
+				const int v = atA ? e.a : e.b;
+				if (kind[v] != Kind::Junction)
+					continue;
+				// (from a merged junction's middle: past the whole of it)
+				const P3& c = centre[root(v)];
+				const float extra = std::max(0.0f, Dist(n.vertices[v].p, {c[0], c[1]}) * 0.5f);
+				(atA ? trimA : trimB)[ei] = std::min(reach[v] * 1.15f + 0.5f + extra, 0.45f * total);
+			}
+		}
+		// the road a change of road leads into, as seen going along `ei` (its lanes in this edge's direction)
+		struct Next
+		{
+			bool any = false;
+			float half = 0;
+			int lanesF = 0, lanesB = 0;
+			float laneWidth = 3.5f;
+			bool sidewalks = false;
+			int other = -1;
+		};
+		const auto nextAt = [&](size_t ei, bool atA) {
+			Next x;
+			const Edge& e = n.edges[ei];
+			const int v = atA ? e.a : e.b;
+			if (kind[v] != Kind::Change)
+				return x;
+			const auto& list = n.vertices[v].edges;
+			const int other = list[0] == static_cast<int>(ei) ? list[1] : list[0];
+			const Edge& o = n.edges[other];
+			x.any = true;
+			x.other = other;
+			x.half = o.HalfWidth();
+			x.laneWidth = o.laneWidth;
+			x.sidewalks = o.sidewalks;
+			// traffic going our way: at our start it comes out of the other; at our end it goes into it
+			const bool otherPointsHere = o.b == v;
+			if (atA)
+				x.lanesF = otherPointsHere ? o.forward : o.backward, x.lanesB = otherPointsHere ? o.backward : o.forward;
+			else
+				x.lanesF = otherPointsHere ? o.backward : o.forward, x.lanesB = otherPointsHere ? o.forward : o.backward;
+			return x;
+		};
+		// edge ends at junctions: the cross-section where the edge stops (outward: away from the junction)
 		struct End
 		{
 			int edge;
-			float angle;
-			P3 roadR, roadL, walkR, walkL;
-			bool sidewalks;
+			bool atA;
+			P2 at, outward;
+			float half, walk; // the road's half width, the sidewalk's width (0: none)
+			float z;
+			bool crossing;
 		};
-		std::vector<std::vector<End>> ends(n.vertices.size());
-		for (size_t ei = 0; ei < n.edges.size(); ++ei)
+		std::vector<std::vector<End>> ends(nv);
+		for (size_t ei = 0; ei < ne; ++ei)
 		{
 			const Edge& e = n.edges[ei];
+			if (inside[ei])
+				continue;
 			const float total = Length(e.points);
+			std::vector<P2> p0;
+			std::vector<float> z0, s0;
+			Cut(e.points, e.z, trimA[ei], total - trimB[ei], p0, z0, s0);
+			if (p0.size() < 2)
+				continue;
+			const Next na = nextAt(ei, true), nb = nextAt(ei, false);
+			const float half = e.HalfWidth(), w = e.laneWidth;
+			// this road's layout: the centre line's offset (left positive) with its lanes, as the next road has it
+			const auto centreOf = [](float h, int lanesF, float lw) { return -h + 0.3f + lanesF * lw; };
+			// tapers: where this road changes into a narrower one, its last metres narrow to it and its centre line
+			// moves over to the next road's (of two alike wide, the first in the list moves); a sidewalk the next road
+			// has not narrows to nothing
+			const auto owns = [&](const Next& x) { return x.half < half - 1e-3f || (std::fabs(x.half - half) <= 1e-3f && static_cast<int>(ei) < x.other); };
+			const auto taperOf = [&](const Next& x) {
+				if (!x.any)
+					return 0.0f;
+				const float shift = owns(x) ? std::max(half - x.half, std::fabs(centreOf(half, e.forward, w) - centreOf(x.half, x.lanesF, x.laneWidth))) : 0.0f;
+				const float walk = e.sidewalks && !x.sidewalks ? 10.0f : 0.0f;
+				return shift > 0.05f || walk > 0 ? std::clamp(shift * 12.0f + walk, 10.0f, 40.0f) : 0.0f;
+			};
+			const float sStart = s0.front(), sEnd = s0.back();
+			const float tapA = std::min(taperOf(na), 0.45f * (sEnd - sStart)), tapB = std::min(taperOf(nb), 0.45f * (sEnd - sStart));
+			// (points every 2 m in the tapers, so that their edges curve smoothly)
 			std::vector<P2> p;
 			std::vector<float> z, s;
-			Cut(e.points, e.z, trimA[ei], total - trimB[ei], p, z, s);
-			if (p.size() < 2)
-				continue;
+			for (size_t i = 0; i < p0.size(); ++i)
+			{
+				if (i)
+				{
+					const float a0 = s0[i - 1], a1 = s0[i];
+					const bool tapering = (tapA > 0 && a0 < sStart + tapA) || (tapB > 0 && a1 > sEnd - tapB);
+					const int steps = tapering ? std::max(1, static_cast<int>(std::ceil((a1 - a0) / 2.0f))) : 1;
+					for (int k = 1; k < steps; ++k)
+					{
+						const float t = static_cast<float>(k) / steps;
+						p.push_back({p0[i - 1][0] + (p0[i][0] - p0[i - 1][0]) * t, p0[i - 1][1] + (p0[i][1] - p0[i - 1][1]) * t});
+						z.push_back(z0[i - 1] + (z0[i] - z0[i - 1]) * t);
+						s.push_back(a0 + (a1 - a0) * t);
+					}
+				}
+				p.push_back(p0[i]), z.push_back(z0[i]), s.push_back(s0[i]);
+			}
+			// how far into a taper each point is: 1 at the change of road, 0 where the taper starts
+			const auto into = [&](float si, bool atA) {
+				const float tap = atA ? tapA : tapB;
+				if (tap <= 0)
+					return 0.0f;
+				const float d = atA ? si - sStart : sEnd - si;
+				const float t = std::clamp(1 - d / tap, 0.0f, 1.0f);
+				return t * t * (3 - 2 * t);
+			};
+			std::vector<float> halfAt(p.size()), walkAt(p.size()), centreAt(p.size());
+			for (size_t i = 0; i < p.size(); ++i)
+			{
+				const float ta = into(s[i], true), tb = into(s[i], false);
+				float h = half, c = centreOf(half, e.forward, w), wk = e.sidewalks ? kSidewalk : 0;
+				for (const auto& [t, x] : {std::pair{ta, &na}, std::pair{tb, &nb}})
+				{
+					if (t <= 0)
+						continue;
+					// (the narrower of the two keeps its width: only the wider narrows)
+					if (x->half < half)
+						h = h + (x->half - half) * t;
+					if (owns(*x))
+						c = c + (centreOf(x->half, x->lanesF, x->laneWidth) - centreOf(half, e.forward, w)) * t;
+					if (e.sidewalks && !x->sidewalks)
+						wk = wk * (1 - t);
+				}
+				halfAt[i] = h, walkAt[i] = wk, centreAt[i] = c;
+			}
 			std::vector<float> scale;
-			const auto nrm = Normals(p, scale);
-			const float half = e.HalfWidth();
+			auto nrm = Normals(p, scale);
+			// at a change of road the two meet on the bisector of their directions (no wedge between them)
+			for (const bool atA : {true, false})
+			{
+				const Next& x = atA ? na : nb;
+				if (!x.any)
+					continue;
+				const Edge& o = n.edges[x.other];
+				const int v = atA ? e.a : e.b;
+				const size_t last = o.points.size() - 1;
+				P2 d0, d1;
+				if (atA)
+					d0 = o.b == v ? Dir(o.points[last - 1], o.points[last]) : Dir(o.points[1], o.points[0]), d1 = Dir(p[0], p[1]);
+				else
+					d0 = Dir(p[p.size() - 2], p.back()), d1 = o.a == v ? Dir(o.points[0], o.points[1]) : Dir(o.points[last], o.points[last - 1]);
+				P2 m{d0[0] + d1[0], d0[1] + d1[1]};
+				const float lm = std::hypot(m[0], m[1]);
+				if (lm < 1e-3f)
+					continue;
+				m = {m[0] / lm, m[1] / lm};
+				const size_t i = atA ? 0 : p.size() - 1;
+				const P2 own = Left(atA ? d1 : d0);
+				nrm[i] = Left(m);
+				scale[i] = 1.0f / std::max(0.5f, nrm[i][0] * own[0] + nrm[i][1] * own[1]);
+			}
 			std::vector<P3> right, left, walkRi, walkRo, walkLi, walkLo;
 			std::vector<std::array<float, 2>> uvR, uvL, uvWi, uvWo;
 			for (size_t i = 0; i < p.size(); ++i)
 			{
-				const float k = scale[i];
+				const float k = scale[i], h = halfAt[i], wk = walkAt[i];
 				const auto off = [&](float o, float dz) { return P3{p[i][0] + nrm[i][0] * o * k, p[i][1] + nrm[i][1] * o * k, z[i] + dz}; };
-				right.push_back(off(-half, 0));
-				left.push_back(off(half, 0));
-				uvR.push_back({-half / kTexture, s[i] / kTexture});
-				uvL.push_back({half / kTexture, s[i] / kTexture});
-				walkRi.push_back(off(-half, kKerb));
-				walkRo.push_back(off(-half - kSidewalk, kKerb));
-				walkLi.push_back(off(half, kKerb));
-				walkLo.push_back(off(half + kSidewalk, kKerb));
+				right.push_back(off(-h, 0));
+				left.push_back(off(h, 0));
+				uvR.push_back({-h / kTexture, s[i] / kTexture});
+				uvL.push_back({h / kTexture, s[i] / kTexture});
+				walkRi.push_back(off(-h, kKerb));
+				walkRo.push_back(off(-h - wk, kKerb));
+				walkLi.push_back(off(h, kKerb));
+				walkLo.push_back(off(h + wk, kKerb));
 				uvWi.push_back({0, s[i] / kTexture});
-				uvWo.push_back({kSidewalk / kTexture, s[i] / kTexture});
+				uvWo.push_back({wk / kTexture, s[i] / kTexture});
 			}
 			b.Strip(out.asphalt, right, left, uvR, uvL, kTarmac, !e.bridge);
 			if (e.sidewalks)
@@ -473,86 +647,238 @@ namespace worldgen::roads
 				b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0);
 				b.Wall(out.kerb, ro, kKerb + 0.25f, false, 0);
 			}
-			// markings: between the directions (double yellow), between lanes (dashed white), edge lines on the big roads
-			const float w = e.laneWidth, base = -half + 0.3f;
-			if (e.forward && e.backward)
-			{
-				const float o = base + e.forward * w;
-				b.Marking(p, z, s, o + 0.12f, 0.16f, kYellowU0, kYellowU1, 4.0f);
-				b.Marking(p, z, s, o - 0.12f, 0.16f, kYellowU0, kYellowU1, 4.0f);
-			}
-			for (int k = 1; k < e.forward; ++k)
-				b.Marking(p, z, s, base + k * w, 0.2f, kDashU0, kDashU1, 4.0f, 3.0f, 12.0f, 0.15f, 0.85f);
-			for (int k = 1; k < e.backward; ++k)
-				b.Marking(p, z, s, half - 0.3f - k * w, 0.2f, kDashU0, kDashU1, 4.0f, 3.0f, 12.0f, 0.15f, 0.85f);
-			if (e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary"))
-			{
-				b.Marking(p, z, s, -half + 0.45f, 0.3f, kWhiteU0, kWhiteU1, 4.0f);
-				b.Marking(p, z, s, half - 0.45f, 0.3f, kWhiteU0, kWhiteU1, 4.0f);
-			}
-			// stop lines where the lanes come into a junction (the forward lanes at b, the backward ones at a)
-			const auto stop = [&](bool atB, int lanes) {
-				if (!lanes || p.size() < 2)
-					return;
-				const size_t i = atB ? p.size() - 1 : 0, j = atB ? p.size() - 2 : 1;
-				const P2 d = Dir(p[j], p[i]); // towards the junction
-				const P2 l = Left(atB ? d : P2{-d[0], -d[1]});
-				const float back = 1.2f;
-				const P2 c{p[i][0] - d[0] * back, p[i][1] - d[1] * back};
-				const float o0 = atB ? base : half - 0.3f - lanes * w, o1 = atB ? base + lanes * w : half - 0.3f;
-				std::vector<P2> line{{c[0] + l[0] * o0, c[1] + l[1] * o0}, {c[0] + l[0] * o1, c[1] + l[1] * o1}};
-				std::vector<float> lz{z[i], z[i]}, ls{0, o1 - o0};
-				b.Marking(line, lz, ls, 0, 0.5f, kStripeU0, kStripeU1, 2.0f);
+			// markings: between the directions (double yellow), between lanes (dashed white: a lane the next road has
+			// not ends where the taper starts), edge lines on the big roads; the stretch before a junction keeps a
+			// crossing (3 m) and the stop line behind it clear
+			const bool crossA = kind[e.a] == Kind::Junction, crossB = kind[e.b] == Kind::Junction;
+			const float clearA = crossA ? 4.6f : 0, clearB = crossB ? 4.6f : 0;
+			const auto offsets = [&](auto&& f) {
+				std::vector<float> o(p.size());
+				for (size_t i = 0; i < p.size(); ++i)
+					o[i] = f(i);
+				return o;
 			};
-			if (junction[e.b] && n.vertices[e.b].edges.size() >= 3)
-				stop(true, e.forward);
-			if (junction[e.a] && n.vertices[e.a].edges.size() >= 3)
-				stop(false, e.backward);
+			const auto line = [&](const std::vector<float>& o, float width, float u0, float u1, float repeat, float from, float to, float dash = 0,
+			                      float period = 0, float v0 = 0, float v1 = 1) {
+				if (to - from > 0.5f)
+					b.Marking(p, z, s, o, width, u0, u1, repeat, dash, period, v0, v1, from, to);
+			};
+			// (as in the US: a double yellow line between the directions of the through roads - residential streets,
+			// service roads and alleys have none; one-way roads a yellow line on their left edge, white on the right)
+			const bool through = !(e.kind == "residential" || e.kind == "service" || e.kind == "living_street" || e.kind == "unclassified" || e.kind == "road" ||
+			                       e.kind == "track");
+			const bool major = e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary");
+			if (e.forward && e.backward && through)
+			{
+				line(offsets([&](size_t i) { return centreAt[i] + 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
+				line(offsets([&](size_t i) { return centreAt[i] - 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
+			}
+			for (int j = 1; j < e.forward; ++j)
+			{
+				const float from = sStart + std::max(clearA, na.any && j >= na.lanesF ? tapA : 0.0f);
+				const float to = sEnd - std::max(clearB, nb.any && j >= nb.lanesF ? tapB : 0.0f);
+				line(offsets([&](size_t i) { return centreAt[i] - j * w; }), 0.2f, kDashU0, kDashU1, 4.0f, from, to, 3.0f, 12.0f,
+				    0.15f, 0.85f);
+			}
+			for (int j = 1; j < e.backward; ++j)
+			{
+				const float from = sStart + std::max(clearA, na.any && j >= na.lanesB ? tapA : 0.0f);
+				const float to = sEnd - std::max(clearB, nb.any && j >= nb.lanesB ? tapB : 0.0f);
+				line(offsets([&](size_t i) { return centreAt[i] + j * w; }), 0.2f, kDashU0, kDashU1, 4.0f, from, to, 3.0f, 12.0f, 0.15f, 0.85f);
+			}
+			if (major)
+			{
+				// (the right edge of the lanes going along: white; the left edge of a one-way road: yellow)
+				const bool oneWay = !e.forward || !e.backward;
+				line(offsets([&](size_t i) { return -halfAt[i] + 0.45f; }), 0.2f, oneWay && !e.forward ? kYellowU0 : kWhiteU0, oneWay && !e.forward ? kYellowU1 : kWhiteU1,
+				    4.0f, sStart + clearA, sEnd - clearB);
+				line(offsets([&](size_t i) { return halfAt[i] - 0.45f; }), 0.2f, oneWay && !e.backward ? kYellowU0 : kWhiteU0, oneWay && !e.backward ? kYellowU1 : kWhiteU1,
+				    4.0f, sStart + clearA, sEnd - clearB);
+			}
+			// at a junction: the crossing (bars along the road, 3 m long, across its width) and the stop line of the
+			// lanes coming in behind it
+			const auto crossing = [&](bool atB) {
+				const size_t i = atB ? p.size() - 1 : 0;
+				const float h = halfAt[i];
+				for (float o = -h + 0.7f; o <= h - 0.6f; o += 1.2f)
+				{
+					const std::vector<float> oo(p.size(), o);
+					line(oo, 0.55f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
+				}
+				const int lanes = atB ? e.forward : e.backward;
+				if (!lanes)
+					return;
+				const float sl = atB ? sEnd - 4.2f : sStart + 4.2f;
+				// (the stop line across the lanes coming in: the right of the centre going to b, the left coming to a)
+				const float c = centreAt[i];
+				const float o0 = atB ? c - lanes * w : c, o1 = atB ? c : c + lanes * w;
+				P2 q{}, d{};
+				float qz = z[i];
+				// the point at sl and the road's direction there
+				for (size_t k = 0; k + 1 < p.size(); ++k)
+					if (s[k + 1] >= sl || k + 2 == p.size())
+					{
+						const float t = std::clamp((sl - s[k]) / std::max(1e-3f, s[k + 1] - s[k]), 0.0f, 1.0f);
+						q = {p[k][0] + (p[k + 1][0] - p[k][0]) * t, p[k][1] + (p[k + 1][1] - p[k][1]) * t};
+						d = Dir(p[k], p[k + 1]);
+						qz = z[k] + (z[k + 1] - z[k]) * t;
+						break;
+					}
+				const P2 l = Left(d);
+				std::vector<P2> stopLine{{q[0] + l[0] * o0 - d[0] * 0.25f, q[1] + l[1] * o0 - d[1] * 0.25f}, {q[0] + l[0] * o1 - d[0] * 0.25f, q[1] + l[1] * o1 - d[1] * 0.25f}};
+				std::vector<float> lz{qz, qz}, ls{0, o1 - o0};
+				b.Marking(stopLine, lz, ls, std::vector<float>(2, 0.0f), 0.5f, kStripeU0, kStripeU1, 2.0f);
+			};
+			// (crossings where people walk: roads with sidewalks, not service roads)
+			const bool walked = e.sidewalks && e.kind != "service" && e.kind != "track";
+			if (walked && crossB && n.vertices[e.b].edges.size() >= 3)
+				crossing(true);
+			if (walked && crossA && n.vertices[e.a].edges.size() >= 3)
+				crossing(false);
 			// this edge's ends at junctions
 			for (const bool atA : {true, false})
 			{
 				const int v = atA ? e.a : e.b;
-				if (!junction[v])
+				if (kind[v] != Kind::Junction)
 					continue;
 				const size_t i = atA ? 0 : p.size() - 1, j = atA ? 1 : p.size() - 2;
-				const P2 outward = Dir(p[i], p[j]);
-				const P2 l = Left(outward);
-				const auto at = [&](float o, float dz) { return P3{p[i][0] + l[0] * o, p[i][1] + l[1] * o, z[i] + dz}; };
-				ends[v].push_back({static_cast<int>(ei), std::atan2(outward[1], outward[0]), at(-half, 0), at(half, 0), at(-half - kSidewalk, kKerb),
-				    at(half + kSidewalk, kKerb), e.sidewalks});
+				ends[root(v)].push_back({static_cast<int>(ei), atA, p[i], Dir(p[i], p[j]), halfAt[i], walkAt[i], z[i], true});
 			}
 		}
-		// junctions: the asphalt between the ends, the sidewalk corners between neighbouring ends
-		for (size_t v = 0; v < n.vertices.size(); ++v)
+		// 4. junctions: the asphalt inside the ends' cross-sections and the kerbs' curves between neighbouring ends
+		// (each a quadratic curve through where the two road edges would meet, tangent to both); the sidewalks round
+		// the corners the same way (narrowing to nothing towards a road without), straight across the side of a T
+		const auto meet = [](const P2& a, const P2& da, const P2& c, const P2& dc, P2& out) {
+			// a + da * t = c + dc * u
+			const float den = da[0] * dc[1] - da[1] * dc[0];
+			if (std::fabs(den) < 1e-3f)
+				return false;
+			const float t = ((c[0] - a[0]) * dc[1] - (c[1] - a[1]) * dc[0]) / den;
+			const float u = ((c[0] - a[0]) * da[1] - (c[1] - a[1]) * da[0]) / den;
+			if (t < 0 || u < 0)
+				return false;
+			out = {a[0] + da[0] * t, a[1] + da[1] * t};
+			return true;
+		};
+		const auto curve = [&](const P2& a, const P2& da, const P2& c, const P2& dc, int steps) {
+			// from a (heading da) to c (arriving against dc)
+			std::vector<P2> pts;
+			P2 ctrl{(a[0] + c[0]) / 2, (a[1] + c[1]) / 2};
+			P2 m;
+			// (where a's line going on meets c's line coming back)
+			if (meet(a, da, c, {-dc[0], -dc[1]}, m) && Dist(m, ctrl) < 2.5f * Dist(a, c) + 1)
+				ctrl = m;
+			for (int k = 0; k <= steps; ++k)
+			{
+				const float t = static_cast<float>(k) / steps, u = 1 - t;
+				pts.push_back({u * u * a[0] + 2 * u * t * ctrl[0] + t * t * c[0], u * u * a[1] + 2 * u * t * ctrl[1] + t * t * c[1]});
+			}
+			return pts;
+		};
+		for (size_t v = 0; v < nv; ++v)
 		{
 			auto& list = ends[v];
 			if (list.size() < 2)
 				continue;
-			std::sort(list.begin(), list.end(), [](const End& x, const End& y) { return x.angle < y.angle; });
-			std::vector<P3> ring;
-			for (const End& e : list)
-				ring.push_back(e.roadR), ring.push_back(e.roadL);
-			const P3 centre{n.vertices[v].p[0], n.vertices[v].p[1], n.vertices[v].z};
-			b.Fan(out.asphalt, centre, ring, kTarmac, true);
+			const P3& c = centre[v];
+			const auto angleOf = [&](const End& x) {
+				const P2 q{x.at[0] + x.outward[0] * 2 - c[0], x.at[1] + x.outward[1] * 2 - c[1]};
+				return std::atan2(q[1], q[0]);
+			};
+			std::sort(list.begin(), list.end(), [&](const End& x, const End& y) { return angleOf(x) < angleOf(y); });
+			std::vector<P2> ring;
+			std::vector<float> ringZ;
+			struct Corner
+			{
+				std::vector<P2> kerb, outer;
+				float zx, zy;
+			};
+			std::vector<Corner> corners;
 			for (size_t k = 0; k < list.size(); ++k)
 			{
 				const End& x = list[k];
 				const End& y = list[(k + 1) % list.size()];
-				if (!x.sidewalks && !y.sidewalks)
-					continue;
-				// the corner from x's left side round to y's right side, if they are less than half a turn apart
-				float gap = y.angle - x.angle;
+				const P2 lx = Left(x.outward), ly = Left(y.outward);
+				const P2 xr{x.at[0] - lx[0] * x.half, x.at[1] - lx[1] * x.half}, xl{x.at[0] + lx[0] * x.half, x.at[1] + lx[1] * x.half};
+				const P2 yr{y.at[0] - ly[0] * y.half, y.at[1] - ly[1] * y.half};
+				ring.push_back(xr), ringZ.push_back(x.z);
+				ring.push_back(xl), ringZ.push_back(x.z);
+				float gap = angleOf(y) - angleOf(x);
 				if (gap <= 0)
 					gap += 2 * kPi;
-				if (gap > kPi * 0.95f)
+				const bool straight = gap > kPi * 0.94f;
+				// the kerb from x's left road edge round to y's right one (into the junction along x, out along y)
+				const P2 in{-x.outward[0], -x.outward[1]};
+				const auto kerb = straight ? std::vector<P2>{xl, yr} : curve(xl, in, yr, y.outward, 8);
+				for (size_t q = 1; q + 1 < kerb.size(); ++q)
+					ring.push_back(kerb[q]), ringZ.push_back(x.z + (y.z - x.z) * static_cast<float>(q) / (kerb.size() - 1));
+				if (x.walk <= 0 && y.walk <= 0)
 					continue;
-				const P3 xi{x.roadL[0], x.roadL[1], x.roadL[2] + kKerb}, yi{y.roadR[0], y.roadR[1], y.roadR[2] + kKerb};
-				const P3 mid{(x.walkL[0] + y.walkR[0]) / 2, (x.walkL[1] + y.walkR[1]) / 2, (x.walkL[2] + y.walkR[2]) / 2};
-				// (the outer corner pushed out to where the two sidewalks' outer edges would meet)
-				const P3 corner{mid[0] + (mid[0] - (xi[0] + yi[0]) / 2) * 0.4f, mid[1] + (mid[1] - (xi[1] + yi[1]) / 2) * 0.4f, mid[2]};
-				const P3 c{(xi[0] + yi[0] + x.walkL[0] + y.walkR[0]) / 4, (xi[1] + yi[1] + x.walkL[1] + y.walkR[1]) / 4, xi[2]};
-				b.Fan(out.sidewalk, c, {xi, x.walkL, corner, y.walkR, yi}, kPavement, true);
-				b.Wall(out.kerb, {x.roadL, y.roadR}, kKerb, true, kConcrete);
+				const P2 xo{xl[0] + lx[0] * x.walk, xl[1] + lx[1] * x.walk}, yo{yr[0] - ly[0] * y.walk, yr[1] - ly[1] * y.walk};
+				Corner cr;
+				cr.kerb = kerb;
+				cr.outer = straight ? std::vector<P2>{xo, yo} : curve(xo, in, yo, y.outward, 8);
+				if (cr.outer.size() != cr.kerb.size())
+				{
+					// (a straight side: as many points on both)
+					cr.kerb = {xl, yr};
+					cr.outer = {xo, yo};
+				}
+				cr.zx = x.z, cr.zy = y.z;
+				corners.push_back(std::move(cr));
+			}
+			// the asphalt: the ring's triangles (heights along it), world-space texture
+			{
+				std::vector<polygon::P2> poly(ring.begin(), ring.end());
+				auto tris = polygon::Triangulate(poly);
+				if (tris.empty())
+				{
+					// (a ring that crosses itself: a fan from the middle)
+					std::vector<P3> r3;
+					for (size_t q = 0; q < ring.size(); ++q)
+						r3.push_back({ring[q][0], ring[q][1], ringZ[q]});
+					b.Fan(out.asphalt, c, r3, kTarmac, true);
+				}
+				else
+				{
+					const P3 up{0, 0, 1};
+					std::vector<uint32_t> idx;
+					for (size_t q = 0; q < ring.size(); ++q)
+						idx.push_back(b.Add(out.asphalt, {ring[q][0], ring[q][1], ringZ[q]}, up, {ring[q][0] / kTexture, -ring[q][1] / kTexture}));
+					for (const auto& t : tris)
+					{
+						b.Tri(out.asphalt, idx[t[0]], idx[t[1]], idx[t[2]]);
+						b.Collide({ring[t[0]][0], ring[t[0]][1], ringZ[t[0]]}, {ring[t[1]][0], ring[t[1]][1], ringZ[t[1]]}, {ring[t[2]][0], ring[t[2]][1], ringZ[t[2]]},
+						    kTarmac, true);
+					}
+				}
+			}
+			for (const Corner& cr : corners)
+			{
+				std::vector<P3> inner, outer;
+				std::vector<std::array<float, 2>> uvI, uvO;
+				float run = 0;
+				for (size_t q = 0; q < cr.kerb.size(); ++q)
+				{
+					const float t = static_cast<float>(q) / (cr.kerb.size() - 1);
+					const float zz = cr.zx + (cr.zy - cr.zx) * t;
+					if (q)
+						run += Dist(cr.kerb[q - 1], cr.kerb[q]);
+					inner.push_back({cr.kerb[q][0], cr.kerb[q][1], zz + kKerb});
+					outer.push_back({cr.outer[q][0], cr.outer[q][1], zz + kKerb});
+					uvI.push_back({0, run / kTexture});
+					uvO.push_back({Dist(cr.kerb[q], cr.outer[q]) / kTexture, run / kTexture});
+				}
+				// (the kerb runs anticlockwise round the junction: the junction on its left, the sidewalk on its right)
+				b.Strip(out.sidewalk, outer, inner, uvO, uvI, kPavement, true);
+				std::vector<P3> foot;
+				for (size_t q = 0; q < cr.kerb.size(); ++q)
+					foot.push_back({cr.kerb[q][0], cr.kerb[q][1], inner[q][2] - kKerb});
+				b.Wall(out.kerb, foot, kKerb, true, kConcrete);
+				std::vector<P3> outerFoot = outer;
+				for (P3& q : outerFoot)
+					q[2] -= kKerb + 0.25f;
+				b.Wall(out.kerb, outerFoot, kKerb + 0.25f, false, 0);
 			}
 		}
 	}

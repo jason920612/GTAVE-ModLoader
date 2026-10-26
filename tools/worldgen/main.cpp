@@ -1524,6 +1524,8 @@ int main(int argc, char** argv)
 			o.aerial = g_options["aerial"];
 		if (g_options.contains("datum"))
 			o.datum = std::stof(g_options["datum"]);
+		if (g_options.contains("roads-obj"))
+			o.roadsObj = g_options["roads-obj"];
 		o.navmesh = !g_options.contains("navmesh") || g_options["navmesh"] != "0";
 		o.paths = !g_options.contains("paths") || g_options["paths"] != "0";
 		std::vector<worldgen::catalog::Item> catalog;

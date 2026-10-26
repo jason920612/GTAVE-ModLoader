@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -29,12 +30,16 @@ namespace worldgen::facades
 		Kind kind = Kind::House;
 		std::string diffuse, normal, specular; // texture names (a kind's styles share the last two)
 		float width = 8, height = 6;           // metres one texture covers
+		std::array<uint8_t, 3> average{};      // the texture's mean colour (the LOD models' walls)
 	};
 
 	struct Set
 	{
 		std::vector<Style> styles;
 		std::vector<loader::convert::DictionaryTexture> textures;
+		std::string palette; // a texture of each style's mean colour, 8 x 8 pixels each (16 a row): the LODs' walls
+		// the middle of a style's patch in the palette (u, v)
+		std::array<float, 2> PaletteUv(size_t style) const;
 	};
 
 	// The styles and their textures, names starting with `prefix`; `size` the diffuse textures' side (pixels).
