@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <limits>
@@ -17,6 +18,7 @@
 #include "elevation.hpp"
 #include "facades.hpp"
 #include "mapfiles.hpp"
+#include "minimap.hpp"
 #include "navgen.hpp"
 #include "paths.hpp"
 #include "polygon.hpp"
@@ -42,7 +44,7 @@ namespace worldgen::build
 		// ground classes (the land grid)
 		enum : uint8_t { kWater, kLand, kBeach, kUrban, kPark, kPaved };
 		// materials.dat rows
-		constexpr uint8_t kGrass = 47, kSand = 19, kConcrete = 1;
+		constexpr uint8_t kGrass = 47, kSand = 19, kConcrete = 1, kDirt = 43;
 
 		float Smooth(float t)
 		{
@@ -250,8 +252,11 @@ namespace worldgen::build
 				else
 				{
 					roads::Mesh& rm = meshes[genericRoof];
-					const uint32_t i0 = add(rm, a, n, t, a[0] / gravel.width, -a[1] / gravel.height), i1 = add(rm, b, n, t, b[0] / gravel.width, -b[1] / gravel.height),
-					               i2 = add(rm, c, n, t, c[0] / gravel.width, -c[1] / gravel.height);
+					// (planar, from the tile's middle: texture coordinates in the thousands lose their precision on the way to
+					// the texture - research/phase0.md §61.25)
+					const auto gu = [&](const P3& p) { return (p[0] - cx) / gravel.width; };
+					const auto gv = [&](const P3& p) { return -(p[1] - cy) / gravel.height; };
+					const uint32_t i0 = add(rm, a, n, t, gu(a), gv(a)), i1 = add(rm, b, n, t, gu(b), gv(b)), i2 = add(rm, c, n, t, gu(c), gv(c));
 					rm.indices.insert(rm.indices.end(), {i0, i1, i2});
 				}
 			}
@@ -360,8 +365,9 @@ namespace worldgen::build
 		}
 		// The land's water, for the loader (game/sea.cpp; next to the pack's dlc.rpf). Out past the game's water grid the sea
 		// is everywhere, under new land too: water.bin says where it really is over this build's terrain, a mask of the land
-		// grid's cells (1: water) reaching 8 m in over the shore so that waves still run up the beaches. land.json: that box
-		// and how calm the sea round the land is.
+		// grid's cells (1: water) reaching 8 m in over the shore so that waves still run up the beaches. land.json (written
+		// with the map, below): that box and how calm the sea round the land is.
+		std::array<float, 4> built{}; // (the terrain tiles' box: what is built)
 		{
 			const float tx0 = w.min[0] + std::floor((bx0 - w.min[0]) / o.tile) * o.tile, ty0 = w.min[1] + std::floor((by0 - w.min[1]) / o.tile) * o.tile;
 			const float tx1 = w.min[0] + std::ceil((bx1 - w.min[0]) / o.tile) * o.tile, ty1 = w.min[1] + std::ceil((by1 - w.min[1]) / o.tile) * o.tile;
@@ -396,8 +402,7 @@ namespace worldgen::build
 			mask.write(reinterpret_cast<const char*>(&ny), 4);
 			mask.write(reinterpret_cast<const char*>(&level), 4);
 			mask.write(reinterpret_cast<const char*>(bits.data()), static_cast<std::streamsize>(bits.size()));
-			std::ofstream(o.out / "land.json") << std::format("{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\", \"climate\": \"{}\"}}\n",
-			    tx0, ty0, tx1, ty1, o.waves, w.climate);
+			built = {tx0, ty0, tx1, ty1};
 		}
 		// 2. heights: land rises gently from the shore (a beach lower), the sea floor deepens away from it
 		// (DistanceTo measures from the cells of a value to the nearest other cell)
@@ -547,6 +552,90 @@ namespace worldgen::build
 			return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
 		};
 
+		// what covers the ground (research/phase0.md §61.25): lawn, paving, sand or bare earth, from the map's classes and,
+		// where there is an aerial picture, what it shows - its near infrared (vegetation: NDVI 0.12 and more, or green
+		// to the eye: artificial turf) in built-up land, parks and the rest; on land, lawns from 14 m off the water
+		enum : uint8_t { kLawn, kPaving, kBare, kSandy, kUnder };
+		raster::Grid<uint8_t> cover = land, lawnCapable = land;
+		{
+			elevation::Aerial photo;
+			const bool photographed = !o.aerial.empty() && photo.Open(o.aerial);
+			size_t counts[5]{};
+			for (int j = 0; j < land.ny; ++j)
+				for (int i = 0; i < land.nx; ++i)
+				{
+					const uint8_t k = land.At(i, j);
+					const P2 c = land.Centre(i, j);
+					const float h = height.At(i, j);
+					uint8_t what = kLawn;
+					if (k == kWater || h < 0.2f)
+						what = kUnder;
+					else if (k == kBeach)
+						what = kSandy;
+					else if (k == kPaved)
+						what = kPaving;
+					else if (photographed)
+					{
+						float ndvi = 0, green = 0, brown = 0;
+						int n = 0;
+						for (int s = 0; s < 9; ++s)
+						{
+							std::array<float, 4> px{};
+							if (!photo.Sample(c[0] + (s % 3 - 1) * land.cell / 3, c[1] + (s / 3 - 1) * land.cell / 3, px))
+								continue;
+							ndvi += (px[3] - px[0]) / std::max(1.0f, px[3] + px[0]);
+							green += px[1] - (px[0] + px[2]) / 2;
+							brown += px[0] - px[2];
+							++n;
+						}
+						if (n)
+						{
+							ndvi /= n, green /= n, brown /= n;
+							what = ndvi >= 0.12f || green > 8 ? kLawn : brown > 15 ? kBare : kPaving;
+						}
+					}
+					cover.At(i, j) = what;
+					++counts[what];
+					lawnCapable.At(i, j) = what == kLawn && toWater.At(i, j) >= 14;
+				}
+			// (the picture's specks smoothed: on land each cell takes what most of the nine round it are - lawn, paving or
+			// bare earth)
+			if (photographed)
+			{
+				const auto before = cover.v;
+				for (int j = 1; j + 1 < land.ny; ++j)
+					for (int i = 1; i + 1 < land.nx; ++i)
+					{
+						const uint8_t self = before[static_cast<size_t>(j) * land.nx + i];
+						if (self > kBare)
+							continue;
+						int votes[3]{};
+						for (int dj = -1; dj <= 1; ++dj)
+							for (int di = -1; di <= 1; ++di)
+								if (const uint8_t c = before[static_cast<size_t>(j + dj) * land.nx + i + di]; c <= kBare)
+									++votes[c];
+						const uint8_t best = static_cast<uint8_t>(std::max_element(votes, votes + 3) - votes);
+						if (votes[best] >= 5 && best != self)
+						{
+							cover.At(i, j) = best;
+							lawnCapable.At(i, j) = best == kLawn && toWater.At(i, j) >= 14;
+						}
+					}
+			}
+			std::printf("ground cover: %zu lawn, %zu paving, %zu bare, %zu sand, %zu under water (4 m cells)%s\n", counts[0], counts[1], counts[2], counts[3],
+			    counts[4], photographed ? "" : " (no aerial pictures: built-up land as lawn)");
+		}
+		// (how far into a lawn: from its edge)
+		const auto lawnDepth = raster::DistanceTo(lawnCapable, 1);
+		const auto coverAt = [&](float x, float y) {
+			const auto c = cover.Cell({x, y});
+			return cover.In(c[0], c[1]) ? cover.At(c[0], c[1]) : uint8_t{kUnder};
+		};
+		const auto depthAt = [&](float x, float y) {
+			const auto c = lawnDepth.Cell({x, y});
+			return lawnDepth.In(c[0], c[1]) ? lawnDepth.At(c[0], c[1]) : 0.0f;
+		};
+
 		// 3. roads (those reaching into the grids)
 		world::World near = w;
 		std::erase_if(near.roads, [&](const world::Road& r) {
@@ -627,6 +716,7 @@ namespace worldgen::build
 		std::vector<P2> shapeCentre;
 		facades::Set facadeSet;
 		std::vector<world::Building> found; // (the buildings the scan saw that the map lacks)
+		std::vector<std::vector<P2>> mapped; // (the footprints of those built, for the game's map)
 		if (o.buildings && scanned)
 		{
 			found = structures::Missing(scan, w.buildings, {bx0, by0, bx1, by1});
@@ -665,6 +755,7 @@ namespace worldgen::build
 				structures::Shape s;
 				if (!structures::Make(b, &scan, ground, so, s, ss))
 					continue;
+				mapped.push_back(b.footprint);
 				const float area = static_cast<float>(std::fabs(polygon::Area(b.footprint)));
 				const uint32_t seed = static_cast<uint32_t>(std::lround(c[0] * 3)) * 73856093u ^ static_cast<uint32_t>(std::lround(c[1] * 3)) * 19349663u;
 				shapeStyle.push_back(facades::Pick(facadeSet, b.kind, s.height, area, seed));
@@ -699,6 +790,7 @@ namespace worldgen::build
 					continue;
 				}
 				placed.push_back(p);
+				mapped.push_back(b.footprint);
 				raster::ForPolygon(floor, {b.footprint}, [&](int i, int j) { floor.At(i, j) = std::min(floor.At(i, j), base + 0.15f); });
 			}
 			stats.buildings = placed.size();
@@ -746,6 +838,37 @@ namespace worldgen::build
 			}
 		}
 
+		// the game's map of the land (research/phase0.md §61.26): the radar's tiles and the pause map's pictures; land.json
+		// with what the loader needs of them
+		{
+			minimap::Input mi;
+			mi.box = built;
+			mi.height = &height;
+			mi.buildings = mapped;
+			for (const auto& e : network.edges)
+			{
+				minimap::Road r;
+				r.points = e.points;
+				r.halfWidth = e.HalfWidth();
+				const std::string kind = e.kind.ends_with("_link") ? e.kind.substr(0, e.kind.size() - 5) : e.kind;
+				r.grey = kind == "service" || kind == "pedestrian" ? 130 : kind == "track" || kind == "path" || kind == "footway" || kind == "cycleway" ? 99 : 180;
+				mi.roads.push_back(std::move(r));
+			}
+			minimap::Output mo;
+			if (!minimap::Write(files, mi, o.name, o.out, mo, error))
+				return error = "map: " + error, false;
+			std::string radar, pictures;
+			for (const auto& [c, r] : mo.supertiles)
+				radar += std::format("{}[{}, {}]", radar.empty() ? "" : ", ", c, r);
+			for (const auto& [r, c] : mo.pictures)
+				pictures += std::format("{}[{}, {}]", pictures.empty() ? "" : ", ", r, c);
+			std::printf("map: %zu radar supertiles (%zu triangles), %zu pause map pictures\n", mo.supertiles.size(), mo.triangles, mo.pictures.size());
+			std::ofstream(o.out / "land.json") << std::format(
+			    "{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\", \"climate\": \"{}\", \"map\": {{\"name\": \"{}\", "
+			    "\"radar\": [{}], \"pictures\": [{}]}}}}\n",
+			    built[0], built[1], built[2], built[3], o.waves, w.climate, o.name, radar, pictures);
+		}
+
 		// 4. tiles: terrain and roads, their collision; entities and archetypes
 		ydr::Material ground3, asphalt, sidewalk, kerb, marking;
 		// (terrain_cb_4lyr: the terrain shader without the rain's puddles, which on flat ground mirror the sky in blue patches)
@@ -753,17 +876,22 @@ namespace worldgen::build
 		    !GameMaterial(files, "dt1_rd1_r1_05.ydr", 3, sidewalk, error) || !GameMaterial(files, "dt1_rd1_r1_05.ydr", 0, kerb, error) ||
 		    !GameMaterial(files, "dt1_rd1_r1_05.ydr", 5, marking, error))
 			return false;
-		{
-			const std::pair<const char*, const char*> layers[] = {{"IM_Grass02V", "IM_Grass02_N"},
-			    {"RSN_OS_beachhard", "NXG_RSN_OS_beachhard_n"},
-			    {"NXG_RSN_OS_beachsoftprints", "NXG_RSN_OS_beachsoftprints_n"},
-			    {"RSN_OS_beachhardwater", "RSN_OS_beachhardwater_n"}};
-			for (int k = 0; k < 4; ++k)
-			{
-				ground3.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), layers[k].first);
-				ground3.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), layers[k].second);
-			}
-		}
+		// the lawns' (terrain_cb_w_4lyr_2tex_blend: the game's own lawns', a Rockford Hills ground model's; the only
+		// blending terrain shader the game has is this one with the rain's puddles - after rain they mirrored the sky over
+		// half a lawn: grass holds little standing water, so its layers' materialWetnessMultiplier (the game's 0.2-0.35)
+		// down to a tenth of that)
+		ydr::Material lawnMaterial;
+		if (!GameMaterial(files, "bh1_21_grnd02_1.ydr", 2, lawnMaterial, error))
+			return false;
+		for (auto& [parameter, bytes] : lawnMaterial.constants)
+			if (parameter == loader::convert::Joaat("materialWetnessMultiplier"))
+				for (size_t k = 0; k + 4 <= bytes.size(); k += 4)
+				{
+					float v;
+					std::memcpy(&v, bytes.data() + k, 4);
+					v *= 0.1f;
+					std::memcpy(bytes.data() + k, &v, 4);
+				}
 		mapfiles::Archetype beachTypes, roadTypes;
 		if (!mapfiles::FindArchetype(files, "vb_35_beacha", beachTypes, error) || !mapfiles::FindArchetype(files, "dt1_rd1_r1_05", roadTypes, error))
 			return false;
@@ -818,6 +946,32 @@ namespace worldgen::build
 				copied[key] = name;
 				return true;
 			};
+			// the terrain's (research/phase0.md §61.25): the ground material's layers - the grass the lawns' layer 3 is too
+			// (where the two materials meet both draw it), paving, sand, wet sand - and the lawns' four grasses and their
+			// blend map
+			{
+				const std::array<std::array<const char*, 4>, 4> groundLayers{{{"ch1_06e_land+hi.ytd", "im_grass10b", "ch1_09_arc007+hidr.ytd", "im_grass07_n"},
+				    {"sp1_03_ground+hidr.ytd", "im_concrete25", "paletoroadtemp+hi.ytd", "im_concrete25_n"},
+				    {"venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints", "venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints_n"},
+				    {"prop_beach+hi.ytd", "rsn_os_beachhardwater", "sm_22_pier+hidr.ytd", "rsn_os_beachhardwater_n"}}};
+				const std::array<std::array<const char*, 2>, 4> lawns{{{"bh1_05_ground1+hidr.ytd", "im_grass11b"}, {"bh1_15_alleygr+hidr.ytd", "im_grass07b"},
+				    {"ch1_06e_land+hi.ytd", "im_grass014b"}, {"ch1_06e_land+hi.ytd", "im_grass10b"}}};
+				std::string d, n;
+				for (int k = 0; k < 4; ++k)
+				{
+					if (!use(groundLayers[k][0], groundLayers[k][1], d) || !use(groundLayers[k][2], groundLayers[k][3], n))
+						return false;
+					ground3.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
+					ground3.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
+					if (!use(lawns[k][0], lawns[k][1], d) || !use("ch1_09_arc007+hidr.ytd", "im_grass07_n", n))
+						return false;
+					lawnMaterial.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
+					lawnMaterial.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
+				}
+				if (!use("bh1_05_ground1+hidr.ytd", "ss1_rd_grassblendmap_01", d))
+					return false;
+				lawnMaterial.Texture(loader::convert::Joaat("lookupTexture"), d);
+			}
 			struct Look
 			{
 				const char *dictionary, *diffuse, *normalDictionary, *normal, *specularDictionary, *specular; // (null: flat, the asphalt's dull)
@@ -952,48 +1106,73 @@ namespace worldgen::build
 						const uint8_t k = land.In(lc[0], lc[1]) ? land.At(lc[0], lc[1]) : kWater;
 						anyLand |= k != kWater || h > -3;
 						const float d = land.In(lc[0], lc[1]) ? toWater.At(lc[0], lc[1]) : 0;
-						// layers: grass, hard sand (built-up ground), soft sand (beach, the shore), wet sand (under water)
-						float grass = 0, hard = 0, soft = 0, wetSand = 0;
-						if (k == kWater || h < 0.2f)
+						// the ground material's layers: grass (the lawn's layer 3), paving, sand (beaches, bare earth, the
+						// shore), wet sand (under water)
+						const uint8_t what = h < 0.2f ? uint8_t{kUnder} : coverAt(x, y);
+						float grass = 0, paving = 0, soft = 0, wetSand = 0;
+						if (what == kUnder)
 							wetSand = 1;
-						else if (k == kBeach)
+						else if (what == kSandy || what == kBare)
 							soft = 1;
-						else if (k == kPaved)
-							hard = 0.7f, grass = 0.3f;
-						else if (k == kUrban)
-							hard = 0.25f, grass = 0.75f;
+						else if (what == kPaving)
+							paving = 1;
 						else
 							grass = 1;
 						if (k != kWater && k != kBeach && d < 14)
 						{
 							const float t = Smooth(d / 14);
-							grass *= t, hard *= t, soft = soft * t + (1 - t);
+							grass *= t, paving *= t, soft = soft * t + (1 - t);
 						}
-						f.layers.push_back(terrain::Layers(grass, hard, soft, wetSand));
+						f.layers.push_back(terrain::Layers(grass, paving, soft, wetSand));
 					}
 				for (int j = 0; j < per; ++j)
 					for (int i = 0; i < per; ++i)
 					{
-						const auto lc = land.Cell({x0 + (i + 0.5f) * o.cell, y0 + (j + 0.5f) * o.cell});
-						const uint8_t k = land.In(lc[0], lc[1]) ? land.At(lc[0], lc[1]) : kWater;
-						f.material.push_back(k == kWater || k == kBeach ? kSand : k == kPaved ? kConcrete : kGrass);
+						const uint8_t what = coverAt(x0 + (i + 0.5f) * o.cell, y0 + (j + 0.5f) * o.cell);
+						f.material.push_back(what == kUnder || what == kSandy ? kSand : what == kPaving ? kConcrete : what == kBare ? kDirt : kGrass);
 					}
+				// the lawns: cells whose four corners are 6 m and more into a lawn; a vertex's depth into it eases over the
+				// next 14 m, 0 where it touches a cell of the ground material (there both draw the same grass)
+				{
+					const auto capable = [&](int vi, int vj) { return depthAt(x0 + vi * o.cell, y0 + vj * o.cell) > 6; };
+					const auto lawnCell = [&](int ci, int cj) { return capable(ci, cj) && capable(ci + 1, cj) && capable(ci, cj + 1) && capable(ci + 1, cj + 1); };
+					f.lawnCell.resize(static_cast<size_t>(per) * per);
+					for (int j = 0; j < per; ++j)
+						for (int i = 0; i < per; ++i)
+							f.lawnCell[static_cast<size_t>(j) * per + i] = lawnCell(i, j);
+					f.lawn.resize(static_cast<size_t>(per + 1) * (per + 1));
+					for (int j = 0; j <= per; ++j)
+						for (int i = 0; i <= per; ++i)
+						{
+							const bool inside = lawnCell(i - 1, j - 1) && lawnCell(i, j - 1) && lawnCell(i - 1, j) && lawnCell(i, j);
+							f.lawn[f.V(i, j)] = inside ? Smooth((depthAt(x0 + i * o.cell, y0 + j * o.cell) - 6) / 14) : 0.0f;
+						}
+				}
 				if (!anyLand)
 					continue; // (deep open sea: nothing to see or walk on)
 				const std::string tname = std::format("{}_t_{}_{}", o.name, ti, tj), rname = std::format("{}_r_{}_{}", o.name, ti, tj),
 				                  cname = std::format("{}_c_{}_{}", o.name, ti, tj);
 				ydr::Drawable td;
 				td.name = tname;
-				td.materials.push_back(ground3);
-				td.lods[0].push_back(terrain::TileMesh(f, 0, 0, per, cx, cy, 5.0f));
-				stats.terrainTriangles += td.lods[0][0].indices.size() / 3;
+				td.materials = {ground3, lawnMaterial};
+				{
+					// (the textures every 3.5 m as the game's lawns have them, its blend map every 22 m)
+					auto [rest, lawn] = terrain::TileMeshes(f, 0, 0, per, cx, cy, 3.5f, 22.0f);
+					lawn.material = 1;
+					for (ydr::Mesh* m : {&rest, &lawn})
+						if (!m->indices.empty())
+						{
+							stats.terrainTriangles += m->indices.size() / 3;
+							td.lods[0].push_back(std::move(*m));
+						}
+				}
 				Bytes file;
 				if (!ydr::Write(td, file, error))
 					return error = tname + ": " + error, false;
 				WriteFile(o.out / (tname + ".ydr"), file);
 				mapfiles::Archetype ta;
 				ta.name = tname;
-				ta.textureDictionary = beachTypes.textureDictionary;
+				ta.textureDictionary = loader::convert::Joaat(facadeDictionary);
 				ta.lodDist = 2500;
 				ydr::Box(td, ta.min, ta.max);
 				archetypes.push_back(ta);
@@ -1156,7 +1335,7 @@ namespace worldgen::build
 								const uint32_t base = static_cast<uint32_t>(to.vertices.size());
 								for (auto v : from.vertices)
 								{
-									v.uv[0] = {(v.position[0] + cx) / facadeSet.styles[gravelStyle].width, -(v.position[1] + cy) / facadeSet.styles[gravelStyle].height};
+									v.uv[0] = {v.position[0] / facadeSet.styles[gravelStyle].width, -v.position[1] / facadeSet.styles[gravelStyle].height};
 									to.vertices.push_back(v);
 								}
 								for (const uint32_t i : from.indices)

@@ -58,14 +58,16 @@ namespace worldgen::paths
 				return error = f->path + ": " + error, false;
 			game.emplace(n, std::move(r));
 		}
-		// the template: a plain two-way street node with two alike links (as tools/worldgen testroad takes it)
+		// the template: a plain two-way street node with two alike links (as tools/worldgen testroad takes it), one the GPS
+		// routes over - +0x20 bit 1 set and +0x24 bit 0 clear, as the city's streets have them: the GPS's search for the
+		// node to start from leaves the others out (research/phase0.md §61.26) - and not switched off
 		const Node* tn = nullptr;
 		Link ahead{};
 		if (const auto it = game.find(463); it != game.end())
 			for (uint32_t i = 0; i < it->second.vehicleNodes && !tn; ++i)
 			{
 				const Node& n = it->second.nodes[i];
-				if (n.LinkCount() != 2)
+				if (n.LinkCount() != 2 || !(n.raw[0x20] & 0x02) || (n.raw[0x24] & 0x91))
 					continue;
 				const Link& l0 = it->second.links[n.FirstLink()];
 				const Link& l1 = it->second.links[n.FirstLink() + 1];

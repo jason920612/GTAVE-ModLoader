@@ -20,7 +20,8 @@ namespace worldgen::ydr
 	{
 		// File-form vtables (build base 0x140000000; the game replaces them), as the game's own files carry them.
 		constexpr uint64_t kVtDrawable = 0x14068C7F0, kVtShaderGroup = 0x1406BB978, kVtModel = 0x1406BB948, kVtGeometry = 0x1406BB7E8,
-		                   kVtVertexBuffer = 0x1406B9108, kVtIndexBuffer = 0x1406B90B8, kVtView = 0x1406B77D8, kVtTextureRef = 0x1406B7940;
+		                   kVtVertexBuffer = 0x1406B9108, kVtIndexBuffer = 0x1406B90B8, kVtView = 0x1406B77D8, kVtTextureRef = 0x1406B7940,
+		                   kVtDictionary = 0x14068E798;
 		constexpr uint32_t kTag = 0x7F800001;
 		constexpr uint32_t kVersion = 159;
 
@@ -313,160 +314,229 @@ namespace worldgen::ydr
 		}
 	}
 
+	namespace
+	{
+		bool Check(const Drawable& d, std::string& error)
+		{
+			if (d.lods[0].empty())
+				return error = "no meshes", false;
+			for (const auto& lod : d.lods)
+				for (const Mesh& m : lod)
+					if (m.material >= d.materials.size() || m.vertices.empty() || m.vertices.size() > 0xFFFF || m.indices.empty() || m.indices.size() % 3 ||
+					    std::any_of(m.indices.begin(), m.indices.end(), [&](uint32_t i) { return i >= m.vertices.size(); }))
+						return error = "a mesh with no or too many vertices (65535), a bad index or no material", false;
+			return true;
+		}
+
+		// The drawable and everything it points to, from `root` (0xD0 bytes the caller allocated).
+		bool Put(Out& o, size_t root, const Drawable& d, std::string& error);
+
+		// The page map (room for every page: the game fills in their addresses) at `root` + 8, then the pages packed.
+		bool Finish(Out& o, size_t root, Bytes& file, std::string& error)
+		{
+			const size_t pageMap = o.Alloc(16 + 8 * 256);
+			if (o.full)
+				return error = "out of space", false;
+			o.Ptr(root + 0x08, pageMap);
+			loader::convert::Resource res;
+			uint32_t pageCount = 0;
+			if (!o.blk.Relayout(res.virtualBlock, res.virtualFlags, pageCount, error, &o.pointers))
+				return false;
+			const size_t newPageMap = static_cast<size_t>(loader::convert::Get<uint64_t>(res.virtualBlock, 8) - kVirtual);
+			res.virtualBlock[newPageMap + 8] = static_cast<uint8_t>(pageCount);
+			res.version = kVersion;
+			res.virtualFlags |= (kVersion >> 4) << 28;
+			res.physicalFlags = (kVersion & 0xF) << 28;
+			return loader::convert::Write(res, file, error);
+		}
+	}
+
 	bool Write(const Drawable& d, Bytes& file, std::string& error)
 	{
-		if (d.lods[0].empty())
-			return error = "no meshes", false;
-		for (const auto& lod : d.lods)
-			for (const Mesh& m : lod)
-				if (m.material >= d.materials.size() || m.vertices.empty() || m.vertices.size() > 0xFFFF || m.indices.empty() || m.indices.size() % 3 ||
-				    std::any_of(m.indices.begin(), m.indices.end(), [&](uint32_t i) { return i >= m.vertices.size(); }))
-					return error = "a mesh with no or too many vertices (65535), a bad index or no material", false;
+		if (!Check(d, error))
+			return false;
 		Out o;
 		const size_t root = o.Alloc(0xD0);
 		if (root != 0)
 			return error = "the drawable is not at the start", false;
-		o.Set<uint64_t>(root, kVtDrawable);
-		std::array<float, 3> min, max;
-		Box(d, min, max);
-		const std::array<float, 3> centre{(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2};
-		float radius = 0;
-		for (const Mesh& m : d.lods[0])
-			for (const Vertex& v : m.vertices)
-				radius = std::max(radius, std::hypot(v.position[0] - centre[0], v.position[1] - centre[1], v.position[2] - centre[2]));
-		o.Set<float>(root + 0x20, centre[0]);
-		o.Set<float>(root + 0x24, centre[1]);
-		o.Set<float>(root + 0x28, centre[2]);
-		o.Set<float>(root + 0x2C, radius);
-		o.Vec(root + 0x30, min, kTag);
-		o.Vec(root + 0x40, max, kTag);
-		for (int lod = 0; lod < 4; ++lod)
-			o.Set<float>(root + 0x70 + 4 * lod, d.lodDistances[lod]);
-		o.Set<uint8_t>(root + 0x80, 1);
-		o.Set<uint8_t>(root + 0x81, 0xFF);
-		o.Ptr(root + 0xA8, o.String(d.name + ".#dr"));
+		return Put(o, root, d, error) && Finish(o, root, file, error);
+	}
 
-		// shaders
-		const size_t group = o.Alloc(0x40), shaders = o.Alloc(8 * d.materials.size());
-		o.Set<uint64_t>(group, kVtShaderGroup);
-		o.Ptr(group + 0x10, shaders);
-		o.Set<uint16_t>(group + 0x18, static_cast<uint16_t>(d.materials.size()));
-		o.Set<uint16_t>(group + 0x1A, static_cast<uint16_t>(d.materials.size()));
-		o.Ptr(root + 0x10, group);
-		std::map<std::vector<uint8_t>, size_t> declarations;
-		for (size_t i = 0; i < d.materials.size(); ++i)
+	bool WriteDictionary(const std::vector<std::pair<uint32_t, Drawable>>& drawables, Bytes& file, std::string& error)
+	{
+		if (drawables.empty() || drawables.size() > 0xFFFF)
+			return error = "no drawables", false;
+		// (the game looks a name up by halving: the hashes in order, the drawables in theirs)
+		std::vector<size_t> order(drawables.size());
+		for (size_t i = 0; i < order.size(); ++i)
+			order[i] = i;
+		std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return drawables[a].first < drawables[b].first; });
+		for (size_t i = 0; i + 1 < order.size(); ++i)
+			if (drawables[order[i]].first == drawables[order[i + 1]].first)
+				return error = std::format("two drawables named {:08x}", drawables[order[i]].first), false;
+		for (const auto& [hash, d] : drawables)
+			if (!Check(d, error))
+				return error = std::format("drawable {:08x}: {}", hash, error), false;
+		// Dictionary (0x40): +0x08 page map, +0x18 1, +0x20 the hashes {u32s, u16 count, capacity}, +0x30 the drawables.
+		Out o;
+		const size_t root = o.Alloc(0x40);
+		if (root != 0)
+			return error = "the dictionary is not at the start", false;
+		const size_t n = drawables.size();
+		const size_t hashes = o.Alloc(4 * n), list = o.Alloc(8 * n);
+		o.Set<uint64_t>(root, kVtDictionary);
+		o.Set<uint32_t>(root + 0x18, 1);
+		o.Ptr(root + 0x20, hashes);
+		o.Set<uint16_t>(root + 0x28, static_cast<uint16_t>(n));
+		o.Set<uint16_t>(root + 0x2A, static_cast<uint16_t>(n));
+		o.Ptr(root + 0x30, list);
+		o.Set<uint16_t>(root + 0x38, static_cast<uint16_t>(n));
+		o.Set<uint16_t>(root + 0x3A, static_cast<uint16_t>(n));
+		for (size_t i = 0; i < n; ++i)
 		{
-			const size_t s = Shader(o, d.materials[i]);
+			const auto& [hash, d] = drawables[order[i]];
+			const size_t at = o.Alloc(0xD0);
 			if (o.full)
 				return error = "out of space", false;
-			o.Ptr(shaders + 8 * i, s);
+			o.Set<uint32_t>(hashes + 4 * i, hash);
+			o.Ptr(list + 8 * i, at);
+			if (!Put(o, at, d, error))
+				return false;
 		}
+		return Finish(o, root, file, error);
+	}
 
-		// a model per level of detail, a geometry per mesh
-		for (int lod = 0; lod < 4; ++lod)
+	namespace
+	{
+		bool Put(Out& o, size_t root, const Drawable& d, std::string& error)
 		{
-			const auto& meshes = d.lods[lod];
-			if (meshes.empty())
-				continue;
-			const size_t n = meshes.size();
-			const size_t list = o.Alloc(0x10), models = o.Alloc(8), model = o.Alloc(0x30);
-			const size_t geometries = o.Alloc(8 * n), boxes = o.Alloc(32 * (n > 1 ? n + 1 : 1)), mapping = o.Alloc(2 * n);
-			o.Ptr(root + 0x50 + 8 * lod, list);
-			o.Ptr(list, models);
-			o.Set<uint16_t>(list + 8, 1);
-			o.Set<uint16_t>(list + 10, 1);
-			o.Ptr(models, model);
-			o.Set<uint64_t>(model, kVtModel);
-			o.Ptr(model + 0x08, geometries);
-			o.Set<uint16_t>(model + 0x10, static_cast<uint16_t>(n));
-			o.Set<uint16_t>(model + 0x12, static_cast<uint16_t>(n));
-			o.Ptr(model + 0x18, boxes);
-			o.Ptr(model + 0x20, mapping);
-			o.Set<uint8_t>(model + 0x2C, 0xFF);
-			o.Set<uint16_t>(model + 0x2E, static_cast<uint16_t>(n));
-			std::array<float, 3> all0{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()},
-			    all1{-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
-			for (size_t g = 0; g < n; ++g)
+			o.Set<uint64_t>(root, kVtDrawable);
+			std::array<float, 3> min, max;
+			Box(d, min, max);
+			const std::array<float, 3> centre{(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2};
+			float radius = 0;
+			for (const Mesh& m : d.lods[0])
+				for (const Vertex& v : m.vertices)
+					radius = std::max(radius, std::hypot(v.position[0] - centre[0], v.position[1] - centre[1], v.position[2] - centre[2]));
+			o.Set<float>(root + 0x20, centre[0]);
+			o.Set<float>(root + 0x24, centre[1]);
+			o.Set<float>(root + 0x28, centre[2]);
+			o.Set<float>(root + 0x2C, radius);
+			o.Vec(root + 0x30, min, kTag);
+			o.Vec(root + 0x40, max, kTag);
+			for (int lod = 0; lod < 4; ++lod)
+				o.Set<float>(root + 0x70 + 4 * lod, d.lodDistances[lod]);
+			o.Set<uint8_t>(root + 0x80, 1);
+			o.Set<uint8_t>(root + 0x81, 0xFF);
+			o.Ptr(root + 0xA8, o.String(d.name + ".#dr"));
+
+			// shaders
+			const size_t group = o.Alloc(0x40), shaders = o.Alloc(8 * d.materials.size());
+			o.Set<uint64_t>(group, kVtShaderGroup);
+			o.Ptr(group + 0x10, shaders);
+			o.Set<uint16_t>(group + 0x18, static_cast<uint16_t>(d.materials.size()));
+			o.Set<uint16_t>(group + 0x1A, static_cast<uint16_t>(d.materials.size()));
+			o.Ptr(root + 0x10, group);
+			std::map<std::vector<uint8_t>, size_t> declarations;
+			for (size_t i = 0; i < d.materials.size(); ++i)
 			{
-				const Mesh& m = meshes[g];
-				const Material& mat = d.materials[m.material];
-				const uint32_t stride = Stride(mat.slots);
-				auto decl = declarations.find(mat.slots);
-				if (decl == declarations.end())
-					decl = declarations.emplace(mat.slots, Declaration(o, mat.slots)).first;
-				const size_t geo = o.Alloc(0xA0), vb = o.Alloc(0x40), vbView = o.Alloc(0x20), ib = o.Alloc(0x40), ibView = o.Alloc(0x20);
-				const size_t vertices = o.Alloc(static_cast<size_t>(stride) * m.vertices.size()), indices = o.Alloc(2 * m.indices.size());
+				const size_t s = Shader(o, d.materials[i]);
 				if (o.full)
 					return error = "out of space", false;
-				for (size_t v = 0; v < m.vertices.size(); ++v)
-					PutVertex(o.blk.data.data() + vertices + v * stride, m.vertices[v], mat.slots);
-				for (size_t i = 0; i < m.indices.size(); ++i)
-					o.Set<uint16_t>(indices + 2 * i, static_cast<uint16_t>(m.indices[i]));
-				o.Set<uint64_t>(vb, kVtVertexBuffer);
-				o.Set<uint32_t>(vb + 0x08, static_cast<uint32_t>(m.vertices.size()));
-				o.Set<uint16_t>(vb + 0x0C, static_cast<uint16_t>(stride));
-				o.Set<uint32_t>(vb + 0x10, 0x00580409);
-				o.Ptr(vb + 0x18, vertices);
-				o.Ptr(vb + 0x30, vbView);
-				o.Ptr(vb + 0x38, decl->second);
-				View(o, vbView);
-				o.Set<uint64_t>(ib, kVtIndexBuffer);
-				o.Set<uint32_t>(ib + 0x08, static_cast<uint32_t>(m.indices.size()));
-				o.Set<uint16_t>(ib + 0x0C, 2);
-				o.Set<uint32_t>(ib + 0x10, 0x0058020A);
-				o.Ptr(ib + 0x18, indices);
-				o.Ptr(ib + 0x30, ibView);
-				View(o, ibView);
-				o.Set<uint64_t>(geo, kVtGeometry);
-				o.Ptr(geo + 0x18, vb);
-				o.Ptr(geo + 0x38, ib);
-				o.Set<uint32_t>(geo + 0x58, static_cast<uint32_t>(m.indices.size()));
-				o.Set<uint32_t>(geo + 0x5C, static_cast<uint32_t>(m.indices.size() / 3));
-				o.Set<uint16_t>(geo + 0x60, static_cast<uint16_t>(m.vertices.size()));
-				o.Set<uint16_t>(geo + 0x62, 3);
-				o.Set<uint16_t>(geo + 0x70, static_cast<uint16_t>(stride));
-				o.Ptr(geo + 0x78, vertices);
-				o.Ptr(geometries + 8 * g, geo);
-				o.Set<uint16_t>(mapping + 2 * g, static_cast<uint16_t>(m.material));
-				std::array<float, 3> lo, hi;
-				MeshBox(m, lo, hi);
-				// (each box's w repeats its x, as in the game's files)
-				const size_t box = boxes + 32 * (n > 1 ? g + 1 : 0);
-				uint32_t wx0, wx1;
-				std::memcpy(&wx0, &lo[0], 4);
-				std::memcpy(&wx1, &hi[0], 4);
-				o.Vec(box, lo, wx0);
-				o.Vec(box + 16, hi, wx1);
-				for (int a = 0; a < 3; ++a)
+				o.Ptr(shaders + 8 * i, s);
+			}
+
+			// a model per level of detail, a geometry per mesh
+			for (int lod = 0; lod < 4; ++lod)
+			{
+				const auto& meshes = d.lods[lod];
+				if (meshes.empty())
+					continue;
+				const size_t n = meshes.size();
+				const size_t list = o.Alloc(0x10), models = o.Alloc(8), model = o.Alloc(0x30);
+				const size_t geometries = o.Alloc(8 * n), boxes = o.Alloc(32 * (n > 1 ? n + 1 : 1)), mapping = o.Alloc(2 * n);
+				o.Ptr(root + 0x50 + 8 * lod, list);
+				o.Ptr(list, models);
+				o.Set<uint16_t>(list + 8, 1);
+				o.Set<uint16_t>(list + 10, 1);
+				o.Ptr(models, model);
+				o.Set<uint64_t>(model, kVtModel);
+				o.Ptr(model + 0x08, geometries);
+				o.Set<uint16_t>(model + 0x10, static_cast<uint16_t>(n));
+				o.Set<uint16_t>(model + 0x12, static_cast<uint16_t>(n));
+				o.Ptr(model + 0x18, boxes);
+				o.Ptr(model + 0x20, mapping);
+				o.Set<uint8_t>(model + 0x2C, 0xFF);
+				o.Set<uint16_t>(model + 0x2E, static_cast<uint16_t>(n));
+				std::array<float, 3> all0{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()},
+				    all1{-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
+				for (size_t g = 0; g < n; ++g)
 				{
-					all0[a] = std::min(all0[a], lo[a]);
-					all1[a] = std::max(all1[a], hi[a]);
+					const Mesh& m = meshes[g];
+					const Material& mat = d.materials[m.material];
+					const uint32_t stride = Stride(mat.slots);
+					auto decl = declarations.find(mat.slots);
+					if (decl == declarations.end())
+						decl = declarations.emplace(mat.slots, Declaration(o, mat.slots)).first;
+					const size_t geo = o.Alloc(0xA0), vb = o.Alloc(0x40), vbView = o.Alloc(0x20), ib = o.Alloc(0x40), ibView = o.Alloc(0x20);
+					const size_t vertices = o.Alloc(static_cast<size_t>(stride) * m.vertices.size()), indices = o.Alloc(2 * m.indices.size());
+					if (o.full)
+						return error = "out of space", false;
+					for (size_t v = 0; v < m.vertices.size(); ++v)
+						PutVertex(o.blk.data.data() + vertices + v * stride, m.vertices[v], mat.slots);
+					for (size_t i = 0; i < m.indices.size(); ++i)
+						o.Set<uint16_t>(indices + 2 * i, static_cast<uint16_t>(m.indices[i]));
+					o.Set<uint64_t>(vb, kVtVertexBuffer);
+					o.Set<uint32_t>(vb + 0x08, static_cast<uint32_t>(m.vertices.size()));
+					o.Set<uint16_t>(vb + 0x0C, static_cast<uint16_t>(stride));
+					o.Set<uint32_t>(vb + 0x10, 0x00580409);
+					o.Ptr(vb + 0x18, vertices);
+					o.Ptr(vb + 0x30, vbView);
+					o.Ptr(vb + 0x38, decl->second);
+					View(o, vbView);
+					o.Set<uint64_t>(ib, kVtIndexBuffer);
+					o.Set<uint32_t>(ib + 0x08, static_cast<uint32_t>(m.indices.size()));
+					o.Set<uint16_t>(ib + 0x0C, 2);
+					o.Set<uint32_t>(ib + 0x10, 0x0058020A);
+					o.Ptr(ib + 0x18, indices);
+					o.Ptr(ib + 0x30, ibView);
+					View(o, ibView);
+					o.Set<uint64_t>(geo, kVtGeometry);
+					o.Ptr(geo + 0x18, vb);
+					o.Ptr(geo + 0x38, ib);
+					o.Set<uint32_t>(geo + 0x58, static_cast<uint32_t>(m.indices.size()));
+					o.Set<uint32_t>(geo + 0x5C, static_cast<uint32_t>(m.indices.size() / 3));
+					o.Set<uint16_t>(geo + 0x60, static_cast<uint16_t>(m.vertices.size()));
+					o.Set<uint16_t>(geo + 0x62, 3);
+					o.Set<uint16_t>(geo + 0x70, static_cast<uint16_t>(stride));
+					o.Ptr(geo + 0x78, vertices);
+					o.Ptr(geometries + 8 * g, geo);
+					o.Set<uint16_t>(mapping + 2 * g, static_cast<uint16_t>(m.material));
+					std::array<float, 3> lo, hi;
+					MeshBox(m, lo, hi);
+					// (each box's w repeats its x, as in the game's files)
+					const size_t box = boxes + 32 * (n > 1 ? g + 1 : 0);
+					uint32_t wx0, wx1;
+					std::memcpy(&wx0, &lo[0], 4);
+					std::memcpy(&wx1, &hi[0], 4);
+					o.Vec(box, lo, wx0);
+					o.Vec(box + 16, hi, wx1);
+					for (int a = 0; a < 3; ++a)
+					{
+						all0[a] = std::min(all0[a], lo[a]);
+						all1[a] = std::max(all1[a], hi[a]);
+					}
+				}
+				if (n > 1)
+				{
+					uint32_t wx0, wx1;
+					std::memcpy(&wx0, &all0[0], 4);
+					std::memcpy(&wx1, &all1[0], 4);
+					o.Vec(boxes, all0, wx0);
+					o.Vec(boxes + 16, all1, wx1);
 				}
 			}
-			if (n > 1)
-			{
-				uint32_t wx0, wx1;
-				std::memcpy(&wx0, &all0[0], 4);
-				std::memcpy(&wx1, &all1[0], 4);
-				o.Vec(boxes, all0, wx0);
-				o.Vec(boxes + 16, all1, wx1);
-			}
+			return !o.full || (error = "out of space", false);
 		}
-
-		// the page map, room for every page (the game fills in their addresses), then the pages packed
-		const size_t pageMap = o.Alloc(16 + 8 * 256);
-		if (o.full)
-			return error = "out of space", false;
-		o.Ptr(root + 0x08, pageMap);
-		loader::convert::Resource res;
-		uint32_t pageCount = 0;
-		if (!o.blk.Relayout(res.virtualBlock, res.virtualFlags, pageCount, error, &o.pointers))
-			return false;
-		const size_t newPageMap = static_cast<size_t>(loader::convert::Get<uint64_t>(res.virtualBlock, 8) - kVirtual);
-		res.virtualBlock[newPageMap + 8] = static_cast<uint8_t>(pageCount);
-		res.version = kVersion;
-		res.virtualFlags |= (kVersion >> 4) << 28;
-		res.physicalFlags = (kVersion & 0xF) << 28;
-		return loader::convert::Write(res, file, error);
 	}
 }

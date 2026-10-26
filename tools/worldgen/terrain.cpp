@@ -12,6 +12,21 @@ namespace worldgen::terrain
 			return static_cast<uint8_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f));
 		}
 
+		// Smooth value noise in [-1, 1] over a lattice of `cell` metres.
+		float Noise(float x, float y, float cell, uint32_t seed)
+		{
+			const auto at = [&](int i, int j) {
+				uint32_t h = static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(j) * 19349663u ^ seed * 83492791u;
+				h ^= h >> 16, h *= 0x7feb352du, h ^= h >> 15, h *= 0x846ca68bu, h ^= h >> 16;
+				return static_cast<float>(h >> 8) / 8388608.0f - 1.0f;
+			};
+			const float fx = x / cell, fy = y / cell;
+			const int i = static_cast<int>(std::floor(fx)), j = static_cast<int>(std::floor(fy));
+			float tx = fx - i, ty = fy - j;
+			tx = tx * tx * (3 - 2 * tx), ty = ty * ty * (3 - 2 * ty);
+			return (at(i, j) * (1 - tx) + at(i + 1, j) * tx) * (1 - ty) + (at(i, j + 1) * (1 - tx) + at(i + 1, j + 1) * tx) * ty;
+		}
+
 		std::array<float, 3> Normalised(std::array<float, 3> v)
 		{
 			const float l = std::hypot(v[0], v[1], v[2]);
@@ -51,7 +66,10 @@ namespace worldgen::terrain
 				v.tangent = {tangent[0], tangent[1], tangent[2], 1};
 				v.colour0 = {255, 0, 255, 255}; // (no darkening; as the game's own terrain has it)
 				v.colour1 = f.layers[f.V(gi, gj)];
-				v.uv[0] = {x / uvMetres, -y / uvMetres};
+				// (from a whole number of repeats near the tile's middle: the same texture at the tiles' seams, and small
+				// coordinates - in the thousands they lose their precision on the way to the texture, which then shows
+				// as a grid of blocks)
+				v.uv[0] = {x / uvMetres - std::floor(cx / uvMetres), -y / uvMetres - std::floor(-cy / uvMetres)};
 				m.vertices.push_back(v);
 			}
 		for (int j = 0; j < n; ++j)
@@ -67,6 +85,48 @@ namespace worldgen::terrain
 					m.indices.insert(m.indices.end(), {a, b, c, b, d, c});
 			}
 		return m;
+	}
+
+	Meshes TileMeshes(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres, float blendMetres)
+	{
+		const ydr::Mesh all = TileMesh(f, i0, j0, cells, cx, cy, uvMetres);
+		if (f.lawnCell.empty())
+			return {all, {}};
+		Meshes out;
+		const int n = std::min({cells, f.nx - i0, f.ny - j0});
+		std::vector<int> groundIndex(all.vertices.size(), -1), lawnIndex(all.vertices.size(), -1);
+		const auto take = [&](ydr::Mesh& m, std::vector<int>& index, uint32_t v, bool lawn) {
+			if (index[v] < 0)
+			{
+				ydr::Vertex vertex = all.vertices[v];
+				if (lawn)
+				{
+					// The weights: lerp(blend map, vertex colour, its alpha). Inside, as the game's own lawns have them (the
+					// colour about half, mostly the first pair - two even grasses - the blend map's patches of the others
+					// kept to a share: one of them is patchy, every 3.5 m a repeat that shows as a grid), varying over tens
+					// of metres; towards the edge layer 3 (green and blue full, alpha 1), the ground material's grass.
+					const int vi = static_cast<int>(v) % (n + 1), vj = static_cast<int>(v) / (n + 1);
+					const float x = vertex.position[0] + cx, y = vertex.position[1] + cy;
+					const float l = f.lawn[f.V(i0 + vi, j0 + vj)];
+					const float gIn = std::clamp(0.12f + 0.12f * Noise(x, y, 53.0f, 7), 0.0f, 1.0f), bIn = std::clamp(0.5f + 0.4f * Noise(x, y, 37.0f, 3), 0.0f, 1.0f);
+					vertex.colour1 = {0, Byte(1 + (gIn - 1) * l), Byte(1 + (bIn - 1) * l), Byte(1 + (0.55f - 1) * l)};
+					vertex.uv[1] = {x / blendMetres - std::floor(cx / blendMetres), -y / blendMetres - std::floor(-cy / blendMetres)};
+				}
+				index[v] = static_cast<int>(m.vertices.size());
+				m.vertices.push_back(vertex);
+			}
+			m.indices.push_back(static_cast<uint32_t>(index[v]));
+		};
+		// (the whole mesh's triangles come in pairs, cell by cell, as TileMesh made them)
+		for (int j = 0; j < n; ++j)
+			for (int i = 0; i < n; ++i)
+			{
+				const bool lawn = f.lawnCell[static_cast<size_t>(j0 + j) * f.nx + (i0 + i)] != 0;
+				const size_t first = (static_cast<size_t>(j) * n + i) * 6;
+				for (size_t k = first; k < first + 6; ++k)
+					take(lawn ? out.lawn : out.ground, lawn ? lawnIndex : groundIndex, all.indices[k], lawn);
+			}
+		return out;
 	}
 
 	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells)

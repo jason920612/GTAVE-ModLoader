@@ -18,6 +18,8 @@
 //   +0x18 boxes (32 bytes: all, then each geometry's; one when one geometry), +0x20 each geometry's shader (u16),
 //   +0x2C 0xFF (drawn in every pass), +0x2E the geometry count. Geometry (0xA0): +0x18 vertex buffer, +0x38 index
 //   buffer, +0x58 index count, +0x5C triangles, +0x60 u16 vertices, u16 3, +0x70 stride, +0x78 the vertex data.
+//   A dictionary of them (.ydd, research/phase0.md §61.26; 0x40): +0x08 page map (only the dictionary has one), +0x18 1,
+//   +0x20 the name hashes (ascending: the game halves to find one; u16 count, capacity), +0x30 the drawables in that order.
 namespace worldgen::ydr
 {
 	// Vertex elements: the slot of the Enhanced declaration.
@@ -77,6 +79,8 @@ namespace worldgen::ydr
 	bool ReadMaterial(const ue5export::drawable::View& view, uint64_t at, uint32_t index, Material& out, std::string& error);
 
 	bool Write(const Drawable& drawable, loader::convert::Bytes& out, std::string& error);
+	// A dictionary of drawables (.ydd) by name hash.
+	bool WriteDictionary(const std::vector<std::pair<uint32_t, Drawable>>& drawables, loader::convert::Bytes& out, std::string& error);
 
 	// The box of the highest level of detail (for the archetype).
 	void Box(const Drawable& drawable, std::array<float, 3>& min, std::array<float, 3>& max);

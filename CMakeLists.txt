@@ -61,6 +61,7 @@ add_library(loader SHARED
     src/loader/game/scripts.cpp
     src/loader/game/story.cpp
     src/loader/game/sea.cpp
+    src/loader/game/minimap.cpp
     src/loader/game/dlss.cpp
     src/loader/graphics/streamline.cpp
     src/loader/graphics/bridge.cpp
@@ -283,6 +284,7 @@ add_executable(worldgen
     tools/worldgen/texture.cpp
     tools/worldgen/facades.cpp
     tools/worldgen/trees.cpp
+    tools/worldgen/minimap.cpp
     tools/worldgen/roadedit.cpp
     tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp

@@ -19,6 +19,11 @@ namespace worldgen::terrain
 		std::vector<float> height;                // per vertex, row by row from the south
 		std::vector<std::array<uint8_t, 4>> layers; // per vertex: the second colour (r darkens, g pair, b layer, a 255)
 		std::vector<uint8_t> material;            // per cell: a row of materials.dat
+		// lawns (TileMeshes; empty: none): per cell, drawn with the lawn material; per vertex, how far into the lawn (0
+		// where it meets the other material: there both draw the same grass, the ground material's layer 0 and the lawn's
+		// layer 3; 1 inside, where the lawn's blend map mixes its four grasses)
+		std::vector<uint8_t> lawnCell;
+		std::vector<float> lawn;
 
 		float H(int i, int j) const { return height[static_cast<size_t>(j) * (nx + 1) + i]; }
 		size_t V(int i, int j) const { return static_cast<size_t>(j) * (nx + 1) + i; }
@@ -30,6 +35,15 @@ namespace worldgen::terrain
 	// The mesh of the tile of `cells` x `cells` from cell (i0, j0), around (cx, cy); texture coordinates: world
 	// metres / uvMetres.
 	ydr::Mesh TileMesh(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres);
+	// The same split by material (research/phase0.md §61.25): the lawn cells (Field::lawnCell) in a mesh of their own
+	// for the game's lawn shader (terrain_cb_w_4lyr_2tex_blend: its blend map, on the second texture coordinates every
+	// `blendMetres`, mixes four grasses where the vertex colour's alpha is 0; at alpha 1 the vertex colour picks layer 3),
+	// the rest as TileMesh.
+	struct Meshes
+	{
+		ydr::Mesh ground, lawn;
+	};
+	Meshes TileMeshes(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres, float blendMetres);
 	// Its collision: parts of at most 20 x 20 cells.
 	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells);
 }

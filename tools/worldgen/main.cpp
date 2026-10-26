@@ -1074,6 +1074,36 @@ int main(int argc, char** argv)
 		std::fprintf(stderr, "%zu dictionaries read\n", read);
 		return 0;
 	}
+	if (command == "shader-find")
+	{
+		// the game's models (.ydr) with a shader of these effects: --shader name,name (file, the shader's index, its
+		// textures)
+		std::set<uint32_t> wanted;
+		std::istringstream list(g_options["shader"]);
+		for (std::string s; std::getline(list, s, ',');)
+			wanted.insert(loader::convert::Joaat(s));
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.ends_with(".ydr"))
+				continue;
+			Bytes data;
+			loader::convert::Resource res;
+			if (!files.Read(f, data, error) || !loader::convert::Read(data, res, error))
+				continue;
+			ue5export::drawable::Model model;
+			if (!ue5export::drawable::Read(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, model, error))
+				continue;
+			for (size_t k = 0; k < model.materials.size(); ++k)
+				if (wanted.contains(model.materials[k].effect))
+				{
+					std::printf("%s %zu %08x:", name.c_str(), k, model.materials[k].effect);
+					for (const auto& [p, texture] : model.materials[k].textures)
+						std::printf(" %s", texture.c_str());
+					std::printf("\n");
+				}
+		}
+		return 0;
+	}
 	if (command == "hash-find")
 	{
 		// the game's files whose name (without the extension) has one of these hashes: --hash 0x...,0x...
@@ -1089,6 +1119,85 @@ int main(int argc, char** argv)
 				stem.resize(dot);
 			if (wanted.contains(loader::convert::Joaat(stem)))
 				std::printf("%08x %s\n", loader::convert::Joaat(stem), name.c_str());
+		}
+		return 0;
+	}
+	if (command == "ydd-stats")
+	{
+		// a drawable dictionary on disk: each drawable's name hash, box, shaders (effect, textures), sections (vertices,
+		// x/y/z ranges, the first vertex colour's range): --file <file.ydd>
+		std::ifstream in(g_options["file"], std::ios::binary);
+		Bytes data((std::istreambuf_iterator<char>(in)), {});
+		loader::convert::Resource res;
+		if (data.empty() || !loader::convert::Read(data, res, error))
+			return Fail("cannot read " + g_options["file"] + ": " + error);
+		const ue5export::drawable::View view(res);
+		for (const auto& [hash, at] : ue5export::drawable::Drawables(view, "ydd"))
+		{
+			ue5export::drawable::Model model;
+			if (!ue5export::drawable::Read(view, at, model, error))
+			{
+				std::printf("drawable %08x: %s\n", hash, error.c_str());
+				continue;
+			}
+			std::printf("drawable %08x: box %.1f %.1f %.1f .. %.1f %.1f %.1f, %zu shaders, %zu sections\n", hash, model.bbMin[0], model.bbMin[1], model.bbMin[2],
+			    model.bbMax[0], model.bbMax[1], model.bbMax[2], model.materials.size(), model.sections.size());
+			for (const auto& m : model.materials)
+			{
+				std::printf("  shader %08x bucket %u:", m.effect, m.drawBucket);
+				for (const auto& [p, name] : m.textures)
+					std::printf(" %08x=%s", p, name.c_str());
+				for (const auto& [p, values] : m.constants)
+				{
+					std::printf(" %08x=(", p);
+					for (size_t k = 0; k < values.size() && k < 4; ++k)
+						std::printf("%s%g", k ? " " : "", values[k]);
+					std::printf(")");
+				}
+				std::printf("\n");
+			}
+			for (const auto& s : model.sections)
+			{
+				float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
+				for (size_t v = 0; v < s.vertices; ++v)
+					for (int c = 0; c < 3; ++c)
+						lo[c] = std::min(lo[c], s.position[v * 3 + c]), hi[c] = std::max(hi[c], s.position[v * 3 + c]);
+				std::printf("  section: shader %u, %u vertices, %zu triangles, x %.1f..%.1f y %.1f..%.1f z %.2f..%.2f", s.material, s.vertices, s.indices.size() / 3,
+				    lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+				if (s.color0.size() >= static_cast<size_t>(s.vertices) * 4 && s.vertices)
+					std::printf(", colour0 first (%u %u %u %u)", s.color0[0], s.color0[1], s.color0[2], s.color0[3]);
+				std::printf("\n");
+				// (--triangles <file>: every triangle as a line "x y x y x y r g b z", appended)
+				if (g_options.contains("triangles") && s.color0.size() >= static_cast<size_t>(s.vertices) * 4)
+				{
+					std::ofstream list(g_options["triangles"], std::ios::app);
+					for (size_t t = 0; t + 2 < s.indices.size(); t += 3)
+					{
+						const uint32_t a = s.indices[t];
+						for (int k = 0; k < 3; ++k)
+							list << s.position[s.indices[t + k] * 3] << ' ' << s.position[s.indices[t + k] * 3 + 1] << ' ';
+						list << int(s.color0[a * 4]) << ' ' << int(s.color0[a * 4 + 1]) << ' ' << int(s.color0[a * 4 + 2]) << ' ' << s.position[a * 3 + 2] << '\n';
+					}
+				}
+				// (--colours: the triangles by their first vertex's colour and height, with the area they cover)
+				if (g_options.contains("colours") && s.color0.size() >= static_cast<size_t>(s.vertices) * 4)
+				{
+					std::map<std::pair<uint32_t, float>, std::pair<int, double>> kinds;
+					for (size_t t = 0; t + 2 < s.indices.size(); t += 3)
+					{
+						const uint32_t a = s.indices[t], b = s.indices[t + 1], c = s.indices[t + 2];
+						uint32_t colour;
+						std::memcpy(&colour, &s.color0[a * 4], 4);
+						const float* p = s.position.data();
+						const double area = std::fabs((p[b * 3] - p[a * 3]) * (p[c * 3 + 1] - p[a * 3 + 1]) - (p[c * 3] - p[a * 3]) * (p[b * 3 + 1] - p[a * 3 + 1])) / 2;
+						auto& k = kinds[{colour, p[a * 3 + 2]}];
+						++k.first, k.second += area;
+					}
+					for (const auto& [key, value] : kinds)
+						std::printf("    colour %u %u %u %u z %.1f: %d triangles, %.0f m2\n", key.first & 0xFF, (key.first >> 8) & 0xFF, (key.first >> 16) & 0xFF, key.first >> 24,
+						    key.second, value.first, value.second);
+				}
+			}
 		}
 		return 0;
 	}
@@ -1112,6 +1221,25 @@ int main(int argc, char** argv)
 			for (size_t v = 0; v < s.vertices; ++v)
 				zMin = std::min(zMin, s.position[v * 3 + 2]), zMax = std::max(zMax, s.position[v * 3 + 2]);
 			std::printf("section: material %u, %u vertices, %zu triangles, z %.2f..%.2f\n", s.material, s.vertices, s.indices.size() / 3, zMin, zMax);
+			// (each texture coordinate set: its range, and how many units a metre along x and y - least squares)
+			for (size_t set = 0; set < s.uv.size(); ++set)
+			{
+				const auto& uv = s.uv[set];
+				if (uv.size() < static_cast<size_t>(s.vertices) * 2 || !s.vertices)
+					continue;
+				float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
+				double sxx = 0, sx = 0, su = 0, sxu = 0, syy = 0, sy = 0, sv = 0, syv = 0;
+				for (size_t v = 0; v < s.vertices; ++v)
+				{
+					for (int c = 0; c < 2; ++c)
+						lo[c] = std::min(lo[c], uv[v * 2 + c]), hi[c] = std::max(hi[c], uv[v * 2 + c]);
+					const double x = s.position[v * 3], y = s.position[v * 3 + 1], u = uv[v * 2], w = uv[v * 2 + 1];
+					sxx += x * x, sx += x, su += u, sxu += x * u, syy += y * y, sy += y, sv += w, syv += y * w;
+				}
+				const double n = s.vertices;
+				const double du = (n * sxu - sx * su) / std::max(1e-9, n * sxx - sx * sx), dv = (n * syv - sy * sv) / std::max(1e-9, n * syy - sy * sy);
+				std::printf("  uv%zu: u %.3f..%.3f, v %.3f..%.3f; per metre: u/x %.4f, v/y %.4f\n", set, lo[0], hi[0], lo[1], hi[1], du, dv);
+			}
 			for (const auto* colours : {&s.color0, &s.color1})
 			{
 				if (colours->size() < static_cast<size_t>(s.vertices) * 4)

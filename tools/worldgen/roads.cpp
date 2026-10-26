@@ -186,11 +186,12 @@ namespace worldgen::roads
 			// A flat polygon (a fan from `centre`, the points anticlockwise round it), textured in world space.
 			void Fan(Mesh& m, const P3& centre, const std::vector<P3>& ring, uint8_t material, bool ground, uint8_t kind = 0)
 			{
+				// (texture coordinates from the middle: small - research/phase0.md §61.25)
 				const P3 up{0, 0, 1};
-				const uint32_t c = Add(m, centre, up, {centre[0] / kTexture, -centre[1] / kTexture});
+				const uint32_t c = Add(m, centre, up, {0, 0});
 				std::vector<uint32_t> r;
 				for (const P3& p : ring)
-					r.push_back(Add(m, p, up, {p[0] / kTexture, -p[1] / kTexture}));
+					r.push_back(Add(m, p, up, {(p[0] - centre[0]) / kTexture, -(p[1] - centre[1]) / kTexture}));
 				for (size_t i = 0; i < ring.size(); ++i)
 				{
 					const size_t j = (i + 1) % ring.size();
@@ -1112,7 +1113,7 @@ namespace worldgen::roads
 					const P3 up{0, 0, 1};
 					std::vector<uint32_t> idx;
 					for (size_t q = 0; q < ring.size(); ++q)
-						idx.push_back(b.Add(jm, {ring[q][0], ring[q][1], ringZ[q]}, up, {ring[q][0] / tm, -ring[q][1] / tm}));
+						idx.push_back(b.Add(jm, {ring[q][0], ring[q][1], ringZ[q]}, up, {(ring[q][0] - c[0]) / tm, -(ring[q][1] - c[1]) / tm}));
 					for (const auto& t : tris)
 					{
 						b.Tri(jm, idx[t[0]], idx[t[1]], idx[t[2]]);

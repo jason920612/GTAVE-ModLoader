@@ -4,6 +4,7 @@
 #include <TlHelp32.h>
 
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <filesystem>
 #include <thread>
@@ -42,7 +43,10 @@ namespace loader::debug
 			uintptr_t rip;
 			uintptr_t value;
 			uintptr_t stack[12];
+			uint64_t regs[5]; // rax, rcx, rdx, r8, r9
+			float xmm0;
 		};
+		bool g_execute[4]{};
 		constexpr int kMaxHits = 256;
 		Hit g_hitLog[kMaxHits];
 		std::atomic_int g_hitCount = 0;
@@ -57,6 +61,10 @@ namespace loader::debug
 			if (!(dr6 & 0xF))
 				return EXCEPTION_CONTINUE_SEARCH;
 			ctx->Dr6 = 0;
+			// (an instruction breakpoint hits before the instruction runs: resume flag, or it hits again at once)
+			for (int i = 0; i < 4; ++i)
+				if ((dr6 & (1ull << i)) && g_execute[i])
+					ctx->EFlags |= 0x10000;
 
 			for (int i = 0; i < 4; ++i)
 			{
@@ -70,6 +78,9 @@ namespace loader::debug
 				h.thread = GetCurrentThreadId();
 				h.rip = ctx->Rip;
 				h.value = 0;
+				const uint64_t regs[5] = {ctx->Rax, ctx->Rcx, ctx->Rdx, ctx->R8, ctx->R9};
+				std::copy(regs, regs + 5, h.regs);
+				std::memcpy(&h.xmm0, &ctx->Xmm0, sizeof(float));
 				ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(g_watchAddr[i]), &h.value, sizeof(h.value), nullptr);
 				int found = 0;
 				const auto* sp = reinterpret_cast<const uintptr_t*>(ctx->Rsp);
@@ -90,9 +101,9 @@ namespace loader::debug
 			DWORD64 dr7 = 0;
 			for (size_t i = 0; i < watches.size() && i < 4; ++i)
 			{
-				const DWORD64 len = watches[i].size == 1 ? 0 : watches[i].size == 2 ? 1 : watches[i].size == 8 ? 2 : 3;
+				const DWORD64 len = watches[i].onExecute ? 0 : watches[i].size == 1 ? 0 : watches[i].size == 2 ? 1 : watches[i].size == 8 ? 2 : 3;
 				dr7 |= 1ull << (i * 2);              // local enable
-				dr7 |= (watches[i].onRead ? 3ull : 1ull) << (16 + i * 4); // read/write or write
+				dr7 |= (watches[i].onExecute ? 0ull : watches[i].onRead ? 3ull : 1ull) << (16 + i * 4); // execute, read/write or write
 				dr7 |= len << (18 + i * 4);          // length
 			}
 			return dr7;
@@ -108,6 +119,7 @@ namespace loader::debug
 			if (g_watchAddr[i] != addr)
 				g_hits[i] = 0; // re-arming the same watch keeps its hit budget
 			g_watchAddr[i] = addr;
+			g_execute[i] = watches[i].onExecute;
 		}
 		if (!g_handler)
 			g_handler = AddVectoredExceptionHandler(1, OnException);
@@ -168,7 +180,9 @@ namespace loader::debug
 			ls >> mode;
 			if (!mode.empty() && mode.back() == '')
 				mode.pop_back();
-			watches.push_back({std::stoull(addr, nullptr, 16), static_cast<uint8_t>(size), mode == "r", true});
+			// (+<hex>: inside the game's module; x: an instruction breakpoint)
+			const bool inGame = !addr.empty() && addr.front() == '+';
+			watches.push_back({std::stoull(inGame ? addr.substr(1) : addr, nullptr, 16), static_cast<uint8_t>(size), mode == "r", !inGame, mode == "x"});
 		}
 		log::Info("debug: arming {} watch(es) from debug_watch.txt", watches.size());
 		std::thread([watches] { ArmWriteWatches(watches); }).detach();
@@ -184,8 +198,8 @@ namespace loader::debug
 			for (uintptr_t v : h.stack)
 				if (v)
 					stack += std::format(" {:#x}", v - g_game.base);
-			log::Info("watch[{}] {:#x} <- rip {:#x} (now {:#x}) thread {} | stack:{}", h.watch, g_watchAddr[h.watch], h.rip - g_game.base,
-			    h.value, h.thread, stack);
+			log::Info("watch[{}] {:#x} <- rip {:#x} (now {:#x}) thread {} | rax {:#x} rcx {:#x} rdx {:#x} r8 {:#x} r9 {:#x} xmm0 {} | stack:{}", h.watch,
+			    g_watchAddr[h.watch], h.rip - g_game.base, h.value, h.thread, h.regs[0], h.regs[1], h.regs[2], h.regs[3], h.regs[4], h.xmm0, stack);
 		}
 	}
 }

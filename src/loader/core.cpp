@@ -33,6 +33,7 @@
 #include "game/navgrid.hpp"
 #include "game/pathregions.hpp"
 #include "game/pools.hpp"
+#include "game/minimap.hpp"
 #include "game/sea.hpp"
 #include "graphics/bridge.hpp"
 #include "graphics/gamelights.hpp"
@@ -343,6 +344,7 @@ namespace loader::core
 		game::pathregions::AllowNewRegionFiles();
 		game::navgrid::Install();
 		game::sea::Install();
+		game::minimap::Install();
 		if (config::Get().ue5Renderer)
 			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())
