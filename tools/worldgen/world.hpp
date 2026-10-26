@@ -42,6 +42,7 @@ namespace worldgen::world
 		float height = 0;
 		std::string kind; // OSM building value
 		std::string name;
+		bool planned = false; // the world editor's: not there yet (its height as given, not measured)
 	};
 
 	struct Point
@@ -65,6 +66,15 @@ namespace worldgen::world
 		P2 To(double lat, double lon) const { return {static_cast<float>(x0 + (lon - lon0) * kx), static_cast<float>(y0 + (lat - lat0) * ky)}; }
 	};
 
+	// A brush stroke of the world editor's: painting the ground's class (park, beach, paved, water, urban, land) or shaping
+	// the terrain (raise, lower, flatten), `radius` metres round its points.
+	struct Stroke
+	{
+		std::string what; // the class painted, or the terrain's operation
+		float radius = 10, amount = 1; // (amount: metres raised or lowered at the middle)
+		std::vector<P2> points;
+	};
+
 	struct World
 	{
 		std::string name;
@@ -77,6 +87,10 @@ namespace worldgen::world
 		std::vector<Building> buildings;
 		std::vector<Point> points;
 		std::string attribution; // the data's source
+		// the world editor's (edits.json): ground painted, terrain shaped, areas cleared of buildings, the climate
+		std::vector<Stroke> paint, terrain;
+		std::vector<std::vector<P2>> demolish;
+		std::string climate;
 	};
 
 
@@ -85,8 +99,13 @@ namespace worldgen::world
 	bool Load(const std::filesystem::path& file, World& w, std::string& error);
 
 	// The world editor's changes (the worldedit mod's edits.json: {"roads": [road objects as world.json has them],
-	// "removed": [road ids]}): a road whose id the world has replaces it, the others are added; removed ones go.
+	// "removed": [road ids], "buildings": [{"footprint", "height", "kind"}], "demolish": [rings], "paint": [strokes],
+	// "terrain": [strokes], "climate": name}): a road whose id the world has replaces it, the others are added; removed
+	// ones go; new buildings are added, any whose middle lies in a demolished ring goes (worldgen build also leaves out
+	// the scan's own there); the strokes and the climate are kept for the build.
 	bool ApplyEdits(World& w, const std::filesystem::path& file, std::string& error);
+	// A footprint whose middle lies in one of the editor's demolished areas.
+	bool Demolished(const World& w, const std::vector<P2>& footprint);
 
 	// The roads for the editor, compact (roads.bin, tools/worldgen and examples/worldedit read the same layout): 'WBRD',
 	// u32 version 1, u32 count; each road: i64 id, u8 + kind, u16 + name, u8 forward, u8 backward, u8 flags (1 sidewalks,

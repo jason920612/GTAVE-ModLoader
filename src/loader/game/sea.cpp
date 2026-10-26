@@ -66,6 +66,7 @@ namespace loader::game::sea
 			std::string name;
 			float box[4]{}; // min x, min y, max x, max y
 			float waves = 1;
+			std::string climate; // its weather (Climate below; empty: the game's)
 			// the water (water.bin): none when the pack has no mask
 			bool water = false;
 			float x0 = 0, y0 = 0, cell = 4;
@@ -194,6 +195,7 @@ namespace loader::game::sea
 					for (int k = 0; k < 4; ++k)
 						land.box[k] = j.at("box").at(k).get<float>();
 					land.waves = std::clamp(j.value("waves", 1.0f), 0.0f, 1.0f);
+					land.climate = j.value("climate", "");
 					log::Info("sea: land {} ({:.0f}, {:.0f})..({:.0f}, {:.0f}), swell {:.2f} of the open ocean's", land.name, land.box[0], land.box[1],
 					    land.box[2], land.box[3], land.waves);
 					if (j.contains("water") && !ReadWater(land, entry.path() / j["water"].get<std::string>()))
@@ -489,6 +491,58 @@ namespace loader::game::sea
 			return true;
 		}
 
+		// A land's climate: the weather by the hour, a few kinds each with its chance (picked afresh every game hour, the
+		// same for the same day and hour). Tropical (Miami): clear mornings, afternoon thunderstorms, clearing evenings; dry:
+		// sun, now and then haze; temperate: clouds, rain, morning fog.
+		struct Chance
+		{
+			const char* weather;
+			float share;
+		};
+		struct Hours
+		{
+			int from, to; // [from, to)
+			std::vector<Chance> chances;
+		};
+		const std::vector<Hours>* Climate(const std::string& name)
+		{
+			static const std::vector<Hours> tropical{
+			    {0, 7, {{"CLEAR", 0.6f}, {"CLOUDS", 0.3f}, {"FOGGY", 0.1f}}},
+			    {7, 12, {{"EXTRASUNNY", 0.5f}, {"CLEAR", 0.35f}, {"CLOUDS", 0.15f}}},
+			    {12, 14, {{"CLOUDS", 0.5f}, {"CLEAR", 0.4f}, {"OVERCAST", 0.1f}}},
+			    {14, 18, {{"THUNDER", 0.25f}, {"RAIN", 0.2f}, {"OVERCAST", 0.25f}, {"CLOUDS", 0.3f}}},
+			    {18, 20, {{"CLEARING", 0.4f}, {"CLOUDS", 0.4f}, {"CLEAR", 0.2f}}},
+			    {20, 24, {{"CLEAR", 0.7f}, {"CLOUDS", 0.3f}}}};
+			static const std::vector<Hours> dry{
+			    {0, 10, {{"CLEAR", 0.8f}, {"SMOG", 0.2f}}}, {10, 18, {{"EXTRASUNNY", 0.75f}, {"CLEAR", 0.15f}, {"SMOG", 0.1f}}}, {18, 24, {{"CLEAR", 0.9f}, {"CLOUDS", 0.1f}}}};
+			static const std::vector<Hours> temperate{
+			    {0, 9, {{"FOGGY", 0.25f}, {"CLOUDS", 0.35f}, {"OVERCAST", 0.2f}, {"CLEAR", 0.2f}}},
+			    {9, 17, {{"CLOUDS", 0.35f}, {"CLEAR", 0.25f}, {"OVERCAST", 0.2f}, {"RAIN", 0.15f}, {"CLEARING", 0.05f}}},
+			    {17, 24, {{"CLOUDS", 0.4f}, {"CLEAR", 0.3f}, {"OVERCAST", 0.2f}, {"RAIN", 0.1f}}}};
+			return name == "tropical" ? &tropical : name == "dry" ? &dry : name == "temperate" ? &temperate : nullptr;
+		}
+
+		const char* WeatherAt(const std::vector<Hours>& climate, int day, int hour)
+		{
+			for (const Hours& h : climate)
+				if (hour >= h.from && hour < h.to)
+				{
+					uint32_t r = static_cast<uint32_t>(day * 31 + hour) * 2654435761u;
+					r ^= r >> 15, r *= 0x2c1b3c6du, r ^= r >> 12;
+					float pick = static_cast<float>(r % 10000) / 10000;
+					for (const Chance& c : h.chances)
+						if ((pick -= c.share) < 0)
+							return c.weather;
+					return h.chances.back().weather;
+				}
+			return "CLEAR";
+		}
+
+		constexpr uint64_t kGetClockHours = 0x25223CA6B4D20B7F, kGetClockDayOfMonth = 0x3D10BC92A4DB1D35;
+		constexpr uint64_t kSetWeatherTypeOvertimePersist = 0xFB5045B7C42B75BF, kClearWeatherTypePersist = 0xCCC39339BEF76CF5;
+		constexpr uint64_t kIsGameplayCamRendering = 0x39B5D1B10383F0C8;
+		const char* g_weather = nullptr; // what the climate set last (nullptr: the game's own)
+
 		bool g_ours = false; // the deep ocean's scaler is ours (set while near a land)
 		std::chrono::steady_clock::time_point g_next{};
 	}
@@ -516,12 +570,33 @@ namespace loader::game::sea
 
 		const auto camera = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
 		float want = 1;
+		const Land* on = nullptr; // the land the camera is over
 		for (const Land& land : g_lands)
 		{
 			const float dx = std::max({land.box[0] - camera.x, 0.0f, camera.x - land.box[2]});
 			const float dy = std::max({land.box[1] - camera.y, 0.0f, camera.y - land.box[3]});
 			const float t = std::clamp(std::hypot(dx, dy) / kReach, 0.0f, 1.0f);
 			want = std::min(want, land.waves + (1 - land.waves) * t * t * (3 - 2 * t));
+			if (dx == 0 && dy == 0)
+				on = &land;
+		}
+		// the land's weather (not under a scripted camera: the editor's, a cutscene's, a test's keep theirs)
+		const auto* climate = on ? Climate(on->climate) : nullptr;
+		if (climate && natives::Invoke<int32_t>(kIsGameplayCamRendering))
+		{
+			const char* weather = WeatherAt(*climate, natives::Invoke<int32_t>(kGetClockDayOfMonth), natives::Invoke<int32_t>(kGetClockHours));
+			if (weather != g_weather)
+			{
+				natives::Invoke<void>(kSetWeatherTypeOvertimePersist, weather, 45.0f);
+				log::Info("sea: {}'s climate ({}): {}", on->name, on->climate, weather);
+				g_weather = weather;
+			}
+		}
+		else if (!climate && g_weather)
+		{
+			// (off the land: the game's weather again)
+			natives::Invoke<void>(kClearWeatherTypePersist);
+			g_weather = nullptr;
 		}
 		if (want >= 0.999f)
 		{

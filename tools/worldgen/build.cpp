@@ -327,6 +327,18 @@ namespace worldgen::build
 		fill("water", kWater);
 		for (const auto& ww : w.waterways)
 			raster::DrawLine(land, ww.points, ww.width / 2, uint8_t{kWater});
+		// (the world editor's paint over them)
+		for (const auto& stroke : w.paint)
+		{
+			const std::map<std::string, uint8_t> classes{{"water", kWater}, {"land", kLand}, {"beach", kBeach}, {"urban", kUrban}, {"park", kPark}, {"paved", kPaved}};
+			const auto it = classes.find(stroke.what);
+			if (it == classes.end())
+				continue;
+			std::vector<P2> line = stroke.points;
+			if (line.size() == 1)
+				line.push_back(line.front());
+			raster::DrawLine(land, line, stroke.radius, it->second);
+		}
 		// the island: no land within `border` of the box's edges
 		for (int j = 0; j < land.ny; ++j)
 			for (int i = 0; i < land.nx; ++i)
@@ -384,8 +396,8 @@ namespace worldgen::build
 			mask.write(reinterpret_cast<const char*>(&ny), 4);
 			mask.write(reinterpret_cast<const char*>(&level), 4);
 			mask.write(reinterpret_cast<const char*>(bits.data()), static_cast<std::streamsize>(bits.size()));
-			std::ofstream(o.out / "land.json") << std::format("{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\"}}\n", tx0,
-			    ty0, tx1, ty1, o.waves);
+			std::ofstream(o.out / "land.json") << std::format("{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\", \"climate\": \"{}\"}}\n",
+			    tx0, ty0, tx1, ty1, o.waves, w.climate);
 		}
 		// 2. heights: land rises gently from the shore (a beach lower), the sea floor deepens away from it
 		// (DistanceTo measures from the cells of a value to the nearest other cell)
@@ -490,6 +502,42 @@ namespace worldgen::build
 			}
 			std::printf("ground: %zu land cells of %.0f m measured\n", count, land.cell);
 		}
+		// the world editor's terrain strokes: raised or lowered by `amount` at the middle of the brush, easing out to its
+		// radius; flattened towards the height where the stroke began
+		for (const auto& stroke : w.terrain)
+		{
+			const auto at = [&](const P2& p) {
+				const auto c = height.Cell(p);
+				return height.In(c[0], c[1]) ? height.At(c[0], c[1]) : 0.0f;
+			};
+			const float level = at(stroke.points.front());
+			float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+			for (const P2& p : stroke.points)
+				x0 = std::min(x0, p[0]), y0 = std::min(y0, p[1]), x1 = std::max(x1, p[0]), y1 = std::max(y1, p[1]);
+			const auto c0 = height.Cell({x0 - stroke.radius, y0 - stroke.radius}), c1 = height.Cell({x1 + stroke.radius, y1 + stroke.radius});
+			for (int j = std::max(0, c0[1]); j <= std::min(height.ny - 1, c1[1]); ++j)
+				for (int i = std::max(0, c0[0]); i <= std::min(height.nx - 1, c1[0]); ++i)
+				{
+					const P2 c = height.Centre(i, j);
+					float d = 1e30f;
+					for (size_t k = 0; k < stroke.points.size(); ++k)
+					{
+						const P2& a = stroke.points[k];
+						const P2& b = stroke.points[std::min(k + 1, stroke.points.size() - 1)];
+						d = std::min(d, polygon::DistanceToSegment(c, a, b));
+					}
+					if (d >= stroke.radius)
+						continue;
+					const float weight = Smooth(1 - d / stroke.radius);
+					float& h = height.At(i, j);
+					if (stroke.what == "raise")
+						h += stroke.amount * weight;
+					else if (stroke.what == "lower")
+						h -= stroke.amount * weight;
+					else if (stroke.what == "flatten")
+						h += (level - h) * weight;
+				}
+		}
 		const auto ground = [&](float x, float y) {
 			const float fx = std::clamp((x - height.x0) / height.cell - 0.5f, 0.0f, height.nx - 1.001f),
 			            fy = std::clamp((y - height.y0) / height.cell - 0.5f, 0.0f, height.ny - 1.001f);
@@ -582,6 +630,8 @@ namespace worldgen::build
 		if (o.buildings && scanned)
 		{
 			found = structures::Missing(scan, w.buildings, {bx0, by0, bx1, by1});
+			// (none where the world editor demolished)
+			std::erase_if(found, [&](const world::Building& b) { return world::Demolished(w, b.footprint); });
 			std::printf("buildings: %zu more that the scan saw and the map has not\n", found.size());
 			{
 				// (where, for checking: middle x, y, area, height)
@@ -1047,8 +1097,9 @@ namespace worldgen::build
 						if (c[0] < x0 || c[0] >= x1 || c[1] < y0 || c[1] >= y1)
 							continue;
 						const auto& s = shapes[k];
-						// (the picture's roofs: low buildings; a tall one leans in it, its roof drawn off its footprint)
-						const bool fromPicture = pictured && s.top < 25;
+						// (the picture's roofs: low buildings that are there - a tall one leans in it, its roof drawn off its footprint;
+						// the world editor's new ones are not in it yet)
+						const bool fromPicture = pictured && s.top < 25 && s.measured;
 						AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1, gravelKey,
 						    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), meshes, cv, ct);
 						tallest = std::max(tallest, s.top);

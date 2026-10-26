@@ -186,10 +186,16 @@ namespace worldgen::roadedit
 		return true;
 	}
 
-	bool Network::SaveEdits(const std::filesystem::path& file, std::string& error) const
+	bool Network::SaveEdits(const std::filesystem::path& file, std::string& error, const std::string& extra) const
 	{
 		ml::Json j = ml::Json::Object();
-		j["version"] = 1;
+		if (!extra.empty())
+		{
+			const ml::Json more = ml::Json::Parse(extra); // (kept: its members are iterated)
+			for (const auto& [key, value] : more.Members())
+				j[key] = value;
+		}
+		j["version"] = 2;
 		ml::Json roads = ml::Json::Array({});
 		for (const auto& [id, unused] : edited_)
 			if (const auto it = byId_.find(id); it != byId_.end() && roads_[it->second].points.size() >= 2)

@@ -569,6 +569,8 @@ namespace
 int main(int argc, char** argv)
 {
 	_setmaxstdio(8192);
+	// (unbuffered: a long build's progress shows as it happens, also into a log)
+	std::setvbuf(stdout, nullptr, _IONBF, 0);
 	if (argc < 2)
 		return Fail("usage: worldgen roundtrip|extract-ynd|regrid|testroad --game <dir> --keys <ng.bin> [--out <dir>]");
 	for (int i = 2; i + 1 < argc; i += 2)

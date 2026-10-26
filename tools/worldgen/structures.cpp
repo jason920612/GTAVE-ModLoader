@@ -552,7 +552,7 @@ namespace worldgen::structures
 		std::vector<uint8_t> inside(h.size(), 0);
 		std::vector<float> edgeDistance(h.size(), 0);
 		size_t insideCount = 0, known = 0;
-		const bool measure = scan && !scan->Empty() && nx * ny < 4000000;
+		const bool measure = scan && !scan->Empty() && !b.planned && nx * ny < 4000000;
 		for (int j = 0; j < ny && measure; ++j)
 			for (int i = 0; i < nx; ++i)
 			{

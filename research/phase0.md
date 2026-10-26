@@ -3777,3 +3777,24 @@ DRAW_TV_CHANNEL、SET_TEXT_RENDER_ID(1)（remote 的 `every` 依序呼叫）。�
   （2.5 km）放在同一個 1 km 地圖時，2.5 km 外就全部載入，整座城市的樹放不進遊戲的物件池。改成：遠的（lodDist ≥ 1 km：地形、
   道路）1 km 一塊，建築的 HD（有父物件）每塊自己一個，近的放 250 m 一格的 `<名>_n_<i>_<j>`。地圖倉庫下限 16020。
 - `rebuild.cmd` 改用全邁阿密的點雲（D:\GTAV-UE5\lidar\full：866 個檔、1975 塊、4306 秒），範圍往北到 1800（含 Española Way）。
+
+### 61.24 世界編輯器：像繪圖軟體一樣編輯（`examples/worldedit`、world.cpp ApplyEdits、build.cpp、loader game/sea，2026-10-26）
+
+- 使用者早先的要求：編輯器要像繪圖軟體：直接放建築、拉道路、畫等高線、設定氣候。道路（§61.19）之外加上：
+  - 建築：點兩個角定出正面，再點一下定深度（矩形，逆時針），[ ] 一次一層樓（3 m），1–5 種類（住宅、公寓、商店、旅館、辦公：
+    決定外牆樣式）。拆除：框選一個矩形，裡面（以輪廓中心算）的建築在重建時拆掉，OSM 的和掃描補的都算。
+  - 地面筆刷：公園、草地、沙灘、鋪面、建地、水（挖出運河、池塘：水面遮罩、海、地形都跟著）；地形筆刷：升高、降低（中心
+    1 m，往筆刷邊緣平滑減到 0）、整平（往筆畫起點的高度）。按住拖曳：每半個筆刷放一個點；單點一下也算一筆。
+  - 等高線：鏡頭附近的地面高度（GET_GROUND_Z，2 m 格子快取）做 marching squares，每 1 m 一條（落差大時 5 m），每 5 條一條粗的。
+  - 氣候：遊戲的天氣／熱帶／乾燥／溫帶。寫進 land.json 的 "climate"；載入器（game/sea）在鏡頭在陸地範圍內、而且是遊戲的
+    一般鏡頭時（編輯器、過場、測試的腳本鏡頭不動天氣），每個遊戲小時依時段的機率挑天氣（同一天同一時刻結果相同）：熱帶是
+    早上晴、午後雷雨、傍晚轉晴；SET_WEATHER_TYPE_OVERTIME_PERSIST 45 秒；離開陸地 CLEAR_WEATHER_TYPE_PERSIST。
+- 兩排工具列（下排工具，上排目前工具的種類與大小），改動立刻存進 edits.json（版本 2：roads、removed 之外加 buildings、
+  demolish、paint、terrain、climate），Ctrl+Z 依本次的順序復原（道路交給 roadedit 的 undo，其他的取掉清單最後一筆）。
+  worldgen：ApplyEdits 讀進 World（demolish、paint、terrain、climate；新建築 planned：不從點雲量屋頂（量到的是地面：零高度的
+  建築）、屋頂不貼航照）；build 在地面分類後畫筆刷、在高度定案後套地形筆畫；掃描補的建築也避開拆除區。
+- 遊戲的文字元件一個最多 99 位元組（33 個中文字）：長文字切段放進 "CELL_EMAIL_BCON"（十個子字串）。`near`、`far` 是 Windows 的巨集，
+  不能當變數名。C++20 的 range-for 對暫時物件成員的參考會懸空（`for (x : Parse(s).Members())`）：先存成區域變數。
+- 驗證（測試管道 `call worldedit.*`：tool、size、stroke、click、climate、contours、apply）：Flamingo Park 挖池塘（地面 1.63 →
+  −0.46 m，有水）、堆小山（1.57 → 5.56 m，20 m 外不變）、蓋 36 m 的旅館（射線打到 36.7 m）、拆一棟房子（屋頂 4.94 → 地面
+  1.03 m，隔壁的不變）、熱帶氣候依時刻換天氣（CLEAR → RAIN → CLEAR）。之後 edits.json 只留氣候（熱帶）。

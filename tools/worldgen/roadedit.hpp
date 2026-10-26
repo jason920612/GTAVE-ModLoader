@@ -52,7 +52,9 @@ namespace worldgen::roadedit
 	public:
 		// The roads (worldgen roads-index: roads.bin, as imported) and the edits made so far (edits.json; missing: none).
 		bool Load(const std::filesystem::path& index, const std::filesystem::path& edits, std::string& error);
-		bool SaveEdits(const std::filesystem::path& file, std::string& error) const;
+		// (`extra`: the editor's other changes - buildings, demolished areas, strokes, climate - written beside the roads'
+		// as a JSON object's members, its text)
+		bool SaveEdits(const std::filesystem::path& file, std::string& error, const std::string& extra = {}) const;
 
 		const std::vector<world::Road>& Roads() const { return roads_; }
 		const world::Road* Find(int64_t id) const;

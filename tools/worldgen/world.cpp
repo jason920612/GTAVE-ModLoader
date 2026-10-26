@@ -563,7 +563,58 @@ namespace worldgen::world
 			w.roads.push_back(std::move(r));
 		std::printf("edits: %zu roads changed, %zu added, %zu removed; %zu buildings in the new roads' way demolished\n", replaced, changed.size(),
 		    removed.size(), demolished);
+		// areas cleared of buildings (a building whose middle is inside goes), new buildings, the brush strokes, the climate
+		for (const auto& ring : j.value("demolish", nlohmann::json::array()))
+			if (auto r = Line(ring); r.size() >= 3)
+				w.demolish.push_back(std::move(r));
+		const size_t standing = w.buildings.size();
+		std::erase_if(w.buildings, [&](const Building& b) { return Demolished(w, b.footprint); });
+		const size_t cleared = standing - w.buildings.size();
+		size_t added = 0;
+		for (const auto& o : j.value("buildings", nlohmann::json::array()))
+		{
+			Building b;
+			b.footprint = Line(o.value("footprint", nlohmann::json::array()));
+			b.height = o.value("height", 10.0f);
+			b.kind = o.value("kind", "yes");
+			b.planned = true;
+			if (b.footprint.size() >= 3)
+				w.buildings.push_back(std::move(b)), ++added;
+		}
+		for (const auto& [key, list] : {std::pair{"paint", &w.paint}, std::pair{"terrain", &w.terrain}})
+			for (const auto& o : j.value(key, nlohmann::json::array()))
+			{
+				Stroke s;
+				s.what = o.value("what", "");
+				s.radius = o.value("radius", 10.0f);
+				s.amount = o.value("amount", 1.0f);
+				s.points = Line(o.value("points", nlohmann::json::array()));
+				if (!s.what.empty() && !s.points.empty())
+					list->push_back(std::move(s));
+			}
+		w.climate = j.value("climate", "");
+		std::printf("edits: %zu buildings demolished in %zu areas, %zu added; %zu paint strokes, %zu terrain strokes; climate %s\n",
+		    cleared, w.demolish.size(), added, w.paint.size(), w.terrain.size(), w.climate.empty() ? "(the game's)" : w.climate.c_str());
 		return true;
+	}
+
+	bool Demolished(const World& w, const std::vector<P2>& footprint)
+	{
+		if (footprint.empty() || w.demolish.empty())
+			return false;
+		P2 c{0, 0};
+		for (const P2& p : footprint)
+			c[0] += p[0] / footprint.size(), c[1] += p[1] / footprint.size();
+		for (const auto& ring : w.demolish)
+		{
+			bool in = false;
+			for (size_t i = 0, k = ring.size() - 1; i < ring.size(); k = i++)
+				if ((ring[i][1] > c[1]) != (ring[k][1] > c[1]) && c[0] < (ring[k][0] - ring[i][0]) * (c[1] - ring[i][1]) / (ring[k][1] - ring[i][1]) + ring[i][0])
+					in = !in;
+			if (in)
+				return true;
+		}
+		return false;
 	}
 
 	bool SaveRoadIndex(const World& w, const std::filesystem::path& file, std::string& error)
