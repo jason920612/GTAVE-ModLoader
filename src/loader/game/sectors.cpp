@@ -27,6 +27,31 @@ namespace loader::game::sectors
 			uint32_t hash = 0; // the name's hash, as the content manager has it
 			float box[4]{};    // min x, min y, max x, max y
 			bool dormant = false;
+			// where its game coordinates are in the real world (land.json "projection": lat0, lon0, x0, y0, kx, ky - x = x0 +
+			// (lon - lon0) kx, y = y0 + (lat - lat0) ky), its own box ("world") and the edges a neighbouring sector goes on
+			// from ("open": n, s, e, w)
+			bool projected = false;
+			double proj[6]{};
+			float world[4]{};
+			std::string open;
+
+			void ToWorld(float x, float y, double& lat, double& lon) const
+			{
+				lon = proj[1] + (x - proj[2]) / proj[4];
+				lat = proj[0] + (y - proj[3]) / proj[5];
+			}
+			void FromWorld(double lat, double lon, float& x, float& y) const
+			{
+				x = static_cast<float>(proj[2] + (lon - proj[1]) * proj[4]);
+				y = static_cast<float>(proj[3] + (lat - proj[0]) * proj[5]);
+			}
+			bool Covers(double lat, double lon) const // (the real-world place its own box takes in)
+			{
+				double s, w, n, e;
+				ToWorld(world[0], world[1], s, w);
+				ToWorld(world[2], world[3], n, e);
+				return projected && lat >= s && lat < n && lon >= w && lon < e;
+			}
 		};
 		std::vector<Land> g_lands;
 		constexpr uint32_t kGroupStartup = 0x5BF6578F, kGroupMapSp = 0x578F99E2; // GROUP_STARTUP, GROUP_MAP_SP
@@ -45,7 +70,15 @@ namespace loader::game::sectors
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6, kSetEntityCoords = 0x06843DA7060A026B, kFreezeEntityPosition = 0x428CA6DBD1094446,
 		                   kClearPedTasksImmediately = 0xAAA34F8A7CB32098, kDoScreenFadeOut = 0x891B5B39AC6302AF, kDoScreenFadeIn = 0xD4E8E24955024033,
 		                   kIsScreenFadedOut = 0xB16FCE9DDC7BA182, kIsLoadingScreenActive = 0x10D0A8F259E93EC9, kLoadAllObjectsNow = 0xBD6E84632DD4CB3F,
-		                   kGetGroundZFor3dCoord = 0xC906A7DAB05C8D2B, kSetFocusPosAndVel = 0xBB7454BAFF08FE25, kClearFocus = 0x31B73D1EA9F01DA2;
+		                   kGetGroundZFor3dCoord = 0xC906A7DAB05C8D2B, kSetFocusPosAndVel = 0xBB7454BAFF08FE25, kClearFocus = 0x31B73D1EA9F01DA2,
+		                   kIsPedInAnyVehicle = 0x997ABD671D25CA0B, kGetVehiclePedIsIn = 0x9A9112A0FE9A4713, kGetEntityModel = 0x9F47B058362C84B5,
+		                   kGetVehicleColours = 0xA19435F193E081AC, kGetEntityHeading = 0xE83D4F9BA2A38914, kGetEntitySpeed = 0xD5037BA82E12416F,
+		                   kGetEntityCoords = 0x3FEF770D40960D5A, kRequestModel = 0x963D27A58DF860AC, kHasModelLoaded = 0x98A4EB5D89A0C952,
+		                   kGetClosestVehicleNodeWithHeading = 0xFF071FB798B803B0, kCreateVehicle = 0xAF35D0D2583051B0,
+		                   kSetVehicleColours = 0x4F1D4BE3A7F24601, kSetPedIntoVehicle = 0xF75B0D629E1C063D, kSetVehicleOnGroundProperly = 0x49733E92263139D1,
+		                   kSetVehicleForwardSpeed = 0xAB54A438726D25D5, kSetModelAsNoLongerNeeded = 0xE532F5D78798DAAB, kSetVehicleEngineOn = 0x2497C4717C8B881E;
+		// the edges: the switch when the player comes this near an open edge, and how far into the next land they arrive
+		constexpr float kEdge = 60, kArrive = 150;
 		// where the player waits while a land is put away: Los Santos, away from any new land
 		constexpr float kHold[3] = {200, -900, 31};
 
@@ -65,7 +98,14 @@ namespace loader::game::sectors
 			ULONGLONG since = 0;
 			bool loadingSeen = false;
 			std::vector<std::string> leaving; // (the lands put away)
+			// the vehicle the player was in: made again where they arrive (its model, colours, heading, speed)
+			bool vehicle = false, modelAsked = false;
+			uint32_t model = 0;
+			int32_t colours[2]{};
+			float heading = 0, speed = 0;
 		} g_switch;
+		ULONGLONG g_lastWatch = 0;
+		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
 		ULONGLONG g_lastTick = 0; // (a gap in the ticks: the session was restarting, story mode's scripts not running)
 
 		bool Overlap(const Land& a, const Land& b)
@@ -170,6 +210,15 @@ namespace loader::game::sectors
 				Land land{name, convert::Joaat(name)};
 				for (int k = 0; k < 4; ++k)
 					land.box[k] = j.at("box").at(k).get<float>();
+				if (j.contains("projection") && j.contains("world"))
+				{
+					for (int k = 0; k < 6; ++k)
+						land.proj[k] = j["projection"].at(k).get<double>();
+					for (int k = 0; k < 4; ++k)
+						land.world[k] = j["world"].at(k).get<float>();
+					land.projected = land.proj[4] != 0 && land.proj[5] != 0;
+					land.open = j.value("open", "");
+				}
 				g_lands.push_back(std::move(land));
 			}
 			catch (const std::exception& e)
@@ -221,15 +270,83 @@ namespace loader::game::sectors
 		if (g_switch.step != Step::None)
 			return "a switch is under way";
 		g_switch = {Step::Fade, to, at != nullptr, {at ? at[0] : 0, at ? at[1] : 0}, GetTickCount64()};
+		const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+		if (natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0))
+		{
+			const int32_t v = natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0);
+			g_switch.vehicle = true;
+			g_switch.model = natives::Invoke<uint32_t>(kGetEntityModel, v);
+			natives::Invoke<void>(kGetVehicleColours, v, &g_switch.colours[0], &g_switch.colours[1]);
+			g_switch.heading = natives::Invoke<float>(kGetEntityHeading, v);
+			g_switch.speed = natives::Invoke<float>(kGetEntitySpeed, v);
+		}
 		natives::Invoke<void>(kDoScreenFadeOut, 800);
 		log::Info("sectors: switching to {}", to);
 		return "";
 	}
 
+	namespace
+	{
+		// The player at an open edge of the land there (a neighbouring sector's side: land.json "open"): the sector whose
+		// own box takes in the real world's place just past it, there (kArrive into it), in the vehicle they are in.
+		void WatchEdges()
+		{
+			const ULONGLONG now = GetTickCount64();
+			if (now - g_lastWatch < 250)
+				return;
+			g_lastWatch = now;
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			const int32_t vehicle = natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0) ? natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0) : 0;
+			const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, vehicle ? vehicle : player, 1);
+			for (const Land& l : g_lands)
+			{
+				if (l.dormant || !l.projected || l.open.empty() || p.x < l.world[0] - 500 || p.x > l.world[2] + 500 || p.y < l.world[1] - 500 ||
+				    p.y > l.world[3] + 500)
+					continue;
+				struct Edge
+				{
+					char side;
+					bool close;
+					float beyond[2], inward[2];
+				};
+				const Edge edges[] = {{'n', p.y > l.world[3] - kEdge, {p.x, l.world[3] + 1}, {0, 1}},
+				    {'s', p.y < l.world[1] + kEdge, {p.x, l.world[1] - 1}, {0, -1}}, {'e', p.x > l.world[2] - kEdge, {l.world[2] + 1, p.y}, {1, 0}},
+				    {'w', p.x < l.world[0] + kEdge, {l.world[0] - 1, p.y}, {-1, 0}}};
+				for (const Edge& e : edges)
+				{
+					if (!e.close || l.open.find(e.side) == std::string::npos)
+						continue;
+					double lat, lon;
+					l.ToWorld(e.beyond[0], e.beyond[1], lat, lon);
+					const auto next = std::find_if(g_lands.begin(), g_lands.end(), [&](const Land& o) { return &o != &l && o.Covers(lat, lon); });
+					if (next == g_lands.end())
+					{
+						const std::string key = l.name + e.side;
+						if (std::find(g_noNeighbour.begin(), g_noNeighbour.end(), key) == g_noNeighbour.end())
+						{
+							g_noNeighbour.push_back(key);
+							log::Warn("sectors: {}'s {} edge is open, but no land takes in the place past it ({:.5f}, {:.5f})", l.name, e.side, lat, lon);
+						}
+						continue;
+					}
+					float at[2];
+					next->FromWorld(lat, lon, at[0], at[1]);
+					at[0] += e.inward[0] * kArrive, at[1] += e.inward[1] * kArrive;
+					log::Info("sectors: the player at {}'s {} edge ({:.0f}, {:.0f}): on to {} at ({:.0f}, {:.0f})", l.name, e.side, p.x, p.y, next->name, at[0], at[1]);
+					Switch(next->name, at);
+					return;
+				}
+			}
+		}
+	}
+
 	void Tick()
 	{
 		if (g_switch.step == Step::None)
+		{
+			WatchEdges();
 			return;
+		}
 		const ULONGLONG now = GetTickCount64(), spent = now - g_switch.since, gap = g_lastTick ? now - g_lastTick : 0;
 		g_lastTick = now;
 		const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
@@ -340,12 +457,40 @@ namespace loader::game::sectors
 				Finish();
 				break;
 			}
-			// on the ground there, once its collision is in (or after 20 s, as it is)
-			float z = 0;
-			if (natives::Invoke<int32_t>(kGetGroundZFor3dCoord, g_switch.at[0], g_switch.at[1], 500.0f, &z, 0, 0) || spent > 20000)
+			// on the ground there, once its collision is in (or after 20 s, as it is); in the vehicle they came in, on the
+			// nearest road, going their way
+			if (g_switch.vehicle && !g_switch.modelAsked)
 			{
-				natives::Invoke<void>(kSetEntityCoords, player, g_switch.at[0], g_switch.at[1], z + 1.0f, 0, 0, 0, 0);
-				log::Info("sectors: the player at {:.0f}, {:.0f} in {}", g_switch.at[0], g_switch.at[1], to->name);
+				natives::Invoke<void>(kRequestModel, g_switch.model);
+				g_switch.modelAsked = true;
+			}
+			float z = 0;
+			const bool ground = natives::Invoke<int32_t>(kGetGroundZFor3dCoord, g_switch.at[0], g_switch.at[1], 500.0f, &z, 0, 0) != 0;
+			const bool model = !g_switch.vehicle || natives::Invoke<int32_t>(kHasModelLoaded, g_switch.model) != 0;
+			if ((ground && model) || spent > 20000)
+			{
+				if (g_switch.vehicle && model)
+				{
+					float x = g_switch.at[0], y = g_switch.at[1], h = g_switch.heading, nodeHeading = 0;
+					natives::ScrVector node{};
+					if (natives::Invoke<int32_t>(kGetClosestVehicleNodeWithHeading, x, y, z, &node, &nodeHeading, 1, 3.0f, 0) &&
+					    std::hypot(node.x - x, node.y - y) < 200)
+					{
+						x = node.x, y = node.y, z = node.z;
+						h = std::fabs(std::remainder(nodeHeading - g_switch.heading, 360.0f)) <= 90 ? nodeHeading : nodeHeading + 180;
+					}
+					const int32_t v = natives::Invoke<int32_t>(kCreateVehicle, g_switch.model, x, y, z + 0.5f, h, 0, 0, 0);
+					natives::Invoke<void>(kSetVehicleColours, v, g_switch.colours[0], g_switch.colours[1]);
+					natives::Invoke<void>(kSetVehicleOnGroundProperly, v, 5.0f);
+					natives::Invoke<void>(kFreezeEntityPosition, player, 0);
+					natives::Invoke<void>(kSetPedIntoVehicle, player, v, -1);
+					natives::Invoke<void>(kSetVehicleEngineOn, v, 1, 1, 0);
+					natives::Invoke<void>(kSetVehicleForwardSpeed, v, g_switch.speed);
+					natives::Invoke<void>(kSetModelAsNoLongerNeeded, g_switch.model);
+				}
+				else
+					natives::Invoke<void>(kSetEntityCoords, player, g_switch.at[0], g_switch.at[1], z + 1.0f, 0, 0, 0, 0);
+				log::Info("sectors: the player at {:.0f}, {:.0f} in {}{}", g_switch.at[0], g_switch.at[1], to->name, g_switch.vehicle ? ", in their vehicle" : "");
 				Finish();
 			}
 			break;

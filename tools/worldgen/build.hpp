@@ -24,6 +24,8 @@ namespace worldgen::build
 		float cell = 8;                 // terrain mesh cell (m)
 		float classify = 4;             // land / water raster (m)
 		float border = 300;             // how far in from the box's edges the land ends (m)
+		std::string open;               // the box's edges ("n", "s", "e", "w") the land goes on past: a neighbouring sector's
+		                                // (no sea there, the roads not cut; the loader switches to it at that edge)
 		std::array<float, 4> area{};    // only this part (x0, y0, x1, y1), for tests; all zero: everything
 		std::filesystem::path scan;     // laser-scan rasters (tools/worldgen/lidar.py): measured ground, buildings of our own
 		std::filesystem::path aerial;   // aerial pictures (tools/worldgen/aerial.py): the roofs' textures

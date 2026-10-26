@@ -408,12 +408,24 @@ namespace worldgen::build
 				line.push_back(line.front());
 			raster::DrawLine(land, line, stroke.radius, it->second);
 		}
-		// the island: no land within `border` of the box's edges
+		// the island: no land within `border` of the box's edges - those a neighbouring sector does not go on from (o.open)
+		const auto toSea = [&](const P2& p) {
+			float edge = std::numeric_limits<float>::max();
+			if (o.open.find('w') == std::string::npos)
+				edge = std::min(edge, p[0] - w.min[0]);
+			if (o.open.find('e') == std::string::npos)
+				edge = std::min(edge, w.max[0] - p[0]);
+			if (o.open.find('s') == std::string::npos)
+				edge = std::min(edge, p[1] - w.min[1]);
+			if (o.open.find('n') == std::string::npos)
+				edge = std::min(edge, w.max[1] - p[1]);
+			return edge;
+		};
 		for (int j = 0; j < land.ny; ++j)
 			for (int i = 0; i < land.nx; ++i)
 			{
 				const P2 c = land.Centre(i, j);
-				const float edge = std::min({c[0] - w.min[0], w.max[0] - c[0], c[1] - w.min[1], w.max[1] - c[1]});
+				const float edge = toSea(c);
 				// (a little wavy, so the coast there is not a ruler line)
 				if (edge < o.border + 60 * Noise(c[0] * 3, c[1] * 3))
 					land.At(i, j) = kWater;
@@ -710,8 +722,7 @@ namespace worldgen::build
 			return std::none_of(r.points.begin(), r.points.end(), [&](const P2& p) { return p[0] >= gx0 && p[0] <= gx1 && p[1] >= gy0 && p[1] <= gy1; });
 		});
 		const auto inBorderSea = [&](const P2& p) {
-			const float edge = std::min({p[0] - w.min[0], w.max[0] - p[0], p[1] - w.min[1], w.max[1] - p[1]});
-			return edge < o.border + 60 * Noise(p[0] * 3, p[1] * 3) + 40; // (and 40 m back from its shore)
+			return toSea(p) < o.border + 60 * Noise(p[0] * 3, p[1] * 3) + 40; // (and 40 m back from its shore)
 		};
 		std::set<std::pair<float, float>> cutEnds; // (where a road now ends because of the cut)
 		size_t cuts = 0;
@@ -1115,10 +1126,15 @@ namespace worldgen::build
 			for (const auto& [r, c] : mo.pictures)
 				pictures += std::format("{}[{}, {}]", pictures.empty() ? "" : ", ", r, c);
 			std::printf("map: %zu radar supertiles (%zu triangles), %zu pause map pictures\n", mo.supertiles.size(), mo.triangles, mo.pictures.size());
+			// (and for the loader's sectors: where the game's coordinates are in the real world - x = x0 + (lon - lon0) kx,
+			// y = y0 + (lat - lat0) ky - the land's own box, and the edges a neighbouring sector goes on from)
+			const auto& pr = w.projection;
 			std::ofstream(o.out / "land.json") << std::format(
 			    "{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\", \"climate\": \"{}\", \"map\": {{\"name\": \"{}\", "
-			    "\"radar\": [{}], \"pictures\": [{}]}}}}\n",
-			    built[0], built[1], built[2], built[3], o.waves, w.climate, o.name, radar, pictures);
+			    "\"radar\": [{}], \"pictures\": [{}]}}, \"projection\": [{:.9f}, {:.9f}, {:.3f}, {:.3f}, {:.6f}, {:.6f}], \"world\": [{:.1f}, {:.1f}, "
+			    "{:.1f}, {:.1f}], \"open\": \"{}\"}}\n",
+			    built[0], built[1], built[2], built[3], o.waves, w.climate, o.name, radar, pictures, pr.lat0, pr.lon0, pr.x0, pr.y0, pr.kx, pr.ky,
+			    w.min[0], w.min[1], w.max[0], w.max[1], o.open);
 		}
 
 		took("map");

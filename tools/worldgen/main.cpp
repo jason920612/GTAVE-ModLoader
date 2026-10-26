@@ -2167,6 +2167,8 @@ int main(int argc, char** argv)
 			o.datum = std::stof(g_options["datum"]);
 		if (g_options.contains("waves"))
 			o.waves = std::stof(g_options["waves"]);
+		if (g_options.contains("open"))
+			o.open = g_options["open"]; // (the box's edges a neighbouring sector goes on from: n, s, e, w)
 		if (g_options.contains("roads-obj"))
 			o.roadsObj = g_options["roads-obj"];
 		o.lods = !g_options.contains("lods") || g_options["lods"] != "0";
