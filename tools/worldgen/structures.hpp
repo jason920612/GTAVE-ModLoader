@@ -50,4 +50,12 @@ namespace worldgen::structures
 	// `ground` is the terrain's height (the base is the lowest of it under the outline).
 	bool Make(const world::Building& b, elevation::Scan* scan, const std::function<float(float, float)>& ground, const Options& o, Shape& out,
 	    Stats& stats);
+
+	// Buildings the scan saw that the map has no footprint for (sheds, garages, cabanas, buildings the map lacks): its
+	// building cells outside every known footprint (and a metre round them), opened by 1.5 m (eaves and slivers along
+	// the footprints' sides go), pieces of at least `minArea` m² and a storey high (2.8 m) traced round (Douglas-Peucker,
+	// 0.6 m) as footprints of kind "yes" with the scan's height. Within `box` (x0, y0, x1, y1), a kilometre at a time (a
+	// piece is the block's that holds its first cell).
+	std::vector<world::Building> Missing(elevation::Scan& scan, const std::vector<world::Building>& known, const std::array<float, 4>& box,
+	    float minArea = 40);
 }

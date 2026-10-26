@@ -578,13 +578,33 @@ namespace worldgen::build
 		std::vector<int> shapeStyle;
 		std::vector<P2> shapeCentre;
 		facades::Set facadeSet;
+		std::vector<world::Building> found; // (the buildings the scan saw that the map lacks)
 		if (o.buildings && scanned)
 		{
+			found = structures::Missing(scan, w.buildings, {bx0, by0, bx1, by1});
+			std::printf("buildings: %zu more that the scan saw and the map has not\n", found.size());
+			{
+				// (where, for checking: middle x, y, area, height)
+				std::ofstream list(o.out.parent_path() / (o.name + "_found.txt"));
+				for (const auto& b : found)
+				{
+					P2 c{0, 0};
+					for (const P2& q : b.footprint)
+						c[0] += q[0] / b.footprint.size(), c[1] += q[1] / b.footprint.size();
+					list << std::format("{:.1f} {:.1f} {:.0f} {:.1f}\n", c[0], c[1], std::fabs(polygon::Area(b.footprint)), b.height);
+				}
+			}
 			facadeSet = facades::Make(o.name + "_f_", 1024);
 			structures::Options so;
 			structures::Stats ss;
+			std::vector<const world::Building*> all;
 			for (const auto& b : w.buildings)
+				all.push_back(&b);
+			for (const auto& b : found)
+				all.push_back(&b);
+			for (const world::Building* pb : all)
 			{
+				const world::Building& b = *pb;
 				if (b.footprint.size() < 3)
 					continue;
 				P2 c{0, 0};
@@ -651,9 +671,10 @@ namespace worldgen::build
 			blocked.Init(gx0, gy0, gx1, gy1, 2.0f, 0);
 			for (const auto& e : network.edges)
 				raster::DrawLine(blocked, e.points, e.HalfWidth(), uint8_t{1});
-			for (const auto& b : w.buildings)
-				if (!b.footprint.empty() && b.footprint[0][0] >= gx0 && b.footprint[0][0] <= gx1 && b.footprint[0][1] >= gy0 && b.footprint[0][1] <= gy1)
-					raster::FillPolygon(blocked, {b.footprint}, uint8_t{1});
+			for (const std::vector<world::Building>* list : {&w.buildings, static_cast<const std::vector<world::Building>*>(&found)})
+				for (const auto& b : *list)
+					if (!b.footprint.empty() && b.footprint[0][0] >= gx0 && b.footprint[0][0] <= gx1 && b.footprint[0][1] >= gy0 && b.footprint[0][1] <= gy1)
+						raster::FillPolygon(blocked, {b.footprint}, uint8_t{1});
 			const auto open = [&](float x, float y) {
 				const auto c = blocked.Cell({x, y});
 				return blocked.In(c[0], c[1]) && !blocked.At(c[0], c[1]);

@@ -8,6 +8,7 @@
 #include <tuple>
 
 #include "polygon.hpp"
+#include "raster.hpp"
 
 namespace worldgen::structures
 {
@@ -800,5 +801,200 @@ namespace worldgen::structures
 		out.top = static_cast<float>(top) - base;
 		stats.triangles += out.roof.size();
 		return !out.roof.empty();
+	}
+
+	namespace
+	{
+		// Douglas-Peucker on a closed ring (split at its two farthest-apart points).
+		std::vector<P2> Simplify(const std::vector<P2>& ring, float tolerance)
+		{
+			if (ring.size() < 4)
+				return ring;
+			size_t far = 0;
+			float best = -1;
+			for (size_t i = 1; i < ring.size(); ++i)
+				if (const float d = std::hypot(ring[i][0] - ring[0][0], ring[i][1] - ring[0][1]); d > best)
+					best = d, far = i;
+			std::vector<bool> keep(ring.size(), false);
+			keep[0] = keep[far] = true;
+			const auto split = [&](auto& self, size_t a, size_t b) -> void {
+				// (the points from a to b round the ring)
+				const size_t n = ring.size();
+				size_t worst = a;
+				float worstD = 0;
+				for (size_t k = (a + 1) % n; k != b; k = (k + 1) % n)
+					if (const float d = polygon::DistanceToSegment(ring[k], ring[a], ring[b]); d > worstD)
+						worstD = d, worst = k;
+				if (worstD > tolerance)
+				{
+					keep[worst] = true;
+					self(self, a, worst);
+					self(self, worst, b);
+				}
+			};
+			split(split, 0, far);
+			split(split, far, 0);
+			std::vector<P2> out;
+			for (size_t i = 0; i < ring.size(); ++i)
+				if (keep[i])
+					out.push_back(ring[i]);
+			return out;
+		}
+	}
+
+	std::vector<world::Building> Missing(elevation::Scan& scan, const std::vector<world::Building>& known, const std::array<float, 4>& box, float minArea)
+	{
+		std::vector<world::Building> out;
+		constexpr float kCell = 0.5f, kBlock = 1000, kMargin = 60;
+		// (the known footprints by 250 m cell of their first point, to find those near a block)
+		std::map<std::pair<int, int>, std::vector<const world::Building*>> byCell;
+		for (const auto& b : known)
+			if (b.footprint.size() >= 3)
+				byCell[{static_cast<int>(std::floor(b.footprint[0][0] / 250)), static_cast<int>(std::floor(b.footprint[0][1] / 250))}].push_back(&b);
+		for (float by = box[1]; by < box[3]; by += kBlock)
+			for (float bx = box[0]; bx < box[2]; bx += kBlock)
+			{
+				const float cx1 = std::min(bx + kBlock, box[2]), cy1 = std::min(by + kBlock, box[3]);
+				raster::Grid<uint8_t> g; // the scan's building cells
+				g.Init(bx - kMargin, by - kMargin, cx1 + kMargin, cy1 + kMargin, kCell, 0);
+				bool any = false;
+				for (int j = 0; j < g.ny; ++j)
+					for (int i = 0; i < g.nx; ++i)
+					{
+						const P2 c = g.Centre(i, j);
+						if (scan.Flags(c[0], c[1]) & elevation::kBuilding)
+							g.At(i, j) = 1, any = true;
+					}
+				if (!any)
+					continue;
+				raster::Grid<uint8_t> covered = g;
+				std::fill(covered.v.begin(), covered.v.end(), uint8_t{0});
+				for (int cj = static_cast<int>(std::floor((by - kMargin - 300) / 250)); cj <= static_cast<int>(std::floor((cy1 + kMargin + 300) / 250)); ++cj)
+					for (int ci = static_cast<int>(std::floor((bx - kMargin - 300) / 250)); ci <= static_cast<int>(std::floor((cx1 + kMargin + 300) / 250)); ++ci)
+						if (const auto it = byCell.find({ci, cj}); it != byCell.end())
+							for (const world::Building* b : it->second)
+								raster::FillPolygon(covered, {b->footprint}, uint8_t{1});
+				// (grown or shrunk a cell at a time, 4-neighbours)
+				const auto grow = [&](const std::vector<uint8_t>& from, int steps, bool erode) {
+					std::vector<uint8_t> cur = from;
+					for (int k = 0; k < steps; ++k)
+					{
+						std::vector<uint8_t> next = cur;
+						for (int j = 0; j < g.ny; ++j)
+							for (int i = 0; i < g.nx; ++i)
+							{
+								const size_t at = static_cast<size_t>(j) * g.nx + i;
+								const bool on = cur[at] != 0;
+								if (erode ? !on : on)
+									continue;
+								for (const auto& [di, dj] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}})
+								{
+									const int ii = i + di, jj = j + dj;
+									const bool other = ii >= 0 && jj >= 0 && ii < g.nx && jj < g.ny && cur[static_cast<size_t>(jj) * g.nx + ii] != 0;
+									if (erode ? !other : other)
+									{
+										next[at] = erode ? 0 : 1;
+										break;
+									}
+								}
+							}
+						cur = std::move(next);
+					}
+					return cur;
+				};
+				// a metre of slack round the footprints, then the opening (3 cells in, 3 out)
+				const auto slack = grow(covered.v, 2, false);
+				std::vector<uint8_t> loose(g.v.size());
+				for (size_t k = 0; k < loose.size(); ++k)
+					loose[k] = g.v[k] && !slack[k];
+				const auto opened = grow(grow(loose, 3, true), 3, false);
+				// the pieces
+				std::vector<int> label(opened.size(), -1);
+				int pieces = 0;
+				for (int j0 = 0; j0 < g.ny; ++j0)
+					for (int i0 = 0; i0 < g.nx; ++i0)
+					{
+						const size_t start = static_cast<size_t>(j0) * g.nx + i0;
+						if (!opened[start] || label[start] >= 0)
+							continue;
+						const int id = pieces++;
+						std::vector<std::pair<int, int>> cells, stack{{i0, j0}};
+						label[start] = id;
+						while (!stack.empty())
+						{
+							const auto [i, j] = stack.back();
+							stack.pop_back();
+							cells.push_back({i, j});
+							for (const auto& [di, dj] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}})
+							{
+								const int ii = i + di, jj = j + dj;
+								if (ii < 0 || jj < 0 || ii >= g.nx || jj >= g.ny)
+									continue;
+								const size_t at = static_cast<size_t>(jj) * g.nx + ii;
+								if (opened[at] && label[at] < 0)
+									label[at] = id, stack.push_back({ii, jj});
+							}
+						}
+						const P2 first = g.Centre(i0, j0);
+						if (cells.size() * kCell * kCell < minArea || first[0] < bx || first[0] >= cx1 || first[1] < by || first[1] >= cy1)
+							continue;
+						// its outline: the cells' outer edges chained anticlockwise (corners in cell units; an edge is the
+						// piece's where the cell beyond it is not)
+						const auto in = [&](int i, int j) { return i >= 0 && j >= 0 && i < g.nx && j < g.ny && label[static_cast<size_t>(j) * g.nx + i] == id; };
+						std::map<std::pair<int, int>, std::pair<int, int>> next;
+						for (const auto& [i, j] : cells)
+						{
+							if (!in(i, j - 1))
+								next[{i, j}] = {i + 1, j};
+							if (!in(i + 1, j))
+								next[{i + 1, j}] = {i + 1, j + 1};
+							if (!in(i, j + 1))
+								next[{i + 1, j + 1}] = {i, j + 1};
+							if (!in(i - 1, j))
+								next[{i, j + 1}] = {i, j};
+						}
+						// (the outer ring: from the lowest, leftmost corner)
+						std::pair<int, int> at = next.begin()->first;
+						for (const auto& [corner, to] : next)
+							if (corner.second < at.second || (corner.second == at.second && corner.first < at.first))
+								at = corner;
+						std::vector<P2> ring;
+						const auto begin = at;
+						for (size_t guard = 0; guard <= next.size(); ++guard)
+						{
+							ring.push_back({g.x0 + at.first * kCell, g.y0 + at.second * kCell});
+							const auto it = next.find(at);
+							if (it == next.end())
+								break;
+							at = it->second;
+							if (at == begin)
+								break;
+						}
+						ring = Simplify(polygon::Clean(ring, 0.05f), 0.6f);
+						if (ring.size() < 3 || polygon::Area(ring) < minArea * 0.6)
+							continue;
+						// its height: the middle of the scan's roof over it above the ground beside it
+						std::vector<float> heights;
+						for (size_t k = 0; k < cells.size(); k += 4)
+						{
+							const P2 c = g.Centre(cells[k].first, cells[k].second);
+							const float roof = scan.Roof(c[0], c[1]), ground = scan.Ground(c[0] + 3, c[1] + 3);
+							if (!std::isnan(roof) && !std::isnan(ground))
+								heights.push_back(roof - ground);
+						}
+						// (lower than a storey: cars, containers, stacked material on a site - not a building)
+						if (heights.empty())
+							continue;
+						std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+						if (heights[heights.size() / 2] < 2.8f)
+							continue;
+						world::Building b;
+						b.height = heights[heights.size() / 2];
+						b.footprint = std::move(ring);
+						b.kind = "yes";
+						out.push_back(std::move(b));
+					}
+			}
+		return out;
 	}
 }
