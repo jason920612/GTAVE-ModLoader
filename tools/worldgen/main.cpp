@@ -57,6 +57,7 @@
 #include "world.hpp"
 #include "convert/ytd.hpp"
 #include "elevation.hpp"
+#include "roadedit.hpp"
 #include "facades.hpp"
 #include "structures.hpp"
 #include "texture.hpp"
@@ -575,6 +576,67 @@ int main(int argc, char** argv)
 			g_options[argv[i] + 2] = argv[i + 1];
 	if (std::string(argv[1]) == "shapes")
 		return Shapes();
+	if (std::string(argv[1]) == "edit")
+	{
+		// a road edit as the world editor makes it, for checking: --roads <roads.bin> --edits <edits.json> then
+		// --road <type id> --points x,y;x,y;... [--curve 1: start;control;end] or --delete x,y; the edits file is updated
+		worldgen::roadedit::Network net;
+		std::string error;
+		if (!net.Load(g_options["roads"], g_options["edits"], error))
+			return Fail(error);
+		const auto point = [](const std::string& s) {
+			worldgen::world::P2 p{};
+			char c = 0;
+			std::istringstream(s) >> p[0] >> c >> p[1];
+			return p;
+		};
+		worldgen::roadedit::Change change;
+		if (g_options.contains("road"))
+		{
+			const auto& types = worldgen::roadedit::Types();
+			const auto type = std::find_if(types.begin(), types.end(), [&](const auto& t) { return g_options["road"] == t.id; });
+			if (type == types.end())
+				return Fail("unknown road type " + g_options["road"]);
+			std::vector<worldgen::world::P2> pts;
+			std::istringstream list(g_options["points"]);
+			for (std::string item; std::getline(list, item, ';');)
+				pts.push_back(point(item));
+			if (pts.size() < 2)
+				return Fail("--points x,y;x,y... (two at least)");
+			if (g_options.contains("curve") && pts.size() == 3)
+				pts = worldgen::roadedit::Network::Curve(pts[0], pts[1], pts[2]);
+			const auto start = net.SnapTo(pts.front(), 8), end = net.SnapTo(pts.back(), 8);
+			change = net.Plan(pts, *type, start, end);
+		}
+		else if (g_options.contains("delete"))
+			change = net.PlanDelete(point(g_options["delete"]), 8);
+		else
+			return Fail("--road <type> --points ... or --delete x,y");
+		for (const auto& r : change.roads)
+			std::printf("road %lld (%s, %d+%d): %zu points%s\n", static_cast<long long>(r.id), r.kind.c_str(), r.forward, r.backward, r.points.size(),
+			    net.Find(r.id) ? " (changed)" : " (new)");
+		for (const int64_t id : change.removed)
+			std::printf("road %lld removed\n", static_cast<long long>(id));
+		net.Commit(change);
+		if (!net.SaveEdits(g_options["edits"], error))
+			return Fail(error);
+		std::printf("%zu edits in %s\n", net.Edits(), g_options["edits"].c_str());
+		return 0;
+	}
+	if (std::string(argv[1]) == "roads-index")
+	{
+		// the roads for the world editor: --world <world.json> [--edits <edits.json>] --out <roads.bin>
+		worldgen::world::World w;
+		std::string error;
+		if (!worldgen::world::Load(g_options["world"], w, error))
+			return Fail(error);
+		if (g_options.contains("edits") && !worldgen::world::ApplyEdits(w, g_options["edits"], error))
+			return Fail(error);
+		if (!worldgen::world::SaveRoadIndex(w, g_options["out"], error))
+			return Fail(error);
+		std::printf("%zu roads in %s\n", w.roads.size(), g_options["out"].c_str());
+		return 0;
+	}
 	if (std::string(argv[1]) == "ytd-png")
 	{
 		// a texture dictionary's textures as pictures (mip 0; block formats BC1-3): --ytd <file> --out <dir>
@@ -1503,6 +1565,9 @@ int main(int argc, char** argv)
 			return Fail("--world <world.json> --out <dir> are needed");
 		worldgen::world::World w;
 		if (!worldgen::world::Load(g_options["world"], w, error))
+			return Fail(error);
+		// (the world editor's changes on top: --edits <edits.json>)
+		if (g_options.contains("edits") && !worldgen::world::ApplyEdits(w, g_options["edits"], error))
 			return Fail(error);
 		worldgen::build::Options o;
 		o.out = g_options["out"];

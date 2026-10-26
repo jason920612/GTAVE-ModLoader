@@ -82,4 +82,13 @@ namespace worldgen::world
 	bool FromOsm(const osm::Data& data, const Projection& p, World& out, std::string& error);
 	bool Save(const World& w, const std::filesystem::path& file, std::string& error);
 	bool Load(const std::filesystem::path& file, World& w, std::string& error);
+
+	// The world editor's changes (the worldedit mod's edits.json: {"roads": [road objects as world.json has them],
+	// "removed": [road ids]}): a road whose id the world has replaces it, the others are added; removed ones go.
+	bool ApplyEdits(World& w, const std::filesystem::path& file, std::string& error);
+
+	// The roads for the editor, compact (roads.bin, tools/worldgen and examples/worldedit read the same layout): 'WBRD',
+	// u32 version 1, u32 count; each road: i64 id, u8 + kind, u16 + name, u8 forward, u8 backward, u8 flags (1 sidewalks,
+	// 2 bridge, 4 tunnel), i8 layer, f32 lane width, f32 speed, u32 points, f32 x y each.
+	bool SaveRoadIndex(const World& w, const std::filesystem::path& file, std::string& error);
 }

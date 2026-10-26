@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
+#include <map>
 #include <set>
 
 #include <nlohmann/json.hpp>
@@ -402,6 +404,27 @@ namespace worldgen::world
 		return true;
 	}
 
+	namespace
+	{
+		Road RoadFrom(const nlohmann::json& o)
+		{
+			Road r;
+			r.id = o["id"];
+			r.kind = o["kind"];
+			r.name = o.value("name", "");
+			r.forward = o["forward"];
+			r.backward = o["backward"];
+			r.laneWidth = o["laneWidth"];
+			r.sidewalks = o["sidewalks"];
+			r.bridge = o.value("bridge", false);
+			r.tunnel = o.value("tunnel", false);
+			r.layer = o.value("layer", 0);
+			r.speed = o.value("speed", 0.0f);
+			r.points = Line(o["points"]);
+			return r;
+		}
+	}
+
 	bool Load(const std::filesystem::path& file, World& w, std::string& error)
 	{
 		std::ifstream in(file, std::ios::binary);
@@ -434,26 +457,130 @@ namespace worldgen::world
 		for (const auto& o : j["waterways"])
 			w.waterways.push_back({Line(o["points"]), o["width"].get<float>(), o["kind"].get<std::string>()});
 		for (const auto& o : j["roads"])
-		{
-			Road r;
-			r.id = o["id"];
-			r.kind = o["kind"];
-			r.name = o["name"];
-			r.forward = o["forward"];
-			r.backward = o["backward"];
-			r.laneWidth = o["laneWidth"];
-			r.sidewalks = o["sidewalks"];
-			r.bridge = o["bridge"];
-			r.tunnel = o["tunnel"];
-			r.layer = o["layer"];
-			r.speed = o["speed"];
-			r.points = Line(o["points"]);
-			w.roads.push_back(std::move(r));
-		}
+			w.roads.push_back(RoadFrom(o));
 		for (const auto& o : j["buildings"])
 			w.buildings.push_back({Line(o["footprint"]), o["height"].get<float>(), o["kind"].get<std::string>(), o["name"].get<std::string>()});
 		for (const auto& o : j["points"])
 			w.points.push_back({o["kind"].get<std::string>(), {o["at"][0].get<float>(), o["at"][1].get<float>()}});
 		return true;
+	}
+
+	bool ApplyEdits(World& w, const std::filesystem::path& file, std::string& error)
+	{
+		std::ifstream in(file, std::ios::binary);
+		if (!in)
+			return true; // (no edits yet)
+		const auto j = nlohmann::json::parse(in, nullptr, false);
+		if (j.is_discarded())
+			return error = file.string() + " is not an edits file", false;
+		std::set<int64_t> removed;
+		for (const auto& id : j.value("removed", nlohmann::json::array()))
+			removed.insert(id.get<int64_t>());
+		std::map<int64_t, Road> changed;
+		for (const auto& o : j.value("roads", nlohmann::json::array()))
+		{
+			Road r = RoadFrom(o);
+			if (r.points.size() >= 2)
+				changed[r.id] = std::move(r);
+		}
+		size_t replaced = 0;
+		std::erase_if(w.roads, [&](const Road& r) { return removed.contains(r.id) && !changed.contains(r.id); });
+		for (Road& r : w.roads)
+			if (const auto it = changed.find(r.id); it != changed.end())
+			{
+				r = it->second;
+				changed.erase(it);
+				++replaced;
+			}
+		// new roads clear their way, as in a city builder: buildings their asphalt and sidewalks would cross go
+		size_t demolished = 0;
+		for (const auto& [id, r] : changed)
+		{
+			const float reach = (r.forward + r.backward) * r.laneWidth / 2 + 0.3f + (r.sidewalks ? 2.6f : 0.5f);
+			float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+			for (const P2& p : r.points)
+				x0 = std::min(x0, p[0]), y0 = std::min(y0, p[1]), x1 = std::max(x1, p[0]), y1 = std::max(y1, p[1]);
+			const auto distance = [&](const P2& q) {
+				float best = 1e30f;
+				for (size_t i = 0; i + 1 < r.points.size(); ++i)
+				{
+					const P2& a = r.points[i];
+					const P2& b = r.points[i + 1];
+					const float dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+					const float t = l2 > 0 ? std::clamp(((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2, 0.0f, 1.0f) : 0;
+					best = std::min(best, std::hypot(q[0] - a[0] - dx * t, q[1] - a[1] - dy * t));
+				}
+				return best;
+			};
+			const auto inside = [](const std::vector<P2>& ring, const P2& p) {
+				bool in = false;
+				for (size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++)
+					if ((ring[i][1] > p[1]) != (ring[j][1] > p[1]) &&
+					    p[0] < (ring[j][0] - ring[i][0]) * (p[1] - ring[i][1]) / (ring[j][1] - ring[i][1]) + ring[i][0])
+						in = !in;
+				return in;
+			};
+			const size_t before = w.buildings.size();
+			std::erase_if(w.buildings, [&](const Building& b) {
+				if (b.footprint.empty())
+					return false;
+				float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+				for (const P2& p : b.footprint)
+					bx0 = std::min(bx0, p[0]), by0 = std::min(by0, p[1]), bx1 = std::max(bx1, p[0]), by1 = std::max(by1, p[1]);
+				if (bx1 < x0 - reach || bx0 > x1 + reach || by1 < y0 - reach || by0 > y1 + reach)
+					return false;
+				// (a corner or an edge's middle within reach of the road, or the road running through it)
+				for (size_t i = 0; i < b.footprint.size(); ++i)
+				{
+					const P2& a = b.footprint[i];
+					const P2& c = b.footprint[(i + 1) % b.footprint.size()];
+					if (distance(a) < reach || distance({(a[0] + c[0]) / 2, (a[1] + c[1]) / 2}) < reach)
+						return true;
+				}
+				for (const P2& p : r.points)
+					if (inside(b.footprint, p))
+						return true;
+				for (size_t i = 0; i + 1 < r.points.size(); ++i)
+					for (float t = 0.25f; t < 1; t += 0.25f)
+						if (inside(b.footprint, {r.points[i][0] + (r.points[i + 1][0] - r.points[i][0]) * t, r.points[i][1] + (r.points[i + 1][1] - r.points[i][1]) * t}))
+							return true;
+				return false;
+			});
+			demolished += before - w.buildings.size();
+		}
+		for (auto& [id, r] : changed)
+			w.roads.push_back(std::move(r));
+		std::printf("edits: %zu roads changed, %zu added, %zu removed; %zu buildings in the new roads' way demolished\n", replaced, changed.size(),
+		    removed.size(), demolished);
+		return true;
+	}
+
+	bool SaveRoadIndex(const World& w, const std::filesystem::path& file, std::string& error)
+	{
+		std::ofstream o(file, std::ios::binary);
+		if (!o)
+			return error = "cannot write " + file.string(), false;
+		const auto put = [&](const auto& v) { o.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+		o.write("WBRD", 4);
+		put(uint32_t{1});
+		put(static_cast<uint32_t>(w.roads.size()));
+		for (const Road& r : w.roads)
+		{
+			put(r.id);
+			put(static_cast<uint8_t>(std::min<size_t>(r.kind.size(), 255)));
+			o.write(r.kind.data(), static_cast<std::streamsize>(std::min<size_t>(r.kind.size(), 255)));
+			put(static_cast<uint16_t>(std::min<size_t>(r.name.size(), 65535)));
+			o.write(r.name.data(), static_cast<std::streamsize>(std::min<size_t>(r.name.size(), 65535)));
+			put(static_cast<uint8_t>(r.forward));
+			put(static_cast<uint8_t>(r.backward));
+			put(static_cast<uint8_t>((r.sidewalks ? 1 : 0) | (r.bridge ? 2 : 0) | (r.tunnel ? 4 : 0)));
+			put(static_cast<int8_t>(r.layer));
+			put(r.laneWidth);
+			put(r.speed);
+			put(static_cast<uint32_t>(r.points.size()));
+			for (const P2& p : r.points)
+				put(p[0]), put(p[1]);
+		}
+		return static_cast<bool>(o);
 	}
 }

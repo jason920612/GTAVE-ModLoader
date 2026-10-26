@@ -29,6 +29,7 @@
 #include "../graphics/bridge.hpp"
 #include "../graphics/particles.hpp"
 #include "../log.hpp"
+#include "../mods.hpp"
 #include "../paths.hpp"
 #include "../state.hpp"
 #include "../ui/overlay.hpp"
@@ -61,6 +62,18 @@ namespace loader::debug::remote
 		};
 		std::mutex g_mutex;
 		std::map<int, Held> g_held; // control -> how long
+		// "call": a mod's web function called as a page would (game.call), its answer back to the tester
+		struct ModCall
+		{
+			std::string name, args;
+			int64_t id = 0;
+			bool queued = false, done = false, ok = false;
+			std::string result;
+		};
+		std::deque<std::shared_ptr<ModCall>> g_modCalls; // waiting for the game thread
+		std::map<int64_t, std::shared_ptr<ModCall>> g_modCallsOut; // queued on a mod, waiting for its answer
+		std::condition_variable g_modCallDone;
+		int64_t g_nextModCall = -1; // (negative: the browser's ids are positive)
 		CamRequest g_cam;            // (the game thread applies it)
 		bool g_teleport = false;
 		float g_teleportTo[3] = {};
@@ -683,6 +696,26 @@ namespace loader::debug::remote
 				(cmd == "depthdump" ? graphics::bridge::DumpDepth : graphics::bridge::DumpColor)(wpath);
 				return "ok";
 			}
+			if (cmd == "call")
+			{
+				// call <name> [json args]: a mod's web function (RegisterWebFunction), run on its mod's thread as a page's
+				// game.call would be; the reply is "ok <its result>"
+				auto call = std::make_shared<ModCall>();
+				in >> call->name;
+				std::getline(in, call->args);
+				call->args.erase(0, call->args.find_first_not_of(' '));
+				if (call->args.empty())
+					call->args = "[]";
+				std::unique_lock lock(g_mutex);
+				call->id = g_nextModCall--;
+				g_modCalls.push_back(call);
+				if (!g_modCallDone.wait_for(lock, std::chrono::seconds(30), [&] { return call->done; }))
+				{
+					g_modCallsOut.erase(call->id);
+					return "err no answer in 30 s";
+				}
+				return call->ok ? "ok " + call->result : "err " + call->result;
+			}
 			if (cmd == "tp")
 			{
 				// tp x y z: the player there
@@ -864,10 +897,36 @@ namespace loader::debug::remote
 		log::Warn("remote: test control is on (\\\\.\\pipe\\gtave-modloader)");
 	}
 
+	void ModCallAnswered(int64_t id, bool ok, const char* result)
+	{
+		std::lock_guard lock(g_mutex);
+		const auto it = g_modCallsOut.find(id);
+		if (it == g_modCallsOut.end())
+			return;
+		it->second->ok = ok;
+		it->second->result = result ? result : "null";
+		it->second->done = true;
+		g_modCallsOut.erase(it);
+		g_modCallDone.notify_all();
+	}
+
 	void Tick()
 	{
 		const ULONGLONG now = GetTickCount64();
 		std::lock_guard lock(g_mutex);
+		while (!g_modCalls.empty())
+		{
+			const auto call = g_modCalls.front();
+			g_modCalls.pop_front();
+			g_modCallsOut[call->id] = call;
+			if (!mods::CallWebFunction(call->name, call->args, call->id))
+			{
+				g_modCallsOut.erase(call->id);
+				call->result = "no mod registered " + call->name;
+				call->done = true;
+				g_modCallDone.notify_all();
+			}
+		}
 		for (auto it = g_held.begin(); it != g_held.end();)
 		{
 			if (now >= it->second.until)

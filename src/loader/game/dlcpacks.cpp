@@ -350,6 +350,15 @@ namespace loader::game::dlcpacks
 			{
 				if (!entry.is_directory())
 					continue;
+				// A pack rebuilt while the game ran (it holds dlc.rpf open: the world editor writes dlc.rpf.new) takes the
+				// old one's place now.
+				if (const auto fresh = entry.path() / L"dlc.rpf.new"; std::filesystem::is_regular_file(fresh, ec))
+				{
+					if (MoveFileExW(fresh.c_str(), (entry.path() / L"dlc.rpf").c_str(), MOVEFILE_REPLACE_EXISTING))
+						log::Info("dlc pack {}: dlc.rpf.new replaced dlc.rpf", Utf8(entry.path().filename().u8string()));
+					else
+						log::Error("dlc pack {}: cannot replace dlc.rpf with dlc.rpf.new (error {})", Utf8(entry.path().filename().u8string()), GetLastError());
+				}
 				Pack pack;
 				if (!std::filesystem::is_regular_file(entry.path() / L"dlc.rpf", ec))
 				{

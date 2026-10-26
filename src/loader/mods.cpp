@@ -20,6 +20,7 @@
 
 #include "ai/ai.hpp"
 #include "config.hpp"
+#include "debug/remote.hpp"
 #include "log.hpp"
 #include "game/char4.hpp"
 #include "game/models.hpp"
@@ -582,7 +583,11 @@ namespace loader::mods
 		{
 			std::unique_ptr<WebCall> call(static_cast<WebCall*>(param));
 			const char* result = call->function.fn(call->args.c_str(), call->function.user);
-			web::Respond(call->id, true, result);
+			// (negative ids: the tester's "call" over the remote pipe)
+			if (call->id < 0)
+				debug::remote::ModCallAnswered(call->id, true, result);
+			else
+				web::Respond(call->id, true, result);
 		}
 
 		int32_t ApiRegisterWebFunction(const char* name, MLWebFunction fn, void* user)

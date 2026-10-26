@@ -3649,3 +3649,22 @@ DRAW_TV_CHANNEL、SET_TEXT_RENDER_ID(1)（remote 的 `every` 依序呼叫）。�
   有點雲時不再用 OSM 的樹點和大道的棕櫚。
 - 地面：陸地格子（4 m）用點雲地面回波的平均（+0.6 m：遊戲的海在 0，NAVD88 0 大約是平均海平面，低窪處會被浪打到），
   沒有回波的從周圍量到的補。
+
+### 61.19 世界編輯器：像城市建造遊戲一樣畫道路（`examples/worldedit`、`tools/worldgen/roadedit`，2026-10-26）
+
+- 使用者要道路「像城市天際線一樣可以直接用拉的」。做法：編輯邏輯（`roadedit`）worldgen 和遊戲 mod 共用：一筆直線或曲線
+  （二次曲線，每 4 m 一點）變成一條選定種類的路（六種預設：雙線道、小路、四線大道、六線大道、單行道、快速道路）；兩端吸附到
+  道路的點或路段上（路段上的點插進那條路）；和其他路相交處兩條都插入同一點（`roads::Build` 把共用點變成路口；橋和隧道不交會）；
+  刪除拿掉兩個路口之間那一段（同一條 OSM 路的其他段保留，第二段給新 id）；每一步可以復原。
+- 世界資料本身不動：修改存在 `edits.json`（改過或新增的路的完整內容，用 id；刪掉的原始 id），`worldgen build --edits` 先套用；
+  新路經過的建築拆掉（柏油和人行道範圍內的角點、邊中點，或路線穿過輪廓）。編輯器讀 `worldgen roads-index` 寫的精簡路網
+  （`roads.bin`，4 MB / 47,103 條）加上 edits。
+- 遊戲裡（F7）：腳本攝影機俯瞰（WASD 移動、QE 轉、RF 俯仰、滾輪縮放）、SET_MOUSE_CURSOR_THIS_FRAME、所有控制停用後讀
+  disabled control（游標 239/240、左右鍵 237/238、滾輪 241/242）；游標射線用 START_EXPENSIVE_SYNCHRONOUS_SHAPE_TEST_LOS_PROBE
+  打到碰撞；底部工具列（DRAW_RECT + 文字；遊戲字型沒有全形空格 U+3000，會變方框）。
+- 預覽：同一區域「修改前」「修改後」各算一次 `roads::Geometry`，只畫修改後多出來的三角形（藍：新路、改變的路口）和消失的（紅），
+  用 DRAW_POLY（單面：正反各畫一次）；三角形用三個角點到公分的座標當鍵。只把整區塗藍時看不出新路。
+- 套用：存 edits，背景執行設定裡的 rebuild.cmd（worldgen build + pack 到 `mods\<包>\dlc.rpf.new`，南灘約 90 秒）；遊戲開著時
+  dlc.rpf 被鎖住，載入器下次啟動時把 dlc.rpf.new 換上（MoveFileEx REPLACE_EXISTING）。
+- 測試：載入器測試管道新增 `call <名稱> <JSON>`（在 mod 的執行緒跑它註冊的網頁函式，等結果，負的 id 和瀏覽器的分開）；
+  編輯器的動作都有網頁函式（worldedit.enter / camera / tool / hover / click / undo / apply / state），所以不用滑鼠也能測。

@@ -124,13 +124,18 @@ add_library(modloader_sdk INTERFACE)
 target_include_directories(modloader_sdk INTERFACE sdk/include)
 target_compile_features(modloader_sdk INTERFACE cxx_std_20)
 
-set(EXAMPLE_MODS hello_mod settings_demo trainer property stocks epsilon bank social animlab basketball roadster police)
+set(EXAMPLE_MODS hello_mod settings_demo trainer property stocks epsilon bank social animlab basketball roadster police worldedit)
 foreach(example IN LISTS EXAMPLE_MODS)
     file(GLOB example_sources CONFIGURE_DEPENDS examples/${example}/*.cpp)
     add_library(${example} SHARED ${example_sources})
     target_link_libraries(${example} PRIVATE modloader_sdk)
     target_compile_options(${example} PRIVATE /W4 /utf-8 /bigobj)
 endforeach()
+
+# World editor: draws roads with the world builder's own road geometry and edit logic (tools/worldgen).
+target_sources(worldedit PRIVATE tools/worldgen/roadedit.cpp tools/worldgen/roads.cpp tools/worldgen/polygon.cpp)
+target_include_directories(worldedit PRIVATE src/loader)
+target_compile_definitions(worldedit PRIVATE NOMINMAX)
 
 # Basketball: MuJoCo (Apache 2.0, prebuilt) simulates the players' physical bodies. mujoco.dll is delay-loaded from
 # ModLoader\mods\basketball\ (every DLL directly in mods\ would be taken for a mod).
@@ -276,6 +281,7 @@ add_executable(worldgen
     tools/worldgen/texture.cpp
     tools/worldgen/facades.cpp
     tools/worldgen/trees.cpp
+    tools/worldgen/roadedit.cpp
     tools/ue5export/drawable.cpp
     tools/ue5export/ng.cpp
     tools/ue5export/gamefiles.cpp
@@ -285,7 +291,7 @@ add_executable(worldgen
     src/loader/convert/pso.cpp
     src/loader/convert/resource.cpp
     src/loader/convert/ytd.cpp)
-target_include_directories(worldgen PRIVATE src/loader)
+target_include_directories(worldgen PRIVATE src/loader sdk/include)
 target_compile_definitions(worldgen PRIVATE NOMINMAX)
 target_link_libraries(worldgen PRIVATE nlohmann_json::nlohmann_json recast)
 target_compile_options(worldgen PRIVATE /W4 /utf-8 /O2 /permissive-)
