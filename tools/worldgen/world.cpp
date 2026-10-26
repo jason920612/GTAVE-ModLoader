@@ -255,6 +255,8 @@ namespace worldgen::world
 				r.tunnel = !Tag(t, "tunnel").empty() && Tag(t, "tunnel") != "no";
 				r.layer = static_cast<int>(Number(Tag(t, "layer")));
 				r.speed = Speed(Tag(t, "maxspeed"));
+				r.surface = Tag(t, "surface");
+				r.smoothness = Tag(t, "smoothness");
 				if (r.points.size() >= 2)
 					out.roads.push_back(std::move(r));
 				continue;
@@ -389,8 +391,15 @@ namespace worldgen::world
 			waterways.push_back({{"kind", ww.kind}, {"width", ww.width}, {"points", Line(ww.points)}});
 		auto& roads = j["roads"] = nlohmann::json::array();
 		for (const Road& r : w.roads)
-			roads.push_back({{"id", r.id}, {"kind", r.kind}, {"name", r.name}, {"forward", r.forward}, {"backward", r.backward}, {"laneWidth", r.laneWidth},
-			    {"sidewalks", r.sidewalks}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}});
+		{
+			nlohmann::json o{{"id", r.id}, {"kind", r.kind}, {"name", r.name}, {"forward", r.forward}, {"backward", r.backward}, {"laneWidth", r.laneWidth},
+			    {"sidewalks", r.sidewalks}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}};
+			if (!r.surface.empty())
+				o["surface"] = r.surface;
+			if (!r.smoothness.empty())
+				o["smoothness"] = r.smoothness;
+			roads.push_back(std::move(o));
+		}
 		auto& buildings = j["buildings"] = nlohmann::json::array();
 		for (const Building& b : w.buildings)
 			buildings.push_back({{"kind", b.kind}, {"name", b.name}, {"height", b.height}, {"footprint", Line(b.footprint)}});
@@ -420,6 +429,8 @@ namespace worldgen::world
 			r.tunnel = o.value("tunnel", false);
 			r.layer = o.value("layer", 0);
 			r.speed = o.value("speed", 0.0f);
+			r.surface = o.value("surface", "");
+			r.smoothness = o.value("smoothness", "");
 			r.points = Line(o["points"]);
 			return r;
 		}

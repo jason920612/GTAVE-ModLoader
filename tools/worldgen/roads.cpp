@@ -38,7 +38,7 @@ namespace worldgen::roads
 		bool Alike(const Edge& x, const Edge& y)
 		{
 			return x.forward == y.forward && x.backward == y.backward && x.laneWidth == y.laneWidth && x.sidewalks == y.sidewalks && x.bridge == y.bridge &&
-			       x.kind == y.kind;
+			       x.kind == y.kind && paving::Of(x.surface) == paving::Of(y.surface);
 		}
 
 		// a road that is not a street: a driveway, alley or parking lane (service), a track, a path
@@ -128,18 +128,19 @@ namespace worldgen::roads
 				return static_cast<uint32_t>(m.vertices.size() - 1);
 			}
 			void Tri(Mesh& m, uint32_t a, uint32_t b, uint32_t c) { m.indices.insert(m.indices.end(), {a, b, c}); }
-			void Collide(const P3& a, const P3& b, const P3& c, uint8_t material, bool ground)
+			void Collide(const P3& a, const P3& b, const P3& c, uint8_t material, bool ground, uint8_t kind = 0)
 			{
 				const uint32_t base = static_cast<uint32_t>(surfaces.collision.vertices.size());
 				surfaces.collision.vertices.insert(surfaces.collision.vertices.end(), {a, b, c});
 				surfaces.collision.triangles.push_back({base, base + 1, base + 2});
 				surfaces.collision.materials.push_back(material);
+				surfaces.collision.kinds.push_back(kind);
 				if (ground)
 					surfaces.footprint.push_back({a, b, c});
 			}
 			// A strip between two lines of points (right and left, the same count), anticlockwise from above.
 			void Strip(Mesh& m, const std::vector<P3>& right, const std::vector<P3>& left, const std::vector<std::array<float, 2>>& uvRight,
-			    const std::vector<std::array<float, 2>>& uvLeft, uint8_t material, bool ground)
+			    const std::vector<std::array<float, 2>>& uvLeft, uint8_t material, bool ground, uint8_t kind = 0)
 			{
 				for (size_t i = 0; i + 1 < right.size(); ++i)
 				{
@@ -150,8 +151,8 @@ namespace worldgen::roads
 					Tri(m, r0, l1, l0);
 					if (material)
 					{
-						Collide(right[i], right[i + 1], left[i + 1], material, ground);
-						Collide(right[i], left[i + 1], left[i], material, ground);
+						Collide(right[i], right[i + 1], left[i + 1], material, ground, kind);
+						Collide(right[i], left[i + 1], left[i], material, ground, kind);
 					}
 				}
 			}
@@ -183,7 +184,7 @@ namespace worldgen::roads
 				}
 			}
 			// A flat polygon (a fan from `centre`, the points anticlockwise round it), textured in world space.
-			void Fan(Mesh& m, const P3& centre, const std::vector<P3>& ring, uint8_t material, bool ground)
+			void Fan(Mesh& m, const P3& centre, const std::vector<P3>& ring, uint8_t material, bool ground, uint8_t kind = 0)
 			{
 				const P3 up{0, 0, 1};
 				const uint32_t c = Add(m, centre, up, {centre[0] / kTexture, -centre[1] / kTexture});
@@ -195,7 +196,7 @@ namespace worldgen::roads
 					const size_t j = (i + 1) % ring.size();
 					Tri(m, c, r[i], r[j]);
 					if (material)
-						Collide(centre, ring[i], ring[j], material, ground);
+						Collide(centre, ring[i], ring[j], material, ground, kind);
 				}
 			}
 			// A marking ribbon along a polyline at offset `o` (per point, left positive), `width` wide, from the atlas
@@ -254,6 +255,190 @@ namespace worldgen::roads
 		};
 	}
 
+	namespace
+	{
+		constexpr std::array<uint8_t, 4> kDecalColour{255, 253, 0, 255}; // (as the markings')
+
+		// The carriageway of an edge (research/phase0.md §61.22): rows across it at the edge's points (and closer where
+		// its relief needs them: over the sinking features, all along an unpaved road), each row's columns from its right
+		// edge to its left (closer over the features), zipped together; its mesh and its collision from the same
+		// vertices, the collision broken (the game's pothole materials) where a pothole or a broken edge is; the
+		// features' decals on the surface over them.
+		void Carriageway(Builder& b, Surfaces& out, paving::Paving pv, const std::vector<paving::Feature>& features, uint32_t seed, const std::vector<P2>& p,
+		    const std::vector<float>& z, const std::vector<float>& s, const std::vector<P2>& nrm, const std::vector<float>& scale,
+		    const std::vector<float>& halfAt, bool worn, bool ground)
+		{
+			using Kind = paving::Feature::Kind;
+			struct Row
+			{
+				float s = 0, z = 0, h = 0;
+				P2 p{}, v{}; // the centre line's point, the offset per metre to the left
+				std::vector<float> cols;
+			};
+			const float sStart = s.front(), sEnd = s.back();
+			const bool rough = paving::Rough(pv);
+			// the cross-section at distance si (the offset per metre interpolated as it is, so that a row between two of
+			// the edge's points lies on the quad between them)
+			const auto rowAt = [&](float si) {
+				size_t i = 0;
+				while (i + 2 < s.size() && s[i + 1] < si)
+					++i;
+				const float t = s[i + 1] > s[i] ? std::clamp((si - s[i]) / (s[i + 1] - s[i]), 0.0f, 1.0f) : 0.0f;
+				Row r;
+				r.s = si;
+				r.z = z[i] + (z[i + 1] - z[i]) * t;
+				r.h = halfAt[i] + (halfAt[i + 1] - halfAt[i]) * t;
+				r.p = {p[i][0] + (p[i + 1][0] - p[i][0]) * t, p[i][1] + (p[i + 1][1] - p[i][1]) * t};
+				const P2 v0{nrm[i][0] * scale[i], nrm[i][1] * scale[i]}, v1{nrm[i + 1][0] * scale[i + 1], nrm[i + 1][1] * scale[i + 1]};
+				r.v = {v0[0] + (v1[0] - v0[0]) * t, v0[1] + (v1[1] - v0[1]) * t};
+				return r;
+			};
+			const auto relief = [&](float si, float o, float h) { return paving::Relief(pv, features, seed, si, o, h, sStart, sEnd); };
+			// the surface's normal from the relief's slope
+			const auto normalAt = [&](const Row& r, float o) {
+				const float e = 0.05f, lv = std::hypot(r.v[0], r.v[1]);
+				const P2 left{r.v[0] / lv, r.v[1] / lv}, along{left[1], -left[0]};
+				const float ds = (relief(r.s + e, o, r.h) - relief(r.s - e, o, r.h)) / (2 * e), dq = (relief(r.s, o + e, r.h) - relief(r.s, o - e, r.h)) / (2 * e * lv);
+				const float gx = ds * along[0] + dq * left[0], gy = ds * along[1] + dq * left[1], l = std::sqrt(gx * gx + gy * gy + 1);
+				return P3{-gx / l, -gy / l, 1 / l};
+			};
+			const auto sinks = [](const paving::Feature& f) { return f.kind != Kind::Patch; };
+			// where the rows go (the edge's own points kept exactly)
+			std::vector<std::pair<float, bool>> at;
+			for (const float si : s)
+				at.push_back({si, true});
+			const auto fill = [&](float a, float c, float step) {
+				const int n = std::max(1, static_cast<int>(std::ceil((c - a) / step)));
+				for (int k = 0; k <= n; ++k)
+					at.push_back({a + (c - a) * k / n, false});
+			};
+			if (rough)
+				fill(sStart, sEnd, 1.0f);
+			for (const auto& f : features)
+				if (sinks(f))
+					fill(f.s0, f.s1, 0.3f);
+			std::sort(at.begin(), at.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+			std::vector<Row> rows;
+			std::vector<bool> base;
+			for (const auto& [si, own] : at)
+			{
+				if (!rows.empty() && si - rows.back().s < 0.02f)
+				{
+					if (own && !base.back())
+						rows.back() = rowAt(si), base.back() = true;
+					continue;
+				}
+				rows.push_back(rowAt(si));
+				base.push_back(own);
+			}
+			for (Row& r : rows)
+			{
+				std::vector<float> c{-r.h, r.h};
+				if (rough)
+					for (float o = -r.h + 1.0f; o < r.h - 0.5f; o += 1.0f)
+						c.push_back(o);
+				for (const auto& f : features)
+					if (sinks(f) && r.s >= f.s0 - 1e-3f && r.s <= f.s1 + 1e-3f)
+					{
+						const int n = std::max(1, static_cast<int>(std::ceil((f.o1 - f.o0) / 0.3f)));
+						for (int k = 0; k <= n; ++k)
+							c.push_back(std::clamp(f.o0 + (f.o1 - f.o0) * k / n, -r.h, r.h));
+					}
+				std::sort(c.begin(), c.end());
+				r.cols.clear();
+				for (const float o : c)
+					if (r.cols.empty() || o - r.cols.back() > 0.02f)
+						r.cols.push_back(o);
+				if (r.cols.back() < r.h)
+					r.cols.back() = r.h;
+			}
+			// (asphalt: worn roads' cracked; its picture spans kerb to kerb, a whole number of times - the game's road
+			// pictures have their gutters at their edges, which met down the middle of the road otherwise)
+			const bool asphalt = pv == paving::Paving::Asphalt;
+			Mesh& m = asphalt && worn ? out.worn : out.paved[static_cast<size_t>(pv)];
+			const float tm = paving::TextureMetres(pv);
+			const float across = std::max(1.0f, std::round(2 * halfAt[halfAt.size() / 2] / tm));
+			const uint8_t material = paving::Material(pv), broken = paving::BrokenMaterial(pv);
+			std::vector<std::vector<uint32_t>> index(rows.size());
+			std::vector<std::vector<P3>> pos(rows.size());
+			for (size_t ri = 0; ri < rows.size(); ++ri)
+			{
+				const Row& r = rows[ri];
+				for (const float o : r.cols)
+				{
+					const float dz = relief(r.s, o, r.h);
+					const P3 q{r.p[0] + r.v[0] * o, r.p[1] + r.v[1] * o, r.z + dz};
+					const P3 normal = rough || !features.empty() ? normalAt(r, o) : P3{0, 0, 1};
+					index[ri].push_back(b.Add(m, q, normal, {asphalt ? (o + r.h) / (2 * r.h) * across : o / tm, r.s / tm}));
+					pos[ri].push_back(q);
+				}
+			}
+			for (size_t ri = 0; ri + 1 < rows.size(); ++ri)
+			{
+				const Row &ra = rows[ri], &rb = rows[ri + 1];
+				const auto ta = [&](size_t k) { return (ra.cols[k] + ra.h) / (2 * ra.h); };
+				const auto tb = [&](size_t k) { return (rb.cols[k] + rb.h) / (2 * rb.h); };
+				size_t i = 0, j = 0;
+				while (i + 1 < ra.cols.size() || j + 1 < rb.cols.size())
+				{
+					const bool alongB = i + 1 >= ra.cols.size() || (j + 1 < rb.cols.size() && tb(j + 1) <= ta(i + 1));
+					// (anticlockwise from above: s along the road, o to its left)
+					const size_t ia = i, jb = j;
+					float cs, co;
+					if (alongB)
+					{
+						b.Tri(m, index[ri][ia], index[ri + 1][jb], index[ri + 1][jb + 1]);
+						cs = (ra.s + 2 * rb.s) / 3, co = (ra.cols[ia] + rb.cols[jb] + rb.cols[jb + 1]) / 3;
+						b.Collide(pos[ri][ia], pos[ri + 1][jb], pos[ri + 1][jb + 1], paving::BrokenAt(features, cs, co) ? broken : material, ground, 1);
+						++j;
+					}
+					else
+					{
+						b.Tri(m, index[ri][ia], index[ri + 1][jb], index[ri][ia + 1]);
+						cs = (2 * ra.s + rb.s) / 3, co = (ra.cols[ia] + rb.cols[jb] + ra.cols[ia + 1]) / 3;
+						b.Collide(pos[ri][ia], pos[ri + 1][jb], pos[ri][ia + 1], paving::BrokenAt(features, cs, co) ? broken : material, ground, 1);
+						++i;
+					}
+				}
+			}
+			// the decals: a grid on the surface over each feature's box (the sinking ones' on the surface's own rows and
+			// columns there), lifted 12 mm, its picture spread over it
+			for (const auto& f : features)
+			{
+				Mesh& dm = f.kind == Kind::Pothole ? out.potholes : f.kind == Kind::Patch ? out.patches : out.breakups;
+				float u0, v0, u1, v1;
+				paving::Picture(f, u0, v0, u1, v1);
+				const float step = sinks(f) ? 0.3f : 1.0f;
+				const int ns = std::max(1, static_cast<int>(std::ceil((f.s1 - f.s0) / step))), no = std::max(1, static_cast<int>(std::ceil((f.o1 - f.o0) / step)));
+				{
+					const Row r = rowAt((f.s0 + f.s1) / 2);
+					const float o = (f.o0 + f.o1) / 2;
+					out.wear.push_back({f.kind, {r.p[0] + r.v[0] * o, r.p[1] + r.v[1] * o, r.z}});
+				}
+				const uint32_t first = static_cast<uint32_t>(dm.vertices.size());
+				for (int a = 0; a <= ns; ++a)
+				{
+					const Row r = rowAt(f.s0 + (f.s1 - f.s0) * a / ns);
+					for (int c = 0; c <= no; ++c)
+					{
+						const float o = f.o0 + (f.o1 - f.o0) * c / no;
+						const P3 q{r.p[0] + r.v[0] * o, r.p[1] + r.v[1] * o, r.z + relief(r.s, o, r.h) + 0.012f};
+						auto colour = kDecalColour;
+						colour[3] = static_cast<uint8_t>(std::lround(255 * paving::Fade(f, r.s, o, r.h)));
+						b.Add(dm, q, normalAt(r, o), {u0 + (u1 - u0) * c / no, v0 + (v1 - v0) * a / ns}, colour);
+					}
+				}
+				for (int a = 0; a < ns; ++a)
+					for (int c = 0; c < no; ++c)
+					{
+						const uint32_t q00 = first + a * (no + 1) + c, q10 = q00 + no + 1;
+						b.Tri(dm, q00, q10, q10 + 1);
+						b.Tri(dm, q00, q10 + 1, q00 + 1);
+					}
+			}
+		}
+	}
+
 	Network Build(const world::World& w)
 	{
 		Network n;
@@ -277,7 +462,7 @@ namespace worldgen::roads
 		{
 			Edge e;
 			e.forward = r.forward, e.backward = r.backward, e.laneWidth = r.laneWidth, e.sidewalks = r.sidewalks, e.bridge = r.bridge, e.kind = r.kind,
-			e.name = r.name, e.speed = r.speed;
+			e.name = r.name, e.speed = r.speed, e.id = r.id, e.surface = r.surface, e.smoothness = r.smoothness;
 			e.a = vertex(r.points.front());
 			e.points.push_back(r.points.front());
 			for (size_t i = 1; i < r.points.size(); ++i)
@@ -669,15 +854,13 @@ namespace worldgen::roads
 				scale[i] = 1.0f / std::max(0.5f, nrm[i][0] * own[0] + nrm[i][1] * own[1]);
 			}
 			std::vector<P3> right, left, walkRi, walkRo, walkLi, walkLo;
-			std::vector<std::array<float, 2>> uvR, uvL, uvWi, uvWo;
+			std::vector<std::array<float, 2>> uvWi, uvWo;
 			for (size_t i = 0; i < p.size(); ++i)
 			{
 				const float k = scale[i], h = halfAt[i], wk = walkAt[i];
 				const auto off = [&](float o, float dz) { return P3{p[i][0] + nrm[i][0] * o * k, p[i][1] + nrm[i][1] * o * k, z[i] + dz}; };
 				right.push_back(off(-h, 0));
 				left.push_back(off(h, 0));
-				uvR.push_back({-h / kTexture, s[i] / kTexture});
-				uvL.push_back({h / kTexture, s[i] / kTexture});
 				walkRi.push_back(off(-h, kKerb));
 				walkRo.push_back(off(-h - wk, kKerb));
 				walkLi.push_back(off(h, kKerb));
@@ -685,11 +868,38 @@ namespace worldgen::roads
 				uvWi.push_back({0, s[i] / kTexture});
 				uvWo.push_back({wk / kTexture, s[i] / kTexture});
 			}
-			b.Strip(out.asphalt, right, left, uvR, uvL, kTarmac, !e.bridge);
+			// the carriageway: what it is made of (OSM surface), its wear (potholes, patches, broken edges: paving.hpp) clear
+			// of its painted lines, its crossings and stop lines and its tapers
+			const paving::Paving pv = paving::Of(e.surface);
+			const bool crossA = kind[e.a] == Kind::Junction, crossB = kind[e.b] == Kind::Junction;
+			const float clearA = crossA ? 4.6f : 0, clearB = crossB ? 4.6f : 0;
+			// (as in the US: a double yellow line between the directions of the through roads - residential streets,
+			// service roads and alleys have none; one-way roads a yellow line on their left edge, white on the right)
+			const bool through = !(e.kind == "residential" || e.kind == "service" || e.kind == "living_street" || e.kind == "unclassified" || e.kind == "road" ||
+			                       e.kind == "track");
+			const bool major = e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary");
+			{
+				std::vector<float> lines;
+				const float c0 = centreOf(half, e.forward, w);
+				if (e.forward && e.backward && through)
+					lines.insert(lines.end(), {c0 - 0.12f, c0 + 0.12f});
+				for (int j = 1; j < e.forward; ++j)
+					lines.push_back(c0 - j * w);
+				for (int j = 1; j < e.backward; ++j)
+					lines.push_back(c0 + j * w);
+				if (major)
+					lines.insert(lines.end(), {-half + 0.45f, half - 0.45f});
+				const uint32_t seed = static_cast<uint32_t>(e.id) * 2654435761u ^ static_cast<uint32_t>(std::lround(p.front()[0] * 10)) * 40503u ^
+				                      static_cast<uint32_t>(std::lround(p.front()[1] * 10));
+				const float f0 = sStart + std::max({clearA + 1.0f, tapA, 1.5f}), f1 = sEnd - std::max({clearB + 1.0f, tapB, 1.5f});
+				const float wear = paving::Wear(e.kind, e.smoothness, e.id);
+				const auto features = f1 - f0 > 3 ? paving::Features(pv, wear, seed, f0, f1, half, lines, major) : std::vector<paving::Feature>{};
+				Carriageway(b, out, pv, features, seed, p, z, s, nrm, scale, halfAt, wear >= 0.5f, !e.bridge);
+			}
 			if (e.sidewalks)
 			{
-				b.Strip(out.sidewalk, walkLi, walkLo, uvWi, uvWo, kPavement, !e.bridge); // (left: inner on the right of its direction)
-				b.Strip(out.sidewalk, walkRo, walkRi, uvWo, uvWi, kPavement, !e.bridge);
+				b.Strip(out.sidewalk, walkLi, walkLo, uvWi, uvWo, kPavement, !e.bridge, 2); // (left: inner on the right of its direction)
+				b.Strip(out.sidewalk, walkRo, walkRi, uvWo, uvWi, kPavement, !e.bridge, 2);
 				b.Wall(out.kerb, left, kKerb, false, kConcrete);  // facing the road (to the right of the left kerb's direction)
 				b.Wall(out.kerb, right, kKerb, true, kConcrete);
 				// the sidewalks' outer edges down to the ground below them
@@ -701,11 +911,10 @@ namespace worldgen::roads
 				b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0);
 				b.Wall(out.kerb, ro, kKerb + 0.25f, false, 0);
 			}
-			// markings: between the directions (double yellow), between lanes (dashed white: a lane the next road has
-			// not ends where the taper starts), edge lines on the big roads; the stretch before a junction keeps a
-			// crossing (3 m) and the stop line behind it clear
-			const bool crossA = kind[e.a] == Kind::Junction, crossB = kind[e.b] == Kind::Junction;
-			const float clearA = crossA ? 4.6f : 0, clearB = crossB ? 4.6f : 0;
+			// markings (on asphalt and concrete): between the directions (double yellow), between lanes (dashed white: a
+			// lane the next road has not ends where the taper starts), edge lines on the big roads; the stretch before a
+			// junction keeps a crossing (3 m) and the stop line behind it clear
+			const bool painted = paving::Marked(pv);
 			const auto offsets = [&](auto&& f) {
 				std::vector<float> o(p.size());
 				for (size_t i = 0; i < p.size(); ++i)
@@ -714,14 +923,9 @@ namespace worldgen::roads
 			};
 			const auto line = [&](const std::vector<float>& o, float width, float u0, float u1, float repeat, float from, float to, float dash = 0,
 			                      float period = 0, float v0 = 0, float v1 = 1) {
-				if (to - from > 0.5f)
+				if (painted && to - from > 0.5f)
 					b.Marking(p, z, s, o, width, u0, u1, repeat, dash, period, v0, v1, from, to);
 			};
-			// (as in the US: a double yellow line between the directions of the through roads - residential streets,
-			// service roads and alleys have none; one-way roads a yellow line on their left edge, white on the right)
-			const bool through = !(e.kind == "residential" || e.kind == "service" || e.kind == "living_street" || e.kind == "unclassified" || e.kind == "road" ||
-			                       e.kind == "track");
-			const bool major = e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary");
 			if (e.forward && e.backward && through)
 			{
 				line(offsets([&](size_t i) { return centreAt[i] + 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
@@ -781,7 +985,8 @@ namespace worldgen::roads
 				const P2 l = Left(d);
 				std::vector<P2> stopLine{{q[0] + l[0] * o0 - d[0] * 0.25f, q[1] + l[1] * o0 - d[1] * 0.25f}, {q[0] + l[0] * o1 - d[0] * 0.25f, q[1] + l[1] * o1 - d[1] * 0.25f}};
 				std::vector<float> lz{qz, qz}, ls{0, o1 - o0};
-				b.Marking(stopLine, lz, ls, std::vector<float>(2, 0.0f), 0.5f, kStripeU0, kStripeU1, 2.0f);
+				if (painted)
+					b.Marking(stopLine, lz, ls, std::vector<float>(2, 0.0f), 0.5f, kStripeU0, kStripeU1, 2.0f);
 			};
 			// (crossings where people walk: streets with sidewalks, at junctions of three streets or more - not where a
 			// street meets only driveways, alleys or parking lanes)
@@ -882,8 +1087,16 @@ namespace worldgen::roads
 				cr.zx = x.z, cr.zy = y.z;
 				corners.push_back(std::move(cr));
 			}
-			// the asphalt: the ring's triangles (heights along it), world-space texture
+			// the carriageway: the ring's triangles (heights along it), world-space texture; made of what all the roads
+			// meeting there are made of, else asphalt
 			{
+				paving::Paving jp = paving::Of(n.edges[list[0].edge].surface);
+				for (const End& x : list)
+					if (paving::Of(n.edges[x.edge].surface) != jp)
+						jp = paving::Paving::Asphalt;
+				Mesh& jm = out.paved[static_cast<size_t>(jp)];
+				const float tm = paving::TextureMetres(jp);
+				const uint8_t jmat = paving::Material(jp);
 				std::vector<polygon::P2> poly(ring.begin(), ring.end());
 				auto tris = polygon::Triangulate(poly);
 				if (tris.empty())
@@ -892,19 +1105,19 @@ namespace worldgen::roads
 					std::vector<P3> r3;
 					for (size_t q = 0; q < ring.size(); ++q)
 						r3.push_back({ring[q][0], ring[q][1], ringZ[q]});
-					b.Fan(out.asphalt, c, r3, kTarmac, true);
+					b.Fan(jm, c, r3, jmat, true, 1);
 				}
 				else
 				{
 					const P3 up{0, 0, 1};
 					std::vector<uint32_t> idx;
 					for (size_t q = 0; q < ring.size(); ++q)
-						idx.push_back(b.Add(out.asphalt, {ring[q][0], ring[q][1], ringZ[q]}, up, {ring[q][0] / kTexture, -ring[q][1] / kTexture}));
+						idx.push_back(b.Add(jm, {ring[q][0], ring[q][1], ringZ[q]}, up, {ring[q][0] / tm, -ring[q][1] / tm}));
 					for (const auto& t : tris)
 					{
-						b.Tri(out.asphalt, idx[t[0]], idx[t[1]], idx[t[2]]);
+						b.Tri(jm, idx[t[0]], idx[t[1]], idx[t[2]]);
 						b.Collide({ring[t[0]][0], ring[t[0]][1], ringZ[t[0]]}, {ring[t[1]][0], ring[t[1]][1], ringZ[t[1]]}, {ring[t[2]][0], ring[t[2]][1], ringZ[t[2]]},
-						    kTarmac, true);
+						    jmat, true, 1);
 					}
 				}
 			}
@@ -925,7 +1138,7 @@ namespace worldgen::roads
 					uvO.push_back({Dist(cr.kerb[q], cr.outer[q]) / kTexture, run / kTexture});
 				}
 				// (the kerb runs anticlockwise round the junction: the junction on its left, the sidewalk on its right)
-				b.Strip(out.sidewalk, outer, inner, uvO, uvI, kPavement, true);
+				b.Strip(out.sidewalk, outer, inner, uvO, uvI, kPavement, true, 2);
 				std::vector<P3> foot;
 				for (size_t q = 0; q < cr.kerb.size(); ++q)
 					foot.push_back({cr.kerb[q][0], cr.kerb[q][1], inner[q][2] - kKerb});
@@ -952,7 +1165,7 @@ namespace worldgen::roads
 			std::unordered_map<uint64_t, std::vector<uint32_t>> cells;
 			for (uint32_t t = 0; t < col.triangles.size(); ++t)
 			{
-				if (col.materials[t] != kTarmac)
+				if (col.kinds[t] != 1)
 					continue;
 				float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
 				for (const uint32_t k : col.triangles[t])
@@ -1017,6 +1230,8 @@ namespace worldgen::roads
 	void Paths(const Network& n, float spacing, std::vector<PathNode>& nodes, std::vector<PathLink>& links)
 	{
 		const auto speedOf = [](const Edge& e) {
+			if (paving::Rough(paving::Of(e.surface)))
+				return std::min(e.speed > 0 ? e.speed : 9.0f, 9.0f);
 			if (e.speed > 0)
 				return e.speed;
 			if (e.kind.starts_with("motorway"))

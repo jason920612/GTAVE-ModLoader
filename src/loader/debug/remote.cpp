@@ -91,7 +91,7 @@ namespace loader::debug::remote
 			std::vector<uint64_t> args;
 			std::vector<std::string> strings; // (what string arguments point into)
 			uint64_t result[3]{};
-			uint64_t out[4][3]{}; // ("out" arguments: what the native wrote there)
+			uint64_t out[8][3]{}; // ("out" arguments: what the native wrote there)
 			int outs = 0;
 			bool done = false, ok = false;
 		};
@@ -580,7 +580,7 @@ namespace loader::debug::remote
 						const char* text = call->strings.back().c_str();
 						std::memcpy(&slot, &text, sizeof(text));
 					}
-					else if ((w == "out" || w.rfind("out:", 0) == 0) && call->outs < 4)
+					else if ((w == "out" || w.rfind("out:", 0) == 0) && call->outs < 8)
 					{
 						uint64_t* at = call->out[call->outs++];
 						if (w.size() > 4) // out:<n>: the native reads n there first (DELETE_VEHICLE(&vehicle))

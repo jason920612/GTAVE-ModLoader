@@ -134,7 +134,7 @@ foreach(example IN LISTS EXAMPLE_MODS)
 endforeach()
 
 # World editor: draws roads with the world builder's own road geometry and edit logic (tools/worldgen).
-target_sources(worldedit PRIVATE tools/worldgen/roadedit.cpp tools/worldgen/roads.cpp tools/worldgen/polygon.cpp)
+target_sources(worldedit PRIVATE tools/worldgen/roadedit.cpp tools/worldgen/roads.cpp tools/worldgen/paving.cpp tools/worldgen/polygon.cpp)
 target_include_directories(worldedit PRIVATE src/loader)
 target_compile_definitions(worldedit PRIVATE NOMINMAX)
 
@@ -271,6 +271,7 @@ add_executable(worldgen
     tools/worldgen/world.cpp
     tools/worldgen/raster.cpp
     tools/worldgen/roads.cpp
+    tools/worldgen/paving.cpp
     tools/worldgen/paths.cpp
     tools/worldgen/build.cpp
     tools/worldgen/buildings.cpp

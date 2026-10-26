@@ -131,6 +131,22 @@ namespace worldgen::build
 			return error = texture + " is not in " + dictionary, false;
 		}
 
+		// A texture of the game's as a picture (its first mip, decoded).
+		bool GameImage(const ue5export::GameFiles& files, const std::string& dictionary, const std::string& name, texture::Image& out, std::string& error)
+		{
+			loader::convert::DictionaryTexture t;
+			if (!CopyTexture(files, dictionary, name, name, t, error))
+				return false;
+			loader::convert::TextureFormat format = t.format;
+			uint8_t mips = t.mips;
+			Bytes pixels(t.pixels.begin(), t.pixels.end());
+			loader::convert::MakeRenderTargetFormat(format, mips, static_cast<uint16_t>(t.width), static_cast<uint16_t>(t.height), pixels);
+			out = texture::Image(t.width, t.height);
+			for (size_t i = 0; i < out.pixels.size() && 4 * i + 3 < pixels.size(); ++i)
+				out.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], pixels[4 * i + 3]};
+			return true;
+		}
+
 		// The name of the game's texture dictionary with this hash (its file's).
 		std::string DictionaryName(const ue5export::GameFiles& files, uint32_t hash)
 		{
@@ -493,13 +509,30 @@ namespace worldgen::build
 		roads::Surfaces surfaces;
 		roads::Geometry(network, surfaces);
 		stats.roadEdges = network.edges.size();
+		{
+			// (the roads' wear, for checking: kind (0 pothole, 1 patch, 2 broken edge), x, y, z)
+			std::ofstream list(o.out.parent_path() / (o.name + "_wear.txt"));
+			size_t counts[3]{};
+			for (const auto& [kind, at] : surfaces.wear)
+			{
+				++counts[static_cast<size_t>(kind)];
+				list << std::format("{} {:.1f} {:.1f} {:.2f}\n", static_cast<int>(kind), at[0], at[1], at[2]);
+			}
+			std::printf("roads' wear: %zu potholes, %zu patches, %zu broken edges\n", counts[0], counts[1], counts[2]);
+		}
 		if (!o.roadsObj.empty())
 		{
 			// (the surfaces' triangles in the work box, a group each)
 			std::ofstream obj(o.roadsObj);
 			size_t next = 1;
-			for (const auto& [group, mesh] : {std::pair<const char*, const roads::Mesh*>{"asphalt", &surfaces.asphalt}, {"sidewalk", &surfaces.sidewalk},
-			         {"kerb", &surfaces.kerb}, {"markings", &surfaces.markings}})
+			std::vector<std::pair<std::string, const roads::Mesh*>> groups;
+			for (size_t k = 0; k < paving::kPavings; ++k)
+				groups.push_back({std::format("paved{}", k), &surfaces.paved[k]});
+			groups.push_back({"worn", &surfaces.worn});
+			for (const auto& [group, mesh] : {std::pair<const char*, const roads::Mesh*>{"sidewalk", &surfaces.sidewalk}, {"kerb", &surfaces.kerb},
+			         {"markings", &surfaces.markings}, {"potholes", &surfaces.potholes}, {"patches", &surfaces.patches}, {"breakups", &surfaces.breakups}})
+				groups.push_back({group, mesh});
+			for (const auto& [group, mesh] : groups)
 			{
 				obj << "g " << group << "\n";
 				std::vector<int> index(mesh->vertices.size(), -1);
@@ -691,6 +724,109 @@ namespace worldgen::build
 				return error = "the road model's texture dictionary has no file", false;
 			parents.push_back({facadeDictionary, roadDictionary});
 		}
+		// the other pavings (paving.hpp) the roads here are made of: the asphalt's shader with the game's textures for
+		// them (and the asphalt's even dull shine: their own specular maps read as wet); the wear's decals: the game's
+		// road decal shader (a road model's patch decal) with its pothole and crumbled-edge pictures and a patch picture
+		// of our own, shining as the asphalt does (the template's sharp highlight looked wet). Copied into our
+		// dictionary, only what is used.
+		std::array<ydr::Material, paving::kPavings> pavedMaterials;
+		pavedMaterials.fill(asphalt);
+		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
+		ydr::Material patchDecal, potholeDecal, breakupDecal;
+		{
+			std::map<std::pair<std::string, std::string>, std::string> copied; // (dictionary, texture) -> our name
+			const auto use = [&](const char* dictionary, const char* texture, std::string& name) {
+				const auto key = std::make_pair(std::string(dictionary), std::string(texture));
+				if (const auto it = copied.find(key); it != copied.end())
+					return name = it->second, true;
+				loader::convert::DictionaryTexture t;
+				name = std::format("{}_{}", o.name, texture);
+				if (!CopyTexture(files, dictionary, texture, name, t, error))
+					return false;
+				shared.push_back(std::move(t));
+				copied[key] = name;
+				return true;
+			};
+			struct Look
+			{
+				const char *dictionary, *diffuse, *normalDictionary, *normal, *specularDictionary, *specular; // (null: flat, the asphalt's dull)
+			};
+			const Look looks[paving::kPavings] = {
+			    {},
+			    {"portblockgroup2b+hi.ytd", "im_freeway_road001", "sp1_rd.ytd", "im_freeway_road001_n", nullptr, nullptr},
+			    {"hw1_15_details.ytd", "im_ground_bricks03", "ss1_05_ground.ytd", "im_ground_bricks03_n", nullptr, nullptr},
+			    {"dt1_20_build+hi.ytd", "rsn_dc_archedcobbles_0001", "kt1_15_ground01+hidr.ytd", "rsn_dc_archedcobbles_0001_n", nullptr, nullptr},
+			    {"vb_38_ground+hi.ytd", "rsn_dc_rd_slabs_0001", "vb_38_ground.ytd", "rsn_dc_rd_slabs_0001_n", nullptr, nullptr},
+			    {"venicebeachrd+hi.ytd", "dc_gravel_road02", "cs1_09_decals_06+hidr.ytd", "dc_gravel_road02_n", nullptr, nullptr},
+			    {"cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01", "cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01_n", nullptr, nullptr},
+			    {"cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01", "cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01_n", nullptr, nullptr}};
+			if (!surfaces.worn.indices.empty())
+			{
+				std::string diffuse, normal;
+				if (!use("po1_rd_po1_rd+hi.ytd", "im_road_012", diffuse) || !use("po1_rd_po1_rd+hi.ytd", "im_road_012_n", normal))
+					return false;
+				wornMaterial.Texture(kDiffuseTex, diffuse);
+				wornMaterial.Texture(kBumpTex, normal);
+			}
+			for (size_t k = 1; k < paving::kPavings; ++k)
+			{
+				if (surfaces.paved[k].indices.empty())
+					continue;
+				const Look& look = looks[k];
+				std::string diffuse, normal = o.name + "_flat_n", specular = o.name + "_asphalt_s";
+				if (!use(look.dictionary, look.diffuse, diffuse) || (look.normal && !use(look.normalDictionary, look.normal, normal)) ||
+				    (look.specular && !use(look.specularDictionary, look.specular, specular)))
+					return false;
+				pavedMaterials[k].Texture(kDiffuseTex, diffuse);
+				pavedMaterials[k].Texture(kBumpTex, normal);
+				pavedMaterials[k].Texture(kSpecularTex, specular);
+			}
+			if (!surfaces.patches.indices.empty() || !surfaces.potholes.indices.empty() || !surfaces.breakups.indices.empty())
+			{
+				ydr::Material decal;
+				if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, decal, error))
+					return false;
+				const auto make = [&](ydr::Material& m, const char* dictionary, const char* diffuse, const char* normal, const char* specular) {
+					std::string d, n = o.name + "_flat_n", s = o.name + "_asphalt_s";
+					if (!use(dictionary, diffuse, d) || (normal && !use(dictionary, normal, n)) || (specular && !use(dictionary, specular, s)))
+						return false;
+					m = decal;
+					m.Texture(kDiffuseTex, d);
+					m.Texture(kBumpTex, n);
+					m.Texture(kSpecularTex, s);
+					return true;
+				};
+				// (Fresnel; Specular: the highlight's tightness; SpecularColor: its strength - as the asphalt's)
+				decal.Constant(loader::convert::Joaat("fresnel"), 0.95f);
+				decal.Constant(loader::convert::Joaat("specular"), 16.0f);
+				decal.Constant(loader::convert::Joaat("specularcolor"), 1.0f);
+				if (!make(potholeDecal, "ap1_01_b_sidebit1b001+hidr.ytd", "et_pothole1", nullptr, nullptr) ||
+				    !make(breakupDecal, "vb_34_seawall+hi.ytd", "im_road_damage_05", "im_road_damage_05_n", nullptr))
+					return false;
+				// a patch: newer (darker) asphalt with the dark sealed seam of its cut all round; the picture is the whole
+				// patch (the game's patch pictures are opaque all over, shaped by their meshes)
+				{
+					texture::Image fresh;
+					if (!GameImage(files, "ap1_04_roads00+hidr.ytd", "im_road_009", fresh, error))
+						return false;
+					texture::Image patch(256, 512);
+					for (int y = 0; y < patch.height; ++y)
+						for (int x = 0; x < patch.width; ++x)
+						{
+							const auto& c = fresh.At((x * 2) % fresh.width, y % fresh.height);
+							const int seam = std::min({x, patch.width - 1 - x, y / 2, (patch.height - 1 - y) / 2});
+							const float k = seam < 3 ? 0.35f : seam < 5 ? 0.6f : 0.8f;
+							patch.At(x, y) = {static_cast<uint8_t>(c[0] * k), static_cast<uint8_t>(c[1] * k), static_cast<uint8_t>(c[2] * k), 255};
+						}
+					shared.push_back(texture::Make(o.name + "_patch", patch, texture::Format::Bc1));
+					shared.push_back(texture::Make(o.name + "_patch_s", texture::Image(4, 4, {34, 34, 34, 255}), texture::Format::Bc1));
+					patchDecal = decal;
+					patchDecal.Texture(kDiffuseTex, o.name + "_patch");
+					patchDecal.Texture(kBumpTex, o.name + "_flat_n");
+					patchDecal.Texture(kSpecularTex, o.name + "_patch_s");
+				}
+			}
+		}
 		if (!shapes.empty())
 		{
 			ydr::Material wallTemplate;
@@ -799,12 +935,19 @@ namespace worldgen::build
 				blocks[{bi, bj}].push_back(te);
 				// collision: the terrain, and the roads' triangles centred in this tile
 				auto parts = terrain::TileCollision(f, 0, 0, per);
+				// (what each road triangle is to the pedestrians' navmesh, carriageway or sidewalk: by part)
+				std::map<size_t, std::vector<uint8_t>> roadKinds;
 				ybn::Part part;
+				std::vector<uint8_t> partKinds;
 				std::map<uint8_t, uint8_t> materialAt;
 				const auto flush = [&] {
 					if (!part.triangles.empty())
+					{
+						roadKinds[parts.size()] = std::move(partKinds);
 						parts.push_back(std::move(part));
+					}
 					part = {};
+					partKinds.clear();
 					materialAt.clear();
 				};
 				const auto& col = surfaces.collision;
@@ -829,6 +972,7 @@ namespace worldgen::build
 					part.vertices.insert(part.vertices.end(), {a, b, c});
 					part.triangles.push_back({base, base + 1, base + 2});
 					part.triangleMaterials.push_back(mat->second);
+					partKinds.push_back(col.kinds[t]);
 					stats.roadTriangles += 1;
 				}
 				flush();
@@ -1118,8 +1262,10 @@ namespace worldgen::build
 				std::set<std::array<P3, 3>> boxSet;
 				for (const auto& t : boxTriangles)
 					boxSet.insert({boxVertices[t[0]], boxVertices[t[1]], boxVertices[t[2]]});
-				for (const auto& p : parts)
+				for (size_t pi = 0; pi < parts.size(); ++pi)
 				{
+					const ybn::Part& p = parts[pi];
+					const auto kinds = roadKinds.find(pi);
 					const uint32_t base = static_cast<uint32_t>(navMesh.vertices.size());
 					navMesh.vertices.insert(navMesh.vertices.end(), p.vertices.begin(), p.vertices.end());
 					for (size_t t = 0; t < p.triangles.size(); ++t)
@@ -1129,18 +1275,32 @@ namespace worldgen::build
 						navMesh.triangles.push_back({base + p.triangles[t][0], base + p.triangles[t][1], base + p.triangles[t][2]});
 						const uint8_t m = p.materials[p.triangleMaterials[t]][0];
 						navMesh.materials.push_back(m);
-						navSurfaces.push_back(m >= 4 && m <= 6 ? navgen::Surface::Road : m == 1 || m == 15 || m == 174 ? navgen::Surface::Pavement
-						                                                                                                : navgen::Surface::Ground);
+						const uint8_t kind = kinds != roadKinds.end() ? kinds->second[t] : 0;
+						navSurfaces.push_back(kind == 1 ? navgen::Surface::Road
+						                      : kind == 2 || (kind == 0 && (m == 1 || m == 15 || m == 174)) ? navgen::Surface::Pavement
+						                                                                                    : navgen::Surface::Ground);
 					}
 				}
 				// the roads' model
+				// (its materials those it uses here; the wear's decals before the markings, which are painted over them)
 				ydr::Drawable rd;
 				rd.name = rname;
-				rd.materials = {asphalt, sidewalk, kerb, marking};
-				AddMeshes(rd, 0, Clip(surfaces.asphalt, x0, y0, x1, y1, cx, cy));
-				AddMeshes(rd, 1, Clip(surfaces.sidewalk, x0, y0, x1, y1, cx, cy));
-				AddMeshes(rd, 2, Clip(surfaces.kerb, x0, y0, x1, y1, cx, cy));
-				AddMeshes(rd, 3, Clip(surfaces.markings, x0, y0, x1, y1, cx, cy));
+				const auto add = [&](const ydr::Material& mat, const roads::Mesh& mesh) {
+					const roads::Mesh part = Clip(mesh, x0, y0, x1, y1, cx, cy);
+					if (part.indices.empty())
+						return;
+					rd.materials.push_back(mat);
+					AddMeshes(rd, static_cast<uint32_t>(rd.materials.size() - 1), part);
+				};
+				for (size_t k = 0; k < paving::kPavings; ++k)
+					add(pavedMaterials[k], surfaces.paved[k]);
+				add(wornMaterial, surfaces.worn);
+				add(sidewalk, surfaces.sidewalk);
+				add(kerb, surfaces.kerb);
+				add(patchDecal, surfaces.patches);
+				add(potholeDecal, surfaces.potholes);
+				add(breakupDecal, surfaces.breakups);
+				add(marking, surfaces.markings);
 				if (!rd.lods[0].empty())
 				{
 					if (!ydr::Write(rd, file, error))

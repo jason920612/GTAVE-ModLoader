@@ -26,6 +26,7 @@ namespace worldgen::world
 		int layer = 0;
 		float speed = 0; // m/s (0: by kind)
 		std::string name;
+		std::string surface, smoothness; // OSM's (empty: not tagged)
 	};
 
 	struct Area

@@ -655,10 +655,16 @@ int main(int argc, char** argv)
 			uint8_t mips = t.mips;
 			Bytes pixels(t.data.begin(), t.data.end());
 			loader::convert::MakeRenderTargetFormat(format, mips, static_cast<uint16_t>(t.width), static_cast<uint16_t>(t.height), pixels);
-			worldgen::texture::Image img(t.width, t.height);
+			worldgen::texture::Image img(t.width, t.height), alpha(t.width, t.height);
 			for (size_t i = 0; i < img.pixels.size() && 4 * i + 3 < pixels.size(); ++i)
+			{
 				img.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], 255};
+				alpha.pixels[i] = {pixels[4 * i + 3], pixels[4 * i + 3], pixels[4 * i + 3], 255};
+			}
 			if (!worldgen::texture::WritePng(fs::path(g_options["out"]) / (t.name + ".png"), img, error))
+				return Fail(error);
+			// (and its alpha, where it has one: BC2, BC3)
+			if ((t.dxgi >= 74 && t.dxgi <= 79) && !worldgen::texture::WritePng(fs::path(g_options["out"]) / (t.name + "_alpha.png"), alpha, error))
 				return Fail(error);
 		}
 		return 0;
@@ -1031,6 +1037,39 @@ int main(int argc, char** argv)
 			worst = std::max(worst, std::fabs(v[2] - z));
 		std::printf("%s.ybn: %zu parts, %zu triangles (read back %zu, heights within %.4f m), %zu bytes\n", g_options["name"].c_str(), parts.size(),
 		    triangles, back.triangles.size(), worst, file.size());
+		return 0;
+	}
+	if (command == "texture-find")
+	{
+		// texture dictionaries' textures whose names contain any of --pattern a,b,c (case-insensitive): dictionary, name,
+		// size, format
+		std::vector<std::string> patterns;
+		std::istringstream list(g_options["pattern"]);
+		for (std::string p; std::getline(list, p, ',');)
+		{
+			std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			patterns.push_back(p);
+		}
+		size_t read = 0;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.ends_with(".ytd"))
+				continue;
+			Bytes data;
+			loader::convert::Resource res;
+			if (!files.Read(f, data, error) || !loader::convert::Read(data, res, error))
+				continue;
+			++read;
+			const ue5export::drawable::View view(res);
+			for (const auto& t : ue5export::drawable::Textures(view, ue5export::drawable::View::kRoot))
+			{
+				std::string lower = t.name;
+				std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (std::any_of(patterns.begin(), patterns.end(), [&](const std::string& p) { return lower.find(p) != std::string::npos; }))
+					std::printf("%s %s %ux%u format %u\n", name.c_str(), t.name.c_str(), t.width, t.height, t.dxgi);
+			}
+		}
+		std::fprintf(stderr, "%zu dictionaries read\n", read);
 		return 0;
 	}
 	if (command == "hash-find")

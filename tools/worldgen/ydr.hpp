@@ -54,6 +54,8 @@ namespace worldgen::ydr
 		std::vector<uint8_t> slots;
 
 		void Texture(uint32_t parameter, const std::string& name);
+		// a constant it already has (a float, or the first of several): false if it has none of that name
+		bool Constant(uint32_t parameter, float value);
 	};
 
 	struct Mesh

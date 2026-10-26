@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "paving.hpp"
 #include "world.hpp"
 #include "ydr.hpp"
 
@@ -27,6 +28,8 @@ namespace worldgen::roads
 		float laneWidth = 3.5f;
 		bool sidewalks = false, bridge = false;
 		std::string kind, name;
+		int64_t id = 0;                    // the OpenStreetMap way's
+		std::string surface, smoothness;   // its tags (paving.hpp)
 		float speed = 0; // m/s
 		float HalfWidth() const { return (forward + backward) * laneWidth / 2 + 0.3f; }
 	};
@@ -62,6 +65,7 @@ namespace worldgen::roads
 		std::vector<P3> vertices;
 		std::vector<std::array<uint32_t, 3>> triangles;
 		std::vector<uint8_t> materials; // per triangle: a row of materials.dat
+		std::vector<uint8_t> kinds;     // per triangle: 1 a carriageway, 2 a sidewalk, 0 other (kerbs)
 	};
 
 	// A traffic signal mast at a signalled junction: where it stands (on the sidewalk), its heading (radians: the model's
@@ -76,7 +80,11 @@ namespace worldgen::roads
 
 	struct Surfaces
 	{
-		Mesh asphalt, sidewalk, kerb, markings;
+		std::array<Mesh, paving::kPavings> paved; // the carriageways (and junctions) by what they are made of
+		Mesh worn;                                // worn asphalt carriageways (paving::Wear 0.5 and more): cracked all over
+		Mesh sidewalk, kerb, markings;
+		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
+		std::vector<std::pair<paving::Feature::Kind, P3>> wear; // where each feature is (for checking)
 		Collision collision;
 		// the ground under the roads: footprints (asphalt and sidewalks) for lowering the terrain below them
 		std::vector<std::array<P3, 3>> footprint;

@@ -226,6 +226,17 @@ namespace worldgen::ydr
 		textures.emplace_back(parameter, name);
 	}
 
+	bool Material::Constant(uint32_t parameter, float value)
+	{
+		for (auto& [p, bytes] : constants)
+			if (p == parameter && bytes.size() >= 4)
+			{
+				std::memcpy(bytes.data(), &value, 4);
+				return true;
+			}
+		return false;
+	}
+
 	bool ReadMaterial(const ue5export::drawable::View& view, uint64_t at, uint32_t index, Material& out, std::string& error)
 	{
 		const uint64_t group = view.Get<uint64_t>(at + 0x10);

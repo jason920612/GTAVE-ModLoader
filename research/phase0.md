@@ -3731,3 +3731,35 @@ DRAW_TV_CHANNEL、SET_TEXT_RENDER_ID(1)（remote 的 `every` 依序呼叫）。�
     一樣改呼叫 OuterStrip。除錯記錄裡陸地範圍內的水面四邊形之後全部是自己的。
 - 工具：`worldgen ydr-stats --file`（自己的模型：每段的頂點、高度、兩組頂點色）、`worldgen hash-find --hash`（遊戲檔名的雜湊撞到
   哪些）；`tools/worldtour.py` 的 hold_player 放開前先把玩家放回地面。
+
+### 61.22 路面：鋪面、磨損，看得到的就摸得到（`tools/worldgen/paving`、`roads.cpp` Carriageway，2026-10-26）
+
+- 使用者：「那些有非柏油鋪裝或柏油有損壞的要有配合損壞的碰撞」。
+- 資料：OSM 的 surface 常有標（邁阿密匯入的 47,103 條車道：asphalt 16,905、concrete 693、paved 299、paving_stones 242、unpaved 17、
+  sett 4、brick 3、dirt 2…），smoothness 幾乎沒有（56 條）。`world::Road` 加 surface、smoothness（重新匯入，其餘完全相同）。
+- 遊戲的材料（`worldgen texture-find --pattern`：所有貼圖字典裡名稱含某字的貼圖；materials.dat 的列＝碰撞材料編號）：
+  - TARMAC 4、TARMAC_POTHOLE 6（震動設定 TARMAC_POTHOLE）、CONCRETE 1、CONCRETE_POTHOLE 2、COBBLESTONE 12（震動）、BRICK_PAVEMENT
+    175、PAVING_SLAB 15、GRAVEL_SMALL 31 / GRAVEL_LARGE 32、DIRT_TRACK 35、MUD_POTHOLE 37、SAND_TRACK 21。
+  - 貼圖：混凝土路 im_freeway_road001、紅磚人字鋪 im_ground_bricks03、石塊 rsn_dc_archedcobbles_0001、石板 rsn_dc_rd_slabs_0001、
+    碎石路 dc_gravel_road02、泥土路 cs_rsn_sm_dirtroad_01、裂開的柏油 im_road_012；貼花：坑洞 et_pothole1、邊緣碎裂
+    im_road_damage_05（ap1_01_b_sidebit1b001.ydr 的第 2 個 shader 是遊戲路面貼花用的 1c1c2570，當模板）。
+  - **遊戲的坑洞、破損貼圖 alpha 全是 255**：遊戲的貼花網格用頂點顏色的 alpha 淡出形狀。照抄就看到一個個矩形。
+  - shader 參數名（joaat 小寫）：0xb5fe3acb Fresnel、0xa1f60489 Specular（亮點的集中度）、0xa98e2243 SpecularColor（強度）。
+    模板的 100 / 0.125 在地上看起來像濕的；改成柏油的 0.95 / 16 / 1。鋪面自己的高光圖也像濕的，改用柏油的平均暗高光。
+- 做法（`paving`）：鋪面 = OSM surface（asphalt/paved/未標、concrete*、brick、sett/cobblestone、paving_stones、gravel/compacted/
+  unpaved、dirt/ground/grass、sand）；磨損 0–1 = smoothness，沒標就依種類（快速道路 0.12…住宅 0.36、服務道路 0.5）每條路
+  ±0.15。特徵（每 100 m）：坑洞 (磨損 − 0.35)×8（混凝土 ×5；碎石／泥土 (0.3 + 磨損)×6），橢圓 0.2–0.9 m、深 3.5–12.5 cm（泥土
+  6–15），在輪跡、離漆線 15 cm 以上；補丁 磨損×3（平的，自己合成的貼圖：較新的柏油加一圈深色封縫）；路緣碎裂 (磨損 −
+  0.45)×4 每側，沒有路緣線的路才有，2–3.5 cm。避開路口兩端的斑馬線、停止線和漸變段。
+- 車道（Carriageway）：橫列放在路的每個點，坑洞／碎裂上每 0.3 m、未鋪面的路每 1 m；每列的欄從右路緣到左路緣（特徵上每
+  0.3 m、未鋪面每 1 m），相鄰兩列的欄數不同就拉鍊式三角化（同一列兩邊共用同一組頂點，沒有 T 形接縫）。**模型和碰撞用同一組
+  頂點**：高度 = 路面 + Relief（坑洞是陡邊平底的碗、碎裂是緩降、碎石／泥土路有 2.5–6 cm 的起伏和輪溝），在路緣和兩端 1 m 內
+  為 0（和路緣、路口接得上）；碰撞三角形的重心在坑洞（橢圓內）或碎裂區裡就用破損材料。法線由起伏的斜率算。貼花是同一組列
+  和欄上的網格（高 12 mm），頂點 alpha：坑洞從坑緣淡到框邊，碎裂在兩端和往路中央淡出，補丁硬邊。
+- 柏油：磨損 0.5 以上的路用裂開的柏油（裂縫、坑洞、碎裂一起出現）；貼圖從路緣到路緣剛好整數次（遊戲的路面貼圖兩邊有路溝，
+  以前在路中央接起來成一條縫）。只有漆線的鋪面（柏油、混凝土）畫標線；未鋪面的路車流速度最多 9 m/s。碰撞三角形標記車道／
+  人行道（行人導航不再從材料猜：混凝土路不會被當成人行道）。
+- 驗證（南灘，375 個坑洞、749 個補丁、70 段碎裂）：GET_GROUND_Z 在坑洞中心比 1.5 m 外低 3–6 cm；從上往下的射線
+  （START_EXPENSIVE_SYNCHRONOUS_SHAPE_TEST_LOS_PROBE + GET_SHAPE_TEST_RESULT_INCLUDING_MATERIAL）坑洞中心的材料和旁邊不同
+  （0x70726a55 對 0x10dd5498）、補丁上和旁邊一樣；石塊路、石板路、混凝土路各是自己的材料。截圖：坑洞和碎裂自然融入、
+  沒有矩形。測試管道的 out 參數上限 4 → 8。
