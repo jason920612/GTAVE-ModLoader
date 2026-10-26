@@ -514,7 +514,7 @@ namespace
 		if (!worldgen::world::Load(g_options["world"], w, error))
 			return Fail(error);
 		worldgen::elevation::Scan scan;
-		if (!scan.Open(g_options["scan"], g_options.contains("datum") ? std::stof(g_options["datum"]) : 0.6f))
+		if (!scan.Open(g_options["scan"], g_options.contains("datum") ? std::stof(g_options["datum"]) : worldgen::build::Options{}.datum))
 			return Fail("no scan rasters in " + g_options["scan"]);
 		float a[4] = {};
 		char c = 0;
@@ -1064,6 +1064,37 @@ int main(int argc, char** argv)
 		std::printf("\n");
 		return 0;
 	}
+	if (command == "tint-stats")
+	{
+		// how the game's own maps tint these archetypes (entity tintValue: the row of a tree's palette): --names a,b,c
+		std::map<uint32_t, std::string> wanted;
+		std::istringstream list(g_options["names"]);
+		for (std::string n; std::getline(list, n, ',');)
+			wanted[loader::convert::Joaat(n)] = n;
+		std::map<std::string, std::map<uint32_t, int>> counts;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.ends_with(".ymap"))
+				continue;
+			Bytes data;
+			ue5export::meta::Meta m;
+			if (!files.Read(f, data, error) || !m.Read(data, error))
+				continue;
+			using ue5export::meta::Hash;
+			for (const ue5export::meta::Ref& e : m.Root().Array(Hash("entities")))
+				if (e)
+					if (const auto it = wanted.find(e.Get<uint32_t>(Hash("archetypeName"))); it != wanted.end())
+						++counts[it->second][e.Get<uint32_t>(Hash("tintValue"))];
+		}
+		for (const auto& [name, tints] : counts)
+		{
+			std::printf("%s:", name.c_str());
+			for (const auto& [tint, n] : tints)
+				std::printf(" %u x%d", tint, n);
+			std::printf("\n");
+		}
+		return 0;
+	}
 	if (command == "file-find")
 	{
 		// the game's files whose names contain --pattern, with where they are; --out <dir>: their contents too
@@ -1140,6 +1171,13 @@ int main(int argc, char** argv)
 				continue;
 			std::string file = entry.path().filename().string();
 			std::transform(file.begin(), file.end(), file.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (file == "land.json" || file == "water.bin")
+			{
+				// (the loader's, next to the pack: game/sea.cpp)
+				std::error_code ec;
+				fs::copy_file(entry.path(), fs::path(g_options["out"]).parent_path() / file, fs::copy_options::overwrite_existing, ec);
+				continue;
+			}
 			if (file.ends_with(".txt") || file.ends_with(".png") || file.ends_with(".json"))
 				continue; // (the build's notes, not game files)
 			if (file == "gtxd.meta")
@@ -1560,7 +1598,7 @@ int main(int argc, char** argv)
 	{
 		// a world description -> its pack's files (build.hpp): --world <world.json> --out <dir> [--zones <mod dir>] [--name n]
 		// [--area x0,y0,x1,y1] [--tile m] [--cell m] [--navmesh 0] [--paths 0] [--scan <lidar.py rasters> [--aerial <aerial.py
-		// tiles>] [--datum m]: measured ground and buildings of our own]
+		// tiles>] [--datum m]: measured ground and buildings of our own] [--waves s: the sea's swell round it, 1 the open ocean's]
 		if (!g_options.contains("world") || !g_options.contains("out"))
 			return Fail("--world <world.json> --out <dir> are needed");
 		worldgen::world::World w;
@@ -1589,8 +1627,11 @@ int main(int argc, char** argv)
 			o.aerial = g_options["aerial"];
 		if (g_options.contains("datum"))
 			o.datum = std::stof(g_options["datum"]);
+		if (g_options.contains("waves"))
+			o.waves = std::stof(g_options["waves"]);
 		if (g_options.contains("roads-obj"))
 			o.roadsObj = g_options["roads-obj"];
+		o.lods = !g_options.contains("lods") || g_options["lods"] != "0";
 		o.navmesh = !g_options.contains("navmesh") || g_options["navmesh"] != "0";
 		o.paths = !g_options.contains("paths") || g_options["paths"] != "0";
 		std::vector<worldgen::catalog::Item> catalog;

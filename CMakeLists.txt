@@ -60,6 +60,7 @@ add_library(loader SHARED
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp
     src/loader/game/story.cpp
+    src/loader/game/sea.cpp
     src/loader/game/dlss.cpp
     src/loader/graphics/streamline.cpp
     src/loader/graphics/bridge.cpp

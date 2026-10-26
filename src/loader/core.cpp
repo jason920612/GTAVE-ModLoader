@@ -33,6 +33,7 @@
 #include "game/navgrid.hpp"
 #include "game/pathregions.hpp"
 #include "game/pools.hpp"
+#include "game/sea.hpp"
 #include "graphics/bridge.hpp"
 #include "graphics/gamelights.hpp"
 #include "game/pose.hpp"
@@ -293,6 +294,8 @@ namespace loader::core
 			else
 				game::char4::Suspend();
 			if (!state::online)
+				game::sea::Tick();
+			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)
 				debug::remote::Tick();
@@ -339,6 +342,7 @@ namespace loader::core
 		game::pathregions::Install();
 		game::pathregions::AllowNewRegionFiles();
 		game::navgrid::Install();
+		game::sea::Install();
 		if (config::Get().ue5Renderer)
 			graphics::gamelights::Install();
 		if (config::Get().pauseMenuModsTab && game::text_override::Init())

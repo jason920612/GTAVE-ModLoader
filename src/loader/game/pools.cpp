@@ -76,9 +76,14 @@ namespace loader::game::pools
 			return size + std::max<uint32_t>(size / 4, 500);
 		}
 
-		// Stores the world builder's new land fills: room for that many more (a whole island: thousands of collision
-		// files, a few hundred maps).
-		constexpr std::pair<std::string_view, uint32_t> kWorldStores[] = {{"fwStaticBoundsStore", 12000}, {"fwMapDataStore", 3000}, {"MapTypesStore", 1000}};
+		// Pools and stores the world builder's new land fills (gameconfig's names; at least these sizes): its collision
+		// files and maps (a whole island: thousands of tiles), and its entities - trees by the ten thousand where the laser
+		// scan saw them. Each tree with collision near the player takes a physics instance: a full "phInstGta" pool
+		// (10030 of 0x70 bytes; fwBasePool::New, +0x15A7C0, breaks into int3 when no slot is free) took the game down as
+		// the camera came to a palm-lined street (research/phase0.md §61.20). Raising "Dummy Object" or "Building" much
+		// further (40000 / 100000) made the game fail at start: their memory comes from a fixed budget.
+		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"StaticBounds", 26700}, {"MapDataStore", 13020}, {"MapTypesStore", 2700},
+		    {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}};
 
 		// Stores that need a size of their own (SetMinimum), by name.
 		std::vector<std::pair<std::string, uint32_t>> g_minimum;
@@ -119,21 +124,6 @@ namespace loader::game::pools
 				else
 					log::Info("pools: {} {} -> {}", name, before, *fallback);
 			}
-			if (!store[0x98] && name)
-				for (const auto& [storeName, extra] : kWorldStores)
-					if (storeName == name)
-					{
-						auto* fallback = reinterpret_cast<uint32_t*>(store + 0x10);
-						const uint32_t before = *fallback;
-						*fallback += extra;
-						if (Node* entry = Find(Joaat(name)))
-						{
-							log::Info("pools: {} {} -> {} (new land)", name, entry->size, entry->size + extra);
-							entry->size += extra;
-						}
-						else
-							log::Info("pools: {} {} -> {} (new land)", name, before, *fallback);
-					}
 			g_original(store);
 		}
 
@@ -162,6 +152,8 @@ namespace loader::game::pools
 
 	bool InstallHooks()
 	{
+		for (const auto& [name, size] : kWorldPools)
+			SetMinimum(std::string(name).c_str(), size);
 		const auto module = pattern::Module::Main();
 		const auto at = pattern::Find(module.text, pattern::Pattern::Parse(kCreateStore));
 		if (!at)

@@ -112,8 +112,8 @@ namespace worldgen::trees
 						const uint32_t seed = Mix(static_cast<uint32_t>(i + static_cast<int>(bx)) * 73856093u ^ static_cast<uint32_t>(j + static_cast<int>(by)) * 19349663u);
 						if (h < 3.5f)
 						{
-							// low growth: a bush on a 4 m lattice, half of them
-							if (((i - inner0) % 8) || ((j - inner0) % 8) || (seed & 1) || !open(x, y))
+							// low growth: a bush on a 6 m lattice, half of them (every entity counts against the game's pools)
+							if (((i - inner0) % 12) || ((j - inner0) % 12) || (seed & 1) || !open(x, y))
 								continue;
 							const Model& m = kBushes[(seed >> 1) % std::size(kBushes)];
 							out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,

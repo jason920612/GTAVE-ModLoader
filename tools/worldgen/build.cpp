@@ -330,6 +330,47 @@ namespace worldgen::build
 			std::filesystem::create_directories(o.out);
 			raster::WritePng(o.out.parent_path() / (o.name + "_land.png"), land.nx, land.ny, rgb, error);
 		}
+		// The land's water, for the loader (game/sea.cpp; next to the pack's dlc.rpf). Out past the game's water grid the sea
+		// is everywhere, under new land too: water.bin says where it really is over this build's terrain, a mask of the land
+		// grid's cells (1: water) reaching 8 m in over the shore so that waves still run up the beaches. land.json: that box
+		// and how calm the sea round the land is.
+		{
+			const float tx0 = w.min[0] + std::floor((bx0 - w.min[0]) / o.tile) * o.tile, ty0 = w.min[1] + std::floor((by0 - w.min[1]) / o.tile) * o.tile;
+			const float tx1 = w.min[0] + std::ceil((bx1 - w.min[0]) / o.tile) * o.tile, ty1 = w.min[1] + std::ceil((by1 - w.min[1]) / o.tile) * o.tile;
+			const uint32_t nx = static_cast<uint32_t>(std::ceil((tx1 - tx0) / land.cell)), ny = static_cast<uint32_t>(std::ceil((ty1 - ty0) / land.cell));
+			std::vector<uint8_t> bits((static_cast<size_t>(nx) * ny + 7) / 8, 0);
+			constexpr int kReach = 2; // (cells)
+			for (uint32_t j = 0; j < ny; ++j)
+				for (uint32_t i = 0; i < nx; ++i)
+				{
+					const int li = static_cast<int>(std::floor((tx0 + (i + 0.5f) * land.cell - land.x0) / land.cell));
+					const int lj = static_cast<int>(std::floor((ty0 + (j + 0.5f) * land.cell - land.y0) / land.cell));
+					bool water = false;
+					for (int dj = -kReach; dj <= kReach && !water; ++dj)
+						for (int di = -kReach; di <= kReach && !water; ++di)
+						{
+							const int a = std::clamp(li + di, 0, land.nx - 1), b = std::clamp(lj + dj, 0, land.ny - 1);
+							water = land.At(a, b) == kWater;
+						}
+					if (water)
+						bits[(static_cast<size_t>(j) * nx + i) / 8] |= static_cast<uint8_t>(1u << ((static_cast<size_t>(j) * nx + i) % 8));
+				}
+			// 'WBWM' version 1: x0, y0, cell (float), nx, ny (uint32), the water's level (float); the bits, rows south to north
+			std::ofstream mask(o.out / "water.bin", std::ios::binary);
+			const float level = 0, cell = land.cell;
+			const uint32_t version = 1;
+			mask.write("WBWM", 4);
+			mask.write(reinterpret_cast<const char*>(&version), 4);
+			mask.write(reinterpret_cast<const char*>(&tx0), 4);
+			mask.write(reinterpret_cast<const char*>(&ty0), 4);
+			mask.write(reinterpret_cast<const char*>(&cell), 4);
+			mask.write(reinterpret_cast<const char*>(&nx), 4);
+			mask.write(reinterpret_cast<const char*>(&ny), 4);
+			mask.write(reinterpret_cast<const char*>(&level), 4);
+			mask.write(reinterpret_cast<const char*>(bits.data()), static_cast<std::streamsize>(bits.size()));
+			std::ofstream(o.out / "land.json") << std::format("{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\"}}\n", tx0,
+			    ty0, tx1, ty1, o.waves);
+		}
 		// 2. heights: land rises gently from the shore (a beach lower), the sea floor deepens away from it
 		// (DistanceTo measures from the cells of a value to the nearest other cell)
 		raster::Grid<uint8_t> dry = land, wet = land;
@@ -592,6 +633,12 @@ namespace worldgen::build
 				trees::Stats ts;
 				trees::Place(scan, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
 				std::printf("trees: %zu palms, %zu broadleaf, %zu bushes\n", ts.palms, ts.broadleaf, ts.bushes);
+			}
+			{
+				// (what stands where, for checking: archetype hash, x, y, z, scale)
+				std::ofstream list(o.out.parent_path() / (o.name + "_props.txt"));
+				for (const auto& prop : furniture)
+					list << std::format("{:08x} {:.1f} {:.1f} {:.1f} {:.2f}\n", prop.archetype, prop.position[0], prop.position[1], prop.position[2], prop.scale);
 			}
 		}
 
@@ -932,6 +979,7 @@ namespace worldgen::build
 						be.position = {cx, cy, 0};
 						be.lodDist = ba.lodDist;
 						be.radius = std::hypot(ba.max[0] - ba.min[0], ba.max[1] - ba.min[1], ba.max[2] - ba.min[2]) / 2;
+						if (o.lods)
 						{
 							// the LOD model: the same walls (their textures are the shared dictionary's, there already), the roofs'
 							// picture a quarter of the size, small sheds left out
