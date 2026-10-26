@@ -27,6 +27,7 @@
 #include "game/pose.hpp"
 #include "convert/resource.hpp"
 #include "game/scripts.hpp"
+#include "game/sectors.hpp"
 #include "game/story.hpp"
 #include <modloader/script.hpp>
 #include "paths.hpp"
@@ -1576,12 +1577,15 @@ namespace loader::mods
 			CommitSaveData();
 			Dispatch(ML_EVENT_GAME_SAVED);
 		}
-		if (changes.loading)
+		// (a world builder sector's switch has a loading screen too - the session restarted for its maps - but no save is
+		// loaded: the game's state, the clock among it, stays as it was)
+		const bool switching = game::sectors::Switching();
+		if (changes.loading && !switching)
 		{
 			DropSaveData();
 			Dispatch(ML_EVENT_SAVE_LOADING);
 		}
-		if (changes.loaded)
+		if (changes.loaded && !switching)
 			PickSaveData();
 		if (changes.character)
 			Dispatch(ML_EVENT_CHARACTER_CHANGED);

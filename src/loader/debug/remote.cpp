@@ -810,8 +810,8 @@ namespace loader::debug::remote
 			if (cmd == "sector")
 			{
 				// sector: the world builder's lands and which are there; sector <name> [x y]: that land there instead of the
-				// one in its place, the player then at x y (game/sectors.hpp; the game restarts the session for it: the switch
-				// runs on after this answer)
+				// one in its place, the player then at x y (game/sectors.hpp; the switch runs on over the next frames, after
+				// this answer)
 				std::string to;
 				float at[2]{};
 				in >> to;

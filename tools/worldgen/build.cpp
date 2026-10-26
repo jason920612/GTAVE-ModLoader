@@ -722,7 +722,8 @@ namespace worldgen::build
 			return std::none_of(r.points.begin(), r.points.end(), [&](const P2& p) { return p[0] >= gx0 && p[0] <= gx1 && p[1] >= gy0 && p[1] <= gy1; });
 		});
 		const auto inBorderSea = [&](const P2& p) {
-			return toSea(p) < o.border + 60 * Noise(p[0] * 3, p[1] * 3) + 40; // (and 40 m back from its shore)
+			// (and past the box itself: at an open edge the road stops there, the next sector's goes on)
+			return toSea(p) < o.border + 60 * Noise(p[0] * 3, p[1] * 3) + 40 || p[0] < w.min[0] || p[0] > w.max[0] || p[1] < w.min[1] || p[1] > w.max[1];
 		};
 		std::set<std::pair<float, float>> cutEnds; // (where a road now ends because of the cut)
 		size_t cuts = 0;

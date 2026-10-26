@@ -96,6 +96,7 @@ namespace loader::game::minimap
 		};
 		std::vector<Supertile> g_supertiles;
 		std::vector<uint8_t> g_entries;
+		bool g_suspended = false; // (a sector switch under way: none wanted)
 
 		// the pause map: the lands' squares (row, column on the lattice) -> the lands that have a picture of it (their pack's
 		// folder, the pictures' name); the open sea's (the first land with pictures that is there)
@@ -143,7 +144,7 @@ namespace loader::game::minimap
 			for (Supertile& s : g_supertiles)
 			{
 				const bool there = std::any_of(s.owners.begin(), s.owners.end(), [](const std::string& o) { return !sectors::Dormant(o); });
-				const uint8_t want = !none && there && s.row >= rowFrom && s.row <= rowTo && s.column >= columnFrom && s.column <= columnTo;
+				const uint8_t want = !none && !g_suspended && there && s.row >= rowFrom && s.row <= rowTo && s.column >= columnFrom && s.column <= columnTo;
 				uint8_t* e = s.entry;
 				if (e[0x72] != want)
 				{
@@ -174,21 +175,24 @@ namespace loader::game::minimap
 			}
 		}
 
+		// An entry's models and its dictionary let go, as the game's own release does (0x56FB80).
+		void Release(uint8_t* e)
+		{
+			std::memset(e + 0x18, 0, 0x58);
+			g_clearA(e + 0x0C, 1);
+			g_clearB(e + 0x0C, 1);
+			g_release(e + 0x0C);
+			e[0x08] = 0;
+			e[0x70] = e[0x71] = e[0x72] = 0;
+		}
+
 		void Shutdown(uint8_t* array, int kind)
 		{
 			g_shutdown(array, kind);
 			if (kind != 8 || g_supertiles.empty() || NotThisThread())
 				return;
 			for (Supertile& s : g_supertiles)
-			{
-				uint8_t* e = s.entry;
-				std::memset(e + 0x18, 0, 0x58);
-				g_clearA(e + 0x0C, 1);
-				g_clearB(e + 0x0C, 1);
-				g_release(e + 0x0C);
-				e[0x08] = 0;
-				e[0x70] = e[0x71] = e[0x72] = 0;
-			}
+				Release(s.entry);
 		}
 
 		// The pause map's grid widened to the lands' squares (each session start: minimap.ymt is read once, at the start).
@@ -441,5 +445,24 @@ namespace loader::game::minimap
 		FlushInstructionCache(GetCurrentProcess(), stubs, 256);
 		log::Info("minimap: {} radar supertiles and {} pause map pictures of new land", g_supertiles.size(), g_pictures.size());
 		return true;
+	}
+
+	void Suspend()
+	{
+		g_suspended = true;
+		if (!g_stream)
+			return;
+		// (each request then as new: the next one looks its dictionary up again, in the files there then)
+		for (Supertile& s : g_supertiles)
+		{
+			Release(s.entry);
+			*reinterpret_cast<int32_t*>(s.entry + 0x0C) = -1;
+			*reinterpret_cast<uint16_t*>(s.entry + 0x10) = 0x7F00;
+		}
+	}
+
+	void Resume()
+	{
+		g_suspended = false;
 	}
 }

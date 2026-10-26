@@ -15,6 +15,7 @@
 #include "../paths.hpp"
 #include "../pattern.hpp"
 #include "content.hpp"
+#include "minimap.hpp"
 #include "natives.hpp"
 
 namespace loader::game::sectors
@@ -82,13 +83,13 @@ namespace loader::game::sectors
 		// where the player waits while a land is put away: Los Santos, away from any new land
 		constexpr float kHold[3] = {200, -900, 31};
 
-		// A switch under way (game thread, Tick), in two goes: the screen faded and the player held in Los Santos, the old
-		// land's maps put away (the game restarts the session for it: every entity gone, the player at the save's place),
-		// the player held again until the path server has let the old land's navmeshes go (they are in its overlay, the
-		// start-up change set's: an archive's navmesh still loaded when the archive is taken away stopped the game,
-		// 0xCE4CD0's int3), then the old land's overlay out, the new one's in and its maps (a second restart), the player
-		// put where they were going.
-		enum class Step { None, Fade, PutAway, FirstRestart, Drain, Bring, SecondRestart, Arrive };
+		// A switch under way (game thread, Tick), in two goes: the screen faded and the player held in Los Santos, the radar's
+		// supertiles of the new land let go, the old land's maps put away (the map group's revert clears the game's world in
+		// the call itself, as story mode <-> online: every entity gone), the player held again until the path server has
+		// let the old land's navmeshes go (they are in its overlay, the start-up change set's: an archive's navmesh still
+		// loaded when the archive is taken away stopped the game, 0xCE4CD0's int3), then the old land's overlay out, the
+		// new one's in and its maps, the player put where they were going.
+		enum class Step { None, Fade, PutAway, SettleOld, Drain, Bring, SettleNew, Arrive };
 		struct Switching
 		{
 			Step step = Step::None;
@@ -96,7 +97,6 @@ namespace loader::game::sectors
 			bool place = false;
 			float at[2]{};
 			ULONGLONG since = 0;
-			bool loadingSeen = false;
 			std::vector<std::string> leaving; // (the lands put away)
 			// the vehicle the player was in: made again where they arrive (its model, colours, heading, speed)
 			bool vehicle = false, modelAsked = false;
@@ -104,9 +104,8 @@ namespace loader::game::sectors
 			int32_t colours[2]{};
 			float heading = 0, speed = 0;
 		} g_switch;
-		ULONGLONG g_lastWatch = 0;
+		ULONGLONG g_lastWatch = 0, g_ended = 0;
 		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
-		ULONGLONG g_lastTick = 0; // (a gap in the ticks: the session was restarting, story mode's scripts not running)
 
 		bool Overlap(const Land& a, const Land& b)
 		{
@@ -173,12 +172,12 @@ namespace loader::game::sectors
 			natives::Invoke<void>(kSetFocusPosAndVel, kHold[0], kHold[1], kHold[2], 0.0f, 0.0f, 0.0f);
 		}
 
-		// Whether a restart's loading screen (or a gap in the ticks: story mode's scripts not running) came and went.
-		bool Restarted(ULONGLONG spent, ULONGLONG gap)
+		// Whether the game has had half a second of frames since the maps changed (`spent` from the end of the change's own
+		// long frame), with no loading screen (or one up for a minute). (A switch once waited 45 s here for a session
+		// restart that does not come: it had been taken for one by that long frame.)
+		bool Settled(ULONGLONG spent)
 		{
-			if (natives::Invoke<int32_t>(kIsLoadingScreenActive) || gap > 1000)
-				g_switch.loadingSeen = true;
-			return (g_switch.loadingSeen && spent > 1000) || spent > 45000;
+			return spent > 500 && (!natives::Invoke<int32_t>(kIsLoadingScreenActive) || spent > 60000);
 		}
 
 
@@ -188,7 +187,9 @@ namespace loader::game::sectors
 			natives::Invoke<void>(kFreezeEntityPosition, player, 0);
 			natives::Invoke<void>(kClearFocus);
 			natives::Invoke<void>(kDoScreenFadeIn, 1000);
+			minimap::Resume();
 			g_switch = {};
+			g_ended = GetTickCount64();
 		}
 	}
 
@@ -347,8 +348,7 @@ namespace loader::game::sectors
 			WatchEdges();
 			return;
 		}
-		const ULONGLONG now = GetTickCount64(), spent = now - g_switch.since, gap = g_lastTick ? now - g_lastTick : 0;
-		g_lastTick = now;
+		const ULONGLONG now = GetTickCount64(), spent = now - g_switch.since;
 		const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
 		Land* to = Find(g_switch.to);
 		if (!to)
@@ -367,8 +367,10 @@ namespace loader::game::sectors
 			}
 			break;
 		case Step::PutAway:
-			// the old land's maps away (the sea and the map's pictures off it at once)
+			// the old land's maps away (the sea and the map's pictures off it at once; the radar's supertiles let go of the
+			// old land's dictionaries first)
 			natives::Invoke<void>(kLoadAllObjectsNow);
+			minimap::Suspend();
 			for (Land& l : g_lands)
 				if (&l != to && !l.dormant && Overlap(l, *to))
 				{
@@ -377,14 +379,13 @@ namespace loader::game::sectors
 					g_switch.leaving.push_back(l.name);
 					log::Info("sectors: {}'s maps put away", l.name);
 				}
-			g_switch.step = Step::FirstRestart;
-			g_switch.since = now;
-			g_switch.loadingSeen = false;
+			g_switch.step = Step::SettleOld;
+			g_switch.since = GetTickCount64();
 			break;
-		case Step::FirstRestart:
-			if (Restarted(spent, gap))
+		case Step::SettleOld:
+			if (Settled(spent))
 			{
-				Hold(player); // (the restart put the player at the save's place)
+				Hold(player); // (as the world was cleared)
 				g_switch.step = Step::Drain;
 				g_switch.since = now;
 			}
@@ -417,7 +418,7 @@ namespace loader::game::sectors
 		}
 		case Step::Bring:
 			// the old land's overlay (road network, navmeshes) out, the new one's in, the road network's regions dropped (they
-			// load again from the new files), then its maps (the second restart)
+			// load again from the new files), then its maps
 			natives::Invoke<void>(kLoadAllObjectsNow);
 			for (const std::string& name : g_switch.leaving)
 				if (const Land* l = Find(name))
@@ -432,12 +433,11 @@ namespace loader::game::sectors
 			config::Get().worldSector = to->name;
 			config::Save();
 			log::Info("sectors: {} is there now", to->name);
-			g_switch.step = Step::SecondRestart;
-			g_switch.since = now;
-			g_switch.loadingSeen = false;
+			g_switch.step = Step::SettleNew;
+			g_switch.since = GetTickCount64();
 			break;
-		case Step::SecondRestart:
-			if (Restarted(spent, gap))
+		case Step::SettleNew:
+			if (Settled(spent))
 			{
 				g_switch.step = Step::Arrive;
 				g_switch.since = now;
@@ -498,5 +498,10 @@ namespace loader::game::sectors
 		case Step::None:
 			break;
 		}
+	}
+
+	bool Switching()
+	{
+		return g_switch.step != Step::None || (g_ended && GetTickCount64() - g_ended < 15000);
 	}
 }

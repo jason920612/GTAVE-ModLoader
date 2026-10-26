@@ -15,4 +15,10 @@ namespace loader::game::minimap
 	// Reads the lands of the enabled packs and hooks the radar and the pause map (each patched call checked against the
 	// build first: on any difference nothing is patched). Once the game is unpacked.
 	bool Install();
+
+	// The game thread: the lands' supertiles let go (their dictionaries released, none wanted) until Resume - a sector
+	// switch takes the old land's files away (game/sectors; a supertile still holding one of its dictionaries then found it
+	// "loaded" with no dictionary there, 0x56FB80).
+	void Suspend();
+	void Resume();
 }

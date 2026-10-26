@@ -112,9 +112,16 @@ namespace worldgen::raster
 		Buckets b;
 		const float margin = reach + 256;
 		b.Build(coastlines, land.x0 - margin, land.y0 - margin, land.x0 + land.nx * land.cell + margin, land.y0 + land.ny * land.cell + margin);
-		// coarse first (every 16th cell, searched as far as needed), then the cells near a coastline exactly
+		// coarse first (every 16th cell, searched as far as needed), then the cells near a coastline exactly. Only within
+		// kBand of a coastline does its nearest piece's side say which side a cell is on: further off, that piece may be a
+		// distant island's, or a shore cut off at the extract's edge, oriented as it comes (an inland sector came out all
+		// water) - those cells take the class of the nearest cell that is near a coastline (a fill out from the band);
+		// with no coastline near at all, land
 		constexpr int kStep = 16;
+		constexpr float kBand = 1000;
+		constexpr uint8_t kUnknown = 255;
 		const int maxRings = std::max(b.nx, b.ny);
+		bool anyKnown = false;
 		for (int j0 = 0; j0 < land.ny; j0 += kStep)
 			for (int i0 = 0; i0 < land.nx; i0 += kStep)
 			{
@@ -125,8 +132,12 @@ namespace worldgen::raster
 				for (int j = j0; j < std::min(j0 + kStep, land.ny); ++j)
 					for (int i = i0; i < std::min(i0 + kStep, land.nx); ++i)
 					{
-						if (side < 0)
+						if (side < 0 || d > kBand + block)
+						{
+							land.At(i, j) = kUnknown;
 							continue;
+						}
+						anyKnown = true;
 						if (d > block + reach)
 						{
 							land.At(i, j) = static_cast<uint8_t>(side);
@@ -137,6 +148,30 @@ namespace worldgen::raster
 						land.At(i, j) = static_cast<uint8_t>(s < 0 ? side : s);
 					}
 			}
+		if (!anyKnown)
+		{
+			std::fill(land.v.begin(), land.v.end(), uint8_t{1});
+			return;
+		}
+		// (the fill: breadth first from every known cell at once - each unknown cell the class of the nearest band)
+		std::vector<int> queue;
+		queue.reserve(land.v.size());
+		for (int j = 0; j < land.ny; ++j)
+			for (int i = 0; i < land.nx; ++i)
+				if (land.At(i, j) != kUnknown)
+					queue.push_back(j * land.nx + i);
+		for (size_t q = 0; q < queue.size(); ++q)
+		{
+			const int i = queue[q] % land.nx, j = queue[q] / land.nx;
+			const uint8_t value = land.At(i, j);
+			const int next[4][2] = {{i - 1, j}, {i + 1, j}, {i, j - 1}, {i, j + 1}};
+			for (const auto& n : next)
+				if (n[0] >= 0 && n[1] >= 0 && n[0] < land.nx && n[1] < land.ny && land.At(n[0], n[1]) == kUnknown)
+				{
+					land.At(n[0], n[1]) = value;
+					queue.push_back(n[1] * land.nx + n[0]);
+				}
+		}
 	}
 
 	Grid<float> DistanceTo(const Grid<uint8_t>& inside, uint8_t value)
