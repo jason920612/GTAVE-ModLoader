@@ -703,12 +703,89 @@ namespace worldgen::build
 		};
 
 		took("ground cover");
-		// 3. roads (those reaching into the grids)
+		// 3. roads (those reaching into the grids), cut where they run into the sea round the island (its border, above:
+		// they went on through it, the trees beside them standing in the water)
 		world::World near = w;
 		std::erase_if(near.roads, [&](const world::Road& r) {
 			return std::none_of(r.points.begin(), r.points.end(), [&](const P2& p) { return p[0] >= gx0 && p[0] <= gx1 && p[1] >= gy0 && p[1] <= gy1; });
 		});
+		const auto inBorderSea = [&](const P2& p) {
+			const float edge = std::min({p[0] - w.min[0], w.max[0] - p[0], p[1] - w.min[1], w.max[1] - p[1]});
+			return edge < o.border + 60 * Noise(p[0] * 3, p[1] * 3) + 40; // (and 40 m back from its shore)
+		};
+		std::set<std::pair<float, float>> cutEnds; // (where a road now ends because of the cut)
+		size_t cuts = 0;
+		{
+			std::vector<world::Road> kept;
+			for (const auto& r : near.roads)
+			{
+				world::Road piece = r;
+				piece.points.clear();
+				for (size_t k = 0; k <= r.points.size(); ++k)
+				{
+					if (k < r.points.size() && !inBorderSea(r.points[k]))
+					{
+						if (piece.points.empty() && k > 0)
+							cutEnds.insert({r.points[k][0], r.points[k][1]});
+						piece.points.push_back(r.points[k]);
+						continue;
+					}
+					if (k < r.points.size())
+						++cuts;
+					if (!piece.points.empty() && k < r.points.size())
+						cutEnds.insert({piece.points.back()[0], piece.points.back()[1]});
+					if (piece.points.size() >= 2)
+						kept.push_back(piece);
+					piece.points.clear();
+				}
+			}
+			near.roads = std::move(kept);
+		}
 		roads::Network network = roads::Build(near);
+		{
+			// (the stubs the cut left pruned back to their last junction: a road on into the sea would be a dead end the
+			// traffic drives into)
+			std::vector<bool> gone(network.edges.size(), false);
+			std::vector<int> degree(network.vertices.size());
+			for (size_t v = 0; v < network.vertices.size(); ++v)
+				degree[v] = static_cast<int>(network.vertices[v].edges.size());
+			size_t pruned = 0;
+			for (size_t v0 = 0; v0 < network.vertices.size(); ++v0)
+			{
+				if (degree[v0] != 1 || !cutEnds.contains({network.vertices[v0].p[0], network.vertices[v0].p[1]}))
+					continue;
+				for (int v = static_cast<int>(v0); degree[v] == 1;)
+				{
+					const auto& list = network.vertices[v].edges;
+					const auto e = std::find_if(list.begin(), list.end(), [&](int x) { return !gone[x]; });
+					if (e == list.end())
+						break;
+					gone[*e] = true;
+					++pruned;
+					const roads::Edge& ed = network.edges[*e];
+					--degree[ed.a], --degree[ed.b];
+					v = ed.a == v ? ed.b : ed.a;
+				}
+			}
+			std::vector<int> index(network.edges.size(), -1);
+			std::vector<roads::Edge> edges;
+			for (size_t e = 0; e < network.edges.size(); ++e)
+				if (!gone[e])
+				{
+					index[e] = static_cast<int>(edges.size());
+					edges.push_back(std::move(network.edges[e]));
+				}
+			network.edges = std::move(edges);
+			for (auto& vx : network.vertices)
+			{
+				std::vector<int> list;
+				for (const int x : vx.edges)
+					if (index[x] >= 0)
+						list.push_back(index[x]);
+				vx.edges = std::move(list);
+			}
+			std::printf("roads: %zu points in the sea round the island cut, %zu road pieces to them pruned\n", cuts, pruned);
+		}
 		roads::Heights(network, ground);
 		roads::Surfaces surfaces;
 		{
@@ -950,7 +1027,9 @@ namespace worldgen::build
 						raster::FillPolygon(blocked, {b.footprint}, uint8_t{1});
 			const auto open = [&](float x, float y) {
 				const auto c = blocked.Cell({x, y});
-				return blocked.In(c[0], c[1]) && !blocked.At(c[0], c[1]);
+				const auto lc = land.Cell({x, y});
+				// (and on land: none in the water - the sea round the island, the bay, the canals)
+				return blocked.In(c[0], c[1]) && !blocked.At(c[0], c[1]) && land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) != kWater;
 			};
 			// (with a scan the trees stand where it saw them; the map's tree points and the avenues' palms then not)
 			props::Place(near, network, surfaces.signals, open, ground, {bx0, by0, bx1, by1}, furniture, !scanned);

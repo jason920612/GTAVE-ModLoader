@@ -223,8 +223,12 @@ namespace worldgen::roads
 					const float l = Dist({bottom[i][0], bottom[i][1]}, {bottom[i + 1][0], bottom[i + 1][1]});
 					const P3 b0 = bottom[i], b1 = bottom[i + 1], t0{b0[0], b0[1], b0[2] + height}, t1{b1[0], b1[1], b1[2] + height};
 					const P3 normal{n[0], n[1], 0};
-					const uint32_t i0 = Add(m, b0, normal, {s / kTexture, 0}), i1 = Add(m, b1, normal, {(s + l) / kTexture, 0}),
-					               i2 = Add(m, t1, normal, {(s + l) / kTexture, height / 0.6f}), i3 = Add(m, t0, normal, {s / kTexture, height / 0.6f});
+					// (the kerb picture's plain concrete strip, its last quarter, down from the top: the rest are painted red
+					// and yellow - no stopping, everywhere - as LS's kerbs)
+					constexpr float kPlain = 0.76f;
+					const float vb = kPlain + height / 0.625f;
+					const uint32_t i0 = Add(m, b0, normal, {s / kTexture, vb}), i1 = Add(m, b1, normal, {(s + l) / kTexture, vb}),
+					               i2 = Add(m, t1, normal, {(s + l) / kTexture, kPlain}), i3 = Add(m, t0, normal, {s / kTexture, kPlain});
 					if (faceLeft)
 						Tri(m, i0, i2, i1), Tri(m, i0, i3, i2);
 					else
