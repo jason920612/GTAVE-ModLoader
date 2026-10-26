@@ -280,7 +280,8 @@ def monitor(out_dir, stop, state, profile_over=None):
             row += list(times[-1]) if times else ["", "", "", ""]
             row += list(drawn[-1]) if drawn else ["", "", "", ""]
             row += [round(busy.get(game, 0)), round(busy.get(renderer, 0))]
-            row += list(camera[-1]) if camera else ["", "", "", "", "", ""]
+            # (without the renderer's log, where the player was: the main loop's last look)
+            row += list(camera[-1]) if camera else [*state.get("pos", ("", "", "")), "", "", ""]
             row += [round(shared.get(game, 0)), round(shared.get(renderer, 0))]
             w.writerow(row)
             f.flush()
@@ -386,6 +387,8 @@ def main(args):
             state["doing"] = what
             g.log(f"{what} for {seconds:.0f} s")
             end = time.time() + seconds
+            began = g.native(GET_ENTITY_COORDS, g.ped(), 1)
+            travelled, last = 0.0, began[2] if began else None
             while time.time() < end:
                 if time.time() >= next_video:
                     videos += 1
@@ -402,6 +405,15 @@ def main(args):
                         os.remove(os.path.splitext(name)[0] + ".grec")
                     threading.Thread(target=convert, daemon=True).start()
                 look_about(g, min(20.0, end - time.time()), stop)
+                where = g.native(GET_ENTITY_COORDS, g.ped(), 1)
+                if where:
+                    state["pos"] = tuple(round(v, 1) for v in where[2])
+                    if last:
+                        travelled += math.dist(last[:2], where[2][:2])
+                    last = where[2]
+            # (a drive that went nowhere: the car stuck - where, for going back to)
+            if what == "drive" and last and travelled < 30:
+                g.log(f"stuck: drove {travelled:.0f} m in {seconds:.0f} s at {last[0]:.0f} {last[1]:.0f}")
     finally:
         stop.set()
         time.sleep(20)

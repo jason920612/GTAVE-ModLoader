@@ -31,6 +31,7 @@ namespace worldgen::paths
 			std::vector<Out> links;
 			// a game node's place in its file (for its junction refs)
 			int gameArea = -1, gameIndex = -1;
+			float junction = 0; // a new junction's record: its box's side (m)
 			uint32_t area = 0, index = 0; // where it is written
 		};
 
@@ -122,6 +123,12 @@ namespace worldgen::paths
 			g.x = n.p[0], g.y = n.p[1];
 			std::memset(g.raw.raw + 0x14, 0, 4); // (no street name)
 			g.raw.raw[0x24] &= 0x7F;           // switched on
+			// a junction (+0x24 bit 2) and a traffic light's stopping place (+0x21 bits 3-7: 15), as the game's own nodes
+			// have them (research/phase0.md §61.27)
+			g.raw.raw[0x24] = static_cast<uint8_t>(n.junction ? g.raw.raw[0x24] | 0x04 : g.raw.raw[0x24] & ~0x04);
+			g.raw.raw[0x21] = static_cast<uint8_t>((g.raw.raw[0x21] & 0x07) | (n.light ? 15 << 3 : 0));
+			if (n.junction)
+				g.junction = n.junctionSize;
 			const int16_t z = static_cast<int16_t>(std::lround(n.p[2] * 32));
 			std::memcpy(g.raw.raw + 0x22, &z, 2);
 			all.push_back(std::move(g));
@@ -138,6 +145,11 @@ namespace worldgen::paths
 				Out o{to, {}};
 				std::memcpy(o.flags, ahead.flags, 4);
 				o.flags[2] = static_cast<uint8_t>((o.flags[2] & 3) | std::clamp(along, 0, 7) << 5 | std::clamp(against, 0, 7) << 2);
+				// the second byte: bits 4-7 the gap between the directions (the template's 6 pushed the cars out over the
+				// kerbs), bit 1 a narrow road - the AI's lanes 4.0 m wide instead of 5.4 (0x263AC00), as real roads' lanes
+				// (3-3.7 m) are nearer to (research/phase0.md §61.27)
+				const float lane = (l.width - 0.6f) / static_cast<float>(std::max(1, l.lanesAB + l.lanesBA));
+				o.flags[1] = lane < 4.7f ? 0x02 : 0x00;
 				o.flags[3] = static_cast<uint8_t>(std::min(255.0f, std::round(length)));
 				all[from].links.push_back(o);
 			}
@@ -195,6 +207,27 @@ namespace worldgen::paths
 				if (g.vehicle)
 					++n.vehicleNodes;
 				n.nodes.push_back(node);
+				// a new junction: a record of its own (the game's junctions with traffic lights all have one: research/
+				// phase0.md §61.27) - its box (x, y its corner as the nodes' positions, 0.25 m), its heights (z in 1/32 m) and a
+				// height map of 2 m cells over it, flat at the node's height
+				if (g.gameArea < 0 && g.junction > 0)
+				{
+					const int cells = std::clamp(static_cast<int>(std::ceil(g.junction / 2)), 2, 120);
+					Junction junction{};
+					junction.x = static_cast<int16_t>(std::lround((g.x - cells) * 4) - ox);
+					junction.y = static_cast<int16_t>(std::lround((g.y - cells) * 4) - oy);
+					int16_t nz;
+					std::memcpy(&nz, g.raw.raw + 0x22, 2);
+					junction.minZ = junction.maxZ = nz;
+					junction.width = junction.height = static_cast<uint8_t>(cells);
+					junction.heightmap = static_cast<uint16_t>(n.heights.size());
+					n.heights.insert(n.heights.end(), static_cast<size_t>(cells) * cells, 0);
+					n.refs.push_back({static_cast<uint16_t>(area), static_cast<uint16_t>(k), static_cast<uint16_t>(n.junctions.size()), 0});
+					// (+0x25 bit 0: the node has a junction record - the vehicle AI only makes a junction, with its traffic
+					// lights, of a node on its route with this bit: 0xF4E880)
+					n.nodes.back().raw[0x25] |= 0x01;
+					n.junctions.push_back(junction);
+				}
 				// a game node's junction refs (and the junctions they name)
 				if (g.gameArea < 0)
 					continue;

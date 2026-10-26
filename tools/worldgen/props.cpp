@@ -79,9 +79,11 @@ namespace worldgen::props
 				continue;
 			const float total = Length(e);
 			const float side = e.HalfWidth() + 0.6f; // (on the sidewalk, near the kerb)
+			// (none by a street junction's corner, where turning cars cut across the kerb: from past its reach)
+			const float fromA = roads::CornerReach(n, e.a) + 1, fromB = roads::CornerReach(n, e.b) + 1;
 			// street lights every 40 m on the right of the way (both sides on wide roads), their arm (the model's -y)
 			// over the road
-			for (float s = 12; s < total - 12; s += 40)
+			for (float s = std::max(12.0f, fromA); s < total - std::max(12.0f, fromB); s += 40)
 			{
 				P2 p, d;
 				float z;
@@ -102,7 +104,7 @@ namespace worldgen::props
 			}
 			// palms along the avenues, every 30 m on alternating sides, in the sidewalk's middle
 			if (palms && (e.kind.starts_with("primary") || e.kind.starts_with("secondary") || e.kind.starts_with("trunk")))
-				for (float s = 20; s < total - 20; s += 30)
+				for (float s = std::max(20.0f, fromA); s < total - std::max(20.0f, fromB); s += 30)
 				{
 					P2 p, d;
 					float z;

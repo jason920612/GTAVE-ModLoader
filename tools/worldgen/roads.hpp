@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "paving.hpp"
@@ -48,7 +49,15 @@ namespace worldgen::roads
 		std::vector<Edge> edges;
 	};
 
+	// A road that is not a street: a driveway, alley or parking lane (service), a track, a path.
+	bool Minor(const Edge& e);
+
 	Network Build(const world::World& w);
+
+	// How far round a street junction (three streets or more) its corners reach: the kerbs' curves end where the roads stop
+	// short of it (its widest road's half width and sidewalk, a little more), and turning cars straighten out 3 m on; 0
+	// at other vertices.
+	float CornerReach(const Network& n, int vertex);
 
 	// The surface heights: `ground` (the terrain's height) plus a little; bridges rise over water (deck at least
 	// `clearance` above the sea in the middle).
@@ -67,6 +76,23 @@ namespace worldgen::roads
 		std::vector<uint8_t> materials; // per triangle: a row of materials.dat
 		std::vector<uint8_t> kinds;     // per triangle: 1 a carriageway, 2 a sidewalk, 0 other (kerbs)
 	};
+
+	// The carriageways' asphalt (the collision's carriageway triangles: roads and junctions) by 8 m cell: whether a point
+	// is on it or within `r` of it (r up to the `reach` it was made for).
+	class Asphalt
+	{
+	public:
+		Asphalt(const Collision& c, float reach);
+		bool Within(float x, float y, float r = 0) const;
+
+	private:
+		const Collision& col;
+		std::unordered_map<int64_t, std::vector<uint32_t>> cells;
+	};
+
+	// Clearances from the asphalt (m): posts (street lights, signal masts) and trees; at the junctions' corners, where turning
+	// cars cut across the kerb (the game's AI keeps lanes 4 m wide, wider than ours), more.
+	constexpr float kPostClear = 0.3f, kTreeClear = 1.0f, kCornerPostClear = 1.5f, kCornerTreeClear = 2.5f;
 
 	// A traffic signal mast at a signalled junction: where it stands (on the sidewalk), its heading (radians: the model's
 	// x axis from east, anticlockwise; its arm, the model's -x, reaches left across the lanes, the heads facing the traffic
@@ -101,7 +127,9 @@ namespace worldgen::roads
 	struct PathNode
 	{
 		P3 p{};
-		bool junction = false;
+		bool junction = false; // (three streets or more meet there, or a signalled junction)
+		bool light = false;    // where the cars coming into a signalled junction stop (its traffic light)
+		float junctionSize = 0; // a junction's box (m a side: the roads' widths across it)
 		float speed = 0;
 		uint32_t street = 0; // name hash
 		int density = 3;     // vehicles spawned near it (0-15)

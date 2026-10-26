@@ -324,26 +324,22 @@ namespace loader::game::sea
 			int16_t x, y;
 			float z;
 		};
-		constexpr int kFlatVertices = 0x600;
+		constexpr int kFlatVertices = 0x3000; // (2048 rectangles: a whole city's shores near the camera need over 256)
 		constexpr uintptr_t kFlatBegin = 0x37391F, kFlatStrips = 0x37394E, kWriteStrips = 0x372F80;
 		constexpr uint8_t kFlatBeginBytes[] = {0xBA, 0x18, 0x00, 0x00, 0x00}; // mov edx,18h: the vertices asked for
 		using WriteStripsFn = void(__fastcall*)(FlatVertex*, int32_t, int32_t, int32_t, int32_t, float);
 		WriteStripsFn g_writeStrips = nullptr;
-		bool g_flatFull = false;
+		int g_flatMost = 0; // (the most rectangles a frame wanted, for the log when they do not fit)
 
 		void __fastcall FlatStrips(FlatVertex* out, int32_t minX, int32_t maxX, int32_t minY, int32_t maxY, float z)
 		{
 			FlatVertex strips[24]{};
 			g_writeStrips(strips, minX, maxX, minY, maxY, z);
-			int n = 0;
+			int n = 0, wanted = 0;
 			const auto put = [&](const Rect& r) {
+				++wanted;
 				if (n + 6 > kFlatVertices)
-				{
-					if (!g_flatFull)
-						log::Warn("sea: the water's flat pass has room for {} rectangles; the rest of the water is left out of it", kFlatVertices / 6);
-					g_flatFull = true;
 					return;
-				}
 				const auto x0 = static_cast<int16_t>(r.x0), x1 = static_cast<int16_t>(r.x1), y0 = static_cast<int16_t>(r.y0), y1 = static_cast<int16_t>(r.y1);
 				const FlatVertex v[6] = {{x0, y0, z}, {x1, y0, z}, {x1, y1, z}, {x0, y0, z}, {x1, y1, z}, {x0, y1, z}};
 				std::memcpy(out + n, v, sizeof(v));
@@ -356,6 +352,11 @@ namespace loader::game::sea
 					SplitStrip(r, put, put);
 			}
 			std::memset(out + n, 0, sizeof(FlatVertex) * static_cast<size_t>(kFlatVertices - n));
+			if (wanted * 6 > kFlatVertices && wanted > g_flatMost)
+			{
+				g_flatMost = wanted;
+				log::Warn("sea: the water's flat pass has room for {} rectangles, {} wanted; the rest of the water is left out of it", kFlatVertices / 6, wanted);
+			}
 		}
 
 		// Executable memory within 2 GB of `target` (the patches reach it with rel32).
@@ -484,7 +485,7 @@ namespace loader::game::sea
 			JumpPatch(g_base + kSegmentHit, segmentStub, sizeof(kSegmentHitBytes));
 			for (const uintptr_t call : kStripCalls)
 				callTo(call, stripStub);
-			const uint8_t flatBegin[] = {0xBA, static_cast<uint8_t>(kFlatVertices & 0xFF), static_cast<uint8_t>(kFlatVertices >> 8), 0x00, 0x00};
+			const uint8_t flatBegin[] = {0xBA, static_cast<uint8_t>(kFlatVertices & 0xFF), static_cast<uint8_t>(kFlatVertices >> 8 & 0xFF), 0x00, 0x00};
 			Write(g_base + kFlatBegin, flatBegin, sizeof(flatBegin));
 			callTo(kFlatStrips, flatStub);
 			log::Info("sea: the game's sea leaves the new land's boxes to their water");

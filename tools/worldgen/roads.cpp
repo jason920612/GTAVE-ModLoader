@@ -10,6 +10,69 @@
 
 namespace worldgen::roads
 {
+	bool Minor(const Edge& e)
+	{
+		return e.kind == "service" || e.kind == "track" || e.kind == "footway" || e.kind == "path" || e.kind == "cycleway" || e.kind == "pedestrian" ||
+		       e.kind == "steps";
+	}
+
+	namespace
+	{
+		constexpr float kAsphaltCell = 8;
+		int64_t AsphaltKey(float x, float y)
+		{
+			return static_cast<int64_t>(std::floor(x / kAsphaltCell)) << 32 | static_cast<uint32_t>(static_cast<int>(std::floor(y / kAsphaltCell)));
+		}
+	}
+
+	Asphalt::Asphalt(const Collision& c, float reach) : col(c)
+	{
+		// (each triangle in every cell within `reach` of it: a point's own cell then has all it can be near)
+		for (uint32_t t = 0; t < col.triangles.size(); ++t)
+		{
+			if (col.kinds[t] != 1)
+				continue;
+			float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+			for (const uint32_t k : col.triangles[t])
+				x0 = std::min(x0, col.vertices[k][0]), y0 = std::min(y0, col.vertices[k][1]), x1 = std::max(x1, col.vertices[k][0]),
+				y1 = std::max(y1, col.vertices[k][1]);
+			for (float y = std::floor((y0 - reach) / kAsphaltCell) * kAsphaltCell; y <= y1 + reach; y += kAsphaltCell)
+				for (float x = std::floor((x0 - reach) / kAsphaltCell) * kAsphaltCell; x <= x1 + reach; x += kAsphaltCell)
+					cells[AsphaltKey(x + kAsphaltCell / 2, y + kAsphaltCell / 2)].push_back(t);
+		}
+	}
+
+	bool Asphalt::Within(float x, float y, float r) const
+	{
+		const auto it = cells.find(AsphaltKey(x, y));
+		if (it == cells.end())
+			return false;
+		for (const uint32_t t : it->second)
+		{
+			const P3* v[3] = {&col.vertices[col.triangles[t][0]], &col.vertices[col.triangles[t][1]], &col.vertices[col.triangles[t][2]]};
+			// (inside: on the same side of all three edges; else the nearest edge within r)
+			float side[3];
+			for (int k = 0; k < 3; ++k)
+			{
+				const P3 &p = *v[k], &q = *v[(k + 1) % 3];
+				side[k] = (q[0] - p[0]) * (y - p[1]) - (q[1] - p[1]) * (x - p[0]);
+			}
+			if ((side[0] >= 0 && side[1] >= 0 && side[2] >= 0) || (side[0] <= 0 && side[1] <= 0 && side[2] <= 0))
+				return true;
+			if (r <= 0)
+				continue;
+			for (int k = 0; k < 3; ++k)
+			{
+				const P3 &p = *v[k], &q = *v[(k + 1) % 3];
+				const float dx = q[0] - p[0], dy = q[1] - p[1], len2 = dx * dx + dy * dy;
+				const float s = len2 > 0 ? std::clamp(((x - p[0]) * dx + (y - p[1]) * dy) / len2, 0.0f, 1.0f) : 0.0f;
+				if (std::hypot(p[0] + s * dx - x, p[1] + s * dy - y) < r)
+					return true;
+			}
+		}
+		return false;
+	}
+
 	namespace
 	{
 		constexpr float kPi = 3.14159265f;
@@ -39,13 +102,6 @@ namespace worldgen::roads
 		{
 			return x.forward == y.forward && x.backward == y.backward && x.laneWidth == y.laneWidth && x.sidewalks == y.sidewalks && x.bridge == y.bridge &&
 			       x.kind == y.kind && paving::Of(x.surface) == paving::Of(y.surface);
-		}
-
-		// a road that is not a street: a driveway, alley or parking lane (service), a track, a path
-		bool Minor(const Edge& e)
-		{
-			return e.kind == "service" || e.kind == "track" || e.kind == "footway" || e.kind == "path" || e.kind == "cycleway" || e.kind == "pedestrian" ||
-			       e.kind == "steps";
 		}
 
 		void Reverse(Edge& e)
@@ -714,6 +770,18 @@ namespace worldgen::roads
 			}
 			return out;
 		}
+	}
+
+	float CornerReach(const Network& n, int vertex)
+	{
+		const auto& list = n.vertices[vertex].edges;
+		if (std::count_if(list.begin(), list.end(), [&](int e) { return !Minor(n.edges[e]); }) < 3)
+			return 0;
+		float side = 0;
+		for (const int e : list)
+			side = std::max(side, n.edges[e].HalfWidth() + (n.edges[e].sidewalks ? kSidewalk : 0.0f));
+		// (the roads stop short of a junction by its side * 1.15 + 0.5 - Geometry - and the corner's sidewalk is that far out)
+		return std::hypot(side * 1.15f + 0.5f + 3, side);
 	}
 
 	Network Build(const world::World& w)
@@ -1543,43 +1611,14 @@ namespace worldgen::roads
 		// 5. traffic signals at the signalled junctions: for each road coming in, a mast at the right corner of the far side
 		// (as in the US: the heads hang over the far side of the junction, in the drivers' view from the stop line), its arm
 		// across the lanes; a road with nothing straight across (the stem of a T) has it by its own stop line. Never on the
-		// asphalt (moved out over the sidewalk, or none), one to a corner; the roads inside a merged junction (between the
-		// carriageways of a divided road) have none.
+		// asphalt or where turning cars cut the corner (moved back over the sidewalk, or none), one to a corner; the roads
+		// inside a merged junction (between the carriageways of a divided road) have none.
 		{
 			std::vector<bool> signalled(nv, false);
 			for (size_t v = 0; v < nv; ++v)
 				if (n.vertices[v].signals && kind[v] == Kind::Junction)
 					signalled[root(static_cast<int>(v))] = true;
-			// the asphalt's triangles by 8 m cell
-			const Collision& col = out.collision;
-			const auto cellKey = [](int i, int j) { return static_cast<uint64_t>(static_cast<uint32_t>(i)) << 32 | static_cast<uint32_t>(j); };
-			std::unordered_map<uint64_t, std::vector<uint32_t>> cells;
-			for (uint32_t t = 0; t < col.triangles.size(); ++t)
-			{
-				if (col.kinds[t] != 1)
-					continue;
-				float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-				for (const uint32_t k : col.triangles[t])
-					x0 = std::min(x0, col.vertices[k][0]), y0 = std::min(y0, col.vertices[k][1]), x1 = std::max(x1, col.vertices[k][0]),
-					y1 = std::max(y1, col.vertices[k][1]);
-				for (int j = static_cast<int>(std::floor(y0 / 8)); j <= static_cast<int>(std::floor(y1 / 8)); ++j)
-					for (int i = static_cast<int>(std::floor(x0 / 8)); i <= static_cast<int>(std::floor(x1 / 8)); ++i)
-						cells[cellKey(i, j)].push_back(t);
-			}
-			const auto onAsphalt = [&](const P2& q) {
-				const auto it = cells.find(cellKey(static_cast<int>(std::floor(q[0] / 8)), static_cast<int>(std::floor(q[1] / 8))));
-				if (it == cells.end())
-					return false;
-				for (const uint32_t t : it->second)
-				{
-					const P3 &a = col.vertices[col.triangles[t][0]], &b = col.vertices[col.triangles[t][1]], &c = col.vertices[col.triangles[t][2]];
-					const auto side = [&](const P3& p0, const P3& p1) { return (p1[0] - p0[0]) * (q[1] - p0[1]) - (p1[1] - p0[1]) * (q[0] - p0[0]); };
-					const float s0 = side(a, b), s1 = side(b, c), s2 = side(c, a);
-					if ((s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0))
-						return true;
-				}
-				return false;
-			};
+			const Asphalt asphalt(out.collision, kCornerPostClear);
 			for (size_t v = 0; v < nv; ++v)
 			{
 				if (!signalled[v] || ends[v].size() < 3)
@@ -1609,12 +1648,14 @@ namespace worldgen::roads
 					const float walk = y ? at.walkR : at.walkL, fill = y ? at.fillR : at.fillL;
 					const float along = y ? 1.0f : 4.6f, off = at.half + fill + (walk > 0 ? std::min(0.9f, walk * 0.35f) : 1.0f);
 					P2 q{at.at[0] + at.outward[0] * along + right[0] * off, at.at[1] + at.outward[1] * along + right[1] * off};
-					for (int k = 0; k < 8 && onAsphalt(q); ++k)
-						q = {q[0] + right[0] * 0.5f, q[1] + right[1] * 0.5f};
-					if (onAsphalt(q) || std::any_of(placed.begin(), placed.end(), [&](const P2& p) { return Dist(p, q) < 3; }))
+					// (back from the kerb as far as the corner's clearance asks, up to 4 m: cars turning in cut across it)
+					float back = 0;
+					for (; back < 4 && asphalt.Within(q[0], q[1], kCornerPostClear); back += 0.25f)
+						q = {q[0] + right[0] * 0.25f, q[1] + right[1] * 0.25f};
+					if (asphalt.Within(q[0], q[1], kCornerPostClear) || std::any_of(placed.begin(), placed.end(), [&](const P2& p) { return Dist(p, q) < 3; }))
 						continue;
 					placed.push_back(q);
-					out.signals.push_back({{q[0], q[1], at.z + kKerb}, std::atan2(-d[0], d[1]), lanesIn * e.laneWidth + off - at.half});
+					out.signals.push_back({{q[0], q[1], at.z + kKerb}, std::atan2(-d[0], d[1]), lanesIn * e.laneWidth + off + back - at.half});
 				}
 			}
 		}
@@ -1638,46 +1679,130 @@ namespace worldgen::roads
 		const auto densityOf = [](const Edge& e) {
 			return e.kind.starts_with("motorway") || e.kind.starts_with("primary") || e.kind.starts_with("trunk") ? 5 : e.kind == "service" ? 1 : 3;
 		};
+		// (junctions joined by a road too short to show between them are one, as Geometry draws them - the carriageways of
+		// a divided road: signalled if any of their vertices has signals, and no traffic light on the roads inside it; a
+		// junction to the AI: three streets or more, or signalled - a street past driveways and alleys is not one)
+		const size_t nv = n.vertices.size();
+		std::vector<int> cluster(nv);
+		for (size_t v = 0; v < nv; ++v)
+			cluster[v] = static_cast<int>(v);
+		const auto root = [&](int v) {
+			while (cluster[v] != v)
+				v = cluster[v] = cluster[cluster[v]];
+			return v;
+		};
+		std::vector<float> reach(nv, 0);
+		for (size_t v = 0; v < nv; ++v)
+			for (const int ei : n.vertices[v].edges)
+				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0.0f));
+		const auto meeting = [&](int v) { return n.vertices[v].edges.size() >= 3; };
+		std::vector<bool> inside(n.edges.size(), false);
+		for (size_t ei = 0; ei < n.edges.size(); ++ei)
+		{
+			const Edge& e = n.edges[ei];
+			if (e.a != e.b && meeting(e.a) && meeting(e.b) && Length(e.points) < (reach[e.a] + reach[e.b]) * 1.25f + 2)
+				inside[ei] = true, cluster[root(e.a)] = root(e.b);
+		}
+		std::vector<bool> clusterSignals(nv, false);
+		for (size_t v = 0; v < nv; ++v)
+			if (n.vertices[v].signals && meeting(static_cast<int>(v)))
+				clusterSignals[root(static_cast<int>(v))] = true;
+		const auto signalled = [&](int v) { return meeting(v) && clusterSignals[root(v)]; };
+		// a merged junction one node, in the middle of its vertices (as the game's own junctions are: the AI makes one
+		// junction, with one cycle of lights, of each junction node), its roads inside it left out
+		std::vector<P3> middle(nv, P3{0, 0, 0});
+		std::vector<int> members(nv, 0);
+		std::vector<float> extent(nv, 0);
+		for (size_t v = 0; v < nv; ++v)
+			if (!n.vertices[v].edges.empty())
+			{
+				const int r = root(static_cast<int>(v));
+				middle[r][0] += n.vertices[v].p[0], middle[r][1] += n.vertices[v].p[1], middle[r][2] += n.vertices[v].z;
+				++members[r];
+			}
+		for (size_t v = 0; v < nv; ++v)
+			if (members[v])
+				middle[v] = {middle[v][0] / members[v], middle[v][1] / members[v], middle[v][2] / members[v]};
+		for (size_t v = 0; v < nv; ++v)
+			if (!n.vertices[v].edges.empty())
+			{
+				const int r = root(static_cast<int>(v));
+				extent[r] = std::max(extent[r], std::hypot(n.vertices[v].p[0] - middle[r][0], n.vertices[v].p[1] - middle[r][1]) + reach[v]);
+			}
 		std::vector<int> vertexNode(n.vertices.size(), -1);
 		for (size_t v = 0; v < n.vertices.size(); ++v)
 		{
 			if (n.vertices[v].edges.empty())
 				continue;
+			const int r = root(static_cast<int>(v));
+			if (members[r] > 1 && vertexNode[r] >= 0)
+			{
+				vertexNode[v] = vertexNode[r];
+				continue;
+			}
 			PathNode node;
-			node.p = {n.vertices[v].p[0], n.vertices[v].p[1], n.vertices[v].z};
-			node.junction = n.vertices[v].edges.size() >= 3;
+			node.p = members[r] > 1 ? middle[r] : P3{n.vertices[v].p[0], n.vertices[v].p[1], n.vertices[v].z};
+			const auto& list = n.vertices[v].edges;
+			node.junction = members[r] > 1 || std::count_if(list.begin(), list.end(), [&](int ei) { return !Minor(n.edges[ei]); }) >= 3 ||
+			                signalled(static_cast<int>(v));
+			if (node.junction)
+				node.junctionSize = std::clamp(2 * ((members[r] > 1 ? extent[r] : reach[v]) + 4), 12.0f, 120.0f);
 			const Edge& first = n.edges[n.vertices[v].edges[0]];
 			node.speed = speedOf(first);
 			node.density = densityOf(first);
 			node.street = loader::convert::Joaat(first.name);
 			vertexNode[v] = static_cast<int>(nodes.size());
+			if (members[r] > 1)
+				vertexNode[r] = vertexNode[v];
 			nodes.push_back(node);
 		}
 		for (const Edge& e : n.edges)
 		{
+			if (inside[static_cast<size_t>(&e - n.edges.data())] || (e.a != e.b && vertexNode[e.a] == vertexNode[e.b]))
+				continue; // (inside a merged junction)
 			const float total = Length(e.points);
+			// where its nodes go (distances along it): every `spacing` m, and where the cars coming into a signalled junction
+			// stop, a little before its crossing (a node of its own: the game's traffic lights are on such nodes - research/
+			// phase0.md §61.27); the plain ones within 4 m of those left out
+			std::vector<std::pair<float, bool>> at;
 			const int steps = std::max(1, static_cast<int>(std::ceil(total / spacing)));
+			for (int k = 1; k < steps; ++k)
+				at.push_back({total * k / steps, false});
+			const auto stopBack = [&](int v) {
+				float across = 0;
+				for (const int ei : n.vertices[v].edges)
+					if (&n.edges[ei] != &e)
+						across = std::max(across, n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0.0f));
+				return std::min(across + 4.0f, total * 0.45f);
+			};
+			std::vector<float> lights;
+			if (e.forward > 0 && signalled(e.b) && total > 8)
+				lights.push_back(total - stopBack(e.b));
+			if (e.backward > 0 && signalled(e.a) && total > 8)
+				lights.push_back(stopBack(e.a));
+			std::erase_if(at, [&](const auto& x) { return std::any_of(lights.begin(), lights.end(), [&](float l) { return std::fabs(l - x.first) < 4; }); });
+			for (const float l : lights)
+				at.push_back({l, true});
+			std::sort(at.begin(), at.end());
 			int previous = vertexNode[e.a];
-			float s = 0;
 			size_t i = 0;
 			float segStart = 0;
-			for (int k = 1; k < steps; ++k)
+			for (const auto& [want, light] : at)
 			{
-				const float want = total * k / steps;
-				while (i + 1 < e.points.size() && segStart + Dist(e.points[i], e.points[i + 1]) < want)
+				while (i + 2 < e.points.size() && segStart + Dist(e.points[i], e.points[i + 1]) < want)
 					segStart += Dist(e.points[i], e.points[i + 1]), ++i;
-				const float l = Dist(e.points[i], e.points[i + 1]), t = l > 0 ? (want - segStart) / l : 0;
+				const float l = Dist(e.points[i], e.points[i + 1]), t = l > 0 ? std::clamp((want - segStart) / l, 0.0f, 1.0f) : 0.0f;
 				PathNode node;
 				node.p = {e.points[i][0] + (e.points[i + 1][0] - e.points[i][0]) * t, e.points[i][1] + (e.points[i + 1][1] - e.points[i][1]) * t,
 				    e.z[i] + (e.z[i + 1] - e.z[i]) * t};
 				node.speed = speedOf(e);
 				node.density = densityOf(e);
 				node.street = loader::convert::Joaat(e.name);
+				node.light = light;
 				nodes.push_back(node);
 				const int here = static_cast<int>(nodes.size() - 1);
 				links.push_back({previous, here, e.forward, e.backward, e.HalfWidth() * 2});
 				previous = here;
-				(void)s;
 			}
 			links.push_back({previous, vertexNode[e.b], e.forward, e.backward, e.HalfWidth() * 2});
 		}

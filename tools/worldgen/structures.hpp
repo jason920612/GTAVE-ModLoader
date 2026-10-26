@@ -55,7 +55,8 @@ namespace worldgen::structures
 	// building cells outside every known footprint (and a metre round them), opened by 1.5 m (eaves and slivers along
 	// the footprints' sides go), pieces of at least `minArea` m² and a storey high (2.8 m) traced round (Douglas-Peucker,
 	// 0.6 m) as footprints of kind "yes" with the scan's height. Within `box` (x0, y0, x1, y1), a kilometre at a time (a
-	// piece is the block's that holds its first cell).
-	std::vector<world::Building> Missing(elevation::Scan& scan, const std::vector<world::Building>& known, const std::array<float, 4>& box,
-	    float minArea = 40);
+	// piece is the block's that holds its first cell). The blocks are worked on all the cores: `open` opens a scan reader
+	// for each worker.
+	std::vector<world::Building> Missing(const std::function<void(elevation::Scan&)>& open, const std::vector<world::Building>& known,
+	    const std::array<float, 4>& box, float minArea = 40);
 }

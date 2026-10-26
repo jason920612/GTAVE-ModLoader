@@ -1,6 +1,9 @@
 #include "build.hpp"
 
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -10,6 +13,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <unordered_map>
 
 #include "../ue5export/drawable.hpp"
 #include "bounds.hpp"
@@ -77,13 +81,65 @@ namespace worldgen::build
 			return ydr::ReadMaterial(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, index, out, error);
 		}
 
-		// A mesh's triangles in one tile (by their centres), moved to around (cx, cy).
-		roads::Mesh Clip(const roads::Mesh& m, float x0, float y0, float x1, float y1, float cx, float cy)
+		// Things by the tile their position is in (from the world box's corner, tiles `size` m): a tile's are looked up in
+		// its cell and the eight round it - a thing on a tile's edge is still kept or left by the same test as before - in
+		// the order they were added (what the tiles hold, and in what order, as when each tile went through all of them).
+		struct TileIndex
+		{
+			float x0 = 0, y0 = 0, size = 1;
+			int ti0 = 0, tj0 = 0, nx = 0, ny = 0;
+			std::vector<std::vector<uint32_t>> cells;
+
+			TileIndex(float x0_, float y0_, float size_, int ti0_, int tj0_, int ti1, int tj1)
+			    : x0(x0_), y0(y0_), size(size_), ti0(ti0_ - 1), tj0(tj0_ - 1), nx(ti1 - ti0_ + 2), ny(tj1 - tj0_ + 2)
+			{
+				cells.resize(static_cast<size_t>(nx) * ny);
+			}
+			void Add(uint32_t thing, float x, float y)
+			{
+				const int i = std::clamp(static_cast<int>(std::floor((x - x0) / size)) - ti0, 0, nx - 1);
+				const int j = std::clamp(static_cast<int>(std::floor((y - y0) / size)) - tj0, 0, ny - 1);
+				cells[static_cast<size_t>(j) * nx + i].push_back(thing);
+			}
+			std::vector<uint32_t> Near(int ti, int tj) const
+			{
+				std::vector<uint32_t> out;
+				for (int j = tj - 1; j <= tj + 1; ++j)
+					for (int i = ti - 1; i <= ti + 1; ++i)
+					{
+						const int ci = i - ti0, cj = j - tj0;
+						if (ci >= 0 && cj >= 0 && ci < nx && cj < ny)
+							out.insert(out.end(), cells[static_cast<size_t>(cj) * nx + ci].begin(), cells[static_cast<size_t>(cj) * nx + ci].end());
+					}
+				std::sort(out.begin(), out.end());
+				return out;
+			}
+		};
+
+		// A mesh's triangles by tile (their centres).
+		TileIndex MeshTiles(const roads::Mesh& m, float x0, float y0, float size, int ti0, int tj0, int ti1, int tj1)
+		{
+			TileIndex index(x0, y0, size, ti0, tj0, ti1, tj1);
+			for (size_t t = 0; t + 2 < m.indices.size(); t += 3)
+			{
+				const auto& a = m.vertices[m.indices[t]].position;
+				const auto& b = m.vertices[m.indices[t + 1]].position;
+				const auto& c = m.vertices[m.indices[t + 2]].position;
+				index.Add(static_cast<uint32_t>(t / 3), (a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3);
+			}
+			return index;
+		}
+
+		// A mesh's triangles in one tile (by their centres), moved to around (cx, cy); of `candidates` (triangle numbers, in
+		// order) when given, else of all.
+		roads::Mesh Clip(const roads::Mesh& m, float x0, float y0, float x1, float y1, float cx, float cy, const std::vector<uint32_t>* candidates = nullptr)
 		{
 			roads::Mesh out;
 			std::map<uint32_t, uint32_t> remap;
-			for (size_t t = 0; t + 2 < m.indices.size(); t += 3)
+			const size_t count = candidates ? candidates->size() : m.indices.size() / 3;
+			for (size_t n = 0; n < count; ++n)
 			{
+				const size_t t = (candidates ? (*candidates)[n] : n) * size_t{3};
 				const auto& a = m.vertices[m.indices[t]].position;
 				const auto& b = m.vertices[m.indices[t + 1]].position;
 				const auto& c = m.vertices[m.indices[t + 2]].position;
@@ -751,7 +807,7 @@ namespace worldgen::build
 		std::vector<std::vector<P2>> mapped; // (the footprints of those built, for the game's map)
 		if (o.buildings && scanned)
 		{
-			found = structures::Missing(scan, w.buildings, {bx0, by0, bx1, by1});
+			found = structures::Missing([&](elevation::Scan& s) { s.Open(o.scan, o.datum); }, w.buildings, {bx0, by0, bx1, by1});
 			// (none where the world editor demolished)
 			std::erase_if(found, [&](const world::Building& b) { return world::Demolished(w, b.footprint); });
 			std::printf("buildings: %zu more that the scan saw and the map has not\n", found.size());
@@ -781,25 +837,60 @@ namespace worldgen::build
 				                            : std::make_pair(static_cast<int>(std::floor(b->footprint[0][1] / 256)), static_cast<int>(std::floor(b->footprint[0][0] / 256)));
 			};
 			std::stable_sort(all.begin(), all.end(), [&](const world::Building* a, const world::Building* b) { return scanTile(a) < scanTile(b); });
-			for (const world::Building* pb : all)
+			// (on all the cores: each worker takes runs of the sorted buildings - their scan tiles together - with a scan
+			// reader of its own; the shapes kept in the buildings' order)
+			struct Made
 			{
-				const world::Building& b = *pb;
-				if (b.footprint.size() < 3)
-					continue;
-				P2 c{0, 0};
-				for (const P2& q : b.footprint)
-					c[0] += q[0] / b.footprint.size(), c[1] += q[1] / b.footprint.size();
-				if (c[0] < bx0 || c[0] >= bx1 || c[1] < by0 || c[1] >= by1 || ground(c[0], c[1]) < 0.3f)
-					continue;
+				bool ok = false;
 				structures::Shape s;
-				if (!structures::Make(b, &scan, ground, so, s, ss))
+				P2 c{};
+			};
+			std::vector<Made> made(all.size());
+			const unsigned workerCount = std::max(1u, std::thread::hardware_concurrency());
+			std::vector<structures::Stats> partStats(workerCount);
+			{
+				constexpr size_t kRun = 64;
+				std::atomic<size_t> next = 0;
+				std::vector<std::thread> workers;
+				for (unsigned wk = 0; wk < workerCount; ++wk)
+					workers.emplace_back([&, wk] {
+						elevation::Scan own;
+						own.Open(o.scan, o.datum);
+						for (size_t first; (first = next.fetch_add(kRun)) < all.size();)
+							for (size_t i = first; i < std::min(all.size(), first + kRun); ++i)
+							{
+								const world::Building& b = *all[i];
+								if (b.footprint.size() < 3)
+									continue;
+								P2 c{0, 0};
+								for (const P2& q : b.footprint)
+									c[0] += q[0] / b.footprint.size(), c[1] += q[1] / b.footprint.size();
+								if (c[0] < bx0 || c[0] >= bx1 || c[1] < by0 || c[1] >= by1 || ground(c[0], c[1]) < 0.3f)
+									continue;
+								made[i].ok = structures::Make(b, &own, ground, so, made[i].s, partStats[wk]);
+								made[i].c = c;
+							}
+					});
+				for (auto& worker : workers)
+					worker.join();
+			}
+			for (const auto& p : partStats)
+			{
+				ss.measured += p.measured, ss.flat += p.flat, ss.shaped += p.shaped, ss.mapHeight += p.mapHeight, ss.skipped += p.skipped;
+				ss.triangles += p.triangles;
+			}
+			for (size_t i = 0; i < all.size(); ++i)
+			{
+				if (!made[i].ok)
 					continue;
+				const world::Building& b = *all[i];
+				const P2 c = made[i].c;
 				mapped.push_back(b.footprint);
 				const float area = static_cast<float>(std::fabs(polygon::Area(b.footprint)));
 				const uint32_t seed = static_cast<uint32_t>(std::lround(c[0] * 3)) * 73856093u ^ static_cast<uint32_t>(std::lround(c[1] * 3)) * 19349663u;
-				shapeStyle.push_back(facades::Pick(facadeSet, b.kind, s.height, area, seed));
+				shapeStyle.push_back(facades::Pick(facadeSet, b.kind, made[i].s.height, area, seed));
 				shapeCentre.push_back(c);
-				shapes.push_back(std::move(s));
+				shapes.push_back(std::move(made[i].s));
 			}
 			stats.buildings = shapes.size();
 			std::printf("buildings: %zu of our own (%zu measured: %zu flat, %zu shaped; %zu at the map's height; %zu skipped), %zu roof triangles\n",
@@ -869,6 +960,47 @@ namespace worldgen::build
 				trees::Stats ts;
 				trees::Place(scan, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
 				std::printf("trees: %zu palms, %zu broadleaf, %zu bushes\n", ts.palms, ts.broadleaf, ts.bushes);
+			}
+			{
+				// nothing in the cars' way: trees and posts off the carriageways (the roads' and the junctions' asphalt, as their
+				// collision has it - the grid above only has the roads' widths along their lines, in 2 m cells) by their
+				// clearances, more by the street junctions' corners, where turning cars cut across the kerb (a signal mast by
+				// a corner's kerb held a turning car, and the junction's traffic behind it, for good)
+				const roads::Asphalt asphalt(surfaces.collision, roads::kCornerTreeClear);
+				constexpr float kCell = 8;
+				const auto key = [](int i, int j) { return static_cast<int64_t>(i) << 32 | static_cast<uint32_t>(j); };
+				const auto cellOf = [](float v) { return static_cast<int>(std::floor(v / kCell)); };
+				// (the street junctions' corners)
+				std::unordered_map<int64_t, std::vector<std::pair<P2, float>>> corners;
+				for (size_t vi = 0; vi < network.vertices.size(); ++vi)
+				{
+					const auto& v = network.vertices[vi];
+					const float reach = roads::CornerReach(network, static_cast<int>(vi));
+					if (reach <= 0)
+						continue;
+					for (int j = cellOf(v.p[1] - reach); j <= cellOf(v.p[1] + reach); ++j)
+						for (int i = cellOf(v.p[0] - reach); i <= cellOf(v.p[0] + reach); ++i)
+							corners[key(i, j)].push_back({v.p, reach});
+				}
+				const auto atCorner = [&](float x, float y) {
+					const auto cell = corners.find(key(cellOf(x), cellOf(y)));
+					return cell != corners.end() && std::any_of(cell->second.begin(), cell->second.end(), [&](const std::pair<P2, float>& c) {
+						return std::hypot(c.first[0] - x, c.first[1] - y) < c.second;
+					});
+				};
+				const uint32_t posts[] = {loader::convert::Joaat("prop_streetlight_01"), loader::convert::Joaat("prop_traffic_01a"),
+				    loader::convert::Joaat("prop_traffic_01b")};
+				size_t trees = 0, postsOut = 0;
+				std::erase_if(furniture, [&](const props::Prop& p) {
+					const bool post = std::find(std::begin(posts), std::end(posts), p.archetype) != std::end(posts);
+					const bool corner = atCorner(p.position[0], p.position[1]);
+					const float r = post ? (corner ? roads::kCornerPostClear : roads::kPostClear) : (corner ? roads::kCornerTreeClear : roads::kTreeClear);
+					if (!asphalt.Within(p.position[0], p.position[1], r))
+						return false;
+					++(post ? postsOut : trees);
+					return true;
+				});
+				std::printf("in the cars' way, left out: %zu trees, %zu posts\n", trees, postsOut);
 			}
 			{
 				// (what stands where, for checking: archetype hash, x, y, z, scale)
@@ -1126,494 +1258,582 @@ namespace worldgen::build
 		std::map<std::pair<int, int>, std::vector<mapfiles::Entity>> lodBlocks; // their LOD maps' (the buildings' LODs)
 		bounds::Mesh navMesh;
 		std::vector<navgen::Surface> navSurfaces;
-		for (int tj = tj0; tj < tj1; ++tj)
-			for (int ti = ti0; ti < ti1; ++ti)
+		// (what lies in which tile, looked up once: each tile going through all of them was most of a city's build)
+		const auto index = [&]() { return TileIndex(w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1); };
+		TileIndex collisionTiles = index(), placedTiles = index(), shapeTiles = index(), furnitureTiles = index();
+		for (size_t t = 0; t < surfaces.collision.triangles.size(); ++t)
+		{
+			const auto& tri = surfaces.collision.triangles[t];
+			const P3 &a = surfaces.collision.vertices[tri[0]], &b = surfaces.collision.vertices[tri[1]], &c = surfaces.collision.vertices[tri[2]];
+			collisionTiles.Add(static_cast<uint32_t>(t), (a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3);
+		}
+		for (size_t k = 0; k < placed.size(); ++k)
+			placedTiles.Add(static_cast<uint32_t>(k), placed[k].centre[0], placed[k].centre[1]);
+		for (size_t k = 0; k < shapes.size(); ++k)
+			shapeTiles.Add(static_cast<uint32_t>(k), shapeCentre[k][0], shapeCentre[k][1]);
+		for (size_t k = 0; k < furniture.size(); ++k)
+			furnitureTiles.Add(static_cast<uint32_t>(k), furniture[k].position[0], furniture[k].position[1]);
+		std::map<const roads::Mesh*, TileIndex> meshTiles;
+		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.markings})
+			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
+		for (const auto& m : surfaces.paved)
+			meshTiles.emplace(&m, MeshTiles(m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
+		// (a tile: what it adds to the maps, the archetypes, the navmesh and the counts. The tiles are made on all the cores,
+		// each worker with its own aerial picture reader; what they add is put together in the tiles' order after, as one
+		// going through them in turn had it)
+		struct TileResult
+		{
+			std::pair<int, int> block{};
+			std::vector<mapfiles::Archetype> archetypes;
+			std::vector<mapfiles::Entity> entities; // (the block's, in order)
+			bool hasLod = false;
+			mapfiles::Entity lod; // (the LOD map's entity of entities[lodOwner])
+			size_t lodOwner = 0;
+			std::vector<std::pair<std::string, std::string>> parents;
+			bounds::Mesh nav;
+			std::vector<navgen::Surface> navSurfaces;
+			size_t terrainTriangles = 0, roadTriangles = 0, generatedTiles = 0, tiles = 0;
+		};
+		const auto makeTile = [&](int ti, int tj, elevation::Aerial& aerial, TileResult& r, std::string& error) -> bool {
+			const float x0 = w.min[0] + ti * o.tile, y0 = w.min[1] + tj * o.tile, x1 = x0 + o.tile, y1 = y0 + o.tile;
+			const float cx = x0 + o.tile / 2, cy = y0 + o.tile / 2;
+			// the terrain field of this tile (vertices every `cell` m)
+			terrain::Field f;
+			f.x0 = x0, f.y0 = y0, f.cell = o.cell, f.nx = f.ny = per;
+			bool anyLand = false;
+			for (int j = 0; j <= per; ++j)
+				for (int i = 0; i <= per; ++i)
+				{
+					const float x = x0 + i * o.cell, y = y0 + j * o.cell;
+					float h = ground(x, y);
+					const auto c = floor.Cell({x, y});
+					if (floor.In(c[0], c[1]) && floor.At(c[0], c[1]) < std::numeric_limits<float>::max())
+						h = std::min(h, floor.At(c[0], c[1]) - 0.15f);
+					f.height.push_back(h);
+					const auto lc = land.Cell({x, y});
+					const uint8_t k = land.In(lc[0], lc[1]) ? land.At(lc[0], lc[1]) : kWater;
+					anyLand |= k != kWater || h > -3;
+					const float d = land.In(lc[0], lc[1]) ? toWater.At(lc[0], lc[1]) : 0;
+					// the ground material's layers: grass (the lawn's layer 3), paving, sand (beaches, bare earth, the
+					// shore), wet sand (under water)
+					const uint8_t what = h < 0.2f ? uint8_t{kUnder} : coverAt(x, y);
+					float grass = 0, paving = 0, soft = 0, wetSand = 0;
+					if (what == kUnder)
+						wetSand = 1;
+					else if (what == kSandy || what == kBare)
+						soft = 1;
+					else if (what == kPaving)
+						paving = 1;
+					else
+						grass = 1;
+					if (k != kWater && k != kBeach && d < 14)
+					{
+						const float t = Smooth(d / 14);
+						grass *= t, paving *= t, soft = soft * t + (1 - t);
+					}
+					f.layers.push_back(terrain::Layers(grass, paving, soft, wetSand));
+				}
+			for (int j = 0; j < per; ++j)
+				for (int i = 0; i < per; ++i)
+				{
+					const uint8_t what = coverAt(x0 + (i + 0.5f) * o.cell, y0 + (j + 0.5f) * o.cell);
+					f.material.push_back(what == kUnder || what == kSandy ? kSand : what == kPaving ? kConcrete : what == kBare ? kDirt : kGrass);
+				}
+			// the lawns: cells whose four corners are 6 m and more into a lawn; a vertex's depth into it eases over the
+			// next 14 m, 0 where it touches a cell of the ground material (there both draw the same grass)
 			{
-				const float x0 = w.min[0] + ti * o.tile, y0 = w.min[1] + tj * o.tile, x1 = x0 + o.tile, y1 = y0 + o.tile;
-				const float cx = x0 + o.tile / 2, cy = y0 + o.tile / 2;
-				// the terrain field of this tile (vertices every `cell` m)
-				terrain::Field f;
-				f.x0 = x0, f.y0 = y0, f.cell = o.cell, f.nx = f.ny = per;
-				bool anyLand = false;
+				const auto capable = [&](int vi, int vj) { return depthAt(x0 + vi * o.cell, y0 + vj * o.cell) > 6; };
+				const auto lawnCell = [&](int ci, int cj) { return capable(ci, cj) && capable(ci + 1, cj) && capable(ci, cj + 1) && capable(ci + 1, cj + 1); };
+				f.lawnCell.resize(static_cast<size_t>(per) * per);
+				for (int j = 0; j < per; ++j)
+					for (int i = 0; i < per; ++i)
+						f.lawnCell[static_cast<size_t>(j) * per + i] = lawnCell(i, j);
+				f.lawn.resize(static_cast<size_t>(per + 1) * (per + 1));
 				for (int j = 0; j <= per; ++j)
 					for (int i = 0; i <= per; ++i)
 					{
-						const float x = x0 + i * o.cell, y = y0 + j * o.cell;
-						float h = ground(x, y);
-						const auto c = floor.Cell({x, y});
-						if (floor.In(c[0], c[1]) && floor.At(c[0], c[1]) < std::numeric_limits<float>::max())
-							h = std::min(h, floor.At(c[0], c[1]) - 0.15f);
-						f.height.push_back(h);
-						const auto lc = land.Cell({x, y});
-						const uint8_t k = land.In(lc[0], lc[1]) ? land.At(lc[0], lc[1]) : kWater;
-						anyLand |= k != kWater || h > -3;
-						const float d = land.In(lc[0], lc[1]) ? toWater.At(lc[0], lc[1]) : 0;
-						// the ground material's layers: grass (the lawn's layer 3), paving, sand (beaches, bare earth, the
-						// shore), wet sand (under water)
-						const uint8_t what = h < 0.2f ? uint8_t{kUnder} : coverAt(x, y);
-						float grass = 0, paving = 0, soft = 0, wetSand = 0;
-						if (what == kUnder)
-							wetSand = 1;
-						else if (what == kSandy || what == kBare)
-							soft = 1;
-						else if (what == kPaving)
-							paving = 1;
-						else
-							grass = 1;
-						if (k != kWater && k != kBeach && d < 14)
-						{
-							const float t = Smooth(d / 14);
-							grass *= t, paving *= t, soft = soft * t + (1 - t);
-						}
-						f.layers.push_back(terrain::Layers(grass, paving, soft, wetSand));
+						const bool inside = lawnCell(i - 1, j - 1) && lawnCell(i, j - 1) && lawnCell(i - 1, j) && lawnCell(i, j);
+						f.lawn[f.V(i, j)] = inside ? Smooth((depthAt(x0 + i * o.cell, y0 + j * o.cell) - 6) / 14) : 0.0f;
 					}
-				for (int j = 0; j < per; ++j)
-					for (int i = 0; i < per; ++i)
+			}
+			if (!anyLand)
+				return true; // (deep open sea: nothing to see or walk on)
+			const std::string tname = std::format("{}_t_{}_{}", o.name, ti, tj), rname = std::format("{}_r_{}_{}", o.name, ti, tj),
+			                  cname = std::format("{}_c_{}_{}", o.name, ti, tj);
+			ydr::Drawable td;
+			td.name = tname;
+			td.materials = {ground3, lawnMaterial};
+			{
+				// (the textures every 3.5 m as the game's lawns have them, its blend map every 22 m)
+				auto [rest, lawn] = terrain::TileMeshes(f, 0, 0, per, cx, cy, 3.5f, 22.0f);
+				lawn.material = 1;
+				for (ydr::Mesh* m : {&rest, &lawn})
+					if (!m->indices.empty())
 					{
-						const uint8_t what = coverAt(x0 + (i + 0.5f) * o.cell, y0 + (j + 0.5f) * o.cell);
-						f.material.push_back(what == kUnder || what == kSandy ? kSand : what == kPaving ? kConcrete : what == kBare ? kDirt : kGrass);
+						r.terrainTriangles += m->indices.size() / 3;
+						td.lods[0].push_back(std::move(*m));
 					}
-				// the lawns: cells whose four corners are 6 m and more into a lawn; a vertex's depth into it eases over the
-				// next 14 m, 0 where it touches a cell of the ground material (there both draw the same grass)
+			}
+			Bytes file;
+			if (!ydr::Write(td, file, error))
+				return error = tname + ": " + error, false;
+			WriteFile(o.out / (tname + ".ydr"), file);
+			mapfiles::Archetype ta;
+			ta.name = tname;
+			ta.textureDictionary = loader::convert::Joaat(facadeDictionary);
+			ta.lodDist = 2500;
+			ydr::Box(td, ta.min, ta.max);
+			r.archetypes.push_back(ta);
+			const int bi = static_cast<int>(std::floor((cx - w.min[0]) / 1000)), bj = static_cast<int>(std::floor((cy - w.min[1]) / 1000));
+			r.block = {bi, bj};
+			mapfiles::Entity te;
+			te.archetype = loader::convert::Joaat(tname);
+			te.position = {cx, cy, 0};
+			te.lodDist = 2500;
+			te.radius = o.tile * 0.75f;
+			r.entities.push_back(te);
+			// collision: the terrain, and the roads' triangles centred in this tile
+			auto parts = terrain::TileCollision(f, 0, 0, per);
+			// (what each road triangle is to the pedestrians' navmesh, carriageway or sidewalk: by part)
+			std::map<size_t, std::vector<uint8_t>> roadKinds;
+			ybn::Part part;
+			std::vector<uint8_t> partKinds;
+			std::map<uint8_t, uint8_t> materialAt;
+			const auto flush = [&] {
+				if (!part.triangles.empty())
 				{
-					const auto capable = [&](int vi, int vj) { return depthAt(x0 + vi * o.cell, y0 + vj * o.cell) > 6; };
-					const auto lawnCell = [&](int ci, int cj) { return capable(ci, cj) && capable(ci + 1, cj) && capable(ci, cj + 1) && capable(ci + 1, cj + 1); };
-					f.lawnCell.resize(static_cast<size_t>(per) * per);
-					for (int j = 0; j < per; ++j)
-						for (int i = 0; i < per; ++i)
-							f.lawnCell[static_cast<size_t>(j) * per + i] = lawnCell(i, j);
-					f.lawn.resize(static_cast<size_t>(per + 1) * (per + 1));
-					for (int j = 0; j <= per; ++j)
-						for (int i = 0; i <= per; ++i)
-						{
-							const bool inside = lawnCell(i - 1, j - 1) && lawnCell(i, j - 1) && lawnCell(i - 1, j) && lawnCell(i, j);
-							f.lawn[f.V(i, j)] = inside ? Smooth((depthAt(x0 + i * o.cell, y0 + j * o.cell) - 6) / 14) : 0.0f;
-						}
+					roadKinds[parts.size()] = std::move(partKinds);
+					parts.push_back(std::move(part));
 				}
-				if (!anyLand)
-					continue; // (deep open sea: nothing to see or walk on)
-				const std::string tname = std::format("{}_t_{}_{}", o.name, ti, tj), rname = std::format("{}_r_{}_{}", o.name, ti, tj),
-				                  cname = std::format("{}_c_{}_{}", o.name, ti, tj);
-				ydr::Drawable td;
-				td.name = tname;
-				td.materials = {ground3, lawnMaterial};
+				part = {};
+				partKinds.clear();
+				materialAt.clear();
+			};
+			const auto& col = surfaces.collision;
+			for (const uint32_t t : collisionTiles.Near(ti, tj))
+			{
+				const auto& tri = col.triangles[t];
+				const P3& a = col.vertices[tri[0]];
+				const P3& b = col.vertices[tri[1]];
+				const P3& c = col.vertices[tri[2]];
+				const float mx = (a[0] + b[0] + c[0]) / 3, my = (a[1] + b[1] + c[1]) / 3;
+				if (mx < x0 || mx >= x1 || my < y0 || my >= y1)
+					continue;
+				if (part.triangles.size() >= 1000 || part.vertices.size() + 3 > 2730)
+					flush();
+				auto mat = materialAt.find(col.materials[t]);
+				if (mat == materialAt.end())
 				{
-					// (the textures every 3.5 m as the game's lawns have them, its blend map every 22 m)
-					auto [rest, lawn] = terrain::TileMeshes(f, 0, 0, per, cx, cy, 3.5f, 22.0f);
-					lawn.material = 1;
-					for (ydr::Mesh* m : {&rest, &lawn})
-						if (!m->indices.empty())
-						{
-							stats.terrainTriangles += m->indices.size() / 3;
-							td.lods[0].push_back(std::move(*m));
-						}
+					mat = materialAt.emplace(col.materials[t], static_cast<uint8_t>(part.materials.size())).first;
+					part.materials.push_back(ybn::Material(col.materials[t]));
 				}
-				Bytes file;
-				if (!ydr::Write(td, file, error))
-					return error = tname + ": " + error, false;
-				WriteFile(o.out / (tname + ".ydr"), file);
-				mapfiles::Archetype ta;
-				ta.name = tname;
-				ta.textureDictionary = loader::convert::Joaat(facadeDictionary);
-				ta.lodDist = 2500;
-				ydr::Box(td, ta.min, ta.max);
-				archetypes.push_back(ta);
-				const int bi = static_cast<int>(std::floor((cx - w.min[0]) / 1000)), bj = static_cast<int>(std::floor((cy - w.min[1]) / 1000));
-				mapfiles::Entity te;
-				te.archetype = loader::convert::Joaat(tname);
-				te.position = {cx, cy, 0};
-				te.lodDist = 2500;
-				te.radius = o.tile * 0.75f;
-				blocks[{bi, bj}].push_back(te);
-				// collision: the terrain, and the roads' triangles centred in this tile
-				auto parts = terrain::TileCollision(f, 0, 0, per);
-				// (what each road triangle is to the pedestrians' navmesh, carriageway or sidewalk: by part)
-				std::map<size_t, std::vector<uint8_t>> roadKinds;
-				ybn::Part part;
-				std::vector<uint8_t> partKinds;
-				std::map<uint8_t, uint8_t> materialAt;
-				const auto flush = [&] {
-					if (!part.triangles.empty())
-					{
-						roadKinds[parts.size()] = std::move(partKinds);
-						parts.push_back(std::move(part));
-					}
-					part = {};
-					partKinds.clear();
-					materialAt.clear();
-				};
-				const auto& col = surfaces.collision;
-				for (size_t t = 0; t < col.triangles.size(); ++t)
+				const uint32_t base = static_cast<uint32_t>(part.vertices.size());
+				part.vertices.insert(part.vertices.end(), {a, b, c});
+				part.triangles.push_back({base, base + 1, base + 2});
+				part.triangleMaterials.push_back(mat->second);
+				partKinds.push_back(col.kinds[t]);
+				r.roadTriangles += 1;
+			}
+			flush();
+			// the buildings standing in this tile: entities, their boxes (obstacles for the navmesh)
+			std::vector<P3> boxVertices;
+			std::vector<std::array<uint32_t, 3>> boxTriangles;
+			for (const uint32_t pk : placedTiles.Near(ti, tj))
+			{
+				const auto& p = placed[pk];
+				if (p.centre[0] < x0 || p.centre[0] >= x1 || p.centre[1] < y0 || p.centre[1] >= y1)
+					continue;
+				mapfiles::Entity be;
+				be.archetype = p.item->hash;
+				be.position = p.position;
+				be.rotation = {0, 0, std::sin(p.heading / 2), std::cos(p.heading / 2)};
+				be.lodDist = p.lodDist;
+				be.radius = std::hypot(p.item->max[0] - p.item->min[0], p.item->max[1] - p.item->min[1], p.item->max[2] - p.item->min[2]) / 2;
+				r.entities.push_back(be);
+				if (part.triangles.size() + 12 > 1000 || part.vertices.size() + 8 > 2730)
+					flush();
+				const size_t before = part.vertices.size();
+				std::vector<std::array<uint32_t, 3>> tris;
+				buildings::CollisionBox(p, part.vertices, tris);
+				auto mat = materialAt.find(kConcrete);
+				if (mat == materialAt.end())
 				{
-					const auto& tri = col.triangles[t];
-					const P3& a = col.vertices[tri[0]];
-					const P3& b = col.vertices[tri[1]];
-					const P3& c = col.vertices[tri[2]];
-					const float mx = (a[0] + b[0] + c[0]) / 3, my = (a[1] + b[1] + c[1]) / 3;
-					if (mx < x0 || mx >= x1 || my < y0 || my >= y1)
+					mat = materialAt.emplace(kConcrete, static_cast<uint8_t>(part.materials.size())).first;
+					part.materials.push_back(ybn::Material(kConcrete));
+				}
+				for (const auto& t : tris)
+					part.triangles.push_back(t), part.triangleMaterials.push_back(mat->second);
+				const uint32_t navBase = static_cast<uint32_t>(boxVertices.size());
+				boxVertices.insert(boxVertices.end(), part.vertices.begin() + static_cast<ptrdiff_t>(before), part.vertices.end());
+				for (const auto& t : tris)
+					boxTriangles.push_back({navBase + t[0] - static_cast<uint32_t>(before), navBase + t[1] - static_cast<uint32_t>(before),
+					    navBase + t[2] - static_cast<uint32_t>(before)});
+			}
+			flush();
+			// buildings of our own standing in this tile (by their middles): one model; their triangles as collision and
+			// as the navmesh's obstacles
+			if (!shapes.empty())
+			{
+				const std::vector<uint32_t> nearShapes = shapeTiles.Near(ti, tj);
+				std::map<uint32_t, roads::Mesh> meshes;
+				std::vector<P3> cv;
+				std::vector<std::array<uint32_t, 3>> ct;
+				const uint32_t aerialKey = static_cast<uint32_t>(facadeSet.styles.size()), gravelKey = static_cast<uint32_t>(gravelStyle);
+				float tallest = 0;
+				size_t standing = 0;
+				for (const uint32_t k : nearShapes)
+				{
+					const P2& c = shapeCentre[k];
+					if (c[0] < x0 || c[0] >= x1 || c[1] < y0 || c[1] >= y1)
 						continue;
-					if (part.triangles.size() >= 1000 || part.vertices.size() + 3 > 2730)
-						flush();
-					auto mat = materialAt.find(col.materials[t]);
-					if (mat == materialAt.end())
-					{
-						mat = materialAt.emplace(col.materials[t], static_cast<uint8_t>(part.materials.size())).first;
-						part.materials.push_back(ybn::Material(col.materials[t]));
-					}
-					const uint32_t base = static_cast<uint32_t>(part.vertices.size());
-					part.vertices.insert(part.vertices.end(), {a, b, c});
-					part.triangles.push_back({base, base + 1, base + 2});
-					part.triangleMaterials.push_back(mat->second);
-					partKinds.push_back(col.kinds[t]);
-					stats.roadTriangles += 1;
+					const auto& s = shapes[k];
+					// (the picture's roofs: low buildings that are there - a tall one leans in it, its roof drawn off its footprint;
+					// the world editor's new ones are not in it yet)
+					const bool fromPicture = pictured && s.top < 25 && s.measured;
+					AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1, gravelKey,
+					    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), meshes, cv, ct);
+					tallest = std::max(tallest, s.top);
+					++standing;
 				}
-				flush();
-				// the buildings standing in this tile: entities, their boxes (obstacles for the navmesh)
-				std::vector<P3> boxVertices;
-				std::vector<std::array<uint32_t, 3>> boxTriangles;
-				for (const auto& p : placed)
+				if (standing)
 				{
-					if (p.centre[0] < x0 || p.centre[0] >= x1 || p.centre[1] < y0 || p.centre[1] >= y1)
-						continue;
-					mapfiles::Entity be;
-					be.archetype = p.item->hash;
-					be.position = p.position;
-					be.rotation = {0, 0, std::sin(p.heading / 2), std::cos(p.heading / 2)};
-					be.lodDist = p.lodDist;
-					be.radius = std::hypot(p.item->max[0] - p.item->min[0], p.item->max[1] - p.item->min[1], p.item->max[2] - p.item->min[2]) / 2;
-					blocks[{bi, bj}].push_back(be);
-					if (part.triangles.size() + 12 > 1000 || part.vertices.size() + 8 > 2730)
-						flush();
-					const size_t before = part.vertices.size();
-					std::vector<std::array<uint32_t, 3>> tris;
-					buildings::CollisionBox(p, part.vertices, tris);
-					auto mat = materialAt.find(kConcrete);
-					if (mat == materialAt.end())
+					const std::string bname = std::format("{}_b_{}_{}", o.name, ti, tj);
+					std::string txd = facadeDictionary;
+					texture::Image lodRoof;
+					if (meshes.contains(aerialKey))
 					{
-						mat = materialAt.emplace(kConcrete, static_cast<uint8_t>(part.materials.size())).first;
-						part.materials.push_back(ybn::Material(kConcrete));
-					}
-					for (const auto& t : tris)
-						part.triangles.push_back(t), part.triangleMaterials.push_back(mat->second);
-					const uint32_t navBase = static_cast<uint32_t>(boxVertices.size());
-					boxVertices.insert(boxVertices.end(), part.vertices.begin() + static_cast<ptrdiff_t>(before), part.vertices.end());
-					for (const auto& t : tris)
-						boxTriangles.push_back({navBase + t[0] - static_cast<uint32_t>(before), navBase + t[1] - static_cast<uint32_t>(before),
-						    navBase + t[2] - static_cast<uint32_t>(before)});
-				}
-				flush();
-				// buildings of our own standing in this tile (by their middles): one model; their triangles as collision and
-				// as the navmesh's obstacles
-				if (!shapes.empty())
-				{
-					std::map<uint32_t, roads::Mesh> meshes;
-					std::vector<P3> cv;
-					std::vector<std::array<uint32_t, 3>> ct;
-					const uint32_t aerialKey = static_cast<uint32_t>(facadeSet.styles.size()), gravelKey = static_cast<uint32_t>(gravelStyle);
-					float tallest = 0;
-					size_t standing = 0;
-					for (size_t k = 0; k < shapes.size(); ++k)
-					{
-						const P2& c = shapeCentre[k];
-						if (c[0] < x0 || c[0] >= x1 || c[1] < y0 || c[1] >= y1)
-							continue;
-						const auto& s = shapes[k];
-						// (the picture's roofs: low buildings that are there - a tall one leans in it, its roof drawn off its footprint;
-						// the world editor's new ones are not in it yet)
-						const bool fromPicture = pictured && s.top < 25 && s.measured;
-						AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1, gravelKey,
-						    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), meshes, cv, ct);
-						tallest = std::max(tallest, s.top);
-						++standing;
-					}
-					if (standing)
-					{
-						const std::string bname = std::format("{}_b_{}_{}", o.name, ti, tj);
-						std::string txd = facadeDictionary;
-						texture::Image lodRoof;
-						if (meshes.contains(aerialKey))
-						{
-							// the tile's roof picture
-							texture::Image img(o.roofTexture, o.roofTexture);
-							bool any = false;
-							for (int y = 0; y < img.height; ++y)
-								for (int x = 0; x < img.width; ++x)
+						// the tile's roof picture
+						texture::Image img(o.roofTexture, o.roofTexture);
+						bool any = false;
+						for (int y = 0; y < img.height; ++y)
+							for (int x = 0; x < img.width; ++x)
+							{
+								std::array<float, 4> px;
+								const float wx = x0 + (x + 0.5f) * o.tile / img.width, wy = y1 - (y + 0.5f) * o.tile / img.height;
+								if (aerial.Sample(wx, wy, px))
 								{
-									std::array<float, 4> px;
-									const float wx = x0 + (x + 0.5f) * o.tile / img.width, wy = y1 - (y + 0.5f) * o.tile / img.height;
-									if (aerial.Sample(wx, wy, px))
-									{
-										img.At(x, y) = {static_cast<uint8_t>(px[0]), static_cast<uint8_t>(px[1]), static_cast<uint8_t>(px[2]), 255};
-										any = true;
-									}
-									else
-										img.At(x, y) = {150, 150, 146, 255};
-								}
-							if (any)
-							{
-								// (the LOD's: a quarter of the size)
-								lodRoof = texture::Image(img.width / 4, img.height / 4);
-								for (int y = 0; y < lodRoof.height; ++y)
-									for (int x = 0; x < lodRoof.width; ++x)
-										for (int ch = 0; ch < 4; ++ch)
-										{
-											int sum = 0;
-											for (int k = 0; k < 16; ++k)
-												sum += img.At(x * 4 + (k & 3), y * 4 + (k >> 2))[ch];
-											lodRoof.At(x, y)[ch] = static_cast<uint8_t>(sum / 16);
-										}
-								txd = std::format("{}_rt_{}_{}", o.name, ti, tj);
-								Bytes ytd;
-								if (!loader::convert::WriteTextureDictionary({texture::Make(std::format("{}_roof_{}_{}", o.name, ti, tj), img, texture::Format::Bc1)}, ytd, error))
-									return error = txd + ": " + error, false;
-								WriteFile(o.out / (txd + ".ytd"), ytd);
-								parents.push_back({txd, facadeDictionary});
-							}
-							else
-							{
-								// (no picture after all: the gravel)
-								auto& from = meshes[aerialKey];
-								auto& to = meshes[gravelKey];
-								const uint32_t base = static_cast<uint32_t>(to.vertices.size());
-								for (auto v : from.vertices)
-								{
-									v.uv[0] = {v.position[0] / facadeSet.styles[gravelStyle].width, -v.position[1] / facadeSet.styles[gravelStyle].height};
-									to.vertices.push_back(v);
-								}
-								for (const uint32_t i : from.indices)
-									to.indices.push_back(base + i);
-								meshes.erase(aerialKey);
-							}
-						}
-						ydr::Drawable bd;
-						bd.name = bname;
-						for (const auto& [key, mesh] : meshes)
-						{
-							if (key == aerialKey)
-							{
-								ydr::Material m = roofMaterial;
-								m.Texture(kDiffuseTex, std::format("{}_roof_{}_{}", o.name, ti, tj));
-								bd.materials.push_back(m);
-							}
-							else
-								bd.materials.push_back(wallMaterials[key]);
-							AddMeshes(bd, static_cast<uint32_t>(bd.materials.size() - 1), mesh);
-						}
-						if (!ydr::Write(bd, file, error))
-							return error = bname + ": " + error, false;
-						WriteFile(o.out / (bname + ".ydr"), file);
-						mapfiles::Archetype ba;
-						ba.name = bname;
-						ba.textureDictionary = loader::convert::Joaat(txd);
-						// (near: the full model; past it its LOD - one material, small pictures - out to the skyline's
-						// distance, as the game's own maps do: the HD entity names its LOD in the block's LOD map)
-						ba.lodDist = std::clamp(300 + tallest * 6, 300.0f, 900.0f);
-						ba.hdTextureDist = 300;
-						ydr::Box(bd, ba.min, ba.max);
-						archetypes.push_back(ba);
-						mapfiles::Entity be;
-						be.archetype = loader::convert::Joaat(bname);
-						be.position = {cx, cy, 0};
-						be.lodDist = ba.lodDist;
-						be.radius = std::hypot(ba.max[0] - ba.min[0], ba.max[1] - ba.min[1], ba.max[2] - ba.min[2]) / 2;
-						if (o.lods)
-						{
-							// the LOD model: the same walls (their textures are the shared dictionary's, there already), the roofs'
-							// picture a quarter of the size, small sheds left out
-							std::map<uint32_t, roads::Mesh> lodMeshes;
-							std::vector<P3> unusedV;
-							std::vector<std::array<uint32_t, 3>> unusedT;
-							for (size_t k = 0; k < shapes.size(); ++k)
-							{
-								const P2& c = shapeCentre[k];
-								if (c[0] < x0 || c[0] >= x1 || c[1] < y0 || c[1] >= y1)
-									continue;
-								const auto& s = shapes[k];
-								double area = 0;
-								for (const auto& t : s.roof)
-								{
-									const auto& a = s.vertices[t[0]];
-									const auto& b2 = s.vertices[t[1]];
-									const auto& c2 = s.vertices[t[2]];
-									area += ((b2[0] - a[0]) * (c2[1] - a[1]) - (b2[1] - a[1]) * (c2[0] - a[0])) / 2;
-								}
-								if (area < 40 && s.top < 6)
-									continue;
-								const bool fromPicture = lodRoof.width > 0 && s.top < 25;
-								AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
-								    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), lodMeshes, unusedV, unusedT);
-							}
-							const std::string lname = std::format("{}_bl_{}_{}", o.name, ti, tj);
-							ydr::Drawable ld;
-							ld.name = lname;
-							std::string ltxd = facadeDictionary;
-							for (const auto& [key, mesh] : lodMeshes)
-							{
-								if (mesh.indices.empty())
-									continue;
-								if (key == aerialKey)
-								{
-									ltxd = std::format("{}_rl_{}_{}", o.name, ti, tj);
-									const std::string rname2 = std::format("{}_roofl_{}_{}", o.name, ti, tj);
-									Bytes ytd;
-									if (!loader::convert::WriteTextureDictionary({texture::Make(rname2, lodRoof, texture::Format::Bc1)}, ytd, error))
-										return error = ltxd + ": " + error, false;
-									WriteFile(o.out / (ltxd + ".ytd"), ytd);
-									parents.push_back({ltxd, facadeDictionary});
-									ydr::Material m = roofMaterial;
-									m.Texture(kDiffuseTex, rname2);
-									ld.materials.push_back(m);
+									img.At(x, y) = {static_cast<uint8_t>(px[0]), static_cast<uint8_t>(px[1]), static_cast<uint8_t>(px[2]), 255};
+									any = true;
 								}
 								else
-									ld.materials.push_back(wallMaterials[key]);
-								AddMeshes(ld, static_cast<uint32_t>(ld.materials.size() - 1), mesh);
+									img.At(x, y) = {150, 150, 146, 255};
 							}
-							if (!ld.materials.empty())
-							{
-								if (!ydr::Write(ld, file, error))
-									return error = lname + ": " + error, false;
-								WriteFile(o.out / (lname + ".ydr"), file);
-								mapfiles::Archetype la;
-								la.name = lname;
-								la.textureDictionary = loader::convert::Joaat(ltxd);
-								la.lodDist = std::clamp(1500 + tallest * 40, 1500.0f, 6000.0f);
-								la.hdTextureDist = 0;
-								ydr::Box(ld, la.min, la.max);
-								archetypes.push_back(la);
-								mapfiles::Entity le;
-								le.archetype = loader::convert::Joaat(lname);
-								le.position = {cx, cy, 0};
-								le.lodDist = la.lodDist;
-								le.lodLevel = 1;
-								le.numChildren = 1;
-								le.childLodDist = be.lodDist;
-								le.radius = be.radius;
-								auto& lods = lodBlocks[{bi, bj}];
-								be.lodLevel = 0;
-								be.parentIndex = static_cast<int32_t>(lods.size());
-								lods.push_back(le);
-							}
-						}
-						blocks[{bi, bj}].push_back(be);
-						stats.generatedTiles += 1;
-						// collision (concrete), in parts of at most 1000 triangles
-						for (size_t first = 0; first < ct.size(); first += 900)
+						if (any)
 						{
-							ybn::Part bp;
-							bp.materials.push_back(ybn::Material(kConcrete));
-							for (size_t t = first; t < std::min(ct.size(), first + 900); ++t)
-							{
-								const uint32_t b0 = static_cast<uint32_t>(bp.vertices.size());
-								for (int k = 0; k < 3; ++k)
-									bp.vertices.push_back(cv[ct[t][k]]);
-								bp.triangles.push_back({b0, b0 + 1, b0 + 2});
-								bp.triangleMaterials.push_back(0);
-							}
-							parts.push_back(std::move(bp));
+							// (the LOD's: a quarter of the size)
+							lodRoof = texture::Image(img.width / 4, img.height / 4);
+							for (int y = 0; y < lodRoof.height; ++y)
+								for (int x = 0; x < lodRoof.width; ++x)
+									for (int ch = 0; ch < 4; ++ch)
+									{
+										int sum = 0;
+										for (int k = 0; k < 16; ++k)
+											sum += img.At(x * 4 + (k & 3), y * 4 + (k >> 2))[ch];
+										lodRoof.At(x, y)[ch] = static_cast<uint8_t>(sum / 16);
+									}
+							txd = std::format("{}_rt_{}_{}", o.name, ti, tj);
+							Bytes ytd;
+							if (!loader::convert::WriteTextureDictionary({texture::Make(std::format("{}_roof_{}_{}", o.name, ti, tj), img, texture::Format::Bc1)}, ytd, error))
+								return error = txd + ": " + error, false;
+							WriteFile(o.out / (txd + ".ytd"), ytd);
+							r.parents.push_back({txd, facadeDictionary});
 						}
-						const uint32_t navBase = static_cast<uint32_t>(boxVertices.size());
-						boxVertices.insert(boxVertices.end(), cv.begin(), cv.end());
-						for (const auto& t : ct)
-							boxTriangles.push_back({navBase + t[0], navBase + t[1], navBase + t[2]});
+						else
+						{
+							// (no picture after all: the gravel)
+							auto& from = meshes[aerialKey];
+							auto& to = meshes[gravelKey];
+							const uint32_t base = static_cast<uint32_t>(to.vertices.size());
+							for (auto v : from.vertices)
+							{
+								v.uv[0] = {v.position[0] / facadeSet.styles[gravelStyle].width, -v.position[1] / facadeSet.styles[gravelStyle].height};
+								to.vertices.push_back(v);
+							}
+							for (const uint32_t i : from.indices)
+								to.indices.push_back(base + i);
+							meshes.erase(aerialKey);
+						}
 					}
-				}
-				// the street furniture in this tile (props: their own collision)
-				for (const auto& prop : furniture)
-				{
-					if (prop.position[0] < x0 || prop.position[0] >= x1 || prop.position[1] < y0 || prop.position[1] >= y1)
-						continue;
-					mapfiles::Entity pe;
-					pe.archetype = prop.archetype;
-					pe.position = prop.position;
-					pe.rotation = {0, 0, std::sin(prop.heading / 2), std::cos(prop.heading / 2)};
-					pe.lodDist = prop.lodDist;
-					pe.scaleXY = pe.scaleZ = prop.scale;
-					pe.radius = 6 * prop.scale;
-					blocks[{bi, bj}].push_back(pe);
-				}
-				// (a tile's collision: at most 256 parts)
-				if (parts.size() > 256)
-				{
-					std::printf("warning: tile %d,%d has %zu collision parts (256 kept)\n", ti, tj, parts.size());
-					parts.resize(256);
-				}
-				Bytes collision;
-				if (!ybn::Write(parts, collision, error))
-					return error = cname + ": " + error, false;
-				WriteFile(o.out / (cname + ".ybn"), collision);
-				// for the navmesh: the same triangles (the buildings' boxes in the way, never walked on)
-				{
-					const uint32_t base = static_cast<uint32_t>(navMesh.vertices.size());
-					navMesh.vertices.insert(navMesh.vertices.end(), boxVertices.begin(), boxVertices.end());
-					for (const auto& t : boxTriangles)
+					ydr::Drawable bd;
+					bd.name = bname;
+					for (const auto& [key, mesh] : meshes)
 					{
-						navMesh.triangles.push_back({base + t[0], base + t[1], base + t[2]});
-						navMesh.materials.push_back(kConcrete);
-						navSurfaces.push_back(navgen::Surface::None);
+						if (key == aerialKey)
+						{
+							ydr::Material m = roofMaterial;
+							m.Texture(kDiffuseTex, std::format("{}_roof_{}_{}", o.name, ti, tj));
+							bd.materials.push_back(m);
+						}
+						else
+							bd.materials.push_back(wallMaterials[key]);
+						AddMeshes(bd, static_cast<uint32_t>(bd.materials.size() - 1), mesh);
 					}
-				}
-				std::set<std::array<P3, 3>> boxSet;
-				for (const auto& t : boxTriangles)
-					boxSet.insert({boxVertices[t[0]], boxVertices[t[1]], boxVertices[t[2]]});
-				for (size_t pi = 0; pi < parts.size(); ++pi)
-				{
-					const ybn::Part& p = parts[pi];
-					const auto kinds = roadKinds.find(pi);
-					const uint32_t base = static_cast<uint32_t>(navMesh.vertices.size());
-					navMesh.vertices.insert(navMesh.vertices.end(), p.vertices.begin(), p.vertices.end());
-					for (size_t t = 0; t < p.triangles.size(); ++t)
+					if (!ydr::Write(bd, file, error))
+						return error = bname + ": " + error, false;
+					WriteFile(o.out / (bname + ".ydr"), file);
+					mapfiles::Archetype ba;
+					ba.name = bname;
+					ba.textureDictionary = loader::convert::Joaat(txd);
+					// (near: the full model; past it its LOD - one material, small pictures - out to the skyline's
+					// distance, as the game's own maps do: the HD entity names its LOD in the block's LOD map)
+					ba.lodDist = std::clamp(300 + tallest * 6, 300.0f, 900.0f);
+					ba.hdTextureDist = 300;
+					ydr::Box(bd, ba.min, ba.max);
+					r.archetypes.push_back(ba);
+					mapfiles::Entity be;
+					be.archetype = loader::convert::Joaat(bname);
+					be.position = {cx, cy, 0};
+					be.lodDist = ba.lodDist;
+					be.radius = std::hypot(ba.max[0] - ba.min[0], ba.max[1] - ba.min[1], ba.max[2] - ba.min[2]) / 2;
+					if (o.lods)
 					{
-						if (boxSet.contains({p.vertices[p.triangles[t][0]], p.vertices[p.triangles[t][1]], p.vertices[p.triangles[t][2]]}))
-							continue; // (a building's: added above)
-						navMesh.triangles.push_back({base + p.triangles[t][0], base + p.triangles[t][1], base + p.triangles[t][2]});
-						const uint8_t m = p.materials[p.triangleMaterials[t]][0];
-						navMesh.materials.push_back(m);
-						const uint8_t kind = kinds != roadKinds.end() ? kinds->second[t] : 0;
-						navSurfaces.push_back(kind == 1 ? navgen::Surface::Road
-						                      : kind == 2 || (kind == 0 && (m == 1 || m == 15 || m == 174)) ? navgen::Surface::Pavement
-						                                                                                    : navgen::Surface::Ground);
+						// the LOD model: the same walls (their textures are the shared dictionary's, there already), the roofs'
+						// picture a quarter of the size, small sheds left out
+						std::map<uint32_t, roads::Mesh> lodMeshes;
+						std::vector<P3> unusedV;
+						std::vector<std::array<uint32_t, 3>> unusedT;
+						for (const uint32_t k : nearShapes)
+						{
+							const P2& c = shapeCentre[k];
+							if (c[0] < x0 || c[0] >= x1 || c[1] < y0 || c[1] >= y1)
+								continue;
+							const auto& s = shapes[k];
+							double area = 0;
+							for (const auto& t : s.roof)
+							{
+								const auto& a = s.vertices[t[0]];
+								const auto& b2 = s.vertices[t[1]];
+								const auto& c2 = s.vertices[t[2]];
+								area += ((b2[0] - a[0]) * (c2[1] - a[1]) - (b2[1] - a[1]) * (c2[0] - a[0])) / 2;
+							}
+							if (area < 40 && s.top < 6)
+								continue;
+							const bool fromPicture = lodRoof.width > 0 && s.top < 25;
+							AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
+							    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), lodMeshes, unusedV, unusedT);
+						}
+						const std::string lname = std::format("{}_bl_{}_{}", o.name, ti, tj);
+						ydr::Drawable ld;
+						ld.name = lname;
+						std::string ltxd = facadeDictionary;
+						for (const auto& [key, mesh] : lodMeshes)
+						{
+							if (mesh.indices.empty())
+								continue;
+							if (key == aerialKey)
+							{
+								ltxd = std::format("{}_rl_{}_{}", o.name, ti, tj);
+								const std::string rname2 = std::format("{}_roofl_{}_{}", o.name, ti, tj);
+								Bytes ytd;
+								if (!loader::convert::WriteTextureDictionary({texture::Make(rname2, lodRoof, texture::Format::Bc1)}, ytd, error))
+									return error = ltxd + ": " + error, false;
+								WriteFile(o.out / (ltxd + ".ytd"), ytd);
+								r.parents.push_back({ltxd, facadeDictionary});
+								ydr::Material m = roofMaterial;
+								m.Texture(kDiffuseTex, rname2);
+								ld.materials.push_back(m);
+							}
+							else
+								ld.materials.push_back(wallMaterials[key]);
+							AddMeshes(ld, static_cast<uint32_t>(ld.materials.size() - 1), mesh);
+						}
+						if (!ld.materials.empty())
+						{
+							if (!ydr::Write(ld, file, error))
+								return error = lname + ": " + error, false;
+							WriteFile(o.out / (lname + ".ydr"), file);
+							mapfiles::Archetype la;
+							la.name = lname;
+							la.textureDictionary = loader::convert::Joaat(ltxd);
+							la.lodDist = std::clamp(1500 + tallest * 40, 1500.0f, 6000.0f);
+							la.hdTextureDist = 0;
+							ydr::Box(ld, la.min, la.max);
+							r.archetypes.push_back(la);
+							mapfiles::Entity le;
+							le.archetype = loader::convert::Joaat(lname);
+							le.position = {cx, cy, 0};
+							le.lodDist = la.lodDist;
+							le.lodLevel = 1;
+							le.numChildren = 1;
+							le.childLodDist = be.lodDist;
+							le.radius = be.radius;
+							be.lodLevel = 0;
+							r.hasLod = true, r.lod = le; // (its place in the block's LOD map: when the tiles are put together)
+						}
 					}
+					if (r.hasLod)
+						r.lodOwner = r.entities.size();
+					r.entities.push_back(be);
+					r.generatedTiles += 1;
+					// collision (concrete), in parts of at most 1000 triangles
+					for (size_t first = 0; first < ct.size(); first += 900)
+					{
+						ybn::Part bp;
+						bp.materials.push_back(ybn::Material(kConcrete));
+						for (size_t t = first; t < std::min(ct.size(), first + 900); ++t)
+						{
+							const uint32_t b0 = static_cast<uint32_t>(bp.vertices.size());
+							for (int k = 0; k < 3; ++k)
+								bp.vertices.push_back(cv[ct[t][k]]);
+							bp.triangles.push_back({b0, b0 + 1, b0 + 2});
+							bp.triangleMaterials.push_back(0);
+						}
+						parts.push_back(std::move(bp));
+					}
+					const uint32_t navBase = static_cast<uint32_t>(boxVertices.size());
+					boxVertices.insert(boxVertices.end(), cv.begin(), cv.end());
+					for (const auto& t : ct)
+						boxTriangles.push_back({navBase + t[0], navBase + t[1], navBase + t[2]});
 				}
-				// the roads' model
-				// (its materials those it uses here; the wear's decals before the markings, which are painted over them)
-				ydr::Drawable rd;
-				rd.name = rname;
-				const auto add = [&](const ydr::Material& mat, const roads::Mesh& mesh) {
-					const roads::Mesh part = Clip(mesh, x0, y0, x1, y1, cx, cy);
-					if (part.indices.empty())
-						return;
-					rd.materials.push_back(mat);
-					AddMeshes(rd, static_cast<uint32_t>(rd.materials.size() - 1), part);
-				};
-				for (size_t k = 0; k < paving::kPavings; ++k)
-					add(pavedMaterials[k], surfaces.paved[k]);
-				add(wornMaterial, surfaces.worn);
-				add(sidewalk, surfaces.sidewalk);
-				add(kerb, surfaces.kerb);
-				add(patchDecal, surfaces.patches);
-				add(potholeDecal, surfaces.potholes);
-				add(breakupDecal, surfaces.breakups);
-				add(marking, surfaces.markings);
-				if (!rd.lods[0].empty())
-				{
-					if (!ydr::Write(rd, file, error))
-						return error = rname + ": " + error, false;
-					WriteFile(o.out / (rname + ".ydr"), file);
-					mapfiles::Archetype ra;
-					ra.name = rname;
-					ra.textureDictionary = loader::convert::Joaat(facadeDictionary);
-					ra.lodDist = 1200;
-					ydr::Box(rd, ra.min, ra.max);
-					archetypes.push_back(ra);
-					mapfiles::Entity re;
-					re.archetype = loader::convert::Joaat(rname);
-					re.position = {cx, cy, 0};
-					re.lodDist = 1200;
-					re.radius = o.tile * 0.75f;
-					blocks[{bi, bj}].push_back(re);
-				}
-				++stats.tiles;
 			}
+			// the street furniture in this tile (props: their own collision)
+			for (const uint32_t fk : furnitureTiles.Near(ti, tj))
+			{
+				const auto& prop = furniture[fk];
+				if (prop.position[0] < x0 || prop.position[0] >= x1 || prop.position[1] < y0 || prop.position[1] >= y1)
+					continue;
+				mapfiles::Entity pe;
+				pe.archetype = prop.archetype;
+				pe.position = prop.position;
+				pe.rotation = {0, 0, std::sin(prop.heading / 2), std::cos(prop.heading / 2)};
+				pe.lodDist = prop.lodDist;
+				pe.scaleXY = pe.scaleZ = prop.scale;
+				pe.radius = 6 * prop.scale;
+				r.entities.push_back(pe);
+			}
+			// (a tile's collision: at most 256 parts)
+			if (parts.size() > 256)
+			{
+				std::printf("warning: tile %d,%d has %zu collision parts (256 kept)\n", ti, tj, parts.size());
+				parts.resize(256);
+			}
+			Bytes collision;
+			if (!ybn::Write(parts, collision, error))
+				return error = cname + ": " + error, false;
+			WriteFile(o.out / (cname + ".ybn"), collision);
+			// for the navmesh: the same triangles (the buildings' boxes in the way, never walked on)
+			{
+				const uint32_t base = static_cast<uint32_t>(r.nav.vertices.size());
+				r.nav.vertices.insert(r.nav.vertices.end(), boxVertices.begin(), boxVertices.end());
+				for (const auto& t : boxTriangles)
+				{
+					r.nav.triangles.push_back({base + t[0], base + t[1], base + t[2]});
+					r.nav.materials.push_back(kConcrete);
+					r.navSurfaces.push_back(navgen::Surface::None);
+				}
+			}
+			std::set<std::array<P3, 3>> boxSet;
+			for (const auto& t : boxTriangles)
+				boxSet.insert({boxVertices[t[0]], boxVertices[t[1]], boxVertices[t[2]]});
+			for (size_t pi = 0; pi < parts.size(); ++pi)
+			{
+				const ybn::Part& p = parts[pi];
+				const auto kinds = roadKinds.find(pi);
+				const uint32_t base = static_cast<uint32_t>(r.nav.vertices.size());
+				r.nav.vertices.insert(r.nav.vertices.end(), p.vertices.begin(), p.vertices.end());
+				for (size_t t = 0; t < p.triangles.size(); ++t)
+				{
+					if (boxSet.contains({p.vertices[p.triangles[t][0]], p.vertices[p.triangles[t][1]], p.vertices[p.triangles[t][2]]}))
+						continue; // (a building's: added above)
+					r.nav.triangles.push_back({base + p.triangles[t][0], base + p.triangles[t][1], base + p.triangles[t][2]});
+					const uint8_t m = p.materials[p.triangleMaterials[t]][0];
+					r.nav.materials.push_back(m);
+					const uint8_t kind = kinds != roadKinds.end() ? kinds->second[t] : 0;
+					r.navSurfaces.push_back(kind == 1 ? navgen::Surface::Road
+					                      : kind == 2 || (kind == 0 && (m == 1 || m == 15 || m == 174)) ? navgen::Surface::Pavement
+					                                                                                    : navgen::Surface::Ground);
+				}
+			}
+			// the roads' model
+			// (its materials those it uses here; the wear's decals before the markings, which are painted over them)
+			ydr::Drawable rd;
+			rd.name = rname;
+			const auto add = [&](const ydr::Material& mat, const roads::Mesh& mesh) {
+				const auto near = meshTiles.at(&mesh).Near(ti, tj);
+				const roads::Mesh part = Clip(mesh, x0, y0, x1, y1, cx, cy, &near);
+				if (part.indices.empty())
+					return;
+				rd.materials.push_back(mat);
+				AddMeshes(rd, static_cast<uint32_t>(rd.materials.size() - 1), part);
+			};
+			for (size_t k = 0; k < paving::kPavings; ++k)
+				add(pavedMaterials[k], surfaces.paved[k]);
+			add(wornMaterial, surfaces.worn);
+			add(sidewalk, surfaces.sidewalk);
+			add(kerb, surfaces.kerb);
+			add(patchDecal, surfaces.patches);
+			add(potholeDecal, surfaces.potholes);
+			add(breakupDecal, surfaces.breakups);
+			add(marking, surfaces.markings);
+			if (!rd.lods[0].empty())
+			{
+				if (!ydr::Write(rd, file, error))
+					return error = rname + ": " + error, false;
+				WriteFile(o.out / (rname + ".ydr"), file);
+				mapfiles::Archetype ra;
+				ra.name = rname;
+				ra.textureDictionary = loader::convert::Joaat(facadeDictionary);
+				ra.lodDist = 1200;
+				ydr::Box(rd, ra.min, ra.max);
+				r.archetypes.push_back(ra);
+				mapfiles::Entity re;
+				re.archetype = loader::convert::Joaat(rname);
+				re.position = {cx, cy, 0};
+				re.lodDist = 1200;
+				re.radius = o.tile * 0.75f;
+				r.entities.push_back(re);
+			}
+			++r.tiles;
+			return true;
+		};
+		{
+			const int across = ti1 - ti0, count = across * (tj1 - tj0);
+			std::vector<TileResult> results(static_cast<size_t>(std::max(0, count)));
+			std::atomic<int> next = 0;
+			std::atomic<bool> failed = false;
+			std::string firstError;
+			std::mutex errorMutex;
+			std::vector<std::thread> workers;
+			for (unsigned k = 0; k < std::max(1u, std::thread::hardware_concurrency()); ++k)
+				workers.emplace_back([&] {
+					elevation::Aerial photo;
+					if (pictured)
+						photo.Open(o.aerial);
+					std::string why;
+					for (int n; !failed && (n = next++) < count;)
+						if (!makeTile(ti0 + n % across, tj0 + n / across, photo, results[static_cast<size_t>(n)], why))
+						{
+							std::lock_guard lock(errorMutex);
+							if (!failed.exchange(true))
+								firstError = why;
+						}
+				});
+			for (auto& worker : workers)
+				worker.join();
+			if (failed)
+				return error = firstError, false;
+			for (TileResult& r : results)
+			{
+				archetypes.insert(archetypes.end(), r.archetypes.begin(), r.archetypes.end());
+				if (r.hasLod)
+				{
+					auto& lods = lodBlocks[r.block];
+					r.entities[r.lodOwner].parentIndex = static_cast<int32_t>(lods.size());
+					lods.push_back(r.lod);
+				}
+				auto& block = blocks[r.block];
+				block.insert(block.end(), r.entities.begin(), r.entities.end());
+				parents.insert(parents.end(), r.parents.begin(), r.parents.end());
+				const uint32_t base = static_cast<uint32_t>(navMesh.vertices.size());
+				navMesh.vertices.insert(navMesh.vertices.end(), r.nav.vertices.begin(), r.nav.vertices.end());
+				for (const auto& tri : r.nav.triangles)
+					navMesh.triangles.push_back({base + tri[0], base + tri[1], base + tri[2]});
+				navMesh.materials.insert(navMesh.materials.end(), r.nav.materials.begin(), r.nav.materials.end());
+				navSurfaces.insert(navSurfaces.end(), r.navSurfaces.begin(), r.navSurfaces.end());
+				stats.terrainTriangles += r.terrainTriangles, stats.roadTriangles += r.roadTriangles;
+				stats.generatedTiles += r.generatedTiles, stats.tiles += r.tiles;
+			}
+		}
 		// the roof pictures' dictionaries under the walls' (worldgen pack puts gtxd.meta in the pack's data)
 		if (!parents.empty())
 		{

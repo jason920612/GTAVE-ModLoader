@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <format>
 #include <limits>
 #include <set>
+#include <thread>
 
 namespace worldgen::navgen
 {
@@ -323,17 +325,37 @@ namespace worldgen::navgen
 						squares.insert({sx, sy});
 				}
 		}
+		// (each square on its own: on all the cores, put in their order after)
+		const std::vector<Square> order(squares.begin(), squares.end());
+		std::vector<SquareMesh> built(order.size());
+		std::vector<std::string> errors(order.size());
+		{
+			std::atomic<size_t> next = 0;
+			std::atomic<bool> failed = false;
+			std::vector<std::thread> workers;
+			for (unsigned k = 0; k < std::max(1u, std::thread::hardware_concurrency()); ++k)
+				workers.emplace_back([&] {
+					for (size_t i; !failed && (i = next++) < order.size();)
+					{
+						built[i].square = order[i];
+						if (!BuildSquare(mesh, areas, boxes, near.at(order[i]), settings, order[i], built[i].polys, errors[i]))
+							failed = true;
+					}
+				});
+			for (auto& worker : workers)
+				worker.join();
+			for (size_t i = 0; i < order.size(); ++i)
+				if (!errors[i].empty())
+					return error = errors[i], false;
+		}
 		std::vector<SquareMesh> meshes;
 		std::map<Square, int> slot;
-		for (const Square& sq : squares)
+		for (size_t i = 0; i < order.size(); ++i)
 		{
-			SquareMesh sm{sq, {}};
-			if (!BuildSquare(mesh, areas, boxes, near[sq], settings, sq, sm.polys, error))
-				return false;
-			if (sm.polys.empty())
+			if (built[i].polys.empty())
 				continue;
-			slot[sq] = static_cast<int>(meshes.size());
-			meshes.push_back(std::move(sm));
+			slot[order[i]] = static_cast<int>(meshes.size());
+			meshes.push_back(std::move(built[i]));
 		}
 
 		// each square's edges on a side cut at the vertices the square across has there (its original ones)

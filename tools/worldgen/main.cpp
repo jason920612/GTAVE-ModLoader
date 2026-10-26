@@ -980,6 +980,163 @@ int main(int argc, char** argv)
 				}
 			}
 		std::printf("%zu regions, %zu nodes, %zu links: %zu wrong\n", regions.size(), nodes, links, bad);
+		{
+			// (junction nodes - +0x24 bit 2 - and the junction records (height maps) their regions name them in; traffic
+			// lights: +0x21 bits 3-7 = 15, the nodes cars stop at before a junction)
+			size_t junctionNodes = 0, withRecord = 0, lights = 0;
+			for (const auto& [area, r] : regions)
+			{
+				std::set<uint16_t> referenced;
+				for (const auto& ref : r.refs)
+					referenced.insert(ref.node);
+				for (size_t k = 0; k < r.nodes.size(); ++k)
+				{
+					if (r.nodes[k].raw[0x24] & 0x04)
+						++junctionNodes, withRecord += referenced.contains(static_cast<uint16_t>(k));
+					lights += (r.nodes[k].raw[0x21] >> 3) == 15;
+				}
+			}
+			std::printf("%zu junction nodes (%zu with a junction record), %zu traffic light nodes\n", junctionNodes, withRecord, lights);
+			// (the junctions the traffic light nodes lead into: the nodes they link to that are junctions - with a record?)
+			size_t intoJunction = 0, intoRecorded = 0;
+			std::map<int, size_t> linkFlags1;
+			for (const auto& [area, r] : regions)
+				for (size_t k = 0; k < r.nodes.size(); ++k)
+				{
+					const auto& nd = r.nodes[k];
+					if ((nd.raw[0x21] >> 3) != 15)
+						continue;
+					bool junction = false, recorded = false;
+					for (uint32_t l = 0; l < nd.LinkCount() && nd.FirstLink() + l < r.links.size(); ++l)
+					{
+						const auto& link = r.links[nd.FirstLink() + l];
+						const auto t = regions.find(link.area);
+						if (t == regions.end() || link.node >= t->second.nodes.size())
+							continue;
+						if (t->second.nodes[link.node].raw[0x24] & 0x04)
+						{
+							junction = true;
+							++linkFlags1[link.flags[1]];
+							for (const auto& ref : t->second.refs)
+								recorded |= ref.node == link.node;
+						}
+					}
+					intoJunction += junction, intoRecorded += recorded;
+				}
+			std::printf("traffic light nodes next to a junction node: %zu (%zu with a record)\n", intoJunction, intoRecorded);
+			{
+				// (how far before the junction node the cars stop: the light nodes' distances to the junction nodes they link to)
+				std::vector<float> back;
+				for (const auto& [area, r] : regions)
+					for (const auto& nd : r.nodes)
+						if ((nd.raw[0x21] >> 3) == 15)
+							for (uint32_t l = 0; l < nd.LinkCount() && nd.FirstLink() + l < r.links.size(); ++l)
+							{
+								const auto& link = r.links[nd.FirstLink() + l];
+								if (link.area != area || link.node >= r.nodes.size() || !(r.nodes[link.node].raw[0x24] & 0x04))
+									continue;
+								const auto& to = r.nodes[link.node];
+								back.push_back(static_cast<float>(std::hypot(to.X() - nd.X(), to.Y() - nd.Y()) / 4.0));
+							}
+				std::sort(back.begin(), back.end());
+				if (!back.empty())
+					std::printf("  light node to junction node: %zu, 10%% %.1f m, 25%% %.1f, median %.1f, 75%% %.1f, 90%% %.1f\n", back.size(),
+					    back[back.size() / 10], back[back.size() / 4], back[back.size() / 2], back[back.size() * 3 / 4], back[back.size() * 9 / 10]);
+			}
+			// (how the junction nodes' other bits differ from the rest: +0x25 bits 0-2, +0x20, +0x26 bit 7)
+			std::map<std::string, size_t> bits;
+			for (const auto& [area, r] : regions)
+				for (const auto& nd : r.nodes)
+				{
+					const bool junction = nd.raw[0x24] & 0x04, light = (nd.raw[0x21] >> 3) == 15;
+					const std::string kind = junction ? "junction" : light ? "light" : "plain";
+					++bits[std::format("{} +25&7={}", kind, nd.raw[0x25] & 7)];
+					++bits[std::format("{} +20={:02x}", kind, nd.raw[0x20])];
+				}
+			for (const auto& [k, c] : bits)
+				if (c > 20)
+					std::printf("  %s: %zu\n", k.c_str(), c);
+			// (the links' third flag byte, bit 0, by what they join: light -> junction, junction -> anything, plain -> plain)
+			std::map<std::string, std::array<size_t, 2>> linkBit;
+			for (const auto& [area, r] : regions)
+				for (const auto& nd : r.nodes)
+					for (uint32_t l = 0; l < nd.LinkCount() && nd.FirstLink() + l < r.links.size(); ++l)
+					{
+						const auto& link = r.links[nd.FirstLink() + l];
+						const auto t = regions.find(link.area);
+						if (t == regions.end() || link.node >= t->second.nodes.size())
+							continue;
+						const auto& to = t->second.nodes[link.node];
+						const auto kindOf = [](const worldgen::ynd::Node& x) {
+							return (x.raw[0x24] & 0x04) ? "junction" : (x.raw[0x21] >> 3) == 15 ? "light" : "plain";
+						};
+						++linkBit[std::format("{} -> {}", kindOf(nd), kindOf(to))][link.flags[2] & 1];
+					}
+			for (const auto& [k, c] : linkBit)
+				std::printf("  link %s: bit 0 clear %zu, set %zu\n", k.c_str(), c[0], c[1]);
+		}
+		if (g_options.contains("at"))
+		{
+			// (the nodes within --at x,y,r: position, link count, their flag bytes +0x20..+0x27, and their links' flags)
+			float at[3]{};
+			std::sscanf(g_options["at"].c_str(), "%f,%f,%f", &at[0], &at[1], &at[2]);
+			for (const auto& [area, r] : regions)
+			{
+				if (area >= 1024)
+					continue;
+				const int cx = static_cast<int>(area % 32), cy = static_cast<int>(area / 32);
+				const bool inside = cx >= 8 && cx < 24 && cy >= 8 && cy < 24;
+				for (size_t k = 0; k < r.nodes.size(); ++k)
+				{
+					const auto& n = r.nodes[k];
+					const double x = n.X() / 4.0 + (inside ? 0 : cx * 1024 - 16384), y = n.Y() / 4.0 + (inside ? 0 : cy * 1024 - 16384);
+					if (std::hypot(x - at[0], y - at[1]) > at[2])
+						continue;
+					std::string line = std::format("area {} node {} ({:.1f}, {:.1f}) {} links, +0x20:", area, k, x, y, n.LinkCount());
+					for (int b = 0x20; b < 0x28; ++b)
+						line += std::format(" {:02x}", n.raw[b]);
+					line += " | links:";
+					for (uint32_t l = 0; l < n.LinkCount() && n.FirstLink() + l < r.links.size(); ++l)
+					{
+						const auto& link = r.links[n.FirstLink() + l];
+						line += std::format(" {}/{} {:02x}{:02x}{:02x}{:02x}", link.area, link.node, link.flags[0], link.flags[1], link.flags[2], link.flags[3]);
+					}
+					for (const auto& ref : r.refs)
+						if (ref.node == k && ref.junction < r.junctions.size())
+						{
+							const auto& j = r.junctions[ref.junction];
+							line += std::format(" | junction {}: x {} y {} z {}..{} {}x{} cells, heights", ref.junction, j.x, j.y, j.minZ, j.maxZ, j.width, j.height);
+							for (size_t c = 0; c < std::min<size_t>(static_cast<size_t>(j.width) * j.height, 12); ++c)
+								line += std::format(" {}", r.heights[j.heightmap + c]);
+						}
+					std::printf("%s\n", line.c_str());
+				}
+			}
+		}
+		if (g_options.contains("flags"))
+		{
+			// (how often each value of the links' first two flag bytes comes, from nodes in the box --flags x0,y0,x1,y1)
+			float box[4]{};
+			std::sscanf(g_options["flags"].c_str(), "%f,%f,%f,%f", &box[0], &box[1], &box[2], &box[3]);
+			std::map<std::pair<int, int>, size_t> seen;
+			for (const auto& [area, r] : regions)
+			{
+				if (area >= 1024)
+					continue;
+				const int cx = static_cast<int>(area % 32), cy = static_cast<int>(area / 32);
+				const bool inside = cx >= 8 && cx < 24 && cy >= 8 && cy < 24;
+				for (const auto& n : r.nodes)
+				{
+					const double x = n.X() / 4.0 + (inside ? 0 : cx * 1024 - 16384), y = n.Y() / 4.0 + (inside ? 0 : cy * 1024 - 16384);
+					if (x < box[0] || x > box[2] || y < box[1] || y > box[3])
+						continue;
+					for (uint32_t l = 0; l < n.LinkCount() && n.FirstLink() + l < r.links.size(); ++l)
+						++seen[{r.links[n.FirstLink() + l].flags[0], r.links[n.FirstLink() + l].flags[1]}];
+				}
+			}
+			for (const auto& [f, c] : seen)
+				std::printf("flags0 %02x flags1 %02x: %zu\n", f.first, f.second, c);
+		}
 		return bad ? 1 : 0;
 	}
 	if (command == "extract-ynd")

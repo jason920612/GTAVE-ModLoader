@@ -922,7 +922,7 @@ namespace worldedit
 			CloseHandle(pi.hThread);
 			g_rebuild = pi.hProcess;
 			g_rebuildStart = ml::TickMs();
-			Say("重建中：世界在背景重新編譯", 8000);
+			Say("重建中：整片土地在背景重新編譯（可能要幾十分鐘，好了會再通知）", 10000);
 		}
 
 		void WatchRebuild()
