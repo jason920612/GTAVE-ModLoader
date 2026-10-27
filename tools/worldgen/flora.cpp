@@ -451,6 +451,90 @@ namespace worldgen::flora
 			return out;
 		}
 
+		// A southern magnolia: a straight trunk most of the way up, branches every 0.6-0.9 m climbing at 40-60 degrees, a
+		// dense dark crown like an egg - widest a third of the way up, pointed at its top, as wide as 0.55-0.7 of the height -
+		// from 1.6-2.6 m up (a town's limbed up); big glossy leaves, a few white flowers.
+		Model Magnolia(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const float H = rnd.Range(9, 16), W = H * rnd.Range(0.55f, 0.7f), base = rnd.Range(1.6f, 2.6f);
+			std::vector<std::pair<Limb, Texture>> limbs;
+			std::vector<Leaf> leaves;
+			const float tall = H * 0.78f + 0.3f;
+			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.04f, 0.04f), rnd.Range(-0.04f, 0.04f), 1}, {0, 0, 1}, 0.03f, tall, 6, rnd.Range(0.24f, 0.34f), 0.07f,
+			    rnd, 0.03f);
+			limbs.push_back({trunk, kBarkSmooth});
+			const P3 middle{0, 0, base + (H - base) * 0.4f};
+			// (the crown's reach at a share v of its height: an egg)
+			const auto reachAt = [&](float v) { return W * 0.5f * std::min(1.0f, 2.2f * std::pow(std::max(0.0f, 1 - v), 0.8f) * (0.35f + v)); };
+			for (float z = base; z < H * 0.82f; z += rnd.Range(0.6f, 0.9f))
+			{
+				const float v = (z - base) / (H - base);
+				const float a = rnd.Range(0, 2 * kPi);
+				const P3 at = At(trunk, (z + 0.3f) / tall);
+				const P3 dir{std::cos(a), std::sin(a), rnd.Range(0.7f, 1.2f)};
+				Limb br = Grow(at, dir, {std::cos(a), std::sin(a), 0.4f}, 0.1f, reachAt(v) * rnd.Range(0.85f, 1.1f), 3, 0.08f * (1 - v * 0.6f), 0.02f, rnd, 0.1f);
+				limbs.push_back({br, kBarkSmooth});
+				for (float t = 0.35f; t <= 1.0f; t += 0.3f)
+					Cluster(leaves, At(br, t), middle, 3, 0.7f, rnd.Range(1.0f, 1.35f), kMagnoliaLeaves, rnd, 0.15f);
+			}
+			// (the egg's shell, and some through it: a closed dark mass)
+			for (int k = 0; k < 460; ++k)
+			{
+				const float a = rnd.Range(0, 2 * kPi), v = std::pow(rnd.Unit(), 0.85f);
+				const float r = reachAt(v) * (k % 4 ? rnd.Range(0.9f, 1.05f) : rnd.Range(0.45f, 0.85f));
+				Cluster(leaves, {std::cos(a) * r, std::sin(a) * r, base + 0.3f + (H - base - 0.3f) * v}, middle, 1, 0.25f, rnd.Range(1.0f, 1.3f), kMagnoliaLeaves, rnd, 0.0f);
+			}
+			Finish(out, limbs, leaves);
+			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			return out;
+		}
+
+		// A sweetgum: a central leader up the whole tree, branches out level and a little up in loose whorls every 0.8-1.3 m,
+		// shorter towards the top - a narrow pyramid when young, an oval later (0.45-0.6 as wide as high), bare to 3-5 m;
+		// star leaves, a bright green.
+		Model Sweetgum(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const float H = rnd.Range(14, 24), W = H * rnd.Range(0.45f, 0.6f), base = rnd.Range(3.0f, 5.0f);
+			std::vector<std::pair<Limb, Texture>> limbs;
+			std::vector<Leaf> leaves;
+			const float tall = H * 0.93f + 0.3f;
+			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.03f, 0.03f), rnd.Range(-0.03f, 0.03f), 1}, {0, 0, 1}, 0.02f, tall, 8, rnd.Range(0.3f, 0.42f), 0.05f,
+			    rnd, 0.03f);
+			limbs.push_back({trunk, kBarkOak});
+			const P3 middle{0, 0, base + (H - base) * 0.45f};
+			for (float z = base; z < H - 1.2f; z += rnd.Range(0.8f, 1.3f))
+			{
+				const float v = (z - base) / (H - base);
+				const P3 at = At(trunk, (z + 0.3f) / tall);
+				const int count = 2 + static_cast<int>(rnd.Next() % 2);
+				const float a0 = rnd.Range(0, 2 * kPi);
+				for (int k = 0; k < count; ++k)
+				{
+					const float a = a0 + 2 * kPi * k / count + rnd.Range(-0.5f, 0.5f);
+					const float reach = W * 0.5f * std::pow(1 - v, 0.55f) * rnd.Range(0.7f, 1.05f) + 0.5f;
+					const P3 dir{std::cos(a), std::sin(a), rnd.Range(0.2f, 0.6f)};
+					Limb br = Grow(at, dir, {std::cos(a), std::sin(a), 0.3f}, 0.1f, reach, 4, 0.1f * (1 - v * 0.7f), 0.02f, rnd, 0.12f);
+					limbs.push_back({br, kBarkOak});
+					for (float t = 0.35f; t <= 1.0f; t += 0.2f)
+						Cluster(leaves, At(br, t), middle, 3, 0.9f, rnd.Range(1.0f, 1.4f), kGumLeaves, rnd, 0.2f);
+				}
+			}
+			// (a looser shell, rounder below: an oval more than a fir - the branches seen through it)
+			for (int k = 0; k < 220; ++k)
+			{
+				const float a = rnd.Range(0, 2 * kPi), v = rnd.Unit();
+				const float r = (W * 0.5f * std::pow(1 - v, 0.55f) + 0.4f) * rnd.Range(0.75f, 1.05f);
+				Cluster(leaves, {std::cos(a) * r, std::sin(a) * r, base + 0.5f + (H - base - 0.5f) * v}, middle, 1, 0.3f, rnd.Range(1.0f, 1.35f), kGumLeaves, rnd, 0.0f);
+			}
+			Finish(out, limbs, leaves);
+			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			return out;
+		}
+
 		// pictures: a pixel's colour scaled
 		std::array<uint8_t, 4> Shade(std::array<float, 3> c, float k, uint8_t a = 255)
 		{
@@ -530,6 +614,12 @@ namespace worldgen::flora
 						const float k = (fissure < 0.22f ? 0.45f + fissure : plate) * (0.88f + 0.22f * Noise(x, y, 4, 8));
 						p = Shade({100, 82, 70}, k);
 					}
+					else if (t == kBarkSmooth)
+					{
+						// (a magnolia's: smooth grey-brown, faint blotches, small pale lenticels)
+						const float k = 0.88f + 0.18f * Noise(x, y * 0.6f, 30, 14) + (Hash01(x / 3, y / 2, 15) > 0.985f ? 0.25f : 0.0f);
+						p = Shade({118, 110, 100}, k);
+					}
 					else
 					{
 						const float k = 0.85f + 0.25f * Noise(x, y, 24, 9) - 0.15f * (Noise(x, y, 60, 10) > 0.65f ? 1 : 0);
@@ -588,6 +678,65 @@ namespace worldgen::flora
 						}
 					}
 				}
+			}
+			else if (t == kMagnoliaLeaves || t == kGumLeaves)
+			{
+				// twigs, then the leaves in a ragged cluster: a magnolia's big dark glossy ellipses (a tenth showing their
+				// rusty undersides; white flowers in the last cell), a sweetgum's five-pointed stars of a brighter green
+				for (int k = 0; k < 6; ++k)
+				{
+					const float a = rnd.Range(0, 2 * kPi);
+					Line(im, cx, cy + 60, cx + std::cos(a) * 85, cy + std::sin(a) * 65, 2.4f, {80, 66, 52, 255}, x0, y0, x1, y1);
+				}
+				const bool magnolia = t == kMagnoliaLeaves;
+				std::array<std::array<float, 3>, 7> lobes{};
+				const int lobeCount = 5 + static_cast<int>(rnd.Next() % 3);
+				for (int q = 0; q < lobeCount; ++q)
+				{
+					const float a = rnd.Range(0, 2 * kPi), d = q ? rnd.Range(35, 75) : 0;
+					lobes[static_cast<size_t>(q)] = {cx + std::cos(a) * d, cy + std::sin(a) * d * 0.85f, q ? rnd.Range(30, 52) : 58};
+				}
+				const int count = magnolia ? 330 : 260;
+				for (int k = 0; k < count; ++k)
+				{
+					const auto& lobe = lobes[rnd.Next() % static_cast<uint32_t>(lobeCount)];
+					const float a = rnd.Range(0, 2 * kPi), d = lobe[2] * std::sqrt(rnd.Unit());
+					const float x = lobe[0] + std::cos(a) * d, y = lobe[1] + std::sin(a) * d * 0.9f;
+					const float lit = 0.6f + 0.45f * (1 - (y - y0) / 256.0f) * rnd.Range(0.6f, 1.0f);
+					if (magnolia)
+					{
+						const bool under = rnd.Unit() < 0.1f;
+						const std::array<float, 3> base = under ? std::array<float, 3>{rnd.Range(96, 118), rnd.Range(64, 76), rnd.Range(34, 44)}
+						                                        : std::array<float, 3>{rnd.Range(18, 30), rnd.Range(38, 54), rnd.Range(16, 26)};
+						const float rx = rnd.Range(10.0f, 15.0f), ry = rnd.Range(4.5f, 6.5f), ang = rnd.Range(0, kPi);
+						Ellipse(im, x, y, rx, ry, ang, Shade(base, lit), x0, y0, x1, y1);
+						if (!under && rnd.Unit() < 0.5f) // (the gloss: a pale streak along the leaf)
+							Ellipse(im, x, y, rx * 0.6f, 1.2f, ang, Shade(base, lit * 2.2f), x0, y0, x1, y1);
+					}
+					else
+					{
+						const std::array<float, 3> base{rnd.Range(48, 64), rnd.Range(90, 110), rnd.Range(30, 42)};
+						const float turn = rnd.Range(0, 2 * kPi), size = rnd.Range(6.0f, 9.0f);
+						for (int point = 0; point < 5; ++point)
+						{
+							const float b = turn + point * 2 * kPi / 5;
+							Ellipse(im, x + std::cos(b) * size * 0.5f, y + std::sin(b) * size * 0.5f, size * 0.6f, size * 0.22f, b, Shade(base, lit), x0, y0, x1, y1);
+						}
+					}
+				}
+				if (magnolia && cell == 3)
+					for (int k = 0; k < 3; ++k)
+					{
+						// (a flower: six broad white petals round a cone)
+						const float a = rnd.Range(0, 2 * kPi), d = rnd.Range(20, 60);
+						const float px = cx + std::cos(a) * d, py = cy + std::sin(a) * d * 0.8f - 10;
+						for (int petal = 0; petal < 6; ++petal)
+						{
+							const float b = petal * kPi / 3 + rnd.Range(-0.2f, 0.2f);
+							Ellipse(im, px + std::cos(b) * 9, py + std::sin(b) * 9, 10, 6, b, Shade({236, 232, 220}, rnd.Range(0.85f, 1.0f)), x0, y0, x1, y1);
+						}
+						Ellipse(im, px, py, 4, 4, 0, {170, 150, 90, 255}, x0, y0, x1, y1);
+					}
 			}
 			else if (t == kPineNeedles)
 			{
@@ -669,6 +818,8 @@ namespace worldgen::flora
 		case Species::Pine: return Pine(seed);
 		case Species::Oak: return Oak(seed);
 		case Species::Myrtle: return Myrtle(seed);
+		case Species::Magnolia: return Magnolia(seed);
+		case Species::Sweetgum: return Sweetgum(seed);
 		default: return Shrub(seed);
 		}
 	}

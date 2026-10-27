@@ -2498,21 +2498,25 @@ namespace worldgen::build
 		std::vector<std::pair<std::string, flora::Model>> floraModels;
 		std::unordered_map<uint32_t, std::pair<float, float>> floraTrunk; // (by archetype: the trunk's radius, its collision's height)
 		std::vector<trees::Own> ownShrubs;
-		if (photographed && w.projection.lat0 >= 28.8)
+		// (as far south as 27 N - central Florida's live oaks and pines; the south's palms, figs and mahoganies stay the game's)
+		if (photographed && w.projection.lat0 >= 27.0)
 			for (int s = 0; s < flora::kSpecies; ++s)
 				for (int k = 0; k < 4; ++k)
 				{
+					const auto species = static_cast<flora::Species>(s);
 					const std::string name = std::format("{}_tree_{}_{}", o.name, s, k);
-					flora::Model m = flora::Make(static_cast<flora::Species>(s), static_cast<uint32_t>(s * 101 + k * 7 + 1));
-					if (s < 4)
-						ownTrees[static_cast<size_t>(s)].push_back({name, m.height, m.width});
+					flora::Model m = flora::Make(species, static_cast<uint32_t>(s * 101 + k * 7 + 1));
+					// (the kind trees::Photo picks by: 0 live oak, 1 pine, 2 oak, 3 crape myrtle, 4 magnolia, 5 sweetgum)
+					const int kind = species == flora::Species::Magnolia ? 4 : species == flora::Species::Sweetgum ? 5 : species == flora::Species::Shrub ? -1 : s;
+					if (kind >= 0)
+						ownTrees[static_cast<size_t>(kind)].push_back({name, m.height, m.width});
 					else
 						ownShrubs.push_back({name, m.height, m.width});
-					// (the trunk up to the first limbs: a live oak's 3 m, a pine's 6, an oak's 4, a crape myrtle's stems 2; a shrub
-					// none)
-					const float trunkHeight = s == 0 ? 3.0f : s == 1 ? 6.0f : s == 2 ? 4.0f : 2.0f;
-					if (s < 4)
-						floraTrunk[loader::convert::Joaat(name)] = {s == 3 ? 0.25f : m.trunk, trunkHeight};
+					// (the trunk up to the first limbs: a live oak's 3 m, a pine's 6, an oak's 4, a sweetgum's 4, a magnolia's 2, a
+					// crape myrtle's stems 2; a shrub none)
+					const float trunkHeight = kind == 0 ? 3.0f : kind == 1 ? 6.0f : kind == 2 || kind == 5 ? 4.0f : 2.0f;
+					if (kind >= 0)
+						floraTrunk[loader::convert::Joaat(name)] = {kind == 3 ? 0.25f : m.trunk, trunkHeight};
 					floraModels.push_back({name, std::move(m)});
 				}
 		std::vector<size_t> shapeBuilding; // (each shape's place in the world's list of buildings; SIZE_MAX: the scan's own)

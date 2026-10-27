@@ -21,8 +21,10 @@ namespace worldgen::flora
 		Oak,     // laurel and water oaks: a taller trunk, climbing limbs, a round crown
 		Myrtle,  // crape myrtle: a few thin smooth stems from the ground, a vase of leaves and flowers
 		Shrub,   // a yard's or a wood's shrub: a dense dark green mound (ligustrum, holly, wax myrtle), no trunk to see
+		Magnolia, // southern magnolia: a straight trunk, a dense dark egg of a crown pointed at the top, big glossy leaves
+		Sweetgum, // a central leader up the whole tree, loose whorls of level branches - a pyramid, an oval later; star leaves
 	};
-	constexpr int kSpecies = 5;
+	constexpr int kSpecies = 7;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.
@@ -32,14 +34,17 @@ namespace worldgen::flora
 		kPineNeedles,
 		kMoss,
 		kMyrtle,
+		kMagnoliaLeaves,
+		kGumLeaves,
 		kBarkOak,
 		kBarkPine,
 		kBarkMyrtle,
+		kBarkSmooth, // (a magnolia's: smooth grey, lenticels)
 		kTextures,
 	};
 	texture::Image Picture(Texture t);
 	// a picture with an outline (alpha) or a bark (opaque)
-	constexpr bool Cutout(Texture t) { return t <= kMyrtle; }
+	constexpr bool Cutout(Texture t) { return t <= kGumLeaves; }
 
 	struct Model
 	{

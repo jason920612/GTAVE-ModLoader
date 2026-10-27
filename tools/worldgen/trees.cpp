@@ -418,8 +418,11 @@ namespace worldgen::trees
 				// one a laurel or water oak, a small one in town a crape myrtle. The pictures' tree finder cuts a live oak's
 				// crown into several peaks, each narrow for its height: by width alone they had all been pines - the reviewers'
 				// rows of "lollipop" trees where the street pictures have a canopy of live oaks)
+				// (and in town three in ten of the evergreens with a crown no wider than their height magnolias; a third of the
+				// leafless sweetgums - the reviewers saw one tree everywhere)
 				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
-				const int kind = t.kind == 0 ? (pine ? 1 : 0) : (town && h <= 9 && seed % 5 < 3 ? 3 : 2);
+				const bool magnolia = town && h >= 6 && h <= 18 && width < h && seed % 10 < 3;
+				const int kind = t.kind == 0 ? (pine ? 1 : magnolia ? 4 : 0) : (town && h <= 9 && seed % 5 < 3 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
 					props::Prop p;
