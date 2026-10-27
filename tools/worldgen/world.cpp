@@ -260,7 +260,11 @@ namespace worldgen::world
 				// (a two-way left turn lane down the middle - lanes:both_ways, or turn:lanes:both_ways left -, Florida's
 				// arterials' fifth lane: in the lanes counted, not one of either way's)
 				const int both = static_cast<int>(Number(Tag(t, "lanes:both_ways")));
-				r.centreLanes = !one && (both > 0 || Tag(t, "turn:lanes:both_ways").find("left") != std::string::npos) ? 1 : 0;
+				// (or a main road's odd lane out: two-way, 3, 5 or 7 lanes and no count either way given - in the US the middle
+				// one is a two-way left turn lane; few are tagged so)
+				const bool oddMain = lanes >= 3 && lanes % 2 == 1 && Tag(t, "lanes:forward").empty() && Tag(t, "lanes:backward").empty() &&
+				                     (base == "trunk" || base == "primary" || base == "secondary" || base == "tertiary") && !link;
+				r.centreLanes = !one && (both > 0 || Tag(t, "turn:lanes:both_ways").find("left") != std::string::npos || oddMain) ? 1 : 0;
 				const int total = lanes > 0 ? std::max(r.centreLanes ? 2 : 1, lanes - r.centreLanes) : defaultLanes;
 				if (one)
 					r.forward = std::max(1, total), r.backward = 0;
