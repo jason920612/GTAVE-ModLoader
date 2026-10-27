@@ -867,6 +867,49 @@ namespace worldgen::build
 		const uint32_t kDiffuseTex = loader::convert::Joaat("DiffuseTex"), kBumpTex = loader::convert::Joaat("BumpTex"),
 		               kSpecularTex = loader::convert::Joaat("SpecularTex");
 
+		// A building's shape for its LOD model: the roof's inner vertices merged by cells of `cell` m (each cell's highest: the
+		// silhouette kept), the outline's kept - the walls stand under them -, triangles left with two corners in one place or
+		// turned over left out. A measured roof is up to 800 triangles: the LOD models had been as big as the HD ones.
+		structures::Shape CoarserRoof(const structures::Shape& s, double cell)
+		{
+			if (s.roof.size() <= 12)
+				return s;
+			structures::Shape out = s;
+			std::vector<uint8_t> fixed(s.vertices.size(), 0);
+			for (const auto& e : s.outline)
+				fixed[e[0]] = fixed[e[1]] = 1;
+			std::map<std::pair<int64_t, int64_t>, uint32_t> keep; // (by cell: its highest inner vertex)
+			for (uint32_t i = 0; i < s.vertices.size(); ++i)
+			{
+				if (fixed[i])
+					continue;
+				const std::pair<int64_t, int64_t> key{static_cast<int64_t>(std::floor(s.vertices[i][0] / cell)), static_cast<int64_t>(std::floor(s.vertices[i][1] / cell))};
+				const auto it = keep.find(key);
+				if (it == keep.end() || s.vertices[i][2] > s.vertices[it->second][2])
+					keep[key] = i;
+			}
+			std::vector<uint32_t> to(s.vertices.size());
+			for (uint32_t i = 0; i < s.vertices.size(); ++i)
+				to[i] = fixed[i] ? i
+				                 : keep.at({static_cast<int64_t>(std::floor(s.vertices[i][0] / cell)), static_cast<int64_t>(std::floor(s.vertices[i][1] / cell))});
+			out.roof.clear();
+			std::set<std::array<uint32_t, 3>> seen;
+			for (const auto& t : s.roof)
+			{
+				const std::array<uint32_t, 3> r{to[t[0]], to[t[1]], to[t[2]]};
+				if (r[0] == r[1] || r[1] == r[2] || r[0] == r[2])
+					continue;
+				const auto &a = s.vertices[r[0]], &b = s.vertices[r[1]], &c = s.vertices[r[2]];
+				if ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) <= 0)
+					continue; // (turned over, or on edge, seen from above)
+				std::array<uint32_t, 3> k = r;
+				std::rotate(k.begin(), std::min_element(k.begin(), k.end()), k.end());
+				if (seen.insert(k).second)
+					out.roof.push_back(r);
+			}
+			return out;
+		}
+
 		// A building of our own into a tile's meshes (keyed by material: its wall style, `aerialRoof` for the tile's
 		// picture or -1, `genericRoof`), moved to around (cx, cy), and its collision triangles. Walls stand on the roof's
 		// outline down to below the ground (u along the outline, v up, metres over the style's tile); faces of the roof
@@ -4551,7 +4594,7 @@ namespace worldgen::build
 				}
 			std::string terrainDictionary = facadeDictionary;
 			// (deep in the woods - a closed canopy 28 m round, its own cell under it, 20 m from any road, walk or building and
-			// 8 m from water -, where no one sees the ground: 8 cm more tolerance for its mesh and collision, a third fewer
+			// 8 m from water -, where no one sees the ground: 8 cm more tolerance for its mesh, a third fewer
 			// triangles there; Florida's countryside is mostly woods)
 			const auto deepWoods = [&](int i, int j) {
 				const float x = x0 + i * o.cell, y = y0 + j * o.cell;
@@ -4803,7 +4846,7 @@ namespace worldgen::build
 			te.radius = o.tile * 0.75f;
 			r.entities.push_back(te);
 			// collision: the terrain, and the roads' triangles centred in this tile
-			auto parts = terrain::TileCollision(f, 0, 0, per, false, deepWoods);
+			auto parts = terrain::TileCollision(f, 0, 0, per);
 			const size_t groundParts = parts.size();
 			// (what each road triangle is to the pedestrians' navmesh, carriageway or sidewalk: by part)
 			std::map<size_t, std::vector<uint8_t>> roadKinds;
@@ -5098,7 +5141,7 @@ namespace worldgen::build
 							if (area < 40 && s.top < 6)
 								continue;
 							const bool fromPicture = lodRoof.width > 0 && s.top < 25;
-							AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
+							AddBuilding(CoarserRoof(s, 4.0), facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
 							    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), lodMeshes, unusedV, unusedT,
 							    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f, nullptr, 0.1f);
 						}

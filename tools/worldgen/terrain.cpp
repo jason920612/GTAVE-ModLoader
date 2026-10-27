@@ -31,10 +31,15 @@ namespace worldgen::terrain
 
 		// A collision part's grid of w x h cells (vertices (w + 1) x (h + 1), two triangles a cell in order) made coarser where
 		// the ground is flat: each block of 16 x 16, 8 x 8, 4 x 4 or 2 x 2 cells (the largest first, at multiples of its size)
-		// of one material whose vertices all lie within 4 cm of the two triangles over its corners becomes those two
-		// (Florida's flat land: a sixth of the triangles or fewer - 2 x 2 only had left three quarters, the collision most of a
-		// sector's pack). Where a coarse cell meets finer ones the surfaces differ only up and down - no gap a thing could fall
-		// through -, by at most those 4 cm.
+		// whose vertices all lie within 8 cm of the two triangles over its corners becomes those two - the model's mesh keeps
+		// 4 cm: wheels and feet a few centimetres off it at most; 4 cm had left the collision the biggest part of a sector's pack
+		// - (Florida's flat land: a sixth of the triangles or fewer). A block is of one material, or of the soft grounds mixed -
+		// grass, short grass, leaf litter, dirt: they sound and grip alike, and the photographed ground changes between them
+		// every few metres -, its cells' commonest. Where a coarse cell meets finer ones the surfaces differ only up and down -
+		// no gap a thing could fall through -, by at most those 8 cm. (Merging the whole tile at once instead, in parts of
+		// Morton-ordered blocks, and the parts' vertices at one place welded - each tried alone - left cars dropped on a third
+		// of a country sector's tiles frozen in the air, the game holding the collision round them not loaded; this never:
+		// research/phase0.md §63.7.)
 		void Coarsen(ybn::Part& part, int w, int h)
 		{
 			const auto V = [&](int i, int j) { return static_cast<uint32_t>(j * (w + 1) + i); };
@@ -42,20 +47,31 @@ namespace worldgen::terrain
 			std::vector<std::array<uint32_t, 3>> triangles;
 			std::vector<uint8_t> materials;
 			std::vector<uint8_t> merged(static_cast<size_t>(w) * h, 0);
+			constexpr float tolerance = 0.08f;
+			const auto soft = [&](uint8_t index) {
+				const uint8_t type = part.materials[index][0];
+				return type == 43 || type == 47 || type == 48 || type == 52;
+			};
 			for (const int size : {16, 8, 4, 2})
 				for (int bj = 0; bj + size <= h; bj += size)
 					for (int bi = 0; bi + size <= w; bi += size)
 					{
-						const uint8_t m = part.triangleMaterials[(static_cast<size_t>(bj) * w + bi) * 2];
+						uint8_t m = part.triangleMaterials[(static_cast<size_t>(bj) * w + bi) * 2];
 						bool free = true;
+						std::map<uint8_t, int> count;
 						for (int dj = 0; dj < size && free; ++dj)
 							for (int di = 0; di < size && free; ++di)
 							{
 								const size_t cell = static_cast<size_t>(bj + dj) * w + bi + di;
-								free = !merged[cell] && part.triangleMaterials[cell * 2] == m;
+								const uint8_t here = part.triangleMaterials[cell * 2];
+								free = !merged[cell] && (here == m || (soft(here) && soft(m)));
+								count[here] += 1;
 							}
 						if (!free)
 							continue;
+						for (const auto& [index, n] : count)
+							if (n > count[m])
+								m = index;
 						// (the coarse cell's diagonal along the flatter way; the height there of each of its vertices)
 						const float za = Z(bi, bj), zb = Z(bi + size, bj), zc = Z(bi, bj + size), zd = Z(bi + size, bj + size);
 						const bool ad = std::fabs(za - zd) <= std::fabs(zb - zc);
@@ -68,7 +84,7 @@ namespace worldgen::terrain
 						bool flat = true;
 						for (int dj = 0; dj <= size && flat; ++dj)
 							for (int di = 0; di <= size && flat; ++di)
-								flat = std::fabs(Z(bi + di, bj + dj) - plane(static_cast<float>(di) / size, static_cast<float>(dj) / size)) < 0.04f;
+								flat = std::fabs(Z(bi + di, bj + dj) - plane(static_cast<float>(di) / size, static_cast<float>(dj) / size)) < tolerance;
 						if (!flat)
 							continue;
 						for (int dj = 0; dj < size; ++dj)
@@ -103,132 +119,6 @@ namespace worldgen::terrain
 			part.vertices = std::move(vertices);
 			part.triangles = std::move(triangles);
 			part.triangleMaterials = std::move(materials);
-		}
-
-		// The collision of a tile's ground (TileCollision's, not the procedural plants'): the field's cells made coarser where
-		// the ground is flat - each block of 32 x 32, 16 x 16, 8 x 8, 4 x 4 or 2 x 2 cells (the largest first, at multiples of
-		// its size) whose vertices all lie within 8 cm of the two triangles over its corners becomes those two (the model's
-		// mesh keeps 4 cm: the wheels and feet never more than a few centimetres off it; a sector's collision had been the
-		// biggest part of its pack, over 100 MB) - and cut into
-		// parts of at most 1000 triangles (the blocks in Morton order: compact parts). A block is of one material, or of the
-		// soft grounds mixed - grass, short grass, leaf litter, dirt: they sound and grip alike, and the photographed ground
-		// changes between them every few metres, which had kept most blocks apart (the collision most of a sector's pack) -,
-		// its cells' commonest. Where a coarse cell meets finer ones the surfaces differ only up and down - no gap a thing
-		// could fall through -, by at most those 8 cm.
-		std::vector<ybn::Part> Coarse(const Field& f, int i0, int j0, int cells, const std::function<float(int, int)>& slack)
-		{
-			const int n = std::min({cells, f.nx - i0, f.ny - j0});
-			const auto Z = [&](int i, int j) { return f.H(i0 + i, j0 + j); };
-			std::vector<float> extra(static_cast<size_t>(n + 1) * (n + 1), 0.0f);
-			if (slack)
-				for (int j = 0; j <= n; ++j)
-					for (int i = 0; i <= n; ++i)
-						extra[static_cast<size_t>(j) * (n + 1) + i] = slack(i0 + i, j0 + j);
-			const auto M = [&](int i, int j) { return static_cast<uint8_t>(f.material[static_cast<size_t>(j0 + j) * f.nx + i0 + i] & 0xFF); };
-			const auto soft = [](uint8_t m) { return m == 43 || m == 47 || m == 48 || m == 52; };
-			struct Block
-			{
-				int i, j, size;
-				uint8_t material;
-				bool ad; // (split from its south-west to its north-east corner)
-			};
-			std::vector<Block> blocks;
-			std::vector<uint8_t> taken(static_cast<size_t>(n) * n, 0);
-			for (const int s : {32, 16, 8, 4, 2})
-				for (int bj = 0; bj + s <= n; bj += s)
-					for (int bi = 0; bi + s <= n; bi += s)
-					{
-						const uint8_t first = M(bi, bj);
-						std::map<uint8_t, int> count;
-						bool free = true;
-						for (int dj = 0; dj < s && free; ++dj)
-							for (int di = 0; di < s && free; ++di)
-							{
-								const uint8_t m = M(bi + di, bj + dj);
-								free = !taken[static_cast<size_t>(bj + dj) * n + bi + di] && (m == first || (soft(m) && soft(first)));
-								count[m] += 1;
-							}
-						if (!free)
-							continue;
-						// (the coarse cell's diagonal along the flatter way; the height there of each of its vertices)
-						const float za = Z(bi, bj), zb = Z(bi + s, bj), zc = Z(bi, bj + s), zd = Z(bi + s, bj + s);
-						const bool ad = std::fabs(za - zd) <= std::fabs(zb - zc);
-						const auto plane = [&](float u, float v) {
-							if (ad) // (triangles a b d and a d c)
-								return u >= v ? za + (zb - za) * u + (zd - zb) * v : za + (zd - zc) * u + (zc - za) * v;
-							// (triangles a b c and b d c)
-							return u + v <= 1 ? za + (zb - za) * u + (zc - za) * v : zd + (zc - zd) * (1 - u) + (zb - zd) * (1 - v);
-						};
-						float tolerance = 0.08f + 1e9f;
-						for (int dj = 0; dj <= s; ++dj)
-							for (int di = 0; di <= s; ++di)
-								tolerance = std::min(tolerance, 0.08f + extra[static_cast<size_t>(bj + dj) * (n + 1) + bi + di]);
-						bool flat = true;
-						for (int dj = 0; dj <= s && flat; ++dj)
-							for (int di = 0; di <= s && flat; ++di)
-								flat = std::fabs(Z(bi + di, bj + dj) - plane(static_cast<float>(di) / s, static_cast<float>(dj) / s)) < tolerance;
-						if (!flat)
-							continue;
-						for (int dj = 0; dj < s; ++dj)
-							for (int di = 0; di < s; ++di)
-								taken[static_cast<size_t>(bj + dj) * n + bi + di] = 1;
-						uint8_t material = first;
-						for (const auto& [m, c] : count)
-							if (c > count[material])
-								material = m;
-						blocks.push_back({bi, bj, s, material, ad});
-					}
-			for (int j = 0; j < n; ++j)
-				for (int i = 0; i < n; ++i)
-					if (!taken[static_cast<size_t>(j) * n + i])
-						blocks.push_back({i, j, 1, M(i, j), std::fabs(Z(i, j) - Z(i + 1, j + 1)) <= std::fabs(Z(i + 1, j) - Z(i, j + 1))});
-			const auto morton = [](int i, int j) {
-				uint32_t m = 0;
-				for (int k = 0; k < 16; ++k)
-					m |= (static_cast<uint32_t>(i) >> k & 1u) << (2 * k) | (static_cast<uint32_t>(j) >> k & 1u) << (2 * k + 1);
-				return m;
-			};
-			std::sort(blocks.begin(), blocks.end(), [&](const Block& p, const Block& q) { return morton(p.i, p.j) < morton(q.i, q.j); });
-			std::vector<ybn::Part> parts;
-			ybn::Part part;
-			std::map<uint32_t, uint32_t> vertexOf;
-			std::map<uint8_t, uint8_t> materialOf;
-			const auto flush = [&] {
-				if (!part.triangles.empty())
-					parts.push_back(std::move(part));
-				part = {};
-				vertexOf.clear();
-				materialOf.clear();
-			};
-			const auto vertex = [&](int i, int j) {
-				auto it = vertexOf.find(static_cast<uint32_t>(j * (n + 1) + i));
-				if (it == vertexOf.end())
-				{
-					it = vertexOf.emplace(static_cast<uint32_t>(j * (n + 1) + i), static_cast<uint32_t>(part.vertices.size())).first;
-					part.vertices.push_back({f.x0 + (i0 + i) * f.cell, f.y0 + (j0 + j) * f.cell, Z(i, j)});
-				}
-				return it->second;
-			};
-			for (const Block& bl : blocks)
-			{
-				if (part.triangles.size() + 2 > 1000 || part.vertices.size() + 4 > 2730)
-					flush();
-				auto mat = materialOf.find(bl.material);
-				if (mat == materialOf.end())
-				{
-					mat = materialOf.emplace(bl.material, static_cast<uint8_t>(part.materials.size())).first;
-					part.materials.push_back(ybn::Material(bl.material));
-				}
-				const uint32_t a = vertex(bl.i, bl.j), b = vertex(bl.i + bl.size, bl.j), c = vertex(bl.i, bl.j + bl.size), d = vertex(bl.i + bl.size, bl.j + bl.size);
-				if (bl.ad)
-					part.triangles.push_back({a, b, d}), part.triangles.push_back({a, d, c});
-				else
-					part.triangles.push_back({a, b, c}), part.triangles.push_back({b, d, c});
-				part.triangleMaterials.push_back(mat->second);
-				part.triangleMaterials.push_back(mat->second);
-			}
-			flush();
-			return parts;
 		}
 
 		std::array<float, 3> Normalised(std::array<float, 3> v)
@@ -459,13 +349,8 @@ namespace worldgen::terrain
 		return out;
 	}
 
-	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural, const std::function<float(int, int)>& slack)
+	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural)
 	{
-		// (Coarse - the whole tile's cells in blocks of up to 32, soft grounds mixed, 8 cm - only with WG_COARSE set: on a third of
-		// a country sector's tiles a car dropped on it stayed frozen in the air, the game holding the collision round it not
-		// loaded - HAS_COLLISION_LOADED_AROUND_ENTITY false - where the ground's per-part Coarsen never does; not found yet)
-		if (!procedural && std::getenv("WG_COARSE"))
-			return Coarse(f, i0, j0, cells, slack);
 		std::vector<ybn::Part> parts;
 		const int n = std::min({cells, f.nx - i0, f.ny - j0});
 		// (procedural: cells of 2 x 2 of the field's, 3 cm down - its plants then sink a little rather than float where the

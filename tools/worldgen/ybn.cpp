@@ -2,13 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <limits>
 #include <map>
 #include <numeric>
-#include <tuple>
 
 namespace worldgen::ybn
 {
@@ -228,43 +226,6 @@ namespace worldgen::ybn
 				std::memcpy(v.data() + subtrees + 16 * i, t.subtrees[i].data(), 16);
 		}
 
-		void Weld(Part& p)
-		{
-			std::map<std::tuple<float, float, float, uint32_t>, uint32_t> at;
-			std::vector<uint32_t> remap(p.vertices.size());
-			std::vector<Vec> vertices;
-			std::vector<std::array<uint8_t, 4>> colours;
-			for (size_t i = 0; i < p.vertices.size(); ++i)
-			{
-				uint32_t colour = 0;
-				if (!p.vertexColours.empty())
-					std::memcpy(&colour, p.vertexColours[i].data(), 4);
-				auto it = at.find({p.vertices[i][0], p.vertices[i][1], p.vertices[i][2], colour});
-				if (it == at.end())
-				{
-					it = at.emplace(std::make_tuple(p.vertices[i][0], p.vertices[i][1], p.vertices[i][2], colour), static_cast<uint32_t>(vertices.size())).first;
-					vertices.push_back(p.vertices[i]);
-					if (!p.vertexColours.empty())
-						colours.push_back(p.vertexColours[i]);
-				}
-				remap[i] = it->second;
-			}
-			std::vector<std::array<uint32_t, 3>> triangles;
-			std::vector<uint8_t> materials;
-			for (size_t t = 0; t < p.triangles.size(); ++t)
-			{
-				const std::array<uint32_t, 3> r{remap[p.triangles[t][0]], remap[p.triangles[t][1]], remap[p.triangles[t][2]]};
-				if (r[0] == r[1] || r[1] == r[2] || r[0] == r[2])
-					continue;
-				triangles.push_back(r);
-				materials.push_back(p.triangleMaterials[t]);
-			}
-			p.vertices = std::move(vertices);
-			p.vertexColours = std::move(colours);
-			p.triangles = std::move(triangles);
-			p.triangleMaterials = std::move(materials);
-		}
-
 		// The common head of a bound: type, sphere, box, centre.
 		void Head(Bytes& v, uint32_t at, uint64_t vtable, uint8_t type, const Vec& min, const Vec& max, float margin, const std::vector<Vec>& points)
 		{
@@ -304,17 +265,8 @@ namespace worldgen::ybn
 		}
 	}
 
-	bool Write(const std::vector<Part>& given, Bytes& out, std::string& error, bool material)
+	bool Write(const std::vector<Part>& parts, Bytes& out, std::string& error, bool material)
 	{
-		// (each part's vertices at one place - and of one colour - made one: the roads' and buildings' triangles come with
-		// three of their own, the triangles' neighbours across their edges then unknown; a triangle with two corners at one
-		// place left out)
-		std::vector<Part> parts = given;
-		// (only with WG_WELD set: not yet tried apart from Coarse, with which cars froze - see terrain.cpp's TileCollision)
-		if (std::getenv("WG_WELD"))
-			for (Part& p : parts)
-				Weld(p);
-		std::erase_if(parts, [](const Part& p) { return p.triangles.empty(); });
 		// (every array within a page of 16 KB: at most 256 parts, a part at most 1000 triangles and 2730 vertices)
 		if (parts.empty() || parts.size() > 256)
 			return error = "no parts, or more than 256", false;

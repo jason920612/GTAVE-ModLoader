@@ -94,7 +94,11 @@ def build(c, r, flags):
     name = f'wbfl_{100 + c:03d}_{100 + r:03d}'
     # (none started with less than --free GB, 120 by default, left on the game's drive: the rest of the list waits for the
     # next run, --skip-built)
-    if g_full.is_set() or shutil.disk_usage(O['game']).free < float(O.get('free', 120)) * 1e9:
+    # (nor once the game is not where it was - moved to another drive: the packs would go into a folder of their own)
+    if g_full.is_set() or not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
+        g_full.set()
+        return name, 'not started: the game is not at ' + O['game']
+    if shutil.disk_usage(O['game']).free < float(O.get('free', 120)) * 1e9:
         g_full.set()
         return name, 'not started: the disk is nearly full'
     s, w = LAT0 + r * DLAT, LON0 + c * DLON
@@ -145,6 +149,9 @@ def build(c, r, flags):
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--landcover', cover,
             '--ground', ground, '--photo', photo, *walls, *rolls, '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
+    if not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
+        g_full.set()
+        return name, 'not packed: the game is not at ' + O['game']
     os.makedirs(os.path.dirname(pack), exist_ok=True)
     out = pack + '.new' if os.path.exists(pack) else pack
     if run([O['worldgen'], 'pack', *common, '--in', gen, '--out', out, '--name', name], log):

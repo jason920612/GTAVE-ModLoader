@@ -63,12 +63,10 @@ namespace worldgen::terrain
 		ydr::Mesh ground, lawn, forest;
 	};
 	Meshes TileMeshes(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres, float blendMetres);
-	// Its collision: parts of at most 20 x 20 cells, made coarser where flat (blocks of up to 16 x 16 cells of one material
-	// within 4 cm; WG_COARSE: the whole tile in blocks of up to 32 x 32 within 8 cm, the soft grounds mixed - cars froze on
-	// it, see terrain.cpp). `procedural`: instead the game's material bounds (ma@ files, research/
+	// Its collision: parts of at most 20 x 20 cells, made coarser where flat (blocks of up to 16 x 16 cells within 8 cm, of one
+	// material or the soft grounds mixed). `procedural`: instead the game's material bounds (ma@ files, research/
 	// phase0.md §63: the only collision its procedural plants are looked for in) - each cell its material's procedural tag
 	// (Field::material's high byte) and its ground colour (Field::colour), every vertex its colour and how dense the plants
 	// grow; the parts without a tagged cell left out.
-	// `slack` as Simplify's.
-	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural = false, const std::function<float(int, int)>& slack = {});
+	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural = false);
 }

@@ -212,6 +212,12 @@ def quit_game():
     except OSError:
         pass
     subprocess.run(["taskkill", "/F", "/IM", "GTA5_Enhanced.exe"], capture_output=True)
+    # (the Rockstar launcher takes a killed game for a crash and waits on its "unexpected exit" dialog - Steam then keeps
+    # the next start waiting for it for good: closed too, PlayGTAV first - the user's say-so, 2026-10-28)
+    time.sleep(3)
+    for name in ("PlayGTAV.exe", "Launcher.exe", "SocialClubHelper.exe"):
+        subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True)
+        time.sleep(1)
     wait_closed()
     test_settings(False)
 
