@@ -144,7 +144,7 @@ namespace worldgen::powerlines
 			                 : -chord[1] * 0.6f + chord[0] * 0.8f >= 0 ? 1.0f
 			                                                           : -1.0f;
 			// (behind the sidewalk, or in the verge 2 m off the asphalt)
-			const float off = e.HalfWidth() + (e.sidewalks ? roads::kSidewalk + 0.9f : 2.0f);
+			const float off = e.HalfWidth() + (e.sidewalks ? e.Walk() + 0.9f : 2.0f);
 			for (size_t k = 0; k < at.size(); ++k)
 			{
 				const uint32_t seed = Mix(static_cast<uint32_t>(ei) * 2654435761u ^ static_cast<uint32_t>(k) * 40503u);

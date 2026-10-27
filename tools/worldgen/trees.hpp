@@ -48,4 +48,8 @@ namespace worldgen::trees
 	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
 	    std::vector<props::Prop>& out, Stats& stats);
+
+	// The trees the scan saw in the box (its canopy's peaks, as Place finds them): where they stand, how tall, their crowns'
+	// radii; their kind left 0 (the caller's to set - the pictures', which tell a pine from a palm).
+	std::vector<Seen> Detect(elevation::Scan& scan, const std::function<float(float, float)>& ground, const std::array<float, 4>& box);
 }

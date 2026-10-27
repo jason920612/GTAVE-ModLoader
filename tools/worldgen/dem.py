@@ -3,11 +3,13 @@ elevation (3DEP; public domain; metres above NAVD88, about the mean sea level in
 hydro-flattened: a lake's surface one height, a river's stepping down along it) from The National Map's image service,
 cut to a sector's box and resampled onto the sector's game coordinates.
 
-usage: python -I tools/worldgen/dem.py --world <world.json> --out <ground.bin> [--cell 8] [--cache <dir>] [--margin 300]
+usage: python -I tools/worldgen/dem.py --world <world.json> --out <ground.bin> [--cell 8] [--step 10] [--cache <dir>] [--margin 300]
   ground.bin ('WBGR' version 1): x0, y0, cell (float32), nx, ny (uint32); then each cell's height in centimetres (int16;
   -32768: not known - out at sea, where the service has nothing), rows south to north.
-The service is asked once per sector box (exportImage, float32 GeoTIFF on a latitude / longitude grid of about 10 m)
-and the answer kept in --cache.
+  --step: the metres a pixel asked for (10: a third of an arc second, the 10 m DEM's; 2: the lidar's 1 m DEM where the
+          service has it - Florida's towns -, the yards over the streets, the ditches, the rises the street pictures show)
+The service is asked for the sector box (exportImage, float32 GeoTIFF on a latitude / longitude grid; in tiles of at
+most 2000 pixels a side) and the answers kept in --cache.
 """
 import json, math, os, struct, sys, time, urllib.request
 
@@ -15,11 +17,12 @@ import numpy as np
 from PIL import Image
 
 SERVICE = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage'
-STEP = 1 / 10800  # (degrees a pixel asked for: a third of an arc second, about 10 m)
+STEP = 1 / 10800  # (degrees a pixel asked for by default: a third of an arc second, about 10 m)
+TILE = 2000  # (pixels a side a request at most: the service answers 500 to 4000 x 4000 of float32)
 
 
 def options(argv):
-    o = {'cell': '8', 'cache': r'D:\GTAV-UE5\dem\cache', 'margin': '300'}
+    o = {'cell': '8', 'cache': r'D:\GTAV-UE5\dem\cache', 'margin': '300', 'step': ''}
     for i in range(0, len(argv) - 1, 2):
         if not argv[i].startswith('--'):
             sys.exit(__doc__)
@@ -29,13 +32,25 @@ def options(argv):
     return o
 
 
-def fetch(south, west, north, east, cache):
-    """Heights over the box (metres, NaN where none), rows north to south, and the box as asked for."""
+def fetch(south, west, north, east, cache, step=STEP):
+    """Heights over the box (metres, NaN where none), rows north to south, and the box as asked for (in tiles)."""
+    width, height = int(math.ceil((east - west) / step)), int(math.ceil((north - south) / step))
+    a = np.full((height, width), np.nan, dtype=np.float32)
+    top = south + height * step
+    for ty in range(0, height, TILE):
+        for tx in range(0, width, TILE):
+            w_, h_ = min(TILE, width - tx), min(TILE, height - ty)
+            a[ty:ty + h_, tx:tx + w_] = fetch_one(top - (ty + h_) * step, west + tx * step, w_, h_, cache, step)
+    return a, (south, west, top, west + width * step)
+
+
+def fetch_one(south, west, width, height, cache, step):
+    """One request's heights: width x height pixels of `step` degrees from the south-west corner, rows north to south."""
     os.makedirs(cache, exist_ok=True)
-    width, height = int(math.ceil((east - west) / STEP)), int(math.ceil((north - south) / STEP))
-    file = os.path.join(cache, f'dem_{south:.4f}_{west:.4f}_{width}x{height}.tif')
+    tag = '' if step == STEP else f'_{1 / step:.0f}'
+    file = os.path.join(cache, f'dem_{south:.4f}_{west:.4f}_{width}x{height}{tag}.tif')
     if not os.path.exists(file):
-        url = (f'{SERVICE}?bbox={west:.6f},{south:.6f},{west + width * STEP:.6f},{south + height * STEP:.6f}&bboxSR=4326&imageSR=4326'
+        url = (f'{SERVICE}?bbox={west:.7f},{south:.7f},{west + width * step:.7f},{south + height * step:.7f}&bboxSR=4326&imageSR=4326'
                f'&size={width},{height}&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image')
         for attempt in range(6):
             try:
@@ -56,7 +71,7 @@ def fetch(south, west, north, east, cache):
     if a.shape != (height, width):
         raise IOError(f'{file}: {a.shape} for {height} x {width}')
     a[(a < -500) | (a > 9000) | ~np.isfinite(a)] = np.nan
-    return a, (south, west, south + height * STEP, west + width * STEP)
+    return a
 
 
 def main():
@@ -72,11 +87,12 @@ def main():
     ys = y0 + (np.arange(ny) + 0.5) * cell
     lons = lon0 + (xs - gx0) / kx
     lats = lat0 + (ys - gy0) / ky
-    pad = 3 * STEP
-    a, (s, wl, n, e) = fetch(lats.min() - pad, lons.min() - pad, lats.max() + pad, lons.max() + pad, o['cache'])
+    step = float(o['step']) / 111320 if o['step'] else STEP
+    pad = 3 * step
+    a, (s, wl, n, e) = fetch(lats.min() - pad, lons.min() - pad, lats.max() + pad, lons.max() + pad, o['cache'], step)
     # bilinear, by pixel centres (row 0 the northmost)
-    fx = (lons - wl) / STEP - 0.5
-    fy = (n - lats) / STEP - 0.5
+    fx = (lons - wl) / step - 0.5
+    fy = (n - lats) / step - 0.5
     ix = np.clip(np.floor(fx).astype(np.int64), 0, a.shape[1] - 2)
     iy = np.clip(np.floor(fy).astype(np.int64), 0, a.shape[0] - 2)
     tx = np.clip(fx - ix, 0, 1)[None, :]

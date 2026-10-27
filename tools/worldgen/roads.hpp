@@ -33,7 +33,15 @@ namespace worldgen::roads
 		int64_t id = 0;                    // the OpenStreetMap way's
 		std::string surface, smoothness;   // its tags (paving.hpp)
 		float speed = 0; // m/s
-		float HalfWidth() const { return (forward + backward) * laneWidth / 2 + 0.3f; }
+		// at its ends (a, b) as OpenStreetMap maps them: a painted crossing; a stop sign for the traffic coming in
+		bool crossingA = false, crossingB = false, stopA = false, stopB = false;
+		float walkWidth = 2.6f; // its sidewalks' width (m)
+		float parking = 0;      // a parking lane each side, this wide (m; 0: none): the traffic lanes between them
+		float bike = 0;         // a painted bike lane each side (m; 0: none), between the parking and the traffic lanes
+		float HalfWidth() const { return (forward + backward) * laneWidth / 2 + 0.3f + parking + bike; }
+		float Side() const { return parking + bike; }             // (what lies between a kerb and the traffic lanes)
+		float LanesHalf() const { return HalfWidth() - Side(); } // (the traffic lanes' half)
+		float Walk() const { return sidewalks ? walkWidth : 0.0f; } // (0: none)
 	};
 
 	struct Vertex
@@ -48,6 +56,7 @@ namespace worldgen::roads
 	{
 		std::vector<Vertex> vertices;
 		std::vector<Edge> edges;
+		size_t mappedStops = 0, mappedCrossings = 0; // (OpenStreetMap's stop signs and crossings put on edges' ends)
 	};
 
 	// A road that is not a street: a driveway, alley or parking lane (service), a track, a path.

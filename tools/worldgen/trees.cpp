@@ -54,9 +54,14 @@ namespace worldgen::trees
 		}
 	}
 
-	void Place(elevation::Scan& scan, const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground,
-	    const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats)
+	namespace
 	{
+		// The scan's canopy in the box: `tree(x, y, height, crown radius, seed)` for each peak where a trunk may stand,
+		// `bush(x, y, height, seed)` for low growth on a 6 m lattice (half of it).
+		template <typename Tree, typename Bush>
+		void Peaks(elevation::Scan& scan, const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground,
+		    const std::array<float, 4>& box, Tree&& tree, Bush&& bush)
+		{
 		constexpr float kPi = 3.14159265f;
 		const float cell = scan.Cell();
 		const float block = 256, margin = 16;
@@ -117,10 +122,7 @@ namespace worldgen::trees
 							// low growth: a bush on a 6 m lattice, half of them (every entity counts against the game's pools)
 							if (((i - inner0) % 12) || ((j - inner0) % 12) || (seed & 1) || !open(x, y))
 								continue;
-							const Model& m = kBushes[(seed >> 1) % std::size(kBushes)];
-							out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,
-							    std::clamp(h / m.height, 0.6f, 1.4f)});
-							++stats.bushes;
+							bush(x, y, h, seed);
 							continue;
 						}
 						// a peak: the highest within a reach growing with the height
@@ -155,14 +157,42 @@ namespace worldgen::trees
 							}
 							radius += r / 8;
 						}
-						const bool palm = radius < 0.33f * h;
-						const Model& m = palm ? Choose(kPalms, h, 2 * radius, 0.0f, seed) : Choose(kBroadleaf, h, 2 * radius, 0.7f, seed);
-						const float scale = std::clamp(h / m.height, palm ? 0.75f : 0.7f, palm ? 1.3f : 1.4f);
-						out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.2f}, static_cast<float>((seed >> 8) % 360) * kPi / 180,
-						    palm ? 350.0f : 400.0f, scale});
-						++(palm ? stats.palms : stats.broadleaf);
+						tree(x, y, h, radius, seed);
 					}
 			}
+		}
+	}
+
+	void Place(elevation::Scan& scan, const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground,
+	    const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats)
+	{
+		constexpr float kPi = 3.14159265f;
+		Peaks(
+		    scan, open, ground, box,
+		    [&](float x, float y, float h, float radius, uint32_t seed) {
+			    const bool palm = radius < 0.33f * h;
+			    const Model& m = palm ? Choose(kPalms, h, 2 * radius, 0.0f, seed) : Choose(kBroadleaf, h, 2 * radius, 0.7f, seed);
+			    const float scale = std::clamp(h / m.height, palm ? 0.75f : 0.7f, palm ? 1.3f : 1.4f);
+			    out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.2f}, static_cast<float>((seed >> 8) % 360) * kPi / 180,
+			        palm ? 350.0f : 400.0f, scale});
+			    ++(palm ? stats.palms : stats.broadleaf);
+		    },
+		    [&](float x, float y, float h, uint32_t seed) {
+			    const Model& m = kBushes[(seed >> 1) % std::size(kBushes)];
+			    out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,
+			        std::clamp(h / m.height, 0.6f, 1.4f)});
+			    ++stats.bushes;
+		    });
+	}
+
+	std::vector<Seen> Detect(elevation::Scan& scan, const std::function<float(float, float)>& ground, const std::array<float, 4>& box)
+	{
+		std::vector<Seen> out;
+		const std::function<bool(float, float)> anywhere = [](float, float) { return true; };
+		Peaks(
+		    scan, anywhere, ground, box, [&](float x, float y, float h, float radius, uint32_t) { out.push_back({x, y, h, radius, 0}); },
+		    [](float, float, float, uint32_t) {});
+		return out;
 	}
 }
 
@@ -312,7 +342,10 @@ namespace worldgen::trees
 			const uint8_t nlcd = cover ? cover(t.x, t.y) : 0;
 			const Model* m = nullptr;
 			bool palm = false;
-			if (t.kind == 2 || (t.kind == 0 && south && width < 0.45f * h && (seed & 3) == 0))
+			// (cabbage palms: what the pictures take for one; in the south a quarter of the narrow evergreen crowns, in the
+			// north's towns - Tallahassee's yards and medians - one in ten of them)
+			const bool town = nlcd >= 21 && nlcd <= 24;
+			if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (south ? (seed & 3) == 0 : town && seed % 10 == 0)))
 				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
 			else if (t.kind == 0 && width >= 0.8f * h && h >= 8)
 				m = &Choose(kLiveOaks, h, width, 0.7f, seed);

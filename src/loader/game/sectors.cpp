@@ -117,6 +117,56 @@ namespace loader::game::sectors
 		} g_switch;
 		ULONGLONG g_lastWatch = 0, g_ended = 0;
 		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
+
+		// Los Santos's far views (research/phase0.md §63): the long-range and LOD maps of its areas - their names in
+		// ModLoader\data\ls_far_maps.txt (worldgen ls-far: the game's own) - away while the player is on a new land (its
+		// mountains stood over Florida's horizon), back once they are in Los Santos again (200 m out of every land's box); by
+		// the camera's place.
+		// Only those that were there are put away and brought back: a mission's swapped map stays as it was.
+		constexpr uint64_t kRequestIpl = 0x41B4893843BBDB74, kRemoveIpl = 0xEE6C5AD3ECE0A82D, kIsIplActive = 0x88A741E44A2B3495,
+		                   kGetFinalRenderedCamCoord = 0xA200EB1EE790F448;
+		std::vector<std::string> g_farMaps, g_farAway; // (all; those put away)
+		int g_far = -1;                                 // (-1 not known yet, 0 there, 1 away)
+		ULONGLONG g_lastFar = 0;
+
+		void WatchFar()
+		{
+			const ULONGLONG now = GetTickCount64();
+			if (g_farMaps.empty() || now - g_lastFar < 1000)
+				return;
+			g_lastFar = now;
+			// (where the picture is taken from: the camera's place - a scripted camera's too, the player left elsewhere)
+			const auto p = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
+			bool on = false, away = true;
+			for (const Land& l : g_lands)
+			{
+				if (l.dormant)
+					continue;
+				on = on || (p.x >= l.box[0] && p.x <= l.box[2] && p.y >= l.box[1] && p.y <= l.box[3]);
+				away = away && (p.x < l.box[0] - 200 || p.x > l.box[2] + 200 || p.y < l.box[1] - 200 || p.y > l.box[3] + 200);
+			}
+			if (on && g_far != 1)
+			{
+				g_farAway.clear();
+				for (const std::string& name : g_farMaps)
+					if (natives::Invoke<int32_t>(kIsIplActive, name.c_str()))
+					{
+						natives::Invoke<void>(kRemoveIpl, name.c_str());
+						g_farAway.push_back(name);
+					}
+				g_far = 1;
+				log::Info("sectors: on a new land; {} of Los Santos's {} far maps put away", g_farAway.size(), g_farMaps.size());
+			}
+			else if (away && g_far != 0)
+			{
+				for (const std::string& name : g_farAway)
+					natives::Invoke<void>(kRequestIpl, name.c_str());
+				if (g_far == 1)
+					log::Info("sectors: in Los Santos; its {} far maps back", g_farAway.size());
+				g_farAway.clear();
+				g_far = 0;
+			}
+		}
 		std::vector<std::string> g_unmountable; // (lands whose pack could not be mounted: not switched to again)
 
 		// The population zones every land shares (the mod tools/worldgen/zones.py --mod makes): each 1 km block of the box
@@ -303,6 +353,19 @@ namespace loader::game::sectors
 		}
 		std::sort(g_lands.begin(), g_lands.end(), [](const Land& a, const Land& b) { return a.name < b.name; });
 		Settle(config::Get().worldSector);
+		if (!g_lands.empty())
+		{
+			std::ifstream list(paths::Get().root / L"data" / L"ls_far_maps.txt");
+			for (std::string line; std::getline(list, line);)
+			{
+				if (!line.empty() && line.back() == '\r')
+					line.pop_back();
+				if (!line.empty())
+					g_farMaps.push_back(line);
+			}
+			if (g_farMaps.empty())
+				log::Warn("sectors: no ModLoader\\data\\ls_far_maps.txt (worldgen ls-far): Los Santos's mountains stay on the lands' horizon");
+		}
 		for (const Land& l : g_lands)
 			if (l.dormant)
 				log::Info("sectors: {} waits (it shares its place with the land there)", l.name);
@@ -431,6 +494,7 @@ namespace loader::game::sectors
 						ApplyZones(l);
 						break;
 					}
+			WatchFar();
 			WatchEdges();
 			return;
 		}

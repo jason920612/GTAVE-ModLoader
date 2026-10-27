@@ -385,26 +385,32 @@ def skyline(img):
 
 
 def fit_view(pano, heading, yaw, game_small):
-    """The panorama's yaw and pitch (within 15 and 4 degrees of `yaw`, 0) whose skyline fits the game's best, and how far
-    apart the skylines then are (the mean over the columns where either has one, a share of the height)."""
+    """The panorama's yaw and pitch (within 10 and 3 degrees of `yaw`, 0) whose skyline fits the game's best, and how far
+    apart the skylines then are (the mean over the columns where either has one, a share of the height). The picture's
+    own heading unless a fit clearly beats it - a quarter closer, not at the search's edge: a skyline of trees alone (or
+    a place that does not match) fits anywhere about as badly, and the fit then wandered to the edges."""
     target = skyline(game_small)
     h, w = game_small.shape[:2]
-    best = (1e9, 0.0, 0.0)
-    for pitch in (-4, -2, 0, 2, 4):
-        for dy in range(-15, 16):
-            sky = skyline(pano_view(pano, heading, yaw + dy, pitch, EYE_FOV, w, h))
-            both = (sky < 0.98) | (target < 0.98)
-            if both.sum() < w // 4:
-                continue
-            score = float(np.abs(sky - target)[both].mean())
-            if score < best[0]:
-                best = (score, float(dy), float(pitch))
+
+    def score_of(dy, pitch):
+        sky = skyline(pano_view(pano, heading, yaw + dy, pitch, EYE_FOV, w, h))
+        both = (sky < 0.98) | (target < 0.98)
+        return float(np.abs(sky - target)[both].mean()) if both.sum() >= w // 4 else 1e9
+
+    plain = score_of(0, 0)
+    best = (plain, 0.0, 0.0)
+    for pitch in (-3, 0, 3):
+        for dy in range(-10, 11):
+            if (dy, pitch) != (0, 0):
+                score = score_of(dy, pitch)
+                if score < best[0]:
+                    best = (score, float(dy), float(pitch))
     score, dy, pitch = best
     for fine in (-0.5, 0.5):
-        sky = skyline(pano_view(pano, heading, yaw + dy + fine, pitch, EYE_FOV, w, h))
-        both = (sky < 0.98) | (target < 0.98)
-        if both.sum() >= w // 4 and float(np.abs(sky - target)[both].mean()) < score:
-            score, dy = float(np.abs(sky - target)[both].mean()), dy + fine
+        if (f := score_of(dy + fine, pitch)) < score:
+            score, dy = f, dy + fine
+    if abs(dy) >= 9.5 or score > 0.75 * plain:
+        return 0.0, 0.0, plain
     return dy, pitch, score
 
 
@@ -437,6 +443,9 @@ def pano(o):
     views = [float(v) for v in o.get('views', '0,90,-90').split(',')]
     listed = []
     hud_off()
+    # (no traffic or people while the pictures are taken: they are not the place - a car had stopped on the camera; the
+    # parked cars stay)
+    gtactl('raw:every 36000 0x245A6883D966D537 0.0')
     for k, (x, y, r) in enumerate(chosen):
         compass = float(r['heading'])
         gtactl(f'raw:cam {x:.1f} {y:.1f} 60 0 -89.9 {FOV}', 'wait:4')
@@ -444,6 +453,7 @@ def pano(o):
         if gz is None:
             gtactl('wait:4')
             gz = ground_z(x, y) or 1.0
+        gtactl(f'raw:native 0xA56F01F3765B93A0 {x:.1f} {y:.1f} {gz:.1f} 12.0 1 0 1 0')  # (CLEAR_AREA round the camera, objects kept)
         picture = np.asarray(Image.open(r['path']).convert('RGB'), np.float32)
         small = np.asarray(Image.fromarray(picture.astype(np.uint8)).resize((1024, 512)), np.float32)
         for view in views:
@@ -463,6 +473,7 @@ def pano(o):
                            'heading': round(yaw, 1), 'fit': dy, 'pitch': pitch, 'skyline': round(score, 3), 'date': r['date'],
                            'creator': r['creator'], 'page': r.get('page', '')})
             print(f'{k}: {r["id"]} view {view:+.0f} at {x:.0f},{y:.0f}: fit {dy:+.1f}, pitch {pitch:+.0f}, skylines {score:.3f}', flush=True)
+    gtactl('raw:every off')
     with open(os.path.join(out, 'pano.json'), 'w', encoding='utf-8') as f:
         json.dump(listed, f, ensure_ascii=False, indent=1)
 

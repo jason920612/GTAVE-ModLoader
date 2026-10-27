@@ -2,10 +2,11 @@
 in front: the person at the computer keeps using it.
 
 usage:
-  gtactl.py launch                 test settings on (windowed, no pause on focus loss, debugRemote), start the game,
+  gtactl.py launch [online]        test settings on (windowed, no pause on focus loss, debugRemote), start the game,
                                    continue story mode; the window stays out of view and silent. The Rockstar launcher
                                    runs in offline mode (-scOfflineOnly, passed on by Steam): story mode needs no
-                                   sign-in, and Rockstar's sign-in has been failing
+                                   sign-in, and Rockstar's sign-in has been failing. "online": signed in - once the
+                                   offline activation has run out (the game shows "activation required" and waits)
   gtactl.py restore                the person's settings back (after the game closed)
   gtactl.py quit                   closes the game, then restore (returns when Steam has seen it closed: a start
                                    asked for before that fails)
@@ -159,7 +160,7 @@ def sign_in_failed(since):
         return False
 
 
-def launch():
+def launch(online=False):
     if game_running():
         sys.exit("the game is already running")
     wait_closed()
@@ -167,7 +168,7 @@ def launch():
     started = time.time()
     # Steam passes extra arguments on to the Rockstar launcher. (Killing a launcher stuck on its sign-in error and
     # starting another one makes PlayGTAV, Steam's process, show "unable to start the game" on the desktop.)
-    start = [os.path.join(STEAM, "steam.exe"), "-applaunch", APP_ID, "-nobattleye", "-scOfflineOnly"]
+    start = [os.path.join(STEAM, "steam.exe"), "-applaunch", APP_ID, "-nobattleye"] + ([] if online else ["-scOfflineOnly"])
     since = steam_log_size()
     subprocess.Popen(start)
     asked_again = False
@@ -300,8 +301,8 @@ def main(args):
     if args[:1] == ["convert"] and len(args) >= 3:
         print(convert(args[1], args[2], float(args[3]) if len(args) > 3 else 30))
         return
-    if args == ["launch"]:
-        launch()
+    if args in (["launch"], ["launch", "online"]):
+        launch(online=args[1:] == ["online"])
         return
     if args == ["restore"]:
         test_settings(False)

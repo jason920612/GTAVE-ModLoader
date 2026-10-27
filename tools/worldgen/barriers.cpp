@@ -1,0 +1,423 @@
+#include "barriers.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <string>
+
+#include "convert/resource.hpp"
+
+namespace worldgen::barriers
+{
+	namespace
+	{
+		using P2 = std::array<float, 2>;
+		using P3 = std::array<float, 3>;
+		using Uv = std::array<float, 2>;
+		using Colour = std::array<uint8_t, 4>;
+
+		// materials.dat rows
+		constexpr uint8_t kConcrete = 1, kChainLink = 61, kRailing = 65, kWood = 70;
+
+		enum class Kind
+		{
+			ChainLink, // wire mesh on galvanised posts with a top rail
+			Boards,    // a board fence: boards on wooden posts
+			Railing,   // posts and two rails (split rail, metal railing, handrails, wire fences)
+			Wall,      // painted block, 0.2 m thick
+			Retaining, // concrete, 0.3 m thick
+			Hedge,     // clipped bushes in a row
+			GuardRail, // a W-beam on posts
+		};
+
+		Kind KindOf(const world::Barrier& b)
+		{
+			if (b.kind == "hedge")
+				return Kind::Hedge;
+			if (b.kind == "guard_rail")
+				return Kind::GuardRail;
+			if (b.kind == "retaining_wall")
+				return Kind::Retaining;
+			if (b.kind == "wall")
+				return Kind::Wall;
+			if (b.kind == "handrail")
+				return Kind::Railing;
+			const std::string& m = b.material;
+			if (m == "wood" || m == "wooden" || m == "board" || m == "boards" || m == "privacy" || m == "panel")
+				return Kind::Boards;
+			if (m == "railing" || m == "split_rail" || m == "metal_bars" || m == "bars" || m == "pole" || m == "post_and_rail" || m == "barbed_wire" ||
+			    m == "electric" || m == "wire")
+				return Kind::Railing;
+			return Kind::ChainLink; // (chain_link, chain, metal, net and the untagged: the street pictures' commonest)
+		}
+
+		// the height where the map gives none (or one out of reason), by kind: a six-foot fence, a four-foot railing, a
+		// garden wall, a retaining wall's face, a hedge, a guard rail's beam top
+		float HeightOf(const world::Barrier& b, Kind k)
+		{
+			const float tagged = b.height;
+			switch (k)
+			{
+			case Kind::ChainLink:
+			case Kind::Boards:
+				return tagged >= 0.6f && tagged <= 4.5f ? tagged : 1.8f;
+			case Kind::Railing:
+				return tagged >= 0.5f && tagged <= 2.0f ? tagged : 1.1f;
+			case Kind::Wall:
+				return tagged >= 0.4f && tagged <= 6.0f ? tagged : 1.6f;
+			case Kind::Retaining:
+				return tagged >= 0.3f && tagged <= 4.0f ? tagged : 0.9f;
+			case Kind::Hedge:
+				return tagged >= 0.5f && tagged <= 4.0f ? tagged : 1.5f;
+			case Kind::GuardRail:
+				return 0.76f;
+			}
+			return 1.8f;
+		}
+
+		// posts' spacing: ten feet for chain link, eight for boards and railings, a guard rail's 6 ft 3 in; walls in pieces
+		float SpacingOf(Kind k)
+		{
+			switch (k)
+			{
+			case Kind::ChainLink:
+				return 3.05f;
+			case Kind::Boards:
+			case Kind::Railing:
+				return 2.44f;
+			case Kind::GuardRail:
+				return 1.905f;
+			case Kind::Hedge:
+				return 1.7f;
+			default:
+				return 3.0f;
+			}
+		}
+
+		P2 Left(const P2& d) { return {-d[1], d[0]}; }
+
+		struct Writer
+		{
+			roads::Collision& col;
+
+			static uint32_t Add(roads::Mesh& m, const P3& p, const P3& n, const P2& t, const Uv& uv, const Colour& colour)
+			{
+				ydr::Vertex v;
+				v.position = p;
+				v.normal = n;
+				v.tangent = {t[0], t[1], 0, 1};
+				v.colour0 = colour;
+				v.uv[0] = uv;
+				m.vertices.push_back(v);
+				return static_cast<uint32_t>(m.vertices.size() - 1);
+			}
+			// a quad, its corners anticlockwise seen from the side its normal faces
+			static void Quad(roads::Mesh& m, const std::array<P3, 4>& q, const P3& n, const P2& t, const std::array<Uv, 4>& uv,
+			    const std::array<Colour, 4>& colours = {Colour{255, 255, 255, 255}, Colour{255, 255, 255, 255}, Colour{255, 255, 255, 255},
+			        Colour{255, 255, 255, 255}})
+			{
+				uint32_t i[4];
+				for (int k = 0; k < 4; ++k)
+					i[k] = Add(m, q[k], n, t, uv[k], colours[k]);
+				m.indices.insert(m.indices.end(), {i[0], i[1], i[2], i[0], i[2], i[3]});
+			}
+			// A vertical face over the ground line a0 -> a1 (bottoms za0, za1, tops ta0, ta1), facing the line's left; `u0`,
+			// `u1` its u at a0, a1, its v from `v0` at the bottom by `vPerMetre` up.
+			static void Face(roads::Mesh& m, const P2& a0, const P2& a1, float za0, float za1, float ta0, float ta1, float u0, float u1, float v0,
+			    float vPerMetre, const Colour& bottom = {255, 255, 255, 255}, const Colour& top = {255, 255, 255, 255})
+			{
+				const P2 d{a1[0] - a0[0], a1[1] - a0[1]};
+				const float l = std::hypot(d[0], d[1]);
+				if (l < 1e-4f)
+					return;
+				const P2 t{d[0] / l, d[1] / l}, n = Left(t);
+				Quad(m, {P3{a0[0], a0[1], za0}, P3{a0[0], a0[1], ta0}, P3{a1[0], a1[1], ta1}, P3{a1[0], a1[1], za1}}, {n[0], n[1], 0}, t,
+				    {Uv{u0, v0}, Uv{u0, v0 - (ta0 - za0) * vPerMetre}, Uv{u1, v0 - (ta1 - za1) * vPerMetre}, Uv{u1, v0}}, {bottom, top, top, bottom});
+			}
+			// a box along `d` (half lengths `along` and `across`) from z0 to z1 round c: its four sides (and its top when
+			// `cap`), u along each side, v up (both a metre's worth by `scale`)
+			static void Box(roads::Mesh& m, const P2& c, const P2& d, float along, float across, float z0, float z1, float scale, bool cap)
+			{
+				const P2 n = Left(d);
+				const std::array<P2, 4> corner{P2{c[0] + d[0] * along + n[0] * across, c[1] + d[1] * along + n[1] * across},
+				    P2{c[0] + d[0] * along - n[0] * across, c[1] + d[1] * along - n[1] * across},
+				    P2{c[0] - d[0] * along - n[0] * across, c[1] - d[1] * along - n[1] * across},
+				    P2{c[0] - d[0] * along + n[0] * across, c[1] - d[1] * along + n[1] * across}}; // (clockwise from above: outward is each side's left)
+				float u = 0;
+				for (int k = 0; k < 4; ++k)
+				{
+					const P2 &p = corner[static_cast<size_t>(k)], &q = corner[static_cast<size_t>((k + 1) % 4)];
+					const float l = std::hypot(q[0] - p[0], q[1] - p[1]);
+					Face(m, p, q, z0, z0, z1, z1, u * scale, (u + l) * scale, 0, scale);
+					u += l;
+				}
+				if (cap)
+					Quad(m, {P3{corner[0][0], corner[0][1], z1}, P3{corner[3][0], corner[3][1], z1}, P3{corner[2][0], corner[2][1], z1},
+					            P3{corner[1][0], corner[1][1], z1}},
+					    {0, 0, 1}, d, {Uv{0, 0}, Uv{along * 2 * scale, 0}, Uv{along * 2 * scale, across * 2 * scale}, Uv{0, across * 2 * scale}});
+			}
+			void Collide(const P3& a, const P3& b, const P3& c, uint8_t material)
+			{
+				const uint32_t base = static_cast<uint32_t>(col.vertices.size());
+				col.vertices.insert(col.vertices.end(), {a, b, c});
+				col.triangles.push_back({base, base + 1, base + 2});
+				col.materials.push_back(material);
+				col.kinds.push_back(kCollisionKind);
+			}
+			// a vertical face's collision (both of its triangles; the other side too when `both`)
+			void CollideFace(const P2& a0, const P2& a1, float za0, float za1, float ta0, float ta1, uint8_t material, bool both)
+			{
+				const P3 b0{a0[0], a0[1], za0}, b1{a1[0], a1[1], za1}, t0{a0[0], a0[1], ta0}, t1{a1[0], a1[1], ta1};
+				Collide(b0, t0, t1, material), Collide(b0, t1, b1, material);
+				if (both)
+					Collide(b0, t1, t0, material), Collide(b0, b1, t1, material);
+			}
+		};
+
+		uint32_t Mix(uint32_t h)
+		{
+			h ^= h >> 16;
+			h *= 0x7feb352du;
+			h ^= h >> 15;
+			h *= 0x846ca68bu;
+			return h ^ (h >> 16);
+		}
+	}
+
+	void Build(const std::vector<world::Barrier>& list, const std::function<float(float, float)>& ground,
+	    const std::function<bool(float, float)>& onRoad, const std::array<float, 4>& box, Meshes& out, roads::Collision& collision,
+	    std::vector<props::Prop>& props, Stats& stats)
+	{
+		Writer w{collision};
+		const uint32_t hedgeBush = loader::convert::Joaat("prop_bush_neat_04"); // (3.2 m long along its y, 2.0 wide, 1.5 high)
+		for (size_t bi = 0; bi < list.size(); ++bi)
+		{
+			const world::Barrier& b = list[bi];
+			if (b.points.size() < 2)
+				continue;
+			const Kind kind = KindOf(b);
+			const float h = HeightOf(b, kind), spacing = SpacingOf(kind);
+			// the line in pieces no longer than the spacing
+			std::vector<P2> q{b.points.front()};
+			for (size_t k = 0; k + 1 < b.points.size(); ++k)
+			{
+				const P2 &a = b.points[k], &c = b.points[k + 1];
+				const float l = std::hypot(c[0] - a[0], c[1] - a[1]);
+				const int n = std::max(1, static_cast<int>(std::ceil(l / spacing - 0.01f)));
+				for (int j = 1; j <= n; ++j)
+					q.push_back({a[0] + (c[0] - a[0]) * j / n, a[1] + (c[1] - a[1]) * j / n});
+			}
+			// (which pieces are built: in the box, not over a road)
+			std::vector<bool> built(q.size() - 1, false);
+			bool any = false;
+			for (size_t k = 0; k + 1 < q.size(); ++k)
+			{
+				const P2 m{(q[k][0] + q[k + 1][0]) / 2, (q[k][1] + q[k + 1][1]) / 2};
+				if (m[0] < box[0] || m[1] < box[1] || m[0] >= box[2] || m[1] >= box[3] || std::hypot(q[k + 1][0] - q[k][0], q[k + 1][1] - q[k][1]) < 0.05f)
+					continue;
+				if (onRoad(m[0], m[1]))
+				{
+					++stats.crossing;
+					continue;
+				}
+				built[k] = any = true;
+			}
+			if (!any)
+				continue;
+			std::vector<float> z(q.size()), s(q.size(), 0.0f);
+			for (size_t k = 0; k < q.size(); ++k)
+			{
+				z[k] = ground(q[k][0], q[k][1]) - 0.05f;
+				if (k)
+					s[k] = s[k - 1] + std::hypot(q[k][0] - q[k - 1][0], q[k][1] - q[k - 1][1]);
+			}
+			const auto dirOf = [&](size_t k) {
+				const float l = std::max(1e-4f, s[k + 1] - s[k]);
+				return P2{(q[k + 1][0] - q[k][0]) / l, (q[k + 1][1] - q[k][1]) / l};
+			};
+			// a post at a built piece's start, and at its end where no built piece goes on
+			const auto posts = [&](auto&& post) {
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+					if (built[k])
+					{
+						post(k, dirOf(k));
+						if (k + 2 >= q.size() || !built[k + 1])
+							post(k + 1, dirOf(k));
+					}
+			};
+			switch (kind)
+			{
+			case Kind::ChainLink:
+			{
+				// the wire mesh (the game's chain link fence's mapping: 8 repeats a metre either way; the vertex colours'
+				// blue from 34 at the foot to 255 at the top, as its own), a top rail, a post every 10 ft
+				const Colour foot{234, 234, 34, 255}, top{234, 234, 255, 255};
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const float za = z[k] + 0.03f, zb = z[k + 1] + 0.03f, ta = z[k] + h - 0.02f, tb = z[k + 1] + h - 0.02f;
+					Writer::Face(out.mesh, q[k], q[k + 1], za, zb, ta, tb, s[k] * 8, s[k + 1] * 8, 0, 8, foot, top);
+					Writer::Face(out.mesh, q[k + 1], q[k], zb, za, tb, ta, s[k + 1] * 8, s[k] * 8, 0, 8, foot, top);
+					w.CollideFace(q[k], q[k + 1], za, zb, ta, tb, kChainLink, false);
+					// (the top rail: 4 cm round, its three sides seen)
+					const P2 d = dirOf(k), n = Left(d);
+					constexpr float r = 0.02f;
+					const P2 l0{q[k][0] + n[0] * r, q[k][1] + n[1] * r}, l1{q[k + 1][0] + n[0] * r, q[k + 1][1] + n[1] * r};
+					const P2 r0{q[k][0] - n[0] * r, q[k][1] - n[1] * r}, r1{q[k + 1][0] - n[0] * r, q[k + 1][1] - n[1] * r};
+					Writer::Face(out.steel, r1, r0, tb - r, ta - r, tb + r, ta + r, s[k + 1], s[k], 0, 1);
+					Writer::Face(out.steel, l0, l1, ta - r, tb - r, ta + r, tb + r, s[k], s[k + 1], 0, 1);
+					Writer::Quad(out.steel, {P3{l0[0], l0[1], ta + r}, P3{r0[0], r0[1], ta + r}, P3{r1[0], r1[1], tb + r}, P3{l1[0], l1[1], tb + r}},
+					    {0, 0, 1}, d, {Uv{s[k], 0}, Uv{s[k], 0.04f}, Uv{s[k + 1], 0.04f}, Uv{s[k + 1], 0}});
+					++stats.pieces;
+				}
+				posts([&](size_t k, const P2& d) { Writer::Box(out.steel, q[k], d, 0.03f, 0.03f, z[k] - 0.1f, z[k] + h + 0.04f, 1.0f, true); });
+				++stats.fences;
+				break;
+			}
+			case Kind::Boards:
+			{
+				// boards (the weathered boards' picture turned on its side: its boards stand up, 10 to 1.5 m, its post
+				// strip - the last eighth - left out), both faces, on 9 cm posts
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const P2 n = Left(dirOf(k));
+					constexpr float half = 0.012f;
+					const P2 a0{q[k][0] + n[0] * half, q[k][1] + n[1] * half}, a1{q[k + 1][0] + n[0] * half, q[k + 1][1] + n[1] * half};
+					const P2 b0{q[k][0] - n[0] * half, q[k][1] - n[1] * half}, b1{q[k + 1][0] - n[0] * half, q[k + 1][1] - n[1] * half};
+					const float za = z[k] + 0.05f, zb = z[k + 1] + 0.05f, ta = z[k] + h, tb = z[k + 1] + h;
+					const auto boards = [&](roads::Mesh& m, const P2& p0, const P2& p1, float s0, float s1, float zp0, float zp1, float tp0, float tp1) {
+						const P2 d{p1[0] - p0[0], p1[1] - p0[1]};
+						const float l = std::hypot(d[0], d[1]);
+						const P2 t{d[0] / l, d[1] / l}, nn = Left(t);
+						// (u up the boards, 0 to 0.875; v along the fence, a picture's worth every 1.5 m)
+						Writer::Quad(m, {P3{p0[0], p0[1], zp0}, P3{p0[0], p0[1], tp0}, P3{p1[0], p1[1], tp1}, P3{p1[0], p1[1], zp1}}, {nn[0], nn[1], 0}, t,
+						    {Uv{0, s0 / 1.5f}, Uv{0.875f, s0 / 1.5f}, Uv{0.875f, s1 / 1.5f}, Uv{0, s1 / 1.5f}});
+					};
+					boards(out.boards, a0, a1, s[k], s[k + 1], za, zb, ta, tb);
+					boards(out.boards, b1, b0, s[k + 1], s[k], zb, za, tb, ta);
+					// (the top's edge)
+					Writer::Quad(out.boards, {P3{a0[0], a0[1], ta}, P3{b0[0], b0[1], ta}, P3{b1[0], b1[1], tb}, P3{a1[0], a1[1], tb}}, {0, 0, 1}, dirOf(k),
+					    {Uv{0.9f, s[k] / 1.5f}, Uv{0.95f, s[k] / 1.5f}, Uv{0.95f, s[k + 1] / 1.5f}, Uv{0.9f, s[k + 1] / 1.5f}});
+					w.CollideFace(q[k], q[k + 1], za, zb, ta, tb, kWood, true);
+					++stats.pieces;
+				}
+				posts([&](size_t k, const P2& d) { Writer::Box(out.boards, q[k], d, 0.045f, 0.06f, z[k] - 0.1f, z[k] + h + 0.05f, 0.5f, true); });
+				++stats.fences;
+				break;
+			}
+			case Kind::Railing:
+			{
+				// posts and two rails (at a third and at the top)
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const P2 d = dirOf(k), m{(q[k][0] + q[k + 1][0]) / 2, (q[k][1] + q[k + 1][1]) / 2};
+					const float l = s[k + 1] - s[k], zm = (z[k] + z[k + 1]) / 2;
+					for (const float at : {h * 0.35f, h - 0.03f})
+						Writer::Box(out.steel, m, d, l / 2, 0.025f, zm + at - 0.03f, zm + at + 0.03f, 1.0f, true);
+					w.CollideFace(q[k], q[k + 1], z[k] + 0.1f, z[k + 1] + 0.1f, z[k] + h, z[k + 1] + h, kRailing, false);
+					++stats.pieces;
+				}
+				posts([&](size_t k, const P2& d) { Writer::Box(out.steel, q[k], d, 0.035f, 0.035f, z[k] - 0.1f, z[k] + h + 0.03f, 1.0f, true); });
+				++stats.fences;
+				break;
+			}
+			case Kind::Wall:
+			case Kind::Retaining:
+			{
+				// a wall in pieces: both faces, its top, its ends (painted block, the picture 2.6 m wide and 2.4 high; the
+				// retaining walls' concrete as the roads' - a picture every 6 m)
+				const bool block = kind == Kind::Wall;
+				roads::Mesh& m = block ? out.block : out.concrete;
+				const Colour c = block ? Colour{255, 255, 255, 255} : Colour{255, 12, 255, 255}; // (the roads' shader's: as their own vertices)
+				const float half = block ? 0.1f : 0.15f, uScale = block ? 1 / 2.6f : 1 / 6.0f, vScale = block ? 1 / 2.4f : 1 / 6.0f;
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const P2 d = dirOf(k), n = Left(d);
+					const P2 a0{q[k][0] + n[0] * half, q[k][1] + n[1] * half}, a1{q[k + 1][0] + n[0] * half, q[k + 1][1] + n[1] * half};
+					const P2 b0{q[k][0] - n[0] * half, q[k][1] - n[1] * half}, b1{q[k + 1][0] - n[0] * half, q[k + 1][1] - n[1] * half};
+					const float za = z[k] - 0.1f, zb = z[k + 1] - 0.1f, ta = z[k] + h, tb = z[k + 1] + h;
+					Writer::Face(m, a0, a1, za, zb, ta, tb, s[k] * uScale, s[k + 1] * uScale, 1, vScale, c, c);
+					Writer::Face(m, b1, b0, zb, za, tb, ta, s[k + 1] * uScale, s[k] * uScale, 1, vScale, c, c);
+					Writer::Quad(m, {P3{a0[0], a0[1], ta}, P3{b0[0], b0[1], ta}, P3{b1[0], b1[1], tb}, P3{a1[0], a1[1], tb}}, {0, 0, 1}, d,
+					    {Uv{s[k] * uScale, 0}, Uv{s[k] * uScale, 2 * half * vScale}, Uv{s[k + 1] * uScale, 2 * half * vScale}, Uv{s[k + 1] * uScale, 0}},
+					    {c, c, c, c});
+					// (an end where the wall stops)
+					if (k == 0 || !built[k - 1])
+						Writer::Face(m, b0, a0, za, za, ta, ta, 0, 2 * half * uScale, 1, vScale, c, c);
+					if (k + 2 >= q.size() || !built[k + 1])
+						Writer::Face(m, a1, b1, zb, zb, tb, tb, 0, 2 * half * uScale, 1, vScale, c, c);
+					w.CollideFace(a0, a1, za, zb, ta, tb, kConcrete, false);
+					w.CollideFace(b1, b0, zb, za, tb, ta, kConcrete, false);
+					++stats.pieces;
+				}
+				++stats.walls;
+				break;
+			}
+			case Kind::Hedge:
+			{
+				// the game's clipped bush (prop_bush_neat_04) a little apart along the line, its long side along it, 1.2 m
+				// wide, as high as the hedge
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const P2 d = dirOf(k), m{(q[k][0] + q[k + 1][0]) / 2, (q[k][1] + q[k + 1][1]) / 2};
+					props::Prop p;
+					p.archetype = hedgeBush;
+					p.position = {m[0], m[1], ground(m[0], m[1]) - 0.1f};
+					p.heading = std::atan2(-d[0], d[1]) + ((Mix(static_cast<uint32_t>(bi * 977 + k)) & 1) ? 3.14159265f : 0.0f);
+					p.lodDist = 150;
+					p.scale = 0.6f;
+					p.scaleZ = h / 1.5f;
+					props.push_back(p);
+					++stats.pieces;
+				}
+				++stats.hedges;
+				break;
+			}
+			case Kind::GuardRail:
+			{
+				// the beam on the road's side of the posts (the side a road is on within 4 m; the left when none), 31 cm
+				// deep, its top 76 cm up; the posts 15 x 10 cm
+				const size_t mid = q.size() / 2 - 1;
+				const P2 dm = dirOf(mid), nm = Left(dm), cm{(q[mid][0] + q[mid + 1][0]) / 2, (q[mid][1] + q[mid + 1][1]) / 2};
+				const float side = onRoad(cm[0] - nm[0] * 4, cm[1] - nm[1] * 4) && !onRoad(cm[0] + nm[0] * 4, cm[1] + nm[1] * 4) ? -1.0f : 1.0f;
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const P2 n = Left(dirOf(k));
+					const float off = 0.12f * side;
+					const P2 a0{q[k][0] + n[0] * off, q[k][1] + n[1] * off}, a1{q[k + 1][0] + n[0] * off, q[k + 1][1] + n[1] * off};
+					const float ta = z[k] + h, tb = z[k + 1] + h, ba = ta - 0.31f, bb = tb - 0.31f;
+					// (the picture's upper half: the beam's face, a picture every 3.81 m)
+					if (side > 0)
+						Writer::Face(out.rail, a0, a1, ba, bb, ta, tb, s[k] / 3.81f, s[k + 1] / 3.81f, 0.5f, 0.5f / 0.31f);
+					else
+						Writer::Face(out.rail, a1, a0, bb, ba, tb, ta, s[k + 1] / 3.81f, s[k] / 3.81f, 0.5f, 0.5f / 0.31f);
+					// (its back, plain)
+					if (side > 0)
+						Writer::Face(out.rail, a1, a0, bb, ba, tb, ta, s[k + 1] / 3.81f, s[k] / 3.81f, 0.5f, 0.5f / 0.31f);
+					else
+						Writer::Face(out.rail, a0, a1, ba, bb, ta, tb, s[k] / 3.81f, s[k + 1] / 3.81f, 0.5f, 0.5f / 0.31f);
+					w.CollideFace(a0, a1, ba, bb, ta, tb, kRailing, true);
+					++stats.pieces;
+				}
+				posts([&](size_t k, const P2& d) { Writer::Box(out.steel, q[k], d, 0.05f, 0.075f, z[k] - 0.1f, z[k] + h - 0.02f, 1.0f, true); });
+				++stats.rails;
+				break;
+			}
+			}
+			for (size_t k = 0; k + 1 < q.size(); ++k)
+				if (built[k])
+					stats.metres += s[k + 1] - s[k];
+		}
+	}
+}

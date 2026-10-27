@@ -1794,6 +1794,42 @@ int main(int argc, char** argv)
 		}
 		return 0;
 	}
+	if (command == "ytyp-check")
+	{
+		// one of our archetype files on disk (--file): its archetypes, the names twice, the boxes not finite or huge, the
+		// lodDists out of range - what makes the game pass the whole file over
+		std::ifstream in(g_options["file"], std::ios::binary);
+		Bytes data((std::istreambuf_iterator<char>(in)), {});
+		ue5export::meta::Meta m;
+		if (data.empty() || !m.Read(data, error))
+			return Fail("cannot read " + g_options["file"] + ": " + error);
+		using ue5export::meta::Hash;
+		std::map<uint32_t, int> seen;
+		size_t count = 0, odd = 0;
+		for (const ue5export::meta::Ref& a : m.Root().Array(Hash("archetypes")))
+		{
+			if (!a)
+				continue;
+			++count;
+			const uint32_t nameHash = a.Get<uint32_t>(Hash("name"));
+			++seen[nameHash];
+			const auto lo = a.Get<std::array<float, 4>>(Hash("bbMin")), hi = a.Get<std::array<float, 4>>(Hash("bbMax"));
+			const auto centre = a.Get<std::array<float, 4>>(Hash("bsCentre"));
+			const float radius = a.Get<float>(Hash("bsRadius")), lod = a.Get<float>(Hash("lodDist"));
+			bool bad = !(lod > 0 && lod < 20000) || !(radius >= 0 && radius < 20000);
+			for (int k = 0; k < 3; ++k)
+				bad |= !std::isfinite(lo[k]) || !std::isfinite(hi[k]) || !std::isfinite(centre[k]) || std::fabs(lo[k]) > 20000 || std::fabs(hi[k]) > 20000 ||
+				       lo[k] > hi[k];
+			if (bad && odd++ < 20)
+				std::printf("odd archetype %08x: box %g %g %g .. %g %g %g, sphere %g %g %g r %g, lodDist %g\n", nameHash, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
+				    centre[0], centre[1], centre[2], radius, lod);
+		}
+		size_t twice = 0;
+		for (const auto& [h, n] : seen)
+			twice += n > 1;
+		std::printf("%zu archetypes, %zu odd, %zu names more than once\n", count, odd, twice);
+		return 0;
+	}
 	if (command == "vertex-dump")
 	{
 		// a game model's vertices as they are (position, normal, colour, first texture coordinates) and triangles, for
@@ -1890,6 +1926,28 @@ int main(int argc, char** argv)
 			std::printf("\n");
 		}
 		return 0;
+	}
+	if (command == "ls-far")
+	{
+		// Los Santos's far views: its maps of long-range and LOD models (the game's own: <area>_..._long_<n>, <area>_lod<n>),
+		// which the loader puts away while the player is on a new land (src/loader/game/sectors.cpp; their mountains stood
+		// over Florida's horizon): --out <file> (ModLoader\data\ls_far_maps.txt), a name a line
+		std::set<std::string> names;
+		for (const auto& [name, f] : files.Files())
+		{
+			if (!name.ends_with(".ymap") || name.starts_with("wb"))
+				continue;
+			const std::string stem = name.substr(0, name.size() - 5);
+			const size_t lod = stem.rfind("_lod"), longRange = stem.rfind("_long_");
+			const auto digits = [&](size_t from) { return std::all_of(stem.begin() + static_cast<ptrdiff_t>(from), stem.end(), [](char c) { return c >= '0' && c <= '9'; }); };
+			if ((lod != std::string::npos && stem.size() - lod <= 5 && digits(lod + 4)) || (longRange != std::string::npos && longRange + 6 < stem.size() && digits(longRange + 6)))
+				names.insert(stem);
+		}
+		std::ofstream out(g_options["out"], std::ios::binary);
+		for (const auto& n : names)
+			out << n << "\n";
+		std::printf("%zu maps\n", names.size());
+		return out ? 0 : 1;
 	}
 	if (command == "file-find")
 	{

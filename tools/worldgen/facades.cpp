@@ -493,11 +493,17 @@ namespace worldgen::facades
 			return v.empty() ? 0 : v[Hash(seed) % v.size()];
 		};
 		const float r = Rand(seed, 99);
-		const bool house = kind == "house" || kind == "detached" || kind == "bungalow" || kind == "semidetached_house" || kind == "terrace";
-		const bool industrial = kind == "industrial" || kind == "warehouse" || kind == "garage" || kind == "garages" || kind == "shed" || kind == "hangar";
+		// (a house's garage is the house's; the metal sheds only the warehouses, works and barns - a big store, a stadium's
+		// stands, a parking garage are block and concrete in the street pictures)
+		const bool house = kind == "house" || kind == "detached" || kind == "bungalow" || kind == "semidetached_house" || kind == "terrace" ||
+		                   ((kind == "garage" || kind == "garages" || kind == "carport") && height < 6);
+		const bool industrial = kind == "industrial" || kind == "warehouse" || kind == "shed" || kind == "hangar" || kind == "manufacture" || kind == "barn" ||
+		                        kind == "farm_auxiliary" || kind == "storage_tank";
 		const bool office = kind == "office" || kind == "commercial" || kind == "retail" || kind == "hospital" || kind == "university" || kind == "school";
-		if (industrial || (height < 10 && area > 3000 && !house))
+		if (industrial)
 			return among(Kind::Shed);
+		if (kind == "parking" || kind == "stadium" || kind == "grandstand" || kind == "garage" || kind == "garages" || (height < 10 && area > 3000 && !house))
+			return among(Kind::Concrete);
 		// (north Florida: frame houses in siding, brick ones, some stucco - Tallahassee's streets; south Florida: concrete
 		// block and stucco, Miami's)
 		const bool north = latitude >= 28.8, miami = latitude < 26.3;
@@ -518,6 +524,8 @@ namespace worldgen::facades
 					kinds = north || latitude >= 27.0 ? std::vector<Kind>{Kind::Siding, Kind::House} : std::vector<Kind>{Kind::House};
 				else if (height < 6.5f)
 					kinds = {Kind::Shop, Kind::Concrete};
+				else if (height < 16)
+					kinds = {Kind::Concrete, Kind::BrickCity}; // (no glass boxes: the low offices and shops are block and brick)
 				else
 					kinds = {Kind::Concrete, Kind::Glass, Kind::Balcony, Kind::BrickCity};
 				int best = -1;

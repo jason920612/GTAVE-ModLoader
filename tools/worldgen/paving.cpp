@@ -129,11 +129,13 @@ namespace worldgen::paving
 		if (smoothness == "impassable")
 			return 1.0f;
 		const std::string base = kind.ends_with("_link") ? kind.substr(0, kind.size() - 5) : kind;
-		const float typical = base == "motorway" || base == "trunk" ? 0.12f : base == "primary" ? 0.18f : base == "secondary" ? 0.24f : base == "tertiary" ? 0.3f
-		                    : base == "service"                                                                                         ? 0.5f
-		                                                                                                                                 : 0.36f;
+		// (Florida's streets as the street pictures show them: mostly sound, now and then a patch; few potholes but in the
+		// car parks' and alleys' service roads)
+		const float typical = base == "motorway" || base == "trunk" ? 0.08f : base == "primary" ? 0.12f : base == "secondary" ? 0.16f : base == "tertiary" ? 0.2f
+		                    : base == "service"                                                                                         ? 0.42f
+		                                                                                                                                 : 0.25f;
 		Random r{Mix(static_cast<uint32_t>(id) ^ Mix(static_cast<uint32_t>(id >> 32)))};
-		return std::clamp(typical + (r.Next() - 0.5f) * 0.3f, 0.0f, 1.0f);
+		return std::clamp(typical + (r.Next() - 0.5f) * 0.24f, 0.0f, 1.0f);
 	}
 
 	std::vector<Feature> Features(Paving p, float wear, uint32_t seed, float s0, float s1, float half, const std::vector<float>& lines, bool edgeLines)

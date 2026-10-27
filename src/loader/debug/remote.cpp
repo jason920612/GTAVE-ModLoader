@@ -49,7 +49,7 @@ namespace loader::debug::remote
 		                   kSetCamFov = 0xB13C14F66A00D047, kSetCamActive = 0x026FB97D0A425F84, kRenderScriptCams = 0x07E5B515DB0636FC,
 		                   kDestroyCam = 0x865908C81A2C22E9, kSetFocusPosAndVel = 0xBB7454BAFF08FE25, kClearFocus = 0x31B73D1EA9F01DA2,
 		                   kSetClockTime = 0x47C3B5848C3E45D8, kPauseClock = 0x4055E40BD2DBEC1D, kSetWeatherTypeNowPersist = 0xED712CA327900C8A,
-		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5, kSetClockDate = 0xB096419DF0D06CE7;
+		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5, kSetClockDate = 0xB096419DF0D06CE7, kSetRain = 0x643E26EA6E024D92;
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6, kSetEntityCoords = 0x06843DA7060A026B;
 		constexpr uint64_t kGetGameplayCamRelativeHeading = 0x743607648ADD4587, kSetGameplayCamRelativeHeading = 0xB4EC2312F4E5B1F1;
 		struct CamRequest
@@ -1116,6 +1116,7 @@ namespace loader::debug::remote
 					natives::Invoke<void>(kSetClockTime, 12, 0, 0);
 					natives::Invoke<void>(kPauseClock, 1);
 					natives::Invoke<void>(kSetWeatherTypeNowPersist, "EXTRASUNNY");
+					natives::Invoke<void>(kSetRain, 0.0f); // (no rain's puddles: a wet road mirrored the sky in the comparisons)
 				}
 				log::Info("remote: camera at {:.1f} {:.1f} {:.1f} heading {:.1f} pitch {:.1f} fov {:.1f}", g_cam.x, g_cam.y, g_cam.z, g_cam.heading, g_cam.pitch,
 				    g_cam.fov);
@@ -1127,6 +1128,7 @@ namespace loader::debug::remote
 				natives::Invoke<void>(kClearFocus);
 				natives::Invoke<void>(kPauseClock, 0);
 				natives::Invoke<void>(kClearWeatherTypePersist);
+				natives::Invoke<void>(kSetRain, -1.0f); // (the weather's own rain again)
 				g_camHandle = 0;
 			}
 		}

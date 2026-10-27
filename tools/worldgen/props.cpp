@@ -90,13 +90,17 @@ namespace worldgen::props
 		{
 			if (!e.sidewalks || e.bridge)
 				continue;
+			// (a street light of its own on the bigger roads - the residential streets' hang on the power poles, the street
+			// pictures there have no steel poles)
+			const bool lit = !(e.kind == "residential" || e.kind == "unclassified" || e.kind == "living_street" || e.kind == "service" ||
+			                   e.kind == "road" || e.kind == "track");
 			const float total = Length(e);
 			const float side = e.HalfWidth() + 0.6f; // (on the sidewalk, near the kerb)
 			// (none by a street junction's corner, where turning cars cut across the kerb: from past its reach)
 			const float fromA = roads::CornerReach(n, e.a) + 1, fromB = roads::CornerReach(n, e.b) + 1;
-			// street lights every 40 m on the right of the way (both sides on wide roads), their arm (the model's -y)
+			// street lights every 45 m on the right of the way (both sides on wide roads), their arm (the model's -y)
 			// over the road
-			for (float s = std::max(12.0f, fromA); s < total - std::max(12.0f, fromB); s += 40)
+			for (float s = std::max(12.0f, fromA); lit && s < total - std::max(12.0f, fromB); s += 45)
 			{
 				P2 p, d;
 				float z;
@@ -125,7 +129,7 @@ namespace worldgen::props
 						break;
 					const float sign = static_cast<int>(s / 30) % 2 ? 1.0f : -1.0f;
 					const P2 right{d[1], -d[0]};
-					const float o = e.HalfWidth() + roads::kSidewalk * 0.65f;
+					const float o = e.HalfWidth() + std::max(e.Walk(), 1.6f) * 0.65f;
 					const P2 q{p[0] + right[0] * o * sign, p[1] + right[1] * o * sign};
 					if (In(box, q[0], q[1]))
 						addPalm(q[0], q[1], z + roads::kKerb + 0.2f);
@@ -135,7 +139,27 @@ namespace worldgen::props
 		// that stops - the smaller where a smaller meets a bigger, the stem of a T of equals, every way at a crossroads of
 		// residential streets (an all-way stop) -, 1.5 m before the corner's reach, 0.8 m off the asphalt, facing the drivers
 		const uint32_t stop = loader::convert::Joaat("prop_sign_road_01a");
-		for (size_t vi = 0; vi < n.vertices.size(); ++vi)
+		// (where the map has its stop signs - a town's mapped as Tallahassee's 813 are -, those; else by the rule below)
+		if (n.mappedStops >= 20)
+		{
+			for (const roads::Edge& e : n.edges)
+				for (const bool atA : {true, false})
+				{
+					if (!(atA ? e.stopA : e.stopB) || e.points.size() < 2 || e.bridge)
+						continue;
+					const roads::Vertex& v = n.vertices[static_cast<size_t>(atA ? e.a : e.b)];
+					const P2 p0 = atA ? e.points[1] : e.points[e.points.size() - 2], p1 = atA ? e.points[0] : e.points.back();
+					const float l = std::hypot(p1[0] - p0[0], p1[1] - p0[1]);
+					if (l < 1e-3f)
+						continue;
+					const P2 in{(p1[0] - p0[0]) / l, (p1[1] - p0[1]) / l}, right{in[1], -in[0]};
+					const float back = roads::CornerReach(n, atA ? e.a : e.b) + 1.5f, aside = e.HalfWidth() + 0.8f;
+					const P2 q{v.p[0] - in[0] * back + right[0] * aside, v.p[1] - in[1] * back + right[1] * aside};
+					if (In(box, q[0], q[1]) && open(q[0], q[1]))
+						out.push_back({stop, {q[0], q[1], ground(q[0], q[1])}, std::atan2(-in[0], in[1]), 200});
+				}
+		}
+		for (size_t vi = 0; vi < n.vertices.size() && n.mappedStops < 20; ++vi)
 		{
 			const auto& v = n.vertices[vi];
 			if (v.signals || v.edges.size() < 3)

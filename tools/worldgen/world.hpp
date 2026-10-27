@@ -23,6 +23,9 @@ namespace worldgen::world
 		float laneWidth = 3.5f;
 		bool sidewalks = false;
 		bool sidewalkTagged = false; // (OSM said so - sidewalk=both/left/right/no/separate; else the build decides by the land)
+		float sidewalkWidth = 0;     // (m; 0: by the road's kind - the build's, not saved)
+		float parking = 0;           // (m: a parking lane's width each side, 0 none - the build's, not saved)
+		bool bikeLanes = false;      // (OSM cycleway=lane: a painted bike lane by each kerb)
 		bool bridge = false, tunnel = false;
 		int layer = 0;
 		float speed = 0; // m/s (0: by kind)
@@ -48,7 +51,8 @@ namespace worldgen::world
 
 	struct Point
 	{
-		std::string kind; // tree, traffic_signals, ...; place:city, place:town, place:village, place:suburb, ... (with a name)
+		std::string kind; // tree, traffic_signals, stop, crossing (crossing:marked, crossing:unmarked when tagged so), ...;
+		                  // place:city, place:town, place:village, place:suburb, ... (with a name)
 		P2 position{};
 		std::string name;
 	};
@@ -68,6 +72,15 @@ namespace worldgen::world
 		std::string kind;
 		bool bridge = false;
 		int layer = 0;
+	};
+
+	// A barrier along a line (OSM barrier=*): fence (its material: chain_link, wood, metal, ...), wall, retaining_wall,
+	// hedge, guard_rail; its height when tagged (0: not).
+	struct Barrier
+	{
+		std::vector<P2> points;
+		std::string kind, material;
+		float height = 0;
 	};
 
 	// Latitude and longitude to game metres: (lat0, lon0) at (x0, y0), metres per degree at the box's middle.
@@ -96,6 +109,7 @@ namespace worldgen::world
 		std::vector<Area> areas;
 		std::vector<Waterway> waterways;
 		std::vector<Rail> rails;
+		std::vector<Barrier> barriers;
 		std::vector<Road> roads;
 		std::vector<Building> buildings;
 		std::vector<Point> points;

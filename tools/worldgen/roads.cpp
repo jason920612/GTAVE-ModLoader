@@ -101,6 +101,7 @@ namespace worldgen::roads
 		bool Alike(const Edge& x, const Edge& y)
 		{
 			return x.forward == y.forward && x.backward == y.backward && x.laneWidth == y.laneWidth && x.sidewalks == y.sidewalks && x.bridge == y.bridge &&
+			       x.walkWidth == y.walkWidth && x.parking == y.parking && x.bike == y.bike &&
 			       x.layer == y.layer &&
 			       x.kind == y.kind && paving::Of(x.surface) == paving::Of(y.surface);
 		}
@@ -226,10 +227,10 @@ namespace worldgen::roads
 					const P3 normal{n[0], n[1], 0};
 					// (the kerb picture's plain concrete strip, its last quarter, down from the top: the rest are painted red
 					// and yellow - no stopping, everywhere - as LS's kerbs)
-					constexpr float kPlain = 0.76f;
+					constexpr float kPlain = 0.81f; // (the light grey strip: the one above it is a darker grey)
 					// (a taller wall - the sidewalk's outer edge over the verge, 0.4 m - squeezed into that strip: past its end
 					// the picture wraps round to the red rows, every sidewalk's back painted as LS's no-stopping kerbs)
-					const float vb = kPlain + std::min(height / 0.625f, 0.235f);
+					const float vb = kPlain + std::min(height / 0.625f, 0.185f);
 					const uint32_t i0 = Add(m, b0, normal, {s / kTexture, vb}), i1 = Add(m, b1, normal, {(s + l) / kTexture, vb}),
 					               i2 = Add(m, t1, normal, {(s + l) / kTexture, kPlain}), i3 = Add(m, t0, normal, {s / kTexture, kPlain});
 					if (faceLeft)
@@ -788,7 +789,7 @@ namespace worldgen::roads
 			return 0;
 		float side = 0;
 		for (const int e : list)
-			side = std::max(side, n.edges[e].HalfWidth() + (n.edges[e].sidewalks ? kSidewalk : 0.0f));
+			side = std::max(side, n.edges[e].HalfWidth() + n.edges[e].Walk());
 		// (the roads stop short of a junction by its side * 1.15 + 0.5 - Geometry - and the corner's sidewalk is that far out)
 		return std::hypot(side * 1.15f + 0.5f + 3, side);
 	}
@@ -815,6 +816,14 @@ namespace worldgen::roads
 		for (const auto& r : w.roads)
 		{
 			Edge e;
+			// (a sidewalk's width by the street: 1.6 m - five feet - on a residential street, 2.2 m on a bigger one; downtown's
+			// wider, set by the build)
+			e.walkWidth = r.sidewalkWidth > 0 ? r.sidewalkWidth
+			            : r.kind.starts_with("primary") || r.kind.starts_with("secondary") || r.kind.starts_with("trunk") || r.kind.starts_with("tertiary")
+			                ? 2.2f
+			                : 1.6f;
+			e.parking = r.parking;
+			e.bike = r.bikeLanes ? 1.5f : 0.0f;
 			e.forward = r.forward, e.backward = r.backward, e.laneWidth = r.laneWidth, e.sidewalks = r.sidewalks, e.bridge = r.bridge, e.layer = r.layer, e.kind = r.kind,
 			e.name = r.name, e.speed = r.speed, e.id = r.id, e.surface = r.surface, e.smoothness = r.smoothness;
 			e.a = vertex(r.points.front());
@@ -901,6 +910,55 @@ namespace worldgen::roads
 			}
 			if (best >= 0)
 				out.vertices[best].signals = true;
+		}
+		// crossings and stop signs as OpenStreetMap maps them: on the edge whose junction end (within 20 m) and line (within
+		// 8 m) are nearest - a crossing painted when the map says so (or where signals stop the traffic: the map's untagged
+		// ones there are), a stop sign for the traffic coming in at that end
+		for (const auto& p : w.points)
+		{
+			const bool marked = p.kind == "crossing:marked" || p.kind == "crossing", stop = p.kind == "stop";
+			if (!marked && !stop)
+				continue;
+			int bestEdge = -1;
+			bool bestAtA = false;
+			float bestD = 1e30f;
+			for (size_t ei = 0; ei < out.edges.size(); ++ei)
+			{
+				const Edge& e = out.edges[ei];
+				if (Minor(e) || e.points.size() < 2)
+					continue;
+				for (const bool atA : {true, false})
+				{
+					const int v = atA ? e.a : e.b;
+					if (out.vertices[static_cast<size_t>(v)].edges.size() < 3)
+						continue;
+					const float toJunction = Dist(out.vertices[static_cast<size_t>(v)].p, p.position);
+					if (toJunction > 20)
+						continue;
+					// (the point's distance to the edge's first or last 25 m)
+					float toLine = 1e30f;
+					const size_t m = e.points.size();
+					for (size_t k = 0; k + 1 < m; ++k)
+					{
+						const P2 &q0 = e.points[atA ? k : m - 1 - k], &q1 = e.points[atA ? k + 1 : m - 2 - k];
+						const P2 d{q1[0] - q0[0], q1[1] - q0[1]};
+						const float l2 = d[0] * d[0] + d[1] * d[1];
+						const float t = l2 > 0 ? std::clamp(((p.position[0] - q0[0]) * d[0] + (p.position[1] - q0[1]) * d[1]) / l2, 0.0f, 1.0f) : 0.0f;
+						toLine = std::min(toLine, Dist({q0[0] + d[0] * t, q0[1] + d[1] * t}, p.position));
+						if (Dist(q1, out.vertices[static_cast<size_t>(v)].p) > 25)
+							break;
+					}
+					if (toLine < 8 && toLine + toJunction * 0.2f < bestD)
+						bestD = toLine + toJunction * 0.2f, bestEdge = static_cast<int>(ei), bestAtA = atA;
+				}
+			}
+			if (bestEdge < 0)
+				continue;
+			Edge& e = out.edges[static_cast<size_t>(bestEdge)];
+			if (stop)
+				(bestAtA ? e.stopA : e.stopB) = true, ++out.mappedStops;
+			else if (p.kind == "crossing:marked" || out.vertices[static_cast<size_t>(bestAtA ? e.a : e.b)].signals)
+				(bestAtA ? e.crossingA : e.crossingB) = true, ++out.mappedCrossings;
 		}
 		return out;
 	}
@@ -1010,7 +1068,7 @@ namespace worldgen::roads
 			if (kind[v] == Kind::Junction && list.size() >= 3 && through.size() == 2 && through[0] != through[1])
 				kind[v] = Kind::Driveway;
 			for (const int ei : list)
-				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0));
+				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + n.edges[ei].Walk());
 		}
 		// (an edge's direction leaving vertex v)
 		const auto away = [&](const Edge& e, int v) {
@@ -1074,7 +1132,7 @@ namespace worldgen::roads
 						if (!Minor(n.edges[s]))
 						{
 							half = std::max(half, n.edges[s].HalfWidth());
-							walk = std::max(walk, n.edges[s].sidewalks ? kSidewalk : 0.0f);
+							walk = std::max(walk, n.edges[s].Walk());
 							along = away(n.edges[s], v);
 						}
 					const P2 d = away(e, v);
@@ -1096,7 +1154,7 @@ namespace worldgen::roads
 			bool any = false;
 			float half = 0;
 			int lanesF = 0, lanesB = 0;
-			float laneWidth = 3.5f;
+			float laneWidth = 3.5f, parking = 0;
 			bool sidewalks = false;
 			int other = -1;
 		};
@@ -1121,6 +1179,7 @@ namespace worldgen::roads
 			x.other = other;
 			x.half = o.HalfWidth();
 			x.laneWidth = o.laneWidth;
+			x.parking = o.Side();
 			x.sidewalks = o.sidewalks;
 			// traffic going our way: at our start it comes out of the other; at our end it goes into it
 			const bool otherPointsHere = o.b == v;
@@ -1157,7 +1216,8 @@ namespace worldgen::roads
 			const Next na = nextAt(ei, true), nb = nextAt(ei, false);
 			const float half = e.HalfWidth(), w = e.laneWidth;
 			// this road's layout: the centre line's offset (left positive) with its lanes, as the next road has it
-			const auto centreOf = [](float h, int lanesF, float lw) { return -h + 0.3f + lanesF * lw; };
+			// (a parking lane on the right before the lanes)
+			const auto centreOf = [](float h, int lanesF, float lw, float park) { return -h + 0.3f + park + lanesF * lw; };
 			// tapers: where this road changes into a narrower one, its last metres narrow to it and its centre line
 			// moves over to the next road's (of two alike wide, the first in the list moves); a sidewalk the next road
 			// has not narrows to nothing
@@ -1165,7 +1225,8 @@ namespace worldgen::roads
 			const auto taperOf = [&](const Next& x) {
 				if (!x.any)
 					return 0.0f;
-				const float shift = owns(x) ? std::max(half - x.half, std::fabs(centreOf(half, e.forward, w) - centreOf(x.half, x.lanesF, x.laneWidth))) : 0.0f;
+				const float shift = owns(x) ? std::max(half - x.half, std::fabs(centreOf(half, e.forward, w, e.Side()) - centreOf(x.half, x.lanesF, x.laneWidth, x.parking)))
+				                            : 0.0f;
 				const float walk = e.sidewalks && !x.sidewalks ? 10.0f : 0.0f;
 				return shift > 0.05f || walk > 0 ? std::clamp(shift * 12.0f + walk, 10.0f, 40.0f) : 0.0f;
 			};
@@ -1200,24 +1261,24 @@ namespace worldgen::roads
 				const float t = std::clamp(1 - d / tap, 0.0f, 1.0f);
 				return t * t * (3 - 2 * t);
 			};
-			std::vector<float> halfAt(p.size()), walkAt(p.size()), centreAt(p.size());
+			std::vector<float> halfAt(p.size()), walkAt(p.size()), centreAt(p.size()), parkAt(p.size());
 			for (size_t i = 0; i < p.size(); ++i)
 			{
 				const float ta = into(s[i], true), tb = into(s[i], false);
-				float h = half, c = centreOf(half, e.forward, w), wk = e.sidewalks ? kSidewalk : 0;
+				float h = half, c = centreOf(half, e.forward, w, e.Side()), wk = e.Walk(), pk = e.Side();
 				for (const auto& [t, x] : {std::pair{ta, &na}, std::pair{tb, &nb}})
 				{
 					if (t <= 0)
 						continue;
 					// (the narrower of the two keeps its width: only the wider narrows)
 					if (x->half < half)
-						h = h + (x->half - half) * t;
+						h = h + (x->half - half) * t, pk = pk + (x->parking - e.Side()) * t;
 					if (owns(*x))
-						c = c + (centreOf(x->half, x->lanesF, x->laneWidth) - centreOf(half, e.forward, w)) * t;
+						c = c + (centreOf(x->half, x->lanesF, x->laneWidth, x->parking) - centreOf(half, e.forward, w, e.Side())) * t;
 					if (e.sidewalks && !x->sidewalks)
 						wk = wk * (1 - t);
 				}
-				halfAt[i] = h, walkAt[i] = wk, centreAt[i] = c;
+				halfAt[i] = h, walkAt[i] = wk, centreAt[i] = c, parkAt[i] = pk;
 			}
 			// the median paving beyond each side at each point (and so no sidewalk there)
 			const Median& md = medians[ei];
@@ -1278,15 +1339,15 @@ namespace worldgen::roads
 			const bool major = e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary");
 			{
 				std::vector<float> lines;
-				const float c0 = centreOf(half, e.forward, w);
+				const float c0 = centreOf(half, e.forward, w, e.Side());
 				if (e.forward && e.backward && through)
 					lines.insert(lines.end(), {c0 - 0.12f, c0 + 0.12f});
 				for (int j = 1; j < e.forward; ++j)
 					lines.push_back(c0 - j * w);
 				for (int j = 1; j < e.backward; ++j)
 					lines.push_back(c0 + j * w);
-				if (major)
-					lines.insert(lines.end(), {-half + 0.45f, half - 0.45f});
+				if (major || e.bike > 0)
+					lines.insert(lines.end(), {-half + 0.45f + e.Side(), half - 0.45f - e.Side()});
 				const uint32_t seed = static_cast<uint32_t>(e.id) * 2654435761u ^ static_cast<uint32_t>(std::lround(p.front()[0] * 10)) * 40503u ^
 				                      static_cast<uint32_t>(std::lround(p.front()[1] * 10));
 				const float f0 = sStart + std::max({clearA + 1.0f, tapA, 1.5f}), f1 = sEnd - std::max({clearB + 1.0f, tapB, 1.5f});
@@ -1523,16 +1584,17 @@ namespace worldgen::roads
 				const float to = sEnd - std::max(clearB, nb.any && j >= nb.lanesB ? tapB : 0.0f);
 				line(offsets([&](size_t i) { return centreAt[i] + j * w; }), 0.2f, kDashU0, kDashU1, 4.0f, from, to, 3.0f, 12.0f, 0.15f, 0.85f);
 			}
-			if (major)
+			if (major || e.bike > 0)
 			{
-				// (the right edge of the lanes going along: white; the left edge of a one-way road: yellow)
+				// (the right edge of the lanes going along: white; the left edge of a one-way road: yellow; inside the parking
+				// and bike lanes - a bike lane's line on any road)
 				const bool oneWay = !e.forward || !e.backward;
-				line(offsets([&](size_t i) { return -halfAt[i] + 0.45f; }), 0.2f, oneWay && !e.forward ? kYellowU0 : kWhiteU0, oneWay && !e.forward ? kYellowU1 : kWhiteU1,
+				line(offsets([&](size_t i) { return -halfAt[i] + 0.45f + parkAt[i]; }), 0.2f, oneWay && !e.forward ? kYellowU0 : kWhiteU0, oneWay && !e.forward ? kYellowU1 : kWhiteU1,
 				    4.0f, sStart + clearA, sEnd - clearB);
-				line(offsets([&](size_t i) { return halfAt[i] - 0.45f; }), 0.2f, oneWay && !e.backward ? kYellowU0 : kWhiteU0, oneWay && !e.backward ? kYellowU1 : kWhiteU1,
+				line(offsets([&](size_t i) { return halfAt[i] - 0.45f - parkAt[i]; }), 0.2f, oneWay && !e.backward ? kYellowU0 : kWhiteU0, oneWay && !e.backward ? kYellowU1 : kWhiteU1,
 				    4.0f, sStart + clearA, sEnd - clearB);
 			}
-			else
+			if (!major)
 			{
 				// (a paved median's edges: yellow - the big roads have their edge lines already)
 				for (const auto& [from, to] : medianL)
@@ -1542,14 +1604,8 @@ namespace worldgen::roads
 			}
 			// at a junction: the crossing (bars along the road, 3 m long, across its width) and the stop line of the
 			// lanes coming in behind it
-			const auto crossing = [&](bool atB) {
+			const auto stopLine = [&](bool atB) {
 				const size_t i = atB ? p.size() - 1 : 0;
-				const float h = halfAt[i];
-				for (float o = -h + 0.7f; o <= h - 0.6f; o += 1.2f)
-				{
-					const std::vector<float> oo(p.size(), o);
-					line(oo, 0.55f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
-				}
 				const int lanes = atB ? e.forward : e.backward;
 				if (!lanes)
 					return;
@@ -1575,13 +1631,31 @@ namespace worldgen::roads
 				if (painted)
 					b.Marking(stopLine, lz, ls, std::vector<float>(2, 0.0f), 0.5f, kStripeU0, kStripeU1, 2.0f);
 			};
+			const auto crossing = [&](bool atB) {
+				const size_t i = atB ? p.size() - 1 : 0;
+				const float h = halfAt[i];
+				for (float o = -h + 0.7f; o <= h - 0.6f; o += 1.2f)
+				{
+					const std::vector<float> oo(p.size(), o);
+					line(oo, 0.55f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
+				}
+				stopLine(atB);
+			};
 			// (crossings where people walk: streets with sidewalks, at junctions of three streets or more - not where a
 			// street meets only driveways, alleys or parking lanes)
+			// (painted crossings where the map has them - a junction with signals, else where it says they are painted; the
+			// street pictures' stop-sign corners mostly have none -; where the map has no crossings at all, at the signals'
+			// junctions)
 			const bool walked = e.sidewalks && !Minor(e);
-			if (walked && crossB && streets[e.b] >= 3)
+			const bool mapped = n.mappedCrossings > 0;
+			if (crossB && streets[e.b] >= 3 && (mapped ? e.crossingB : walked && n.vertices[static_cast<size_t>(e.b)].signals))
 				crossing(true);
-			if (walked && crossA && streets[e.a] >= 3)
+			else if (crossB && e.stopB && e.forward)
+				stopLine(true);
+			if (crossA && streets[e.a] >= 3 && (mapped ? e.crossingA : walked && n.vertices[static_cast<size_t>(e.a)].signals))
 				crossing(false);
+			else if (crossA && e.stopA && e.backward)
+				stopLine(false);
 			// this edge's ends at junctions
 			for (const bool atA : {true, false})
 			{
@@ -1789,7 +1863,9 @@ namespace worldgen::roads
 					if (asphalt.Within(q[0], q[1], kCornerPostClear) || std::any_of(placed.begin(), placed.end(), [&](const P2& p) { return Dist(p, q) < 3; }))
 						continue;
 					placed.push_back(q);
-					out.signals.push_back({{q[0], q[1], at.z + kKerb}, std::atan2(-d[0], d[1]), lanesIn * e.laneWidth + off + back - at.half});
+					// (over the parking lane by the kerb too)
+					const float park = n.edges[static_cast<size_t>(at.edge)].Side();
+					out.signals.push_back({{q[0], q[1], at.z + kKerb}, std::atan2(-d[0], d[1]), lanesIn * e.laneWidth + off + back - at.half + park});
 				}
 			}
 		}
@@ -1967,7 +2043,7 @@ namespace worldgen::roads
 		std::vector<float> reach(nv, 0);
 		for (size_t v = 0; v < nv; ++v)
 			for (const int ei : n.vertices[v].edges)
-				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0.0f));
+				reach[v] = std::max(reach[v], n.edges[ei].HalfWidth() + n.edges[ei].Walk());
 		const auto meeting = [&](int v) { return n.vertices[v].edges.size() >= 3; };
 		std::vector<bool> inside(n.edges.size(), false);
 		for (size_t ei = 0; ei < n.edges.size(); ++ei)
@@ -2045,7 +2121,7 @@ namespace worldgen::roads
 				float across = 0;
 				for (const int ei : n.vertices[v].edges)
 					if (&n.edges[ei] != &e)
-						across = std::max(across, n.edges[ei].HalfWidth() + (n.edges[ei].sidewalks ? kSidewalk : 0.0f));
+						across = std::max(across, n.edges[ei].HalfWidth() + n.edges[ei].Walk());
 				return std::min(across + 4.0f, total * 0.45f);
 			};
 			std::vector<float> lights;
@@ -2074,10 +2150,10 @@ namespace worldgen::roads
 				node.light = light;
 				nodes.push_back(node);
 				const int here = static_cast<int>(nodes.size() - 1);
-				links.push_back({previous, here, e.forward, e.backward, e.HalfWidth() * 2});
+				links.push_back({previous, here, e.forward, e.backward, e.LanesHalf() * 2});
 				previous = here;
 			}
-			links.push_back({previous, vertexNode[e.b], e.forward, e.backward, e.HalfWidth() * 2});
+			links.push_back({previous, vertexNode[e.b], e.forward, e.backward, e.LanesHalf() * 2});
 		}
 	}
 }

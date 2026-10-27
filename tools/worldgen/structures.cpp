@@ -555,7 +555,18 @@ namespace worldgen::structures
 		std::vector<uint8_t> inside(h.size(), 0);
 		std::vector<float> edgeDistance(h.size(), 0);
 		size_t insideCount = 0, known = 0;
-		const bool measure = scan && !scan->Empty() && !b.planned && nx * ny < 4000000;
+		// (a scan with no returns over the footprint - past its edge: one over part of the land - is none)
+		bool scanned = false;
+		if (scan && !scan->Empty())
+		{
+			P2 mid{0, 0};
+			for (const P2& p : ring)
+				mid[0] += p[0] / ring.size(), mid[1] += p[1] / ring.size();
+			scanned = scan->Count(mid[0], mid[1]) > 0;
+			for (size_t e = 0; e < ring.size() && !scanned; ++e)
+				scanned = scan->Count(ring[e][0], ring[e][1]) > 0;
+		}
+		const bool measure = scanned && !b.planned && nx * ny < 4000000;
 		// (no measurement: a house's hip roof - each cell's height up from the nearest wall)
 		const double area = std::fabs(polygon::Area(ring));
 		const bool houseKind = b.kind == "house" || b.kind == "detached" || b.kind == "residential" || b.kind == "semidetached_house" ||

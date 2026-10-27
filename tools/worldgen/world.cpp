@@ -111,6 +111,9 @@ namespace worldgen::world
 				return "grass";
 			if (amenity == "parking")
 				return "parking";
+			// (a university's or college's grounds: their lines underground)
+			if (amenity == "university" || amenity == "college" || landuse == "education")
+				return "campus";
 			if (!Tag(t, "aeroway").empty())
 				return "paved";
 			if (landuse == "residential" || landuse == "commercial" || landuse == "retail" || landuse == "industrial" || landuse == "construction" ||
@@ -258,6 +261,9 @@ namespace worldgen::world
 				r.sidewalks = !link && base != "motorway" && base != "trunk" && highway != "service" && highway != "track" && sidewalk != "no" &&
 				              sidewalk != "none" && sidewalk != "separate";
 				r.sidewalkTagged = !sidewalk.empty();
+				for (const char* key : {"cycleway", "cycleway:both", "cycleway:right", "cycleway:left"})
+					if (const std::string& v = Tag(t, key); v == "lane" || v == "exclusive_lane")
+						r.bikeLanes = true;
 				r.bridge = !Tag(t, "bridge").empty() && Tag(t, "bridge") != "no";
 				r.tunnel = !Tag(t, "tunnel").empty() && Tag(t, "tunnel") != "no";
 				r.layer = static_cast<int>(Number(Tag(t, "layer")));
@@ -288,6 +294,22 @@ namespace worldgen::world
 				if (rl.points.size() >= 2)
 					out.rails.push_back(std::move(rl));
 				continue;
+			}
+			// barriers along lines: fences, walls, hedges, guard rails, retaining walls
+			if (const std::string& barrier = Tag(t, "barrier");
+			    barrier == "fence" || barrier == "wall" || barrier == "retaining_wall" || barrier == "hedge" || barrier == "guard_rail" ||
+			    barrier == "city_wall" || barrier == "handrail")
+			{
+				Barrier br;
+				br.points = Points(d, w, p);
+				br.kind = barrier == "city_wall" ? "wall" : barrier;
+				br.material = !Tag(t, "fence_type").empty() ? Tag(t, "fence_type") : Tag(t, "material");
+				br.height = static_cast<float>(Number(Tag(t, "height")));
+				if (br.points.size() >= 2)
+					out.barriers.push_back(std::move(br));
+				// (a fenced area - a pond's, a field's - or a walled building is that too)
+				if (AreaKind(t).empty() && Tag(t, "building").empty())
+					continue;
 			}
 			const std::string& waterway = Tag(t, "waterway");
 			if (!closed && (waterway == "canal" || waterway == "river" || waterway == "stream" || waterway == "ditch" || waterway == "drain"))
@@ -364,8 +386,15 @@ namespace worldgen::world
 				kind = "traffic_signals";
 			else if (Tag(t, "highway") == "stop")
 				kind = "stop";
-			else if (Tag(t, "highway") == "crossing")
-				kind = "crossing";
+			else if (Tag(t, "highway") == "crossing" || (Tag(t, "footway") == "crossing" && Tag(t, "highway").empty()))
+			{
+				// (painted or not: the crossing tag's kinds, or crossing:markings)
+				const std::string& c = Tag(t, "crossing");
+				const std::string& m = Tag(t, "crossing:markings");
+				kind = c == "unmarked" || c == "no" || m == "no" ? "crossing:unmarked"
+				     : c == "marked" || c == "zebra" || c == "traffic_signals" || c == "uncontrolled" || (!m.empty() && m != "no") ? "crossing:marked"
+				                                                                                                                  : "crossing";
+			}
 			else if (const std::string& place = Tag(t, "place");
 			         !Tag(t, "name").empty() && (place == "city" || place == "town" || place == "village" || place == "hamlet" || place == "suburb" ||
 			                                     place == "neighbourhood" || place == "quarter" || place == "locality" || place == "island"))
@@ -430,11 +459,16 @@ namespace worldgen::world
 		auto& rails = j["rails"] = nlohmann::json::array();
 		for (const Rail& rl : w.rails)
 			rails.push_back({{"kind", rl.kind}, {"bridge", rl.bridge}, {"layer", rl.layer}, {"points", Line(rl.points)}});
+		auto& barriers = j["barriers"] = nlohmann::json::array();
+		for (const Barrier& br : w.barriers)
+			barriers.push_back({{"kind", br.kind}, {"material", br.material}, {"height", br.height}, {"points", Line(br.points)}});
 		auto& roads = j["roads"] = nlohmann::json::array();
 		for (const Road& r : w.roads)
 		{
 			nlohmann::json o{{"id", r.id}, {"kind", r.kind}, {"name", r.name}, {"forward", r.forward}, {"backward", r.backward}, {"laneWidth", r.laneWidth},
 			    {"sidewalks", r.sidewalks}, {"sidewalkTagged", r.sidewalkTagged}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}};
+			if (r.bikeLanes)
+				o["bikeLanes"] = true;
 			if (!r.surface.empty())
 				o["surface"] = r.surface;
 			if (!r.smoothness.empty())
@@ -470,6 +504,7 @@ namespace worldgen::world
 			r.laneWidth = o["laneWidth"];
 			r.sidewalks = o["sidewalks"];
 			r.sidewalkTagged = o.value("sidewalkTagged", false);
+			r.bikeLanes = o.value("bikeLanes", false);
 			r.bridge = o.value("bridge", false);
 			r.tunnel = o.value("tunnel", false);
 			r.layer = o.value("layer", 0);
@@ -515,6 +550,9 @@ namespace worldgen::world
 		if (j.contains("rails"))
 			for (const auto& o : j["rails"])
 				w.rails.push_back({Line(o["points"]), o["kind"].get<std::string>(), o["bridge"].get<bool>(), o["layer"].get<int>()});
+		if (j.contains("barriers"))
+			for (const auto& o : j["barriers"])
+				w.barriers.push_back({Line(o["points"]), o["kind"].get<std::string>(), o.value("material", ""), o.value("height", 0.0f)});
 		for (const auto& o : j["roads"])
 			w.roads.push_back(RoadFrom(o));
 		for (const auto& o : j["buildings"])

@@ -4,12 +4,17 @@ ground, water, bridge decks, buildings and trees as the scan's own classes say.
 
 usage (in a Python with laspy[lazrs], numpy and pyproj; keep the data outside the repository):
   lidar.py fetch  --index <url> --world <world.json> [--area x0,y0,x1,y1] --out <laz dir> [--crs <epsg>]
+  lidar.py ept    --ept <url> --world <world.json> [--area x0,y0,x1,y1] --out <laz dir>
   lidar.py raster --world <world.json> --laz <laz dir> --out <raster dir> [--area x0,y0,x1,y1] [--cell 0.5] [--tile 256]
+                  [--crs <epsg>]
 
 fetch: the scan's files that touch the world's box (or the area of it, in game metres), downloaded once (resumable).
 The index is either a USGS project's virtual point cloud (.vpc: a STAC FeatureCollection, each file's box in longitude
 and latitude, its asset relative to the .vpc) or a NOAA project's minmax .csv (each file's box in the files' own
 coordinates, --crs, default 6346: NAD83(2011) UTM 17N; the files next to the .csv).
+ept: the same from an Entwine point tile set - USGS's public bucket (s3-us-west-2.amazonaws.com/usgs-lidar-public/<project>:
+its 3DEP projects, no rate limit as on rockyweb) -: the octree's nodes over the area, each node's file as it is (EPSG:3857,
+no coordinate system in their headers: raster --crs 3857).
 raster: every file's points into the world's raster tiles, `t_<i>_<j>.bin` (i = floor(x / tile), j = floor(y / tile)):
   header (32 bytes): 'WBLR', u32 version 2, f32 x0, f32 y0 (the tile's south-west corner), f32 cell, u32 width,
   u32 height, u32 layers (5); then the layers, each width * height, rows south to north:
@@ -23,7 +28,7 @@ Points are turned from each file's own coordinates (its header's WKT, read with 
 world's projection (world.json "projection"). Partial tiles are kept between files (<out>/partial) so that tiles on
 the files' seams get the points of every file; `raster` keeps a list of the files done and can be run again.
 """
-import csv, json, os, struct, sys, time, urllib.request
+import csv, json, os, shutil, struct, sys, time, urllib.request
 
 def options(argv):
     o = {}
@@ -53,15 +58,24 @@ def area_of(o, w):
 def to_latlon(p, x, y):
     return p['lat0'] + (y - p['y0']) / p['ky'], p['lon0'] + (x - p['x0']) / p['kx']
 
+AGENT = {'User-Agent': 'GTAVE-ModLoader-worldgen/1.0 (laser scans for a game map of Florida)'}
+
+
 def download(url, file):
-    for attempt in range(4):
+    # (resumed where a try stopped; USGS's server answers 429 to a quick run of requests: waited out, longer each time)
+    for attempt in range(9):
         try:
-            urllib.request.urlretrieve(url, file + '.part')
+            have = os.path.getsize(file + '.part') if os.path.exists(file + '.part') else 0
+            headers = dict(AGENT, **({'Range': f'bytes={have}-'} if have else {}))
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=600) as r:
+                with open(file + '.part', 'ab' if have and r.status == 206 else 'wb') as f:
+                    shutil.copyfileobj(r, f, 1 << 20)
             os.replace(file + '.part', file)
             return
         except OSError as e:
-            print(f'  {os.path.basename(file)}: {e} (try {attempt + 1})', flush=True)
-            time.sleep(5 * (attempt + 1))
+            wait = 30 * 2 ** min(attempt, 4)
+            print(f'  {os.path.basename(file)}: {e} (try {attempt + 1}; again in {wait} s)', flush=True)
+            time.sleep(wait)
     sys.exit(f'cannot download {url}')
 
 def fetch(o):
@@ -111,6 +125,65 @@ def fetch(o):
         if (k + 1) % 10 == 0 or k + 1 == len(wanted):
             print(f'[{k + 1}/{len(wanted)}] {total / 1e6:.0f} MB, {total / 1e6 / max(1, time.time() - start):.1f} MB/s', flush=True)
 
+def get_json(url):
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=120) as r:
+                return json.load(r)
+        except OSError as e:
+            print(f'  {url}: {e} (try {attempt + 1})', flush=True)
+            time.sleep(10 * (attempt + 1))
+    sys.exit(f'cannot read {url}')
+
+
+def ept(o):
+    import math
+    w, p = load_world(o['world'])
+    x0, y0, x1, y1 = area_of(o, w)
+    s, west = to_latlon(p, x0, y0)
+    n, east = to_latlon(p, x1, y1)
+    # (the area in web Mercator, the set's coordinates)
+    R = 6378137.0
+    mx0, mx1 = R * math.radians(west), R * math.radians(east)
+    my0, my1 = (R * math.log(math.tan(math.pi / 4 + math.radians(v) / 2)) for v in (s, n))
+    base = o['ept'].rstrip('/')
+    out = o['out']
+    os.makedirs(out, exist_ok=True)
+    b = get_json(base + '/ept.json')['bounds']  # min x, y, z, max x, y, z: a cube
+    wanted, pending, points = [], ['0-0-0-0'], 0
+    while pending:
+        root = pending.pop()
+        for key, count in get_json(f'{base}/ept-hierarchy/{root}.json').items():
+            d, i, j, _ = (int(v) for v in key.split('-'))
+            size = (b[3] - b[0]) / 2 ** d
+            nx0, ny0 = b[0] + i * size, b[1] + j * size
+            if nx0 > mx1 or nx0 + size < mx0 or ny0 > my1 or ny0 + size < my0:
+                continue
+            if count == -1:
+                pending.append(key)  # (its own hierarchy file)
+            elif count > 0:
+                wanted.append(key)
+                points += count
+    print(f'{len(wanted)} nodes, {points / 1e6:.0f} million points', flush=True)
+    # (16 at a time: each node's file is small, the bucket far away - one after another ran at 0.3 MB/s)
+    import concurrent.futures
+    start, total, done = time.time(), 0, 0
+
+    def one(key):
+        file = os.path.join(out, key + '.laz')
+        if os.path.exists(file):
+            return 0
+        download(f'{base}/ept-data/{key}.laz', file)
+        return os.path.getsize(file)
+
+    with concurrent.futures.ThreadPoolExecutor(16) as pool:
+        for size in pool.map(one, wanted):
+            total += size
+            done += 1
+            if done % 500 == 0 or done == len(wanted):
+                print(f'[{done}/{len(wanted)}] {total / 1e6:.0f} MB, {total / 1e6 / max(1, time.time() - start):.1f} MB/s', flush=True)
+
+
 class Partial:
     """A raster tile while points come in: the highest return, the ground's sum and count, returns, flags."""
     def __init__(self, np, n):
@@ -144,6 +217,8 @@ def raster(o):
         points = 0
         with laspy.open(os.path.join(laz, name)) as r:
             crs = r.header.parse_crs()
+            if crs is None and 'crs' in o:
+                crs = pyproj.CRS.from_epsg(int(o['crs']))
             if crs is None:
                 print(f'{name}: no coordinate system in its header, skipped')
                 continue
@@ -247,7 +322,7 @@ def raster(o):
     print(f'{count} raster tiles in {out}')
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2 or sys.argv[1] not in ('fetch', 'raster'):
+    if len(sys.argv) < 2 or sys.argv[1] not in ('fetch', 'ept', 'raster'):
         sys.exit(__doc__)
     o = options(sys.argv[2:])
-    (fetch if sys.argv[1] == 'fetch' else raster)(o)
+    {'fetch': fetch, 'ept': ept, 'raster': raster}[sys.argv[1]](o)
