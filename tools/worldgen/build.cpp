@@ -5272,9 +5272,56 @@ namespace worldgen::build
 			add(patchDecal, surfaces.patches);
 			add(potholeDecal, surfaces.potholes);
 			add(breakupDecal, surfaces.breakups);
-			add(marking, surfaces.markings);
-			// the ground as the street panoramas show it: each block's picture in the tile's atlases (7 x 7 blocks of 256
-			// texels with 4 round each, the edges repeated), a decal over each 0.8 m cell of it that the pictures see
+			// (where the street panoramas see the ground - their blocks' alpha over 0 -: their paint, not ours - our markings'
+			// triangles there left out)
+			std::map<std::pair<int, int>, std::vector<uint8_t>> seenGround; // (each block's alpha, rows from the north)
+			if (const auto git = groundBlocks.find({ti, tj}); git != groundBlocks.end())
+			{
+				std::ifstream gb(o.phototex / "ground.bin", std::ios::binary);
+				std::vector<uint8_t> px(static_cast<size_t>(kGroundSide) * kGroundSide * 4);
+				for (const GroundBlock& g : git->second)
+				{
+					gb.seekg(static_cast<std::streamoff>(g.offset + static_cast<uint64_t>(kGroundGrid) * kGroundGrid * 4));
+					gb.read(reinterpret_cast<char*>(px.data()), static_cast<std::streamsize>(px.size()));
+					auto& a = seenGround[{g.i, g.j}];
+					a.resize(static_cast<size_t>(kGroundSide) * kGroundSide);
+					for (size_t k = 0; k < a.size(); ++k)
+						a[k] = px[k * 4 + 3];
+				}
+			}
+			const auto pictured = [&](float x, float y) {
+				const int bi = static_cast<int>(std::floor(x / kGroundBlock)), bj = static_cast<int>(std::floor(y / kGroundBlock));
+				const auto it = seenGround.find({bi, bj});
+				if (it == seenGround.end())
+					return false;
+				const int tx = std::clamp(static_cast<int>((x - bi * kGroundBlock) / kGroundCell), 0, kGroundSide - 1);
+				const int ty = std::clamp(static_cast<int>((y - bj * kGroundBlock) / kGroundCell), 0, kGroundSide - 1);
+				return it->second[static_cast<size_t>(kGroundSide - 1 - ty) * kGroundSide + tx] > 0;
+			};
+			if (seenGround.empty())
+				add(marking, surfaces.markings);
+			else
+			{
+				const auto near = meshTiles.at(&surfaces.markings).Near(ti, tj);
+				roads::Mesh part = Clip(surfaces.markings, x0, y0, x1, y1, cx, cy, &near);
+				std::vector<uint32_t> kept;
+				for (size_t t = 0; t + 2 < part.indices.size(); t += 3)
+				{
+					const auto &a = part.vertices[part.indices[t]].position, &b = part.vertices[part.indices[t + 1]].position,
+					           &c = part.vertices[part.indices[t + 2]].position;
+					if (!pictured((a[0] + b[0] + c[0]) / 3 + cx, (a[1] + b[1] + c[1]) / 3 + cy))
+						kept.insert(kept.end(), {part.indices[t], part.indices[t + 1], part.indices[t + 2]});
+				}
+				part.indices = std::move(kept);
+				if (!part.indices.empty())
+				{
+					rd.materials.push_back(marking);
+					AddMeshes(rd, static_cast<uint32_t>(rd.materials.size() - 1), part);
+				}
+			}
+			// the ground as the street panoramas show it - the road paint alone (phototex.py): each block's picture in the
+			// tile's atlases (7 x 7 blocks of 256 texels with 4 round each, the edges repeated), a decal over each 0.8 m cell
+			// with paint in it
 			std::string roadTxd = facadeDictionary;
 			if (const auto git = groundBlocks.find({ti, tj}); git != groundBlocks.end())
 			{
@@ -5323,11 +5370,11 @@ namespace worldgen::build
 					for (int gj = 0; gj + 1 < kGroundGrid; ++gj)
 						for (int gi = 0; gi + 1 < kGroundGrid; ++gi)
 						{
-							// (a cell any of whose texels the pictures see)
+							// (a cell with paint in it: alpha over 8 - 1 is the ground seen, unpainted)
 							bool seen = false;
 							for (int ty = 0; ty < kGroundStep && !seen; ++ty)
 								for (int tx = 0; tx < kGroundStep && !seen; ++tx)
-									seen = px[(static_cast<size_t>(kGroundSide - 1 - (gj * kGroundStep + ty)) * kGroundSide + gi * kGroundStep + tx) * 4 + 3] > 0;
+									seen = px[(static_cast<size_t>(kGroundSide - 1 - (gj * kGroundStep + ty)) * kGroundSide + gi * kGroundStep + tx) * 4 + 3] > 8;
 							if (!seen)
 								continue;
 							const uint32_t a = vertex(gi, gj), b = vertex(gi + 1, gj), c = vertex(gi + 1, gj + 1), d = vertex(gi, gj + 1);
