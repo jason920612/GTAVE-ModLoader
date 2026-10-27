@@ -44,6 +44,10 @@ namespace worldgen::structures
 		float sink = 0.6f;           // the walls go this far below the base
 		float coverage = 0.3f;       // the share of the footprint with building returns a measurement needs
 		float minPlane = 6;          // the smallest roof plane kept (m²); smaller ones join a neighbour
+		// the share of the unmeasured houses with a near-rectangular footprint that get a gable roof - the ridge along the
+		// long side, the short sides' walls up to it - the rest hip roofs (north Florida's street pictures: half and half;
+		// the south's hurricane country mostly hip)
+		float gableShare = 0;
 	};
 
 	struct Stats

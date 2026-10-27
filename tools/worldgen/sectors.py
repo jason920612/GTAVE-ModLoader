@@ -8,18 +8,21 @@ its OpenStreetMap extract (worldgen osm) with the building footprints it lacks f
 (msbuildings.py; ODbL), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its ground
 (dem.py: 3DEP's measured heights, the lakes' and rivers' levels), what its aerial pictures show (photo.py, in the venv
 of numpy, scipy, tifffile, zarr and Pillow: every tree, the ground's cover and colour - research/phase0.md §63), its build
-(houses of our own with hip roofs, other buildings the game's models where one fits, the trees and ground of the
-pictures, the game's plants on the ground, navmeshes only where people go; every edge open: the land goes on into the
-neighbours), its population zones (zones.py, into the land.json) and its pack (ModLoader\\mods\\<name>; dlc.rpf.new when a
-pack is there already: the loader takes it at the next start). The build's own files and the pictures' are removed once
-packed (--keep: kept).
+(every building our own - hip-roofed houses, walls in the region's styles: the game's Los Santos models looked nothing
+like Florida's -, the walls' colour and brick from the street pictures where there are any (photofacade.py, --mapillary),
+power lines along the streets, parked cars, the trees and ground of the pictures, the game's plants on the ground,
+navmeshes only where people go; every edge open: the land goes on into the neighbours), its population zones (zones.py,
+into the land.json) and its pack (ModLoader\\mods\\<name>; dlc.rpf.new when a pack is there already: the loader takes it
+at the next start). The build's own files and the pictures' are removed once packed (--keep: kept).
 
 usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.tsv> [--jobs n] [--skip-built] [--dry-run]
-       [--keep]
+       [--keep] [--mapillary <metadata.csv>[,<metadata.csv>...]]
+  --mapillary: street picture downloads (Mapillary, CC BY-SA 4.0): a sector with pictures in it gets its walls' colours
+          from them
   --list: the survey's land cells (worldgen survey, then the sea flood-filled away: a tsv with column and row), built
           nearest Miami first
   --names col,row=name;...  existing packs for some cells (not built again; by default Miami's full build)
-Paths: --game, --worldgen, --keys, --pbf, --catalog, --worlds (the world folders), --log as below by default.
+Paths: --game, --worldgen, --keys, --pbf, --worlds (the world folders), --log as below by default.
 """
 import concurrent.futures, os, shutil, subprocess, sys, threading, time
 
@@ -30,12 +33,12 @@ O = {
     'dem': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dem.py'),
     'zones': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zones.py'),
     'photo': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photo.py'),
+    'photofacade': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photofacade.py'),
     'msbuildings': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'msbuildings.py'),
     'mscells': r'D:\GTAV-UE5\buildings\ms\cells',  # (msbuildings.py split's)
     'venv': r'D:\GTAV-UE5\venv\Scripts\python.exe',
     'keys': r'D:\GTAV-UE5\keys\ng.bin',
     'pbf': r'D:\GTAV-UE5\osm\pbf\florida.osm.pbf',
-    'catalog': r'D:\GTAV-UE5\catalog.tsv',
     'worlds': r'D:\GTAV-UE5\world',
     'names': '0,0=wbmia',
     'jobs': '1',
@@ -104,10 +107,19 @@ def build(c, r, flags):
     photo = os.path.join(folder, 'photo')
     if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo], log):
         return name, f'aerial pictures failed (see {log})'
+    # (the walls the street pictures show, when any were taken in the sector)
+    walls = []
+    if O.get('mapillary'):
+        seen = os.path.join(folder, 'facades.json')
+        if run([O['venv'], '-I', O['photofacade'], '--world', world, '--metadata', O['mapillary'], '--out', seen], log):
+            return name, f'street pictures failed (see {log})'
+        with open(seen, encoding='utf-8') as f:
+            if '"building"' in f.read(4096):
+                walls = ['--facades', seen]
     gen = os.path.join(folder, 'full_gen')
     shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
-    if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--catalog', O['catalog'], '--open', 'nsew',
-            '--landcover', cover, '--ground', ground, '--photo', photo, '--navmesh', 'near', '--climate', 'tropical'], log):
+    if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--landcover', cover,
+            '--ground', ground, '--photo', photo, *walls, '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     os.makedirs(os.path.dirname(pack), exist_ok=True)
     out = pack + '.new' if os.path.exists(pack) else pack

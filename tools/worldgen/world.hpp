@@ -22,6 +22,7 @@ namespace worldgen::world
 		int forward = 1, backward = 1; // lanes along the points / against them
 		float laneWidth = 3.5f;
 		bool sidewalks = false;
+		bool sidewalkTagged = false; // (OSM said so - sidewalk=both/left/right/no/separate; else the build decides by the land)
 		bool bridge = false, tunnel = false;
 		int layer = 0;
 		float speed = 0; // m/s (0: by kind)

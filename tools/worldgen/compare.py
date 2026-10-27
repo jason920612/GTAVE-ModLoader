@@ -90,6 +90,53 @@ def road_near(x, y, z, compass, reach=12.0):
     return nx + 1.8 * math.cos(a), ny - 1.8 * math.sin(a)
 
 
+def road_along(roads, x, y, compass, reach=15.0):
+    """The street a car's camera was on, from the land's world.json roads: the nearest stretch within `reach` m that runs
+    within 35 degrees of the way the picture faces (either way along it), the camera in the lane on its right (a two-way
+    road's: half a lane right of the middle; a one-way road's middle); none: None."""
+    hx, hy = math.sin(math.radians(compass)), math.cos(math.radians(compass))
+    best = None
+    for pts, lane, two in roads:
+        a, b = pts[:-1], pts[1:]
+        d = b - a
+        length = np.hypot(d[:, 0], d[:, 1])
+        ok = length > 0.5
+        u = d[ok] / length[ok, None]
+        aa, ll = a[ok], length[ok]
+        along = np.abs(u[:, 0] * hx + u[:, 1] * hy) >= math.cos(math.radians(35))
+        if not along.any():
+            continue
+        u, aa, ll = u[along], aa[along], ll[along]
+        t = np.clip((x - aa[:, 0]) * u[:, 0] + (y - aa[:, 1]) * u[:, 1], 0, ll)
+        qx, qy = aa[:, 0] + u[:, 0] * t, aa[:, 1] + u[:, 1] * t
+        dist = np.hypot(qx - x, qy - y)
+        k = int(np.argmin(dist))
+        if dist[k] < reach and (best is None or dist[k] < best[0]):
+            best = (float(dist[k]), float(qx[k]), float(qy[k]), lane if two else 0.0)
+    if best is None:
+        return None
+    _, qx, qy, lane = best
+    return qx + 0.5 * lane * hy, qy - 0.5 * lane * hx  # (right of the way it faces: (hy, -hx))
+
+
+def land_roads(land):
+    """The land's roads from its world.json (D:\\GTAV-UE5\\world\\<land>\\world.json; Miami's wbmia: miami): each one's points
+    (game x, y), lane width and whether it goes both ways; none when the world is not there (the sectors' are removed once
+    built)."""
+    folder = 'miami' if land.name == 'wbmia' else land.name
+    path = os.path.join(r'D:\GTAV-UE5\world', folder, 'world.json')
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding='utf-8') as f:
+        w = json.load(f)
+    out = []
+    for r in w.get('roads', []):
+        if r.get('kind') in ('footway', 'path', 'cycleway', 'steps', 'pedestrian', 'track') or len(r.get('points', [])) < 2:
+            continue
+        out.append((np.array(r['points'], np.float64)[:, :2], float(r.get('laneWidth', 3.5)), r.get('forward', 1) > 0 and r.get('backward', 1) > 0))
+    return out
+
+
 def ground_z(x, y):
     out = gtactl(f'raw:native 0xC906A7DAB05C8D2B {x:.1f} {y:.1f} 1000.0 out 0 0')
     m = re.search(r'\| out \S+ (\S+)', out)
@@ -266,6 +313,7 @@ def mapillary(o):
     rnd.shuffle(rows)
     listed = []
     hud_off()
+    roads = land_roads(land)
     for k, r in enumerate(rows[:int(o.get('limit', 12))]):
         lat, lon, compass = float(r['lat']), float(r['lon']), float(r['heading'])
         x, y = land.game(lat, lon)
@@ -275,7 +323,8 @@ def mapillary(o):
             gtactl('wait:4')
             gz = ground_z(x, y) or 1.0
         # (a phone's position is often some metres off: onto the road it was taken from when one is that near)
-        x, y = road_near(x, y, gz, compass)
+        snapped = road_along(roads, x, y, compass) if roads else None
+        x, y = snapped if snapped else road_near(x, y, gz, compass)
         gz = ground_z(x, y) or gz
         shot = os.path.join(out, f'game_{r["id"]}.png')
         gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} {(360 - compass) % 360:.1f} 0 {EYE_FOV}', 'wait:7', f'shot:{shot}')

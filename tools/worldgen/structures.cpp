@@ -564,6 +564,45 @@ namespace worldgen::structures
 		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000;
 		const bool hip = !measure && !b.planned && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
 		const float eave = b.height > 7.5f ? b.height - 2.5f : 3.0f;
+		// (a gable roof instead: on a footprint near its narrowest box - 85 % of it and more -, by the place's own number;
+		// the height then rises only from the walls along the long side, the short sides' walls - their edges across the
+		// ridge - becoming the gables)
+		std::vector<bool> eaveEdge(ring.size(), true);
+		if (hip && o.gableShare > 0)
+		{
+			float bestArea = 1e30f, axis = 0;
+			for (size_t e = 0; e < ring.size(); ++e)
+			{
+				const P2& p = ring[e];
+				const P2& q = ring[(e + 1) % ring.size()];
+				const float len = std::hypot(q[0] - p[0], q[1] - p[1]);
+				if (len < 0.5f)
+					continue;
+				const float ux = (q[0] - p[0]) / len, uy = (q[1] - p[1]) / len;
+				float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
+				for (const P2& r : ring)
+				{
+					const float u = r[0] * ux + r[1] * uy, v = -r[0] * uy + r[1] * ux;
+					u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, v), v1 = std::max(v1, v);
+				}
+				if ((u1 - u0) * (v1 - v0) < bestArea)
+					bestArea = (u1 - u0) * (v1 - v0), axis = u1 - u0 >= v1 - v0 ? std::atan2(uy, ux) : std::atan2(ux, -uy);
+			}
+			uint32_t seed = static_cast<uint32_t>(std::lround(ring[0][0] * 7)) * 73856093u ^ static_cast<uint32_t>(std::lround(ring[0][1] * 7)) * 19349663u;
+			seed ^= seed >> 15, seed *= 0x2c1b3c6du, seed ^= seed >> 12;
+			if (area >= 0.85 * bestArea && static_cast<float>(seed % 1000) < o.gableShare * 1000)
+			{
+				const float ax = std::cos(axis), ay = std::sin(axis);
+				for (size_t e = 0; e < ring.size(); ++e)
+				{
+					const P2& p = ring[e];
+					const P2& q = ring[(e + 1) % ring.size()];
+					const float len = std::hypot(q[0] - p[0], q[1] - p[1]);
+					// (an edge along the ridge - within 30 degrees - carries an eave; one across it is a gable)
+					eaveEdge[e] = len > 1e-3f && std::fabs(((q[0] - p[0]) * ax + (q[1] - p[1]) * ay) / len) > 0.866f;
+				}
+			}
+		}
 		for (int j = 0; j < ny && (measure || hip); ++j)
 			for (int i = 0; i < nx; ++i)
 			{
@@ -573,13 +612,18 @@ namespace worldgen::structures
 				const size_t k = static_cast<size_t>(j) * nx + i;
 				inside[k] = 1;
 				++insideCount;
-				float d = 1e30f;
+				float d = 1e30f, de = 1e30f;
 				for (size_t e = 0; e < ring.size(); ++e)
-					d = std::min(d, polygon::DistanceToSegment(c, ring[e], ring[(e + 1) % ring.size()]));
+				{
+					const float de1 = polygon::DistanceToSegment(c, ring[e], ring[(e + 1) % ring.size()]);
+					d = std::min(d, de1);
+					if (eaveEdge[e])
+						de = std::min(de, de1);
+				}
 				edgeDistance[k] = d;
 				if (hip)
 				{
-					h[k] = base + eave + std::min(d * 0.42f, 3.5f), ++known;
+					h[k] = base + eave + std::min((de < 1e29f ? de : d) * 0.42f, 3.5f), ++known;
 					continue;
 				}
 				const float roof = scan->Roof(c[0], c[1]);

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
+#include <vector>
 
 #include "convert/resource.hpp"
 
@@ -43,6 +45,17 @@ namespace worldgen::props
 				run += l;
 			}
 			return false;
+		}
+
+		// a road's rank at a junction: the bigger kinds go on, the smaller stop (service roads and driveways give way with no
+		// sign of their own)
+		int Rank(const roads::Edge& e)
+		{
+			const std::string_view k = e.kind;
+			return k.starts_with("motorway") ? 7 : k.starts_with("trunk") ? 6 : k.starts_with("primary") ? 5 : k.starts_with("secondary") ? 4
+			     : k.starts_with("tertiary")                                                                         ? 3
+			     : k == "unclassified" || k == "residential" || k == "living_street" || k == "road"                ? 2
+			                                                                                                         : 1;
 		}
 
 		float Length(const roads::Edge& e)
@@ -117,6 +130,77 @@ namespace worldgen::props
 					if (In(box, q[0], q[1]))
 						addPalm(q[0], q[1], z + roads::kKerb + 0.2f);
 				}
+		}
+		// stop signs at the junctions without signals (the street pictures' every corner): on the right of each road coming in
+		// that stops - the smaller where a smaller meets a bigger, the stem of a T of equals, every way at a crossroads of
+		// residential streets (an all-way stop) -, 1.5 m before the corner's reach, 0.8 m off the asphalt, facing the drivers
+		const uint32_t stop = loader::convert::Joaat("prop_sign_road_01a");
+		for (size_t vi = 0; vi < n.vertices.size(); ++vi)
+		{
+			const auto& v = n.vertices[vi];
+			if (v.signals || v.edges.size() < 3)
+				continue;
+			struct Way
+			{
+				const roads::Edge* e;
+				P2 in; // (the way traffic comes in, towards the junction)
+				int rank;
+			};
+			std::vector<Way> ways;
+			for (const int ei : v.edges)
+			{
+				const roads::Edge& e = n.edges[static_cast<size_t>(ei)];
+				if (e.points.size() < 2 || e.a == e.b)
+					continue;
+				const bool atA = e.a == static_cast<int>(vi);
+				const P2 p = atA ? e.points[0] : e.points.back(), q = atA ? e.points[1] : e.points[e.points.size() - 2];
+				const float l = std::hypot(p[0] - q[0], p[1] - q[1]);
+				if (l < 1e-3f)
+					continue;
+				// (none comes in on a one-way road leaving the junction)
+				if ((atA && e.backward == 0) || (!atA && e.forward == 0))
+				{
+					ways.push_back({&e, {(p[0] - q[0]) / l, (p[1] - q[1]) / l}, -1});
+					continue;
+				}
+				ways.push_back({&e, {(p[0] - q[0]) / l, (p[1] - q[1]) / l}, Rank(e)});
+			}
+			int top = 0;
+			for (const Way& wy : ways)
+				top = std::max(top, wy.rank);
+			if (top < 2)
+				continue;
+			const bool equals = std::all_of(ways.begin(), ways.end(), [&](const Way& wy) { return wy.rank == top || wy.rank < 0; });
+			// (a T of equals: the two most nearly opposite go on, the other stops)
+			std::vector<bool> stops(ways.size(), false);
+			if (equals && ways.size() == 3)
+			{
+				float straightest = 1;
+				size_t a = 0, b = 1;
+				for (size_t i = 0; i < ways.size(); ++i)
+					for (size_t j = i + 1; j < ways.size(); ++j)
+						if (const float dot = ways[i].in[0] * ways[j].in[0] + ways[i].in[1] * ways[j].in[1]; dot < straightest)
+							straightest = dot, a = i, b = j;
+				for (size_t i = 0; i < ways.size(); ++i)
+					stops[i] = i != a && i != b;
+			}
+			else
+				for (size_t i = 0; i < ways.size(); ++i)
+					stops[i] = equals ? top == 2 : ways[i].rank < top;
+			const float reach = roads::CornerReach(n, static_cast<int>(vi));
+			for (size_t i = 0; i < ways.size(); ++i)
+			{
+				const Way& wy = ways[i];
+				if (!stops[i] || wy.rank < 2 || wy.e->bridge)
+					continue;
+				const P2 right{wy.in[1], -wy.in[0]};
+				const float back = reach + 1.5f, aside = wy.e->HalfWidth() + 0.8f;
+				const P2 q{v.p[0] - wy.in[0] * back + right[0] * aside, v.p[1] - wy.in[1] * back + right[1] * aside};
+				if (!In(box, q[0], q[1]) || !open(q[0], q[1]))
+					continue;
+				// (the sign's face its model's -y: towards the traffic coming in)
+				out.push_back({stop, {q[0], q[1], ground(q[0], q[1])}, std::atan2(-wy.in[0], wy.in[1]), 200});
+			}
 		}
 		// traffic signal masts where the junctions' geometry put them (roads::Geometry): the long arm (9.8 m) where the lanes
 		// coming in are wider than the short one (5 m) reaches

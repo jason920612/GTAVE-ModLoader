@@ -47,8 +47,10 @@ namespace worldgen::facades
 		std::array<float, 2> PaletteUv(size_t style) const;
 	};
 
-	// The styles and their textures, names starting with `prefix`; `size` the diffuse textures' side (pixels).
-	Set Make(const std::string& prefix, int size);
+	// The styles and their textures, names starting with `prefix`; `size` the diffuse textures' side (pixels) for the walls
+	// of fine detail - siding, brick -, half that for the others; only the region's (`latitude`): Art Deco in Miami, siding
+	// and brick elsewhere (a pack's resource is at most 16 MB: all of them did not fit one texture dictionary).
+	Set Make(const std::string& prefix, int size, double latitude = 25.8);
 
 	// What the street pictures saw of a building's walls (tools/worldgen/photofacade.py): their lit colour, the share that
 	// looks like brick.

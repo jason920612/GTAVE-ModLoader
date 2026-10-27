@@ -254,7 +254,10 @@ namespace worldgen::world
 				              : highway == "track"                                                                       ? 1.75f
 				                                                                                                         : 3.0f;
 				const std::string& sidewalk = Tag(t, "sidewalk");
-				r.sidewalks = !link && base != "motorway" && base != "trunk" && highway != "service" && highway != "track" && sidewalk != "no" && sidewalk != "none";
+				// (separate: drawn as footways of their own - not twice)
+				r.sidewalks = !link && base != "motorway" && base != "trunk" && highway != "service" && highway != "track" && sidewalk != "no" &&
+				              sidewalk != "none" && sidewalk != "separate";
+				r.sidewalkTagged = !sidewalk.empty();
 				r.bridge = !Tag(t, "bridge").empty() && Tag(t, "bridge") != "no";
 				r.tunnel = !Tag(t, "tunnel").empty() && Tag(t, "tunnel") != "no";
 				r.layer = static_cast<int>(Number(Tag(t, "layer")));
@@ -431,7 +434,7 @@ namespace worldgen::world
 		for (const Road& r : w.roads)
 		{
 			nlohmann::json o{{"id", r.id}, {"kind", r.kind}, {"name", r.name}, {"forward", r.forward}, {"backward", r.backward}, {"laneWidth", r.laneWidth},
-			    {"sidewalks", r.sidewalks}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}};
+			    {"sidewalks", r.sidewalks}, {"sidewalkTagged", r.sidewalkTagged}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}};
 			if (!r.surface.empty())
 				o["surface"] = r.surface;
 			if (!r.smoothness.empty())
@@ -466,6 +469,7 @@ namespace worldgen::world
 			r.backward = o["backward"];
 			r.laneWidth = o["laneWidth"];
 			r.sidewalks = o["sidewalks"];
+			r.sidewalkTagged = o.value("sidewalkTagged", false);
 			r.bridge = o.value("bridge", false);
 			r.tunnel = o.value("tunnel", false);
 			r.layer = o.value("layer", 0);

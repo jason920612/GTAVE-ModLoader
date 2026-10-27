@@ -151,12 +151,31 @@ def analyse(rgbn, chm):
     # (water takes in the near infrared: dark there against the visible light - the bay's turquoise shallows as well as a
     # black pond)
     water = ((ndvi < 0.02) & (bright < 60) & (n < 55)) | ((ndvi < -0.05) & (n < 0.75 * bright))
+    # (shade - of the trees, of the buildings - is as dark and its near infrared as low: the water is what lies in smooth
+    # stretches of 300 m² and more with no canopy heights over it, the rest shade; in Tallahassee's yards a seventh of the
+    # ground had been water, its ground brown leaf litter)
+    shade = water.copy()
+    labels, count = ndimage.label(ndimage.binary_opening(water, iterations=1))
+    if count:
+        index = np.arange(1, count + 1)
+        size = ndimage.sum(np.ones(labels.shape, np.float32), labels, index)
+        rough = ndimage.mean(uneven, labels, index)
+        tall = ndimage.mean((chm >= 3).astype(np.float32), labels, index)
+        keep = np.zeros(count + 1, bool)
+        keep[1:] = (size >= 300) & (rough < 12) & (tall < 0.3)
+        water = ndimage.binary_dilation(keep[labels], iterations=1) & water
+    else:
+        water = np.zeros_like(water)
+    shade &= ~water
     # (the pictures decide where trees stand - crowns and their shadows make the near infrared uneven, 17-26 over 5 m in
     # woods, about 5 on a field; the canopy heights are years older: a field cleared since still had 15 m trees there -
     # and only give their heights; leafless winter crowns: uneven, a little green or tall)
     # (little green - a winter's leafless crowns, or a field's shrubs and tracks: only more uneven, or tall)
     canopy = (uneven > 12) & ((ndvi > 0.15) | (chm >= 3) | ((ndvi > 0.08) & (uneven > 17))) | ((ndvi > 0.35) & (uneven > 8))
     canopy &= ~water
+    # (crowns in their own shade, and the shade they throw under the canopy heights' trees: canopy - what is seen from
+    # above; the crowns had covered a third less than the pictures' canopy)
+    canopy |= shade & (chm >= 4)
     # (never bright bare ground - a sand track, a ploughed field - between crowns: the 5 m unevenness spreads onto it)
     canopy &= ~((bright > 110) & (ndvi < 0.1))
     canopy = ndimage.binary_opening(canopy, iterations=1)
@@ -204,7 +223,7 @@ def analyse(rgbn, chm):
         owner = index[iy, ix]
         area = np.bincount(owner[canopy], minlength=len(trees))
         for k, t in enumerate(trees):
-            t[3] = float(min(9.0, max(1.5, math.sqrt(area[k] / math.pi))))
+            t[3] = float(min(12.0, max(1.5, math.sqrt(area[k] / math.pi))))  # (a live oak's: up to 12 m)
     trees = [tuple(t) for t in trees]
     # the ground under no canopy: water, green grass, dry grass, bare earth or sand, paving or roofs
     sat = (np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) / np.maximum(np.maximum(np.maximum(r, g), b), 1)
@@ -217,7 +236,12 @@ def analyse(rgbn, chm):
     cls[(ndvi <= 0.12) & ~warm] = 6
     cls[water] = 1
     cls[canopy] = 2
-    return canopy, trees, cls
+    # (other shade: the ground under it as the nearest ground in the open - a lawn's shade lawn, a car park's paving)
+    rest = shade & ~canopy
+    if rest.any() and not (rest | canopy | water).all():
+        _, (iy, ix) = ndimage.distance_transform_edt(rest | canopy | water, return_indices=True)
+        cls[rest] = cls[iy[rest], ix[rest]]
+    return canopy, trees, cls, shade
 
 
 def main():
@@ -276,7 +300,7 @@ def main():
         heights = chm.heights(np.ascontiguousarray(lat), np.ascontiguousarray(lon))
         if not rgbn.any():
             continue
-        canopy, block_trees, cls = analyse(rgbn, heights)
+        canopy, block_trees, cls, shade = analyse(rgbn, heights)
         for px, py, h, crown, kind in block_trees:
             x, y = float(xs[px]), float(ys[py])
             if bx <= x < bx + BLOCK and by <= y < by + BLOCK and x < ax1 and y < ay1:
@@ -287,7 +311,7 @@ def main():
         gj = np.floor((ys - gy0) / GROUND).astype(np.int64)
         GI, GJ = np.broadcast_to(gi[None, :], (ny, nx)), np.broadcast_to(gj[:, None], (ny, nx))
         ok = inner & (GI >= 0) & (GJ >= 0) & (GI < gnx) & (GJ < gny)
-        seen = ok & (cls != 2) & (cls != 1)
+        seen = ok & (cls != 2) & (cls != 1) & ~shade  # (the ground's own colour: not in shade)
         for c in range(3):
             np.add.at(gsum[..., c], (GJ[seen], GI[seen]), rgbn[..., c][seen])
         np.add.at(gcount, (GJ[seen], GI[seen]), 1)
