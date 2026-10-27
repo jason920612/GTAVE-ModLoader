@@ -28,6 +28,7 @@ namespace worldgen::roads
 		int forward = 1, backward = 1; // lanes along a -> b, against it
 		float laneWidth = 3.5f;
 		bool sidewalks = false, bridge = false;
+		int layer = 0; // (OpenStreetMap's: a bridge's level over the ground's roads, 1 and up)
 		std::string kind, name;
 		int64_t id = 0;                    // the OpenStreetMap way's
 		std::string surface, smoothness;   // its tags (paving.hpp)
@@ -59,8 +60,12 @@ namespace worldgen::roads
 	// at other vertices.
 	float CornerReach(const Network& n, int vertex);
 
-	// The surface heights: `ground` (the terrain's height) plus a little; bridges rise over water (deck at least
-	// `clearance` above the sea in the middle).
+	// The surface heights: `ground` (the terrain's height) plus a little. A bridge runs straight between its ends: one on
+	// the ground (where the road on it goes on along the ground - on an embankment the measured ground has) at the ground's
+	// height, a junction of bridges only in the air at kLevel a layer over the ground (or the sea); one mostly over water
+	// between two ends on the ground arches up to `clearance` over its middle (less over a short one); a bridge's deck
+	// always 1 m over the ground under it.
+	constexpr float kLevel = 6.5f;
 	void Heights(Network& n, const std::function<float(float, float)>& ground, float clearance = 6.0f);
 
 	struct Mesh
@@ -109,6 +114,8 @@ namespace worldgen::roads
 		std::array<Mesh, paving::kPavings> paved; // the carriageways (and junctions) by what they are made of
 		Mesh worn;                                // worn asphalt carriageways (paving::Wear 0.5 and more): cracked all over
 		Mesh sidewalk, kerb, markings;
+		Mesh structure;                           // bridges' decks, parapets and piers (concrete)
+		Mesh railTrack, railBed, railSteel;       // railways: the track (sleepers on ballast), the bed's shoulders, the rails
 		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
 		std::vector<std::pair<paving::Feature::Kind, P3>> wear; // where each feature is (for checking)
 		Collision collision;
@@ -121,7 +128,17 @@ namespace worldgen::roads
 
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).
-	void Geometry(const Network& n, Surfaces& out, const std::function<bool(float, float)>& planted = {});
+	// `ground(x, y)`: the terrain's height (bridges' piers stand on it; without: none).
+	void Geometry(const Network& n, Surfaces& out, const std::function<bool(float, float)>& planted = {},
+	    const std::function<float(float, float)>& ground = {});
+
+	// Railways (research/phase0.md §63): on the ground a ballast bed 0.35 m high, its track pictured on it (sleepers and
+	// ballast) with the rails themselves on top, its shoulders sloping to the ground; elevated (a bridge: an elevated
+	// line, the Metrorail's and Metromover's guideways) a concrete beam on piers, at kRailLevel a layer over the ground where
+	// a line's bridges meet in the air. Where a road crosses (`onRoad`), the road's surface is there.
+	constexpr float kRailLevel = 8.0f;
+	void Rails(const std::vector<world::Rail>& rails, const std::function<float(float, float)>& ground, const std::function<bool(float, float)>& onRoad,
+	    Surfaces& out);
 
 	// The traffic graph: nodes (junction nodes where three roads or more meet) and links with their lanes.
 	struct PathNode

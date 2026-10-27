@@ -679,17 +679,25 @@ namespace
 			                           "      </ContentChangeSets>\n    </Item>\n",
 			    startupSet);
 		}
-		// Archetype files (.ytyp): requested with the change set (DLC_ITYP_REQUEST), kept while it is on.
+		// Archetype files (.ytyp): requested with the change set that enables their archive (DLC_ITYP_REQUEST), kept while
+		// it is on - asked for by an earlier change set, before their archive was there, they were never loaded: none of
+		// the land's own models drawn (a town's pack, its archetype files past the first set's archives)
 		std::string typeItems, typeEnables;
-		for (const auto& child : files)
-			if (child.name.ends_with(".ytyp"))
-			{
-				const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, archiveOf[child.name], child.name);
-				typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
-				                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
-				    path);
-				typeEnables += std::format("            <Item>{}</Item>\n", path);
-			}
+		std::vector<std::string> ownTypeEnables(setNames.size());
+		{
+			std::map<std::string, size_t> archiveIndex;
+			for (size_t g = 0; g < archiveNames.size(); ++g)
+				archiveIndex[archiveNames[g]] = g;
+			for (const auto& child : files)
+				if (child.name.ends_with(".ytyp"))
+				{
+					const std::string path = std::format("{}:/%PLATFORM%/levels/gta5/{}.rpf/{}", device, archiveOf[child.name], child.name);
+					typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
+					                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
+					    path);
+					ownTypeEnables[setOf[archiveIndex.at(archiveOf[child.name])]] += std::format("            <Item>{}</Item>\n", path);
+				}
+		}
 		// (requests.txt in the input: the game's own archetype files to keep loaded, one path a line, "platform:/..." -
 		// those of the game's models the world places)
 		{
@@ -714,7 +722,7 @@ namespace
 			    device);
 			typeEnables += std::format("            <Item>{}:/common/data/gtxd.meta</Item>\n", device);
 		}
-		// (the archetype files and texture parents with the first map change set)
+		// (the game's archetype files and the texture parents with the first map change set, ours with their archives')
 		std::string mapSets, mapSetNames;
 		for (size_t s = 0; s < setNames.size(); ++s)
 		{
@@ -723,7 +731,7 @@ namespace
 			                       "{}{}          </filesToEnable>\n        </Item>\n      </mapChangeSetData>\n"
 			                       "      <requiresLoadingScreen value=\"true\" />\n      <loadingScreenContext>LOADINGSCREEN_CONTEXT_LAST_FRAME</loadingScreenContext>\n"
 			                       "      <useCacheLoader value=\"true\" />\n    </Item>\n",
-			    setNames[s], rpfEnables[s], s ? std::string() : typeEnables);
+			    setNames[s], rpfEnables[s], ownTypeEnables[s] + (s ? std::string() : typeEnables));
 			mapSetNames += std::format("        <Item>{}</Item>\n", setNames[s]);
 		}
 		const std::string content = std::format(
@@ -1786,6 +1794,41 @@ int main(int argc, char** argv)
 		}
 		return 0;
 	}
+	if (command == "vertex-dump")
+	{
+		// a game model's vertices as they are (position, normal, colour, first texture coordinates) and triangles, for
+		// working out what a shader reads from them: --model <file.ydr> [--count 40]
+		Bytes data;
+		loader::convert::Resource res;
+		const auto* f = files.Find(g_options["model"]);
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
+			return Fail("cannot read " + g_options["model"] + ": " + error);
+		ue5export::drawable::Model model;
+		if (!ue5export::drawable::Read(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, model, error))
+			return Fail(error);
+		const size_t count = g_options.count("count") ? std::stoul(g_options["count"]) : 40;
+		for (const auto& s : model.sections)
+		{
+			std::printf("section: material %u, lod %u, %u vertices, %zu triangles\n", s.material, s.lod, s.vertices, s.indices.size() / 3);
+			for (size_t v = 0; v < std::min<size_t>(s.vertices, count); ++v)
+			{
+				std::printf("  %3zu p %8.3f %8.3f %8.3f", v, s.position[v * 3], s.position[v * 3 + 1], s.position[v * 3 + 2]);
+				if (s.normal.size() >= (v + 1) * 3)
+					std::printf(" n %7.3f %7.3f %7.3f", s.normal[v * 3], s.normal[v * 3 + 1], s.normal[v * 3 + 2]);
+				if (s.color0.size() >= (v + 1) * 4)
+					std::printf(" c %3u %3u %3u %3u", s.color0[v * 4], s.color0[v * 4 + 1], s.color0[v * 4 + 2], s.color0[v * 4 + 3]);
+				for (const auto& uv : s.uv)
+					if (uv.size() >= (v + 1) * 2)
+						std::printf(" uv %7.3f %7.3f", uv[v * 2], uv[v * 2 + 1]);
+				std::printf("\n");
+			}
+			std::printf("  triangles:");
+			for (size_t i = 0; i < std::min<size_t>(s.indices.size(), count * 3); ++i)
+				std::printf("%s%u", i % 3 ? "," : " ", s.indices[i]);
+			std::printf("\n");
+		}
+		return 0;
+	}
 	if (command == "material-dump")
 	{
 		// a game model's shader as worldgen reads it for its own models: --model <file.ydr> --index <n>
@@ -2220,6 +2263,8 @@ int main(int argc, char** argv)
 			o.ground = g_options["ground"];
 		if (g_options.contains("photo"))
 			o.photo = g_options["photo"];
+		if (g_options.contains("facades"))
+			o.facades = g_options["facades"];
 		if (g_options.contains("climate"))
 			o.climate = g_options["climate"];
 		if (g_options.contains("datum"))
@@ -2575,10 +2620,18 @@ int main(int argc, char** argv)
 	}
 	if (command == "cargen-dump")
 	{
-		// a map file's car generators (parked cars): --name <file.ymap>: CCarGen's layout, each one's fields
+		// a map file's car generators (parked cars): --name <file.ymap> (the game's) or --file <path> (one on disk, ours):
+		// CCarGen's layout, each one's fields
 		Bytes data;
 		ue5export::meta::Meta m;
-		if (const auto* f = files.Find(g_options["name"]); !f || !files.Read(*f, data, error) || !m.Read(data, error))
+		if (g_options.contains("file"))
+		{
+			std::ifstream in(g_options["file"], std::ios::binary);
+			data.assign(std::istreambuf_iterator<char>(in), {});
+			if (data.empty() || !m.Read(data, error))
+				return Fail("cannot read " + g_options["file"] + " " + error);
+		}
+		else if (const auto* f = files.Find(g_options["name"]); !f || !files.Read(*f, data, error) || !m.Read(data, error))
 			return Fail("cannot read " + g_options["name"] + " " + error);
 		using ue5export::meta::Hash;
 		if (const auto* st = m.Find(Hash("CCarGen")))

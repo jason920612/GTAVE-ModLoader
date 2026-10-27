@@ -5,7 +5,7 @@ canopy heights (CC BY 4.0: "High Resolution Canopy Height Maps", 1 m from satell
 in EPSG:3857) for how tall the trees are.
 
 usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
-  photo.py --world <world.json> --out <dir> [--area x0,y0,x1,y1] [--chm D:\\GTAV-UE5\\chm] [--keep <dir>]
+  photo.py --world <world.json> --out <dir> [--area x0,y0,x1,y1] [--chm D:\\GTAV-UE5\\chm] [--keep <dir>] [--fetch 4]
   <dir>/trees.bin  'WBTR' version 1, count (u32); each tree: x, y, height, crown radius (f32), kind (u8: 0 evergreen, 1 bare
                    - leafless in the pictures' winter, 2 palm-like: small round crown), pad (3 bytes)
   <dir>/cover.bin  'WBPC' version 1, x0, y0, cell (f32), nx, ny (u32); each 4 m cell (rows south to north): its class (u8:
@@ -148,7 +148,9 @@ def analyse(rgbn, chm):
     nmean = ndimage.uniform_filter(n, 5)
     nvar = ndimage.uniform_filter(n * n, 5) - nmean * nmean
     uneven = np.sqrt(np.maximum(nvar, 0))
-    water = (ndvi < 0.02) & (bright < 60) & (n < 55)
+    # (water takes in the near infrared: dark there against the visible light - the bay's turquoise shallows as well as a
+    # black pond)
+    water = ((ndvi < 0.02) & (bright < 60) & (n < 55)) | ((ndvi < -0.05) & (n < 0.75 * bright))
     # (the pictures decide where trees stand - crowns and their shadows make the near infrared uneven, 17-26 over 5 m in
     # woods, about 5 on a field; the canopy heights are years older: a field cleared since still had 15 m trees there -
     # and only give their heights; leafless winter crowns: uneven, a little green or tall)
@@ -206,10 +208,13 @@ def analyse(rgbn, chm):
     trees = [tuple(t) for t in trees]
     # the ground under no canopy: water, green grass, dry grass, bare earth or sand, paving or roofs
     sat = (np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) / np.maximum(np.maximum(np.maximum(r, g), b), 1)
+    # (no plants: grey - paving, roofs - at any brightness, a city's light concrete is no sand; warm and bright - sand,
+    # bare earth, a ploughed field; warm and darker the winter's dormant grass, dry grass)
     cls = np.full(canopy.shape, 4, np.uint8)
     cls[(ndvi > 0.28)] = 3
-    cls[(ndvi <= 0.12) & (bright > 150) & (sat < 0.35)] = 5
-    cls[(ndvi <= 0.08) & (sat < 0.12) & (bright <= 150)] = 6
+    warm = (r > b + 14) | (sat >= 0.16)
+    cls[(ndvi <= 0.12) & warm & (bright > 150)] = 5
+    cls[(ndvi <= 0.12) & ~warm] = 6
     cls[water] = 1
     cls[canopy] = 2
     return canopy, trees, cls
@@ -239,19 +244,30 @@ def main():
     trees = []
     started = time.time()
     blocks = [(bx, by) for by in np.arange(ay0, ay1, BLOCK) for bx in np.arange(ax0, ax1, BLOCK)]
-    for k, (bx, by) in enumerate(blocks):
+    def window(bx, by):
         # the block and its overlap (its trees kept only in the block itself)
         x0, y0 = bx - OVERLAP, by - OVERLAP
-        nx = int(min(BLOCK, ax1 - bx) + 2 * OVERLAP)
-        ny = int(min(BLOCK, ay1 - by) + 2 * OVERLAP)
+        return x0, y0, int(min(BLOCK, ax1 - bx) + 2 * OVERLAP), int(min(BLOCK, ay1 - by) + 2 * OVERLAP)
+
+    def picture(bx, by):
+        x0, y0, nx, ny = window(bx, by)
         cached = os.path.join(o['keep'], f'naip_{int(bx)}_{int(by)}.npz') if 'keep' in o else None
         if cached and os.path.exists(cached):
-            rgbn = np.load(cached)['rgbn']
-        else:
-            rgbn = naip_block(pr, x0, y0, nx, ny)
-            if cached:
-                os.makedirs(o['keep'], exist_ok=True)
-                np.savez_compressed(cached, rgbn=rgbn)
+            return np.load(cached)['rgbn']
+        rgbn = naip_block(pr, x0, y0, nx, ny)
+        if cached:
+            os.makedirs(o['keep'], exist_ok=True)
+            np.savez_compressed(cached, rgbn=rgbn)
+        return rgbn
+
+    # (the pictures asked for four at a time, ahead of the blocks' analysis: the service takes about half a minute a block)
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=int(o.get('fetch', 4)))
+    pending = [pool.submit(picture, bx, by) for bx, by in blocks]
+    for k, (bx, by) in enumerate(blocks):
+        x0, y0, nx, ny = window(bx, by)
+        rgbn = pending[k].result()
+        pending[k] = None
         # pixel centres (rows north to south)
         xs = x0 + (np.arange(nx) + 0.5) * CELL
         ys = y0 + ny * CELL - (np.arange(ny) + 0.5) * CELL

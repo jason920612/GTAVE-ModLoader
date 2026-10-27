@@ -71,6 +71,25 @@ def gtactl(*steps):
     return r.stdout
 
 
+def hud_off():
+    """The radar and the HUD hidden (DISPLAY_RADAR, DISPLAY_HUD: they stay so) - the pictures have none."""
+    gtactl('raw:native 0xA0EBB943C300E693 0', 'raw:native 0xA6294919E56FF02A 0')
+
+
+def road_near(x, y, z, compass, reach=12.0):
+    """The street a car's camera was on: the nearest road node (GET_CLOSEST_VEHICLE_NODE) within `reach` m, then 1.8 m
+    to the right of the way the picture faces (the lane it drove in); none: where it was."""
+    out = gtactl(f'raw:native 0x240A18690AE96513 {x:.1f} {y:.1f} {z:.1f} out 1 3.0 0')
+    m = re.search(r'\| out \S+ \S+ (\S+) (\S+) (\S+)', out)
+    if not out.startswith('ok 1') or not m:
+        return x, y
+    nx, ny = float(m.group(1)), float(m.group(2))
+    if math.hypot(nx - x, ny - y) > reach:
+        return x, y
+    a = math.radians(compass)
+    return nx + 1.8 * math.cos(a), ny - 1.8 * math.sin(a)
+
+
 def ground_z(x, y):
     out = gtactl(f'raw:native 0xC906A7DAB05C8D2B {x:.1f} {y:.1f} 1000.0 out 0 0')
     m = re.search(r'\| out \S+ (\S+)', out)
@@ -127,6 +146,7 @@ def aerial(o):
         x0, y0, x1, y1 = land.world
         points = [(rnd.uniform(x0 + width_m, x1 - width_m), rnd.uniform(y0 + size, y1 - size)) for _ in range(int(o.get('count', 6)))]
     rows = []
+    hud_off()
     for cx, cy in points:
         gz = ground_z(cx, cy)
         if gz is None:
@@ -245,6 +265,7 @@ def mapillary(o):
     rnd = random.Random(int(o.get('seed', 1)))
     rnd.shuffle(rows)
     listed = []
+    hud_off()
     for k, r in enumerate(rows[:int(o.get('limit', 12))]):
         lat, lon, compass = float(r['lat']), float(r['lon']), float(r['heading'])
         x, y = land.game(lat, lon)
@@ -253,6 +274,9 @@ def mapillary(o):
         if gz is None:
             gtactl('wait:4')
             gz = ground_z(x, y) or 1.0
+        # (a phone's position is often some metres off: onto the road it was taken from when one is that near)
+        x, y = road_near(x, y, gz, compass)
+        gz = ground_z(x, y) or gz
         shot = os.path.join(out, f'game_{r["id"]}.png')
         gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} {(360 - compass) % 360:.1f} 0 {EYE_FOV}', 'wait:7', f'shot:{shot}')
         real = Image.open(os.path.join(folder, r['file'])).convert('RGB')

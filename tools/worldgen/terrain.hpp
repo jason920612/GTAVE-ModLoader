@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <functional>
 #include <cstdint>
 #include <vector>
 
@@ -45,6 +46,11 @@ namespace worldgen::terrain
 	// The mesh of the tile of `cells` x `cells` from cell (i0, j0), around (cx, cy); texture coordinates: world
 	// metres / uvMetres.
 	ydr::Mesh TileMesh(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres);
+	// TileMesh's mesh made coarser (research/phase0.md §63): each 2 x 2 cells whose nine vertices lie within `tolerance` of
+	// the two triangles over their corners and are `alike` (vertex indices: their tints) become those two triangles; the
+	// middle of an edge stays where the cells across it are not merged, or on the tile's edge (the neighbouring tile's
+	// mesh), so that no crack opens. Vertices no triangle uses are left out.
+	void Simplify(ydr::Mesh& m, const Field& f, int i0, int j0, int cells, float tolerance, const std::function<bool(uint32_t, uint32_t)>& alike);
 	// The same split by material (research/phase0.md §61.25): the lawn cells (Field::lawnCell) in a mesh of their own
 	// for the game's lawn shader (terrain_cb_w_4lyr_2tex_blend: its blend map, on the second texture coordinates every
 	// `blendMetres`, mixes four grasses where the vertex colour's alpha is 0; at alpha 1 the vertex colour picks layer 3),

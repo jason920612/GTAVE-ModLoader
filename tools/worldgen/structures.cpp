@@ -556,7 +556,15 @@ namespace worldgen::structures
 		std::vector<float> edgeDistance(h.size(), 0);
 		size_t insideCount = 0, known = 0;
 		const bool measure = scan && !scan->Empty() && !b.planned && nx * ny < 4000000;
-		for (int j = 0; j < ny && measure; ++j)
+		// (no measurement: a house's hip roof - each cell's height up from the nearest wall)
+		const double area = std::fabs(polygon::Area(ring));
+		const bool houseKind = b.kind == "house" || b.kind == "detached" || b.kind == "residential" || b.kind == "semidetached_house" ||
+		                       b.kind == "bungalow" || b.kind == "terrace" || b.kind == "cabin" || b.kind == "farm" ||
+		                       ((b.kind == "yes" || b.kind.empty()) && area >= 50 && area <= 350);
+		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000;
+		const bool hip = !measure && !b.planned && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
+		const float eave = b.height > 7.5f ? b.height - 2.5f : 3.0f;
+		for (int j = 0; j < ny && (measure || hip); ++j)
 			for (int i = 0; i < nx; ++i)
 			{
 				const P2 c{gx0 + (i + 0.5f) * cell, gy0 + (j + 0.5f) * cell};
@@ -569,6 +577,11 @@ namespace worldgen::structures
 				for (size_t e = 0; e < ring.size(); ++e)
 					d = std::min(d, polygon::DistanceToSegment(c, ring[e], ring[(e + 1) % ring.size()]));
 				edgeDistance[k] = d;
+				if (hip)
+				{
+					h[k] = base + eave + std::min(d * 0.42f, 3.5f), ++known;
+					continue;
+				}
 				const float roof = scan->Roof(c[0], c[1]);
 				if (!std::isnan(roof))
 				{
@@ -579,7 +592,7 @@ namespace worldgen::structures
 				if (d > 1.5f && !std::isnan(top) && !std::isnan(g) && top - g < 0.8f)
 					h[k] = g, ++known;
 			}
-		if (!measure || insideCount < 8 || static_cast<float>(known) < o.coverage * static_cast<float>(insideCount))
+		if (!(measure || hip) || insideCount < 8 || static_cast<float>(known) < o.coverage * static_cast<float>(insideCount))
 		{
 			// the map's height, a flat roof
 			++stats.mapHeight;
@@ -600,8 +613,10 @@ namespace worldgen::structures
 			stats.triangles += out.roof.size();
 			return true;
 		}
-		++stats.measured;
-		out.measured = true;
+		if (hip)
+			++stats.pitched, out.pitched = true;
+		else
+			++stats.measured, out.measured = true;
 		// holes: the mean of known neighbours, outwards
 		for (int pass = 0; pass < 400; ++pass)
 		{

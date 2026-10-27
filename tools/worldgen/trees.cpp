@@ -306,9 +306,9 @@ namespace worldgen::trees
 			if (t.x < box[0] || t.y < box[1] || t.x >= box[2] || t.y >= box[3] || !open(t.x, t.y))
 				continue;
 			const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(t.x * 4)) * 73856093u ^ static_cast<uint32_t>(std::lround(t.y * 4)) * 19349663u);
-			// (the crown the canopy it covers in the pictures, a little wider: the game's models' leaves fill less than their
+			// (the crown the canopy it covers in the pictures, a quarter wider: the game's models' leaves fill less than their
 			// boxes, and the woods' canopy closes overhead as in the pictures)
-			const float h = std::clamp(t.height, 3.0f, 40.0f), width = 2.3f * std::max(t.crown, 1.0f);
+			const float h = std::clamp(t.height, 3.0f, 40.0f), width = 2.5f * std::max(t.crown, 1.0f);
 			const uint8_t nlcd = cover ? cover(t.x, t.y) : 0;
 			const Model* m = nullptr;
 			bool palm = false;

@@ -59,6 +59,16 @@ namespace worldgen::world
 		std::string kind; // canal, river, stream, ...
 	};
 
+	// A railway line (one track): OSM's railway kind - rail, light_rail, subway, monorail, narrow_gauge -, on a bridge
+	// (elevated: a viaduct, a guideway) at a layer.
+	struct Rail
+	{
+		std::vector<P2> points;
+		std::string kind;
+		bool bridge = false;
+		int layer = 0;
+	};
+
 	// Latitude and longitude to game metres: (lat0, lon0) at (x0, y0), metres per degree at the box's middle.
 	struct Projection
 	{
@@ -84,6 +94,7 @@ namespace worldgen::world
 		std::vector<std::vector<P2>> coastlines;
 		std::vector<Area> areas;
 		std::vector<Waterway> waterways;
+		std::vector<Rail> rails;
 		std::vector<Road> roads;
 		std::vector<Building> buildings;
 		std::vector<Point> points;

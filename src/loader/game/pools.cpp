@@ -81,9 +81,10 @@ namespace loader::game::pools
 		// scan saw them. Each tree with collision near the player takes a physics instance: a full "phInstGta" pool
 		// (10030 of 0x70 bytes; fwBasePool::New, +0x15A7C0, breaks into int3 when no slot is free) took the game down as
 		// the camera came to a palm-lined street (research/phase0.md §61.20). Raising "Dummy Object" or "Building" much
-		// further (40000 / 100000) made the game fail at start: their memory comes from a fixed budget.
+		// further (40000 / 100000) made the game fail at start: their memory comes from a fixed budget. Parked cars: a
+		// town's driveways and car parks round the player (research/phase0.md §63), the game's 800 car generators not enough.
 		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"StaticBounds", 26700}, {"MapDataStore", 16020}, {"MapTypesStore", 2700},
-		    {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}};
+		    {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}, {"CCargen", 4000}};
 
 		// Stores that need a size of their own (SetMinimum), by name.
 		std::vector<std::pair<std::string, uint32_t>> g_minimum;

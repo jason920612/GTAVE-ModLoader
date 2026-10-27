@@ -24,7 +24,11 @@ namespace worldgen::buildings
 			    "scaffold", "ground", "gnd", "wire", "cable", "ivy", "sign", "light", "dmg", "damage", "repair", "fizz", "alpha", "proxy", "shadow",
 			    "_ref", "reflect", "frame", "_fr", "window", "door", "awning", "stair", "fence", "wall", "_rd", "fur", "grass", "_d_", "dirt", "blend",
 			    "ladder", "_lad", "pole", "tarp", "struct", "_top", "fake", "_ob", "neon", "_em", "scaff", "billboard", "_bb", "antenna", "balcon",
-			    "balus", "fnc", "dtl", "_dec", "shad", "shdw", "steps", "support", "fire_exit", "_fg", "sign", "burnt", "destroy", "_dam"};
+			    "balus", "fnc", "dtl", "_dec", "shad", "shdw", "steps", "support", "fire_exit", "_fg", "sign", "burnt", "destroy", "_dam",
+			    // (towers that are no buildings: water towers - Tallahassee had 163 of them on small footprints -, radio masts,
+			    // a tower's pillars or base)
+			    "wattower", "watertower", "radio", "pilar", "pillar", "towerbase", "tower_base", "tank", "silo", "chimney", "mast", "crane",
+			    "sc1_33_tower", "pergola", "posts", "terrain", "_roof", "logo", "_fiz", "toilet"};
 			if (std::none_of(std::begin(kYes), std::end(kYes), [&](const char* w) { return Has(it.name, w); }))
 				return false;
 			if (std::any_of(std::begin(kNo), std::end(kNo), [&](const char* w) { return Has(it.name, w); }) || it.name.ends_with("_d"))
@@ -137,7 +141,7 @@ namespace worldgen::buildings
 			if (!(c.styles & want))
 				continue;
 			const float rl = c.longSide / longSide, rs = c.shortSide / shortSide, rh = c.height / std::max(height, 3.0f);
-			if (rl > 1.15f || rs > 1.2f || rl < 0.6f || rs < 0.55f)
+			if (rl > 1.15f || rs > 1.2f || rl < 0.6f || rs < 0.55f || rh > 2.5f || rh < 0.3f)
 				continue;
 			const float cost = std::fabs(std::log(rl)) + std::fabs(std::log(rs)) + 0.6f * std::fabs(std::log(rh));
 			if (cost > 1.3f)

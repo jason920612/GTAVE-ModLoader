@@ -271,6 +271,21 @@ namespace worldgen::world
 					out.roads.push_back(std::move(r));
 				continue;
 			}
+			// railways in use (not in tunnels: the subway's underground stretches; a loop - the Metromover's - as a line
+			// back to its start)
+			if (const std::string& railway = Tag(t, "railway");
+			    (railway == "rail" || railway == "light_rail" || railway == "subway" || railway == "monorail" || railway == "narrow_gauge") &&
+			    (Tag(t, "tunnel").empty() || Tag(t, "tunnel") == "no"))
+			{
+				Rail rl;
+				rl.points = Points(d, w, p);
+				rl.kind = railway;
+				rl.bridge = !Tag(t, "bridge").empty() && Tag(t, "bridge") != "no";
+				rl.layer = static_cast<int>(Number(Tag(t, "layer")));
+				if (rl.points.size() >= 2)
+					out.rails.push_back(std::move(rl));
+				continue;
+			}
 			const std::string& waterway = Tag(t, "waterway");
 			if (!closed && (waterway == "canal" || waterway == "river" || waterway == "stream" || waterway == "ditch" || waterway == "drain"))
 			{
@@ -409,6 +424,9 @@ namespace worldgen::world
 		auto& waterways = j["waterways"] = nlohmann::json::array();
 		for (const Waterway& ww : w.waterways)
 			waterways.push_back({{"kind", ww.kind}, {"width", ww.width}, {"points", Line(ww.points)}});
+		auto& rails = j["rails"] = nlohmann::json::array();
+		for (const Rail& rl : w.rails)
+			rails.push_back({{"kind", rl.kind}, {"bridge", rl.bridge}, {"layer", rl.layer}, {"points", Line(rl.points)}});
 		auto& roads = j["roads"] = nlohmann::json::array();
 		for (const Road& r : w.roads)
 		{
@@ -490,6 +508,9 @@ namespace worldgen::world
 		}
 		for (const auto& o : j["waterways"])
 			w.waterways.push_back({Line(o["points"]), o["width"].get<float>(), o["kind"].get<std::string>()});
+		if (j.contains("rails"))
+			for (const auto& o : j["rails"])
+				w.rails.push_back({Line(o["points"]), o["kind"].get<std::string>(), o["bridge"].get<bool>(), o["layer"].get<int>()});
 		for (const auto& o : j["roads"])
 			w.roads.push_back(RoadFrom(o));
 		for (const auto& o : j["buildings"])

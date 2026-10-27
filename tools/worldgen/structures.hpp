@@ -14,7 +14,10 @@
 // tolerance; Delaunay flips inside the outline), so that flat roofs, pitched ones, set-back towers, courtyards and
 // domes all come out of one method. Before that the heights become planes (regions grown over the cells; the small
 // ones - roof clutter - join their neighbours), so that a roof's faces are flat and its triangles few. The walls stand on the outline, from below the ground to the roof's edge. Without
-// a measurement the map's height makes a flat-roofed block.
+// a measurement a house (the map's house kinds, or an unnamed building of a house's size) gets a hip roof - each point of
+// the roof 22 degrees up from the nearest wall, its walls a storey high (or the map's height less the roof), the rise at
+// most 3.5 m (Florida's houses: low hip roofs of shingle or tile) - made as a measured roof would be; others the map's
+// height as a flat-roofed block.
 namespace worldgen::structures
 {
 	using P2 = std::array<float, 2>;
@@ -29,6 +32,7 @@ namespace worldgen::structures
 		float height = 0;   // the main roof above the base
 		float top = 0;      // the highest point above the base
 		bool measured = false;
+		bool pitched = false; // (no measurement: a house's hip roof made from its footprint)
 		std::string kind;   // the map's building value
 	};
 
@@ -44,7 +48,7 @@ namespace worldgen::structures
 
 	struct Stats
 	{
-		size_t measured = 0, flat = 0, shaped = 0, mapHeight = 0, skipped = 0, triangles = 0;
+		size_t measured = 0, flat = 0, shaped = 0, mapHeight = 0, skipped = 0, triangles = 0, pitched = 0;
 	};
 
 	// `ground` is the terrain's height (the base is the lowest of it under the outline).

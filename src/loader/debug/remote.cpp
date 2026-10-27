@@ -728,6 +728,38 @@ namespace loader::debug::remote
 				}
 				return call->ok ? "ok " + call->result : "err " + call->result;
 			}
+			if (cmd == "peek")
+			{
+				// peek <address> [bytes]: memory as hex (up to 512 bytes; an address with an r in front is the game's module's
+				// offset, a * in front reads the pointer there first); for looking at the game's own structures from tests
+				std::string at;
+				size_t count = 64;
+				in >> at >> count;
+				count = std::min<size_t>(count, 512);
+				uintptr_t address = 0;
+				bool deref = false;
+				if (!at.empty() && at[0] == '*')
+					deref = true, at.erase(0, 1);
+				if (!at.empty() && at[0] == 'r')
+					address = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + std::stoull(at.substr(1), nullptr, 16);
+				else
+					address = std::stoull(at, nullptr, 16);
+				std::vector<uint8_t> bytes(count);
+				SIZE_T got = 0;
+				if (deref)
+				{
+					uintptr_t to = 0;
+					if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(address), &to, sizeof(to), &got) || got != sizeof(to))
+						return "err cannot read the pointer";
+					address = to;
+				}
+				if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(address), bytes.data(), count, &got) || got != count)
+					return "err cannot read there";
+				std::string out = std::format("ok {:x}", address);
+				for (const uint8_t b : bytes)
+					out += std::format(" {:02x}", b);
+				return out;
+			}
 			if (cmd == "tp")
 			{
 				// tp x y z: the player there

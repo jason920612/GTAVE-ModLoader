@@ -231,7 +231,7 @@ namespace worldgen::paving
 		{
 			// unpaved: bumps of a few centimetres (shorter and longer waves), on dirt and sand ruts in the wheel tracks
 			const float bumps = p == Paving::Gravel ? 0.025f : 0.035f, swells = p == Paving::Gravel ? 0.04f : 0.06f;
-			r += bumps * Noise(seed, s, o, 1.4f) + swells * Noise(seed ^ 0x9e37u, s, o, 6.0f);
+			r += bumps * Noise(seed, s, o, 4.0f) + swells * Noise(seed ^ 0x9e37u, s, o, 9.0f);
 			if (p != Paving::Gravel)
 				for (const float track : {-half / 2 - 0.8f, -half / 2 + 0.8f, half / 2 - 0.8f, half / 2 + 0.8f})
 				{

@@ -4,12 +4,15 @@ and switches to the next one where the player crosses their shared edge.
 
 The grid is anchored at Miami's box (its south-west corner 25.745 N, -80.232 E): a sector is 0.121 degrees of latitude
 by 0.117 of longitude, cell (column, row) = (0, 0) Miami, (0, 1) the one north of it, (-1, 0) west. For each cell:
-its OpenStreetMap extract (worldgen osm), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its ground
-(dem.py: 3DEP's measured heights, the lakes' and rivers' levels), its build (the light kind: the map's buildings as the
-game's models, trees by the land cover, navmeshes only where people go, no laser scan or aerial pictures; every edge
-open: the land goes on into the neighbours), its population zones (zones.py, into the land.json) and its pack
-(ModLoader\\mods\\<name>; dlc.rpf.new when a pack is there already: the loader takes it at the next start). The build's
-own files are removed once packed (--keep: kept).
+its OpenStreetMap extract (worldgen osm) with the building footprints it lacks from Microsoft's US Building Footprints
+(msbuildings.py; ODbL), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its ground
+(dem.py: 3DEP's measured heights, the lakes' and rivers' levels), what its aerial pictures show (photo.py, in the venv
+of numpy, scipy, tifffile, zarr and Pillow: every tree, the ground's cover and colour - research/phase0.md §63), its build
+(houses of our own with hip roofs, other buildings the game's models where one fits, the trees and ground of the
+pictures, the game's plants on the ground, navmeshes only where people go; every edge open: the land goes on into the
+neighbours), its population zones (zones.py, into the land.json) and its pack (ModLoader\\mods\\<name>; dlc.rpf.new when a
+pack is there already: the loader takes it at the next start). The build's own files and the pictures' are removed once
+packed (--keep: kept).
 
 usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.tsv> [--jobs n] [--skip-built] [--dry-run]
        [--keep]
@@ -26,6 +29,10 @@ O = {
     'nlcd': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nlcd.py'),
     'dem': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dem.py'),
     'zones': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zones.py'),
+    'photo': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photo.py'),
+    'msbuildings': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'msbuildings.py'),
+    'mscells': r'D:\GTAV-UE5\buildings\ms\cells',  # (msbuildings.py split's)
+    'venv': r'D:\GTAV-UE5\venv\Scripts\python.exe',
     'keys': r'D:\GTAV-UE5\keys\ng.bin',
     'pbf': r'D:\GTAV-UE5\osm\pbf\florida.osm.pbf',
     'catalog': r'D:\GTAV-UE5\catalog.tsv',
@@ -82,17 +89,25 @@ def build(c, r, flags):
     log = os.path.join(folder, 'build.log')
     common = ['--game', O['game'], '--keys', O['keys']]
     world = os.path.join(folder, 'world.json')
-    if not os.path.exists(world) and run([O['worldgen'], 'osm', *common, '--pbf', O['pbf'], '--box', f'{s},{w},{n},{e}', '--out', folder, '--name', name], log):
-        return name, f'osm failed (see {log})'
+    if not os.path.exists(world):
+        if run([O['worldgen'], 'osm', *common, '--pbf', O['pbf'], '--box', f'{s},{w},{n},{e}', '--out', folder, '--name', name], log):
+            return name, f'osm failed (see {log})'
+        if run([sys.executable, '-I', O['msbuildings'], 'merge', '--world', world, '--cells', O['mscells']], log):
+            os.remove(world)  # (made again, both steps, next time)
+            return name, f'footprints failed (see {log})'
     cover = os.path.join(folder, 'landcover.bin')
     if not os.path.exists(cover) and run([sys.executable, '-I', O['nlcd'], '--world', world, '--out', cover], log):
         return name, f'land cover failed (see {log})'
     ground = os.path.join(folder, 'ground.bin')
     if not os.path.exists(ground) and run([sys.executable, '-I', O['dem'], '--world', world, '--out', ground], log):
         return name, f'ground failed (see {log})'
+    photo = os.path.join(folder, 'photo')
+    if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo], log):
+        return name, f'aerial pictures failed (see {log})'
     gen = os.path.join(folder, 'full_gen')
+    shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--catalog', O['catalog'], '--open', 'nsew',
-            '--landcover', cover, '--ground', ground, '--navmesh', 'near', '--climate', 'tropical'], log):
+            '--landcover', cover, '--ground', ground, '--photo', photo, '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     os.makedirs(os.path.dirname(pack), exist_ok=True)
     out = pack + '.new' if os.path.exists(pack) else pack
@@ -104,6 +119,7 @@ def build(c, r, flags):
         return name, f'zones failed (see {log})'
     if 'keep' not in flags:
         shutil.rmtree(gen, ignore_errors=True)
+        shutil.rmtree(photo, ignore_errors=True)  # (about 200 MB a sector: made again from the pictures if wanted)
         for f in ('world.json',):
             try:
                 os.remove(os.path.join(folder, f))

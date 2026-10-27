@@ -53,6 +53,16 @@ namespace worldgen::mapfiles
 
 	bool WriteTypes(const ue5export::GameFiles& files, const std::string& name, const std::vector<Archetype>& archetypes, loader::convert::Bytes& out,
 	    std::string& error);
+	// A parked car the game makes there when the player comes near (a car generator, CCarGen): its middle on the ground,
+	// the way it faces (a unit vector), its model (0: one of the area's), flags (the game's driveways' and car parks').
+	struct CarGen
+	{
+		std::array<float, 3> position{};
+		std::array<float, 2> direction{1, 0};
+		uint32_t model = 0;
+		uint32_t flags = 0x660;
+	};
+
 	bool WriteMap(const ue5export::GameFiles& files, const std::string& name, const std::vector<Entity>& entities, loader::convert::Bytes& out,
-	    std::string& error, const MapInfo& info = {});
+	    std::string& error, const MapInfo& info = {}, const std::vector<CarGen>& cars = {});
 }

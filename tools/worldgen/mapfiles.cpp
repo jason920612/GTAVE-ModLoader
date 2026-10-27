@@ -1,6 +1,7 @@
 #include "mapfiles.hpp"
 
 #include <algorithm>
+#include <format>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -96,6 +97,32 @@ namespace worldgen::mapfiles
 			pointers = list.empty() ? 0 : meta::Writer::Pointer(w.AddBlock(7, std::move(pointerBlock)), 0);
 			return true;
 		}
+
+		// An array of the structures themselves, one after another in one block (atArray<T>: CMapData's carGenerators - as an
+		// array of pointers, as the entities are, the game read the pointers as car generators: a few dozen of garbage, no
+		// car), at most a block's worth (Pages::kSize).
+		template <typename Fill>
+		bool Structures(meta::Writer& w, const char* structure, size_t count, Fill fill, uint64_t& pointer, std::string& error)
+		{
+			const uint32_t hash = meta::Hash(structure), size = w.Size(hash);
+			if (!size)
+				return error = std::string(structure) + " is not in the template", false;
+			if (count * size > Pages::kSize)
+				return error = std::format("{} {} are more than one block holds", count, structure), false;
+			Bytes block(count * size, 0);
+			const uint32_t number = w.AddBlock(hash, {});
+			for (size_t k = 0; k < count; ++k)
+			{
+				Fields f(w, structure);
+				fill(k, f);
+				if (!f.ok)
+					return error = std::string("a field of ") + structure + " is not in the template", false;
+				std::memcpy(block.data() + k * size, f.data.data(), size);
+			}
+			w.Block(number) = std::move(block);
+			pointer = meta::Writer::Pointer(number, 0);
+			return true;
+		}
 	}
 
 	bool FindArchetype(const ue5export::GameFiles& files, const std::string& name, Archetype& out, std::string& error)
@@ -166,10 +193,11 @@ namespace worldgen::mapfiles
 	}
 
 	bool WriteMap(const ue5export::GameFiles& files, const std::string& name, const std::vector<Entity>& entities, Bytes& out, std::string& error,
-	    const MapInfo& info)
+	    const MapInfo& info, const std::vector<CarGen>& cars)
 	{
+		// (a map of the game's with car generators: its definitions have CCarGen)
 		meta::Writer w;
-		if (!Template(files, "cs1_10_strm_0.ymap", w, error))
+		if (!Template(files, cars.empty() ? "cs1_10_strm_0.ymap" : "hw1_02_strm_0.ymap", w, error))
 			return false;
 		std::array<float, 3> lo{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()},
 		    hi{-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()},
@@ -205,6 +233,32 @@ namespace worldgen::mapfiles
 		};
 		if (!Blocks(w, "CEntityDef", entities.size(), fill, list, error))
 			return false;
+		// (the cars: as the game's - the way they face times 5 m, 2.5 m across; any colour, the area's cars; a car is made
+		// within about 150 m: the map is loaded that far round them)
+		uint64_t carList = 0;
+		const auto fillCar = [&](size_t i, Fields& f) {
+			const CarGen& c = cars[i];
+			const float position[4] = {c.position[0], c.position[1], c.position[2], 0};
+			f.Set("position", position, 16);
+			f.Set<float>("orientX", c.direction[0] * 5.0f);
+			f.Set<float>("orientY", c.direction[1] * 5.0f);
+			f.Set<float>("perpendicularLength", 2.5f);
+			f.Set<uint32_t>("carModel", c.model);
+			f.Set<uint32_t>("flags", c.flags);
+			for (const char* colour : {"bodyColorRemap1", "bodyColorRemap2", "bodyColorRemap3", "bodyColorRemap4"})
+				f.Set<int32_t>(colour, -1);
+			f.Set<uint32_t>("popGroup", 0);
+			f.Set<int8_t>("livery", -1);
+			for (int a = 0; a < 3; ++a)
+			{
+				lo[a] = std::min(lo[a], c.position[a] - 5);
+				hi[a] = std::max(hi[a], c.position[a] + 5);
+				streamLo[a] = std::min(streamLo[a], c.position[a] - 150);
+				streamHi[a] = std::max(streamHi[a], c.position[a] + 150);
+			}
+		};
+		if (!cars.empty() && !Structures(w, "CCarGen", cars.size(), fillCar, carList, error))
+			return false;
 		Fields root(w, "CMapData");
 		root.Set<uint32_t>("name", mapHash);
 		root.Set<uint32_t>("parent", info.parent);
@@ -215,6 +269,8 @@ namespace worldgen::mapfiles
 		root.Vec("entitiesExtentsMin", lo);
 		root.Vec("entitiesExtentsMax", hi);
 		root.Array("entities", list, static_cast<uint16_t>(entities.size()));
+		if (!cars.empty())
+			root.Array("carGenerators", carList, static_cast<uint16_t>(cars.size()));
 		if (!root.ok)
 			return error = "a field of CMapData is not in the template", false;
 		return w.Write(w.AddBlock(meta::Hash("CMapData"), std::move(root.data)), out, error);

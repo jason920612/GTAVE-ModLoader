@@ -116,6 +116,57 @@ namespace worldgen::facades
 				}
 		}
 
+		// lap siding: boards 18 cm to the weather, each lapped over the one below - the board thickest at its foot, a shadow
+		// under that edge -, painted, a faint grain along them
+		void Siding(Canvas& c, Rgb colour, uint32_t seed)
+		{
+			constexpr float kExposure = 0.18f;
+			for (int y = 0; y < c.h; ++y)
+				for (int x = 0; x < c.w; ++x)
+				{
+					const float u = (x + 0.5f) / c.w, v = (y + 0.5f) / c.h;
+					const float up = (1 - v) * c.mh; // (metres up the wall: the image's rows run down)
+					const float t = up / kExposure - std::floor(up / kExposure); // (0 at a board's foot, 1 under the next one's)
+					const float grain = Fbm(u * 0.25f, v * 6.0f, 16, seed, 2);
+					const float shadow = t > 0.86f ? 0.72f : 1.0f;
+					const size_t i = static_cast<size_t>(y) * c.w + x;
+					c.albedo[i] = Scale(colour, (0.97f + 0.06f * (1 - t) + 0.05f * grain) * shadow);
+					c.height[i] = 0.62f - 0.22f * t;
+					c.spec[i] = 0.12f;
+				}
+		}
+
+		// brick in running bond: 21.5 x 6.5 cm and 1 cm joints - each brick its own shade, the mortar recessed
+		void Brick(Canvas& c, Rgb colour, Rgb mortar, uint32_t seed)
+		{
+			constexpr float kLong = 0.225f, kCourse = 0.075f;
+			for (int y = 0; y < c.h; ++y)
+				for (int x = 0; x < c.w; ++x)
+				{
+					const float u = (x + 0.5f) / c.w, v = (y + 0.5f) / c.h;
+					const float up = (1 - v) * c.mh, across = u * c.mw;
+					const int course = static_cast<int>(std::floor(up / kCourse));
+					const float along = across + (course % 2 ? kLong / 2 : 0);
+					const int brick = static_cast<int>(std::floor(along / kLong));
+					const float tv = up / kCourse - course, tu = along / kLong - brick;
+					const size_t i = static_cast<size_t>(y) * c.w + x;
+					const float fine = Fbm(u, v, 128, seed, 2);
+					if (tv < 0.14f || tu < 0.046f)
+					{
+						c.albedo[i] = Scale(mortar, 1 + 0.1f * fine);
+						c.height[i] = 0.4f;
+						c.spec[i] = 0.05f;
+						continue;
+					}
+					// (bricks of a wall differ: lighter, darker, a few nearly black from the kiln)
+					const uint32_t bu = static_cast<uint32_t>(brick + 1000), bv = static_cast<uint32_t>(course + 1000);
+					const float shade = Rand(bu, bv, seed) < 0.06f ? 0.62f : 0.84f + 0.32f * Rand(bu, bv, seed + 1);
+					c.albedo[i] = Scale(colour, shade * (1 + 0.12f * fine));
+					c.height[i] = 0.58f + 0.03f * fine;
+					c.spec[i] = 0.07f;
+				}
+		}
+
 		// glass: the sky's reflection, brighter up, a little different pane to pane
 		Rgb Glass(Rgb tint, float v, float r)
 		{
@@ -338,6 +389,68 @@ namespace worldgen::facades
 						c.albedo[i] = Mix(c.albedo[i], {214, 214, 210}, 0.7f);
 				}
 		}, true, 3);
+		// frame houses in lap siding: two floors of 3 m, windows every 4 m in wide white trim, louvred shutters on some, a
+		// block foundation
+		const std::pair<const char*, Rgb> sidings[] = {{"white", {236, 236, 230}}, {"grey", {190, 196, 198}}, {"beige", {212, 198, 168}},
+		    {"yellow", {232, 218, 164}}, {"blue", {176, 196, 212}}, {"sage", {172, 186, 158}}, {"tan", {194, 174, 144}}};
+		for (size_t k = 0; k < std::size(sidings); ++k)
+			add(Kind::Siding, "siding", std::string("siding_") + sidings[k].first, 8, 6, [&](Canvas& c) {
+				Siding(c, sidings[k].second, ++seed);
+				const bool shutters = k % 3 != 0;
+				const Rgb shutter = k % 2 ? Rgb{40, 52, 44} : Rgb{34, 38, 46};
+				for (int f = 0; f < 2; ++f)
+					for (int b = 0; b < 2; ++b)
+					{
+						const float x = b * 4.0f + 1.4f, y = f * 3.0f + 0.9f;
+						c.Fill(x - 0.11f, y - 0.11f, x + 1.31f, y + 1.51f, {244, 244, 240}, 0.66f, 0.15f); // (the trim)
+						Window(c, x, y, x + 1.2f, y + 1.4f, 0.06f, {244, 244, 240}, {80, 98, 112}, seed * 31 + f * 2 + b, true);
+						if (shutters)
+							for (const float sx : {x - 0.58f, x + 1.34f})
+								c.Rect(sx, y - 0.05f, sx + 0.44f, y + 1.45f, [&](size_t i, float, float v) {
+									// (louvres: a slat every 6 cm)
+									const float slat = std::fmod(v * 1.5f / 0.06f, 1.0f);
+									c.albedo[i] = Scale(shutter, 0.85f + 0.3f * slat);
+									c.height[i] = 0.7f + 0.05f * slat;
+									c.spec[i] = 0.12f;
+								});
+					}
+				c.Rect(0, 0, c.mw, 0.45f, [&](size_t i, float, float) {
+					c.albedo[i] = Scale(Rgb{150, 148, 142}, 0.95f + 0.1f * Rand(static_cast<uint32_t>(i), seed));
+					c.height[i] = 0.7f;
+					c.spec[i] = 0.05f;
+				});
+			}, k == 0, 5);
+		// brick houses: the same floors, white-framed windows on a stone sill, a soldier course over them
+		const std::pair<const char*, Rgb> bricks[] = {{"red", {150, 72, 56}}, {"brown", {128, 84, 64}}, {"orange", {172, 98, 70}}, {"buff", {190, 156, 120}}};
+		for (size_t k = 0; k < std::size(bricks); ++k)
+			add(Kind::Brick, "brick", std::string("brick_") + bricks[k].first, 8.1f, 6, [&](Canvas& c) {
+				Brick(c, bricks[k].second, {196, 192, 182}, ++seed);
+				for (int f = 0; f < 2; ++f)
+					for (int b = 0; b < 2; ++b)
+					{
+						const float x = b * 4.05f + 1.4f, y = f * 3.0f + 0.9f;
+						Window(c, x, y, x + 1.2f, y + 1.4f, 0.08f, {238, 238, 232}, {80, 98, 112}, seed * 31 + f * 2 + b, true);
+						c.Fill(x - 0.1f, y - 0.1f, x + 1.3f, y - 0.01f, {205, 200, 188}, 0.7f, 0.08f); // (the sill)
+						c.Rect(x - 0.08f, y + 1.4f, x + 1.28f, y + 1.62f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.9f); });
+					}
+			}, k == 0, 6);
+		// red brick walk-ups and offices: floors of 3.075 m, tall windows every 2.43 m on stone sills, a band at each floor
+		const std::pair<const char*, Rgb> brickCity[] = {{"red", {146, 66, 52}}, {"brown", {124, 80, 62}}, {"buff", {186, 152, 116}}};
+		for (size_t k = 0; k < std::size(brickCity); ++k)
+			add(Kind::BrickCity, "brickcity", std::string("brickcity_") + brickCity[k].first, 12.15f, 12.3f, [&](Canvas& c) {
+				Brick(c, brickCity[k].second, {190, 186, 176}, ++seed);
+				for (int f = 0; f < 4; ++f)
+				{
+					const float y = f * 3.075f;
+					c.Fill(0, y + 2.9f, c.mw, y + 3.0f, {200, 194, 180}, 0.66f, 0.08f);
+					for (int b = 0; b < 5; ++b)
+					{
+						const float x = b * 2.43f + 0.66f;
+						Window(c, x, y + 0.85f, x + 1.1f, y + 2.6f, 0.07f, {226, 224, 216}, {70, 88, 102}, seed * 37 + f * 5 + b, true);
+						c.Fill(x - 0.12f, y + 0.72f, x + 1.22f, y + 0.84f, {205, 200, 188}, 0.7f, 0.08f);
+					}
+				}
+			}, k == 0, 6);
 		// the palette for the LOD models' walls
 		set.palette = prefix + "lod";
 		texture::Image pal(128, 8 * static_cast<int>((set.styles.size() + 15) / 16));
@@ -366,7 +479,7 @@ namespace worldgen::facades
 		return 0;
 	}
 
-	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed)
+	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed, double latitude, const Seen* seen)
 	{
 		const auto among = [&](Kind k) {
 			std::vector<int> v;
@@ -381,12 +494,68 @@ namespace worldgen::facades
 		const bool office = kind == "office" || kind == "commercial" || kind == "retail" || kind == "hospital" || kind == "university" || kind == "school";
 		if (industrial || (height < 10 && area > 3000 && !house))
 			return among(Kind::Shed);
-		if (house || (height < 8.5f && area < 350))
-			return among(Kind::House);
+		// (north Florida: frame houses in siding, brick ones, some stucco - Tallahassee's streets; south Florida: concrete
+		// block and stucco, Miami's)
+		const bool north = latitude >= 28.8, miami = latitude < 26.3;
+		const bool apartments = kind == "apartments" || kind == "dormitory" || kind == "terrace";
+		const bool homely = house || (height < 8.5f && area < 350) || (apartments && height <= 15);
+		// (seen in the street pictures: brick, or a painted wall of their colour - the styles' mean colours are a little
+		// darker than their paint, their windows in them; a dark colour is a wall in deep shade or behind leaves: not used)
+		if (seen && !industrial)
+		{
+			const float lum = (seen->colour[0] + seen->colour[1] + seen->colour[2]) / 3.0f;
+			const bool brick = seen->brick > 0.4f;
+			if (brick || lum >= 70)
+			{
+				std::vector<Kind> kinds;
+				if (brick)
+					kinds = {homely ? Kind::Brick : Kind::BrickCity};
+				else if (homely)
+					kinds = north || latitude >= 27.0 ? std::vector<Kind>{Kind::Siding, Kind::House} : std::vector<Kind>{Kind::House};
+				else if (height < 6.5f)
+					kinds = {Kind::Shop, Kind::Concrete};
+				else
+					kinds = {Kind::Concrete, Kind::Glass, Kind::Balcony, Kind::BrickCity};
+				int best = -1;
+				float bestDistance = 1e30f;
+				for (size_t i = 0; i < set.styles.size(); ++i)
+				{
+					if (std::find(kinds.begin(), kinds.end(), set.styles[i].kind) == kinds.end())
+						continue;
+					float distance = 0;
+					for (int c = 0; c < 3; ++c)
+					{
+						const float diff = set.styles[i].average[c] * 1.08f - seen->colour[c];
+						distance += diff * diff;
+					}
+					if (distance < bestDistance)
+						bestDistance = distance, best = static_cast<int>(i);
+				}
+				if (best >= 0)
+					return best;
+			}
+		}
+		if (homely)
+		{
+			const float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
+			return among(r < siding ? Kind::Siding : r < siding + brick ? Kind::Brick : Kind::House);
+		}
+		const bool retail = kind == "retail" || kind == "commercial" || kind == "supermarket" || kind == "kiosk";
+		if (retail && height <= 6.5f)
+			return among(Kind::Shop);
 		if (height >= 40)
 			return among(r < (office ? 0.75f : 0.45f) ? Kind::Glass : Kind::Balcony);
 		if (height >= 16)
+		{
+			if (north)
+				return among(r < 0.35f ? Kind::BrickCity : r < 0.75f ? Kind::Concrete : Kind::Glass);
 			return among(office ? (r < 0.6f ? Kind::Glass : Kind::Concrete) : (r < 0.55f ? Kind::Balcony : r < 0.8f ? Kind::Concrete : Kind::Glass));
+		}
+		// (low and middling: red brick in the north's downtowns and campuses, Art Deco walk-ups only in Miami)
+		if (north)
+			return among(r < 0.6f ? Kind::BrickCity : Kind::Concrete);
+		if (!miami)
+			return among(r < 0.5f ? Kind::Concrete : r < 0.8f ? Kind::House : Kind::BrickCity);
 		return among(office ? (r < 0.6f ? Kind::Concrete : Kind::Deco) : (r < 0.75f ? Kind::Deco : Kind::Concrete));
 	}
 }
