@@ -11,7 +11,7 @@ usage: python -I tools/worldgen/dem.py --world <world.json> --out <ground.bin> [
 The service is asked for the sector box (exportImage, float32 GeoTIFF on a latitude / longitude grid; in tiles of at
 most 2000 pixels a side) and the answers kept in --cache.
 """
-import json, math, os, struct, sys, time, urllib.request
+import io, json, math, os, struct, sys, time, urllib.request
 
 import numpy as np
 from PIL import Image
@@ -49,6 +49,12 @@ def fetch_one(south, west, width, height, cache, step):
     os.makedirs(cache, exist_ok=True)
     tag = '' if step == STEP else f'_{1 / step:.0f}'
     file = os.path.join(cache, f'dem_{south:.4f}_{west:.4f}_{width}x{height}{tag}.tif')
+    # (a kept answer that does not read whole - an earlier download cut short - asked for again)
+    if os.path.exists(file):
+        try:
+            Image.open(file).load()
+        except Exception:
+            os.remove(file)
     if not os.path.exists(file):
         url = (f'{SERVICE}?bbox={west:.7f},{south:.7f},{west + width * step:.7f},{south + height * step:.7f}&bboxSR=4326&imageSR=4326'
                f'&size={width},{height}&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image')
@@ -58,6 +64,8 @@ def fetch_one(south, west, width, height, cache, step):
                     data = r.read()
                 if not data.startswith((b'II*\x00', b'MM\x00*')):
                     raise IOError(data[:300].decode('utf-8', 'replace'))
+                # (all of it: the service now and then cuts an answer short - a TIFF's head and part of its pixels)
+                Image.open(io.BytesIO(data)).load()
                 break
             except Exception as e:  # (the service is busy now and then: tried again)
                 if attempt == 5:

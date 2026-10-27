@@ -74,6 +74,7 @@ def fetch(x0, y0, x1, y1, year, cache):
                     data = r.read()
                 if not data.startswith((b'II*\x00', b'MM\x00*')):
                     raise IOError(data[:300].decode('utf-8', 'replace'))
+                Image.open(io.BytesIO(data)).load()  # (all of it: an answer cut short is asked for again)
                 break
             except Exception as e:  # (the service is busy now and then: tried again)
                 if attempt == 4:
