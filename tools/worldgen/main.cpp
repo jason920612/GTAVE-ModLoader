@@ -1949,9 +1949,9 @@ int main(int argc, char** argv)
 			}
 			std::printf("\n");
 		}
-		std::printf("  slots:");
-		for (const uint8_t sl : m.slots)
-			std::printf(" %u", sl);
+		std::printf("  slots (DXGI formats):");
+		for (size_t k = 0; k < m.slots.size(); ++k)
+			std::printf(" %u (%u)", m.slots[k], k < m.formats.size() ? m.formats[k] : 0u);
 		std::printf("\n");
 		return 0;
 	}

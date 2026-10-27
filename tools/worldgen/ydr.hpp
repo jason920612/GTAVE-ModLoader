@@ -56,6 +56,7 @@ namespace worldgen::ydr
 		std::vector<std::pair<uint32_t, std::string>> textures;
 		std::vector<std::pair<uint32_t, std::vector<uint8_t>>> constants;
 		std::vector<uint8_t> slots;
+		std::vector<uint8_t> formats; // (each slot's DXGI format as the game's geometry has it; empty: not read)
 
 		void Texture(uint32_t parameter, const std::string& name);
 		// a constant it already has (a float, or the first of several): false if it has none of that name

@@ -44,6 +44,18 @@ def fetch(south, west, north, east, cache, step=STEP):
     return a, (south, west, top, west + width * step)
 
 
+def read_tiff(source):
+    """A TIFF's first band as float32 - Pillow's, else tifffile's: the service's tiles all over the sea are sparse TIFFs (a
+    tile of zeros has no bytes), which Pillow takes for a file cut short."""
+    try:
+        return np.array(Image.open(source), dtype=np.float32)
+    except Exception:
+        import tifffile  # (the venv's)
+        if hasattr(source, 'seek'):
+            source.seek(0)
+        return np.asarray(tifffile.imread(source), dtype=np.float32)
+
+
 def fetch_one(south, west, width, height, cache, step):
     """One request's heights: width x height pixels of `step` degrees from the south-west corner, rows north to south."""
     os.makedirs(cache, exist_ok=True)
@@ -52,7 +64,7 @@ def fetch_one(south, west, width, height, cache, step):
     # (a kept answer that does not read whole - an earlier download cut short - asked for again)
     if os.path.exists(file):
         try:
-            Image.open(file).load()
+            read_tiff(file)
         except Exception:
             os.remove(file)
     if not os.path.exists(file):
@@ -65,7 +77,7 @@ def fetch_one(south, west, width, height, cache, step):
                 if not data.startswith((b'II*\x00', b'MM\x00*')):
                     raise IOError(data[:300].decode('utf-8', 'replace'))
                 # (all of it: the service now and then cuts an answer short - a TIFF's head and part of its pixels)
-                Image.open(io.BytesIO(data)).load()
+                read_tiff(io.BytesIO(data))
                 break
             except Exception as e:  # (the service is busy now and then: tried again)
                 if attempt == 5:
@@ -75,7 +87,7 @@ def fetch_one(south, west, width, height, cache, step):
         with open(file + '.part', 'wb') as f:
             f.write(data)
         os.replace(file + '.part', file)
-    a = np.array(Image.open(file), dtype=np.float32)
+    a = read_tiff(file)
     if a.shape != (height, width):
         raise IOError(f'{file}: {a.shape} for {height} x {width}')
     # (Florida's ground lies between -30 and 120 m; over the sea the service answers 0 with single pixels of 100 m, 300 m,
