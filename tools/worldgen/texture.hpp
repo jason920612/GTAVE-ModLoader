@@ -33,6 +33,9 @@ namespace worldgen::texture
 	};
 
 	// A dictionary texture of the image with its full mip chain (sides of powers of two).
-	loader::convert::DictionaryTexture Make(const std::string& name, const Image& image, Format format);
+	// `cutout`: a picture cut out by its alpha (leaves): each smaller level's colour averaged by alpha (no dark rims) and
+	// its alpha scaled so that as much of it stays over half as in the full one (box-filtered, a far crown's cut-out thinned
+	// to a dithered ghost).
+	loader::convert::DictionaryTexture Make(const std::string& name, const Image& image, Format format, bool cutout = false);
 	bool WritePng(const std::filesystem::path& file, const Image& image, std::string& error);
 }

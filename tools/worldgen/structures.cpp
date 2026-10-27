@@ -675,7 +675,9 @@ namespace worldgen::structures
 				std::sort(all.begin(), all.end());
 				const float eaveZ = edge[edge.size() / 5], ridgeZ = all[all.size() * 19 / 20];
 				eave = std::clamp(eaveZ - base, 2.4f, 9.0f);
-				riseCap = std::clamp(ridgeZ - eaveZ, 0.8f, 5.0f);
+				// (its ridge at a house's pitch, at least 2 m over the eaves: the scan's ridge, noisy over a small roof, had
+				// made the roofs flat boxes in the reviewers' eyes)
+				riseCap = std::clamp(ridgeZ - eaveZ, 2.0f, 5.0f);
 				hip = true;
 				fill(0);
 			}

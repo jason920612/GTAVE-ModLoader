@@ -2070,6 +2070,7 @@ namespace worldgen::roads
 			                                             : paving::Of(wk.surface);
 			const bool unpaved = pv == paving::Paving::Gravel || pv == paving::Paving::Dirt || pv == paving::Paving::Sand;
 			const float width = wk.width > 0 ? std::clamp(wk.width, 0.8f, 6.0f)
+			                    : wk.kind == "driveway"                       ? 3.0f
 			                    : wk.kind == "sidewalk" || wk.kind == "steps" ? 1.5f
 			                    : wk.kind == "cycleway"                       ? 2.4f
 			                    : wk.kind == "pedestrian"                     ? 3.0f

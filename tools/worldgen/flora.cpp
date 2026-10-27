@@ -184,8 +184,8 @@ namespace worldgen::flora
 				for (const auto& [l, tex] : limbs)
 					if (l.r[0] >= minRadius[lod])
 						Tube(out.lods[lod][tex], l, l.r[0] > 0.25f ? sides[lod] + (lod == 0 ? 2 : 0) : std::max(3, sides[lod] - 2));
-				const int every[4] = {1, 2, 5, 12};
-				const float grow[4] = {1.0f, 1.32f, 1.9f, 2.6f};
+				const int every[4] = {1, 2, 4, 8};
+				const float grow[4] = {1.0f, 1.32f, 1.7f, 2.1f};
 				for (size_t k = 0; k < leaves.size(); k += every[lod])
 				{
 					const Leaf& f = leaves[k];
@@ -233,8 +233,9 @@ namespace worldgen::flora
 				const P3 out2{std::cos(az), std::sin(az), 0};
 				const float len = W * 0.5f * rnd.Range(0.85f, 1.1f);
 				// (out and up steeply, then bending over to level and down at the end)
-				Limb limb = Grow(Add(top, Mul(out2, 0.25f)), Add(Mul(out2, 0.6f), P3{0, 0, rnd.Range(0.7f, 0.95f)}), Add(out2, P3{0, 0, -0.22f}), 0.2f, len, 8,
-				    0.36f, 0.07f, rnd, 0.08f);
+				// (up at 40-55 degrees, levelling off over its length: a hammock's swoop where it bent down past level)
+				Limb limb = Grow(Add(top, Mul(out2, 0.25f)), Add(Mul(out2, 0.75f), P3{0, 0, rnd.Range(0.65f, 0.9f)}), Add(out2, P3{0, 0, -0.06f}), 0.11f, len, 8,
+				    0.36f, 0.07f, rnd, 0.06f);
 				// (its height kept under the crown's top and over the fork's: the street pictures' live oaks' limbs sweep out
 				// level, they do not come down to the ground)
 				for (P3& q : limb.p)
@@ -245,10 +246,10 @@ namespace worldgen::flora
 					const P3 at = At(limb, t);
 					Cluster(leaves, at, middle, 6, 1.5f, rnd.Range(1.3f, 1.8f), kOakLeaves, rnd, 0.5f);
 					// (moss under the limb)
-					if (t < 0.92f && rnd.Unit() < 0.55f)
+					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.3f)
 					{
 						const P3 drop{at[0] + rnd.Range(-0.4f, 0.4f), at[1] + rnd.Range(-0.4f, 0.4f), at[2] - RadiusAt(limb, t)};
-						const float len2 = rnd.Range(0.8f, 1.8f), wd = rnd.Range(0.4f, 0.7f);
+						const float len2 = rnd.Range(0.6f, 1.3f), wd = rnd.Range(0.35f, 0.6f);
 						const float spin = rnd.Range(0, kPi);
 						const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 						for (int c = 0; c < 2; ++c)
@@ -263,8 +264,8 @@ namespace worldgen::flora
 					const float t = rnd.Range(0.3f, 0.75f);
 					const float turn = (k % 2 ? 1.0f : -1.0f) * rnd.Range(0.5f, 0.9f);
 					const P3 sideDir{std::cos(az + turn), std::sin(az + turn), rnd.Range(0.1f, 0.35f)};
-					Limb br = Grow(At(limb, t), sideDir, {sideDir[0], sideDir[1], -0.15f}, 0.18f, len * rnd.Range(0.35f, 0.5f), 4, RadiusAt(limb, t) * 0.55f, 0.04f,
-					    rnd, 0.15f);
+					Limb br = Grow(At(limb, t), sideDir, {sideDir[0], sideDir[1], -0.05f}, 0.1f, len * rnd.Range(0.35f, 0.5f), 4, RadiusAt(limb, t) * 0.55f, 0.04f,
+					    rnd, 0.12f);
 					for (P3& q : br.p)
 						q[2] = std::clamp(q[2], fork + 0.6f, H - 1.2f);
 					limbs.push_back({br, kBarkOak});
@@ -272,14 +273,14 @@ namespace worldgen::flora
 					{
 						const P3 at = At(br, s);
 						Cluster(leaves, at, middle, 5, 1.2f, rnd.Range(1.2f, 1.7f), kOakLeaves, rnd, 0.4f);
-						if (s < 0.85f && rnd.Unit() < 0.4f)
+						if (s < 0.85f && rnd.Unit() < 0.2f)
 						{
 							const P3 drop{at[0], at[1], at[2] - 0.05f};
 							const float spin = rnd.Range(0, kPi);
 							const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 							for (int c = 0; c < 2; ++c)
-								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.35f, 0.6f),
-								    rnd.Range(0.6f, 1.5f), static_cast<int>(rnd.Next() % 4), kMoss, true});
+								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.3f, 0.5f),
+								    rnd.Range(0.5f, 1.1f), static_cast<int>(rnd.Next() % 4), kMoss, true});
 						}
 					}
 				}
@@ -493,14 +494,12 @@ namespace worldgen::flora
 					}
 					else if (t == kBarkPine)
 					{
-						// (plates about 10 x 25 cm in the bark's 1.6 x 3.2 m: dark furrows round them)
-						const float px = x / 512.0f * 16, py = y / 512.0f * 13;
-						const int cx = static_cast<int>(std::floor(px + 0.5f * (static_cast<int>(std::floor(py)) % 2)));
-						const float fu = px + 0.5f * (static_cast<int>(std::floor(py)) % 2) - cx, fv = py - std::floor(py);
-						const float edge = std::min({fu, 1 - fu, fv * 2.5f, (1 - fv) * 2.5f});
-						const float plate = 0.85f + 0.3f * Hash01(cx, static_cast<int>(std::floor(py)), 7);
-						const float k = (edge < 0.12f ? 0.45f : plate) * (0.9f + 0.2f * Noise(x, y, 5, 8));
-						p = Shade({104, 80, 66}, k);
+						// (long irregular plates between dark vertical fissures that wander: no brick bond)
+						const float wander = 22 * Noise(x * 0.3f, y, 60, 11) + 8 * Noise(x, y, 14, 12);
+						const float fissure = std::fabs(std::sin((x + wander) * 2 * kPi / 34));
+						const float plate = 0.8f + 0.35f * Noise(x, y * 0.25f, 20, 13);
+						const float k = (fissure < 0.22f ? 0.45f + fissure : plate) * (0.88f + 0.22f * Noise(x, y, 4, 8));
+						p = Shade({100, 82, 70}, k);
 					}
 					else
 					{
@@ -581,14 +580,17 @@ namespace worldgen::flora
 			else
 			{
 				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards
-				for (int k = 0; k < 120; ++k)
+				for (int k = 0; k < 55; ++k)
 				{
-					float x = rnd.Range(10, im.width - 10.0f);
-					const float len = rnd.Range(0.45f, 1.0f) * im.height, phase = rnd.Range(0, 2 * kPi), sway = rnd.Range(3, 10);
-					const std::array<float, 3> c{rnd.Range(132, 160), rnd.Range(142, 168), rnd.Range(122, 142)};
+					// (a beard: the strands bunched in the middle and longest there, the sides short)
+					const float g = (rnd.Unit() + rnd.Unit() + rnd.Unit()) / 3 - 0.5f;
+					float x = im.width / 2.0f + g * (im.width - 30.0f);
+					const float len = (0.25f + 0.75f * (1 - std::fabs(g) * 2)) * rnd.Range(0.6f, 1.0f) * im.height, phase = rnd.Range(0, 2 * kPi),
+					            sway = rnd.Range(3, 12);
+					const std::array<float, 3> c{rnd.Range(96, 118), rnd.Range(104, 124), rnd.Range(88, 104)};
 					for (float y = rnd.Range(0, 20); y < len; y += 1.0f)
 					{
-						const float w = 4.0f * (1 - y / len) + 1.2f;
+						const float w = 2.6f * (1 - y / len) + 0.9f;
 						const float px = x + std::sin(y / 40 + phase) * sway;
 						Ellipse(im, px, y, w / 2 + 0.2f, 0.8f, 0, Shade(c, rnd.Range(0.85f, 1.05f)), x0, y0, x1, y1);
 						if (rnd.Unit() < 0.02f)

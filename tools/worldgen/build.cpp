@@ -1079,8 +1079,8 @@ namespace worldgen::build
 					if (landCoverAt && grassy > 0)
 						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24 && out[0] > out[2] + 10 && out[0] >= out[1] - 5)
 						{
-							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.85f * grassy / n;
-							const std::array<float, 3> lawn{l * 0.74f, l * 1.14f, l * 0.5f};
+							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.7f * grassy / n;
+							const std::array<float, 3> lawn{l * 0.8f, l * 1.08f, l * 0.6f};
 							for (int k = 0; k < 3; ++k)
 								out[k] = std::clamp(out[k] + (lawn[k] - out[k]) * share, 0.0f, 255.0f);
 						}
@@ -2819,7 +2819,18 @@ namespace worldgen::build
 						segments[key50(m[0], m[1])].push_back({static_cast<int>(ei), static_cast<int>(k)});
 					}
 				}
-				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0;
+				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0, mappedDrives = 0;
+				// (the map's own driveways by 50 m cell of their points)
+				std::unordered_map<int64_t, std::vector<size_t>> drivewayCells;
+				for (size_t wi = 0; wi < w.walks.size(); ++wi)
+					if (w.walks[wi].kind == "driveway")
+					{
+						std::set<int64_t> cellsOf;
+						for (const P2& q : w.walks[wi].points)
+							cellsOf.insert(key50(q[0], q[1]));
+						for (const int64_t k : cellsOf)
+							drivewayCells[k].push_back(wi);
+					}
 				// (the yards' things, as the street pictures show them: shrubs along a house's front - foundation plantings -, and
 				// where the street has no sidewalk a mailbox on its post at the asphalt's edge by the driveway)
 				static const char* kShrubs[] = {"prop_bush_med_01", "prop_bush_med_02", "prop_bush_med_05", "prop_bush_neat_02", "prop_bush_neat_04",
@@ -2881,8 +2892,42 @@ namespace worldgen::build
 					// (past the sidewalk and verge: the car's middle 2.5 + 2.8 m from the carriageway's edge, to one side)
 					const float inward = half + 5.3f + std::min(room - 8.5f, 3.0f) * ((seed >> 8) % 100) / 100.0f;
 					const float side = (((seed >> 16) & 1) ? 1.0f : -1.0f) * radius * (0.35f + 0.25f * ((seed >> 20) % 100) / 100.0f);
-					const float x = nearest[0] + u[0] * inward + along[0] * side, y = nearest[1] + u[1] * inward + along[1] * side;
-					const P2 dir = (seed >> 24) % 100 < 70 ? u : P2{-u[0], -u[1]};
+					float x = nearest[0] + u[0] * inward + along[0] * side, y = nearest[1] + u[1] * inward + along[1] * side;
+					P2 dir = (seed >> 24) % 100 < 70 ? u : P2{-u[0], -u[1]};
+					// (the map's own driveway to this house, where it has one - an end of it within 6 m of the outline -: the car
+					// on it, 4.5 m short of that end, the garage door where it leads; nothing paved by the rule)
+					bool mapped = false;
+					P2 mo{}, mu{};
+					{
+						float bestEnd = 6;
+						for (int dj = -1; dj <= 1; ++dj)
+							for (int di = -1; di <= 1; ++di)
+								if (const auto it = drivewayCells.find(key50(c[0] + di * 50.0f, c[1] + dj * 50.0f)); it != drivewayCells.end())
+									for (const size_t wi : it->second)
+									{
+										const auto& pts = w.walks[wi].points;
+										for (const bool atEnd : {false, true})
+										{
+											const P2& endPt = atEnd ? pts.back() : pts.front();
+											const P2& prev = atEnd ? pts[pts.size() - 2] : pts[1];
+											float dmin = 1e30f;
+											for (size_t e = 0; e < b.footprint.size(); ++e)
+											{
+												const P2 &fa = b.footprint[e], &fb = b.footprint[(e + 1) % b.footprint.size()];
+												dmin = std::min(dmin, polygon::DistanceToSegment(endPt, fa, fb));
+											}
+											const float l = Dist(endPt, prev);
+											if (dmin < bestEnd && l > 0.5f)
+												bestEnd = dmin, mapped = true, mo = endPt, mu = {(endPt[0] - prev[0]) / l, (endPt[1] - prev[1]) / l};
+										}
+									}
+					}
+					if (mapped)
+					{
+						x = mo[0] - mu[0] * 4.5f, y = mo[1] - mu[1] * 4.5f;
+						dir = (seed >> 24) % 100 < 70 ? mu : P2{-mu[0], -mu[1]};
+						++mappedDrives;
+					}
 					// the driveway (the street pictures' every house has one, concrete): from past the sidewalk - or the asphalt's
 					// edge - up to the house, 3 m wide (5.6 for two cars), under the car; 7 cm over the ground, which it follows
 					const float laneFrom = half + walkWidth + 0.05f, laneTo = std::max(laneFrom + 3.0f, best - 0.55f * radius);
@@ -2890,9 +2935,9 @@ namespace worldgen::build
 					{
 						auto& m = surfaces.paved[static_cast<size_t>(paving::Paving::Concrete)];
 						const P2 o{nearest[0] + along[0] * laneSide, nearest[1] + along[1] * laneSide};
-						const int steps = std::max(1, static_cast<int>(std::ceil((laneTo - laneFrom) / 2.0f)));
+						const int steps = mapped ? 0 : std::max(1, static_cast<int>(std::ceil((laneTo - laneFrom) / 2.0f)));
 						const uint32_t base = static_cast<uint32_t>(m.vertices.size());
-						for (int k = 0; k <= steps; ++k)
+						for (int k = 0; k <= steps && !mapped; ++k)
 						{
 							const float at = laneFrom + (laneTo - laneFrom) * k / steps;
 							for (const float across : {laneHalf, -laneHalf}) // (left of the way in - `along`'s side when u is turned left - then right)
@@ -2913,9 +2958,12 @@ namespace worldgen::build
 							const uint32_t l0 = base + 2 * k, r0 = l0 + 1, l1 = l0 + 2, r1 = l0 + 3;
 							m.indices.insert(m.indices.end(), {r0, r1, l1, r0, l1, l0});
 						}
-						++paved;
+						paved += !mapped;
 						// the garage door where the driveway's middle line meets the house (a wall facing the street), the
-						// front door on the same wall past it - the street pictures' houses all show both
+						// front door on the same wall past it - the street pictures' houses all show both (the map's driveway:
+						// along its last stretch)
+						const P2 rayFrom = mapped ? P2{mo[0] - mu[0] * 8, mo[1] - mu[1] * 8} : o, rayDir = mapped ? mu : u;
+						const float rayStart = mapped ? 0.0f : laneFrom;
 						const auto& f = b.footprint;
 						float hitT = 1e30f;
 						size_t hitE = f.size();
@@ -2923,12 +2971,12 @@ namespace worldgen::build
 						{
 							const P2 &fa = f[e], &fb = f[(e + 1) % f.size()];
 							const P2 d{fb[0] - fa[0], fb[1] - fa[1]};
-							const float den = u[0] * d[1] - u[1] * d[0];
+							const float den = rayDir[0] * d[1] - rayDir[1] * d[0];
 							if (std::fabs(den) < 1e-4f)
 								continue;
-							const P2 r{fa[0] - o[0], fa[1] - o[1]};
-							const float t = (r[0] * d[1] - r[1] * d[0]) / den, sAlong = (r[0] * u[1] - r[1] * u[0]) / den;
-							if (t > laneFrom && t < hitT && sAlong >= 0 && sAlong <= 1)
+							const P2 r{fa[0] - rayFrom[0], fa[1] - rayFrom[1]};
+							const float t = (r[0] * d[1] - r[1] * d[0]) / den, sAlong = (r[0] * rayDir[1] - r[1] * rayDir[0]) / den;
+							if (t > rayStart && t < hitT && sAlong >= 0 && sAlong <= 1)
 								hitT = t, hitE = e;
 						}
 						if (hitE < f.size())
@@ -2936,10 +2984,16 @@ namespace worldgen::build
 							const P2 &fa = f[hitE], &fb = f[(hitE + 1) % f.size()];
 							const float el = Dist(fa, fb);
 							const P2 wd{(fb[0] - fa[0]) / el, (fb[1] - fa[1]) / el}, nrm{wd[1], -wd[0]};
-							const P2 hit{o[0] + u[0] * hitT, o[1] + u[1] * hitT};
+							const P2 hit{rayFrom[0] + rayDir[0] * hitT, rayFrom[1] + rayDir[1] * hitT};
 							const float at = (hit[0] - fa[0]) * wd[0] + (hit[1] - fa[1]) * wd[1];
 							const float gw = second ? 4.9f : 2.6f;
-							if (-(nrm[0] * u[0] + nrm[1] * u[1]) > 0.6f && el >= gw + 0.8f)
+							// (a garage by the year built - the rolls': before 1960 few have one, the street pictures' bungalows
+							// and ranches a carport or nothing; from 1980 most)
+							const auto yearIt = builtYear.find(bi);
+							const int built = yearIt != builtYear.end() ? yearIt->second : 0;
+							const uint32_t chance = built == 0 ? 60 : built < 1960 ? 15 : built < 1980 ? 50 : 85;
+							const bool garage = (seed >> 3) % 100 < chance;
+							if (garage && -(nrm[0] * rayDir[0] + nrm[1] * rayDir[1]) > 0.6f && el >= gw + 0.8f)
 							{
 								const float g0 = std::clamp(at - gw / 2, 0.3f, el - 0.3f - gw);
 								auto& list = doorsOf[bi];
@@ -3118,8 +3172,9 @@ namespace worldgen::build
 						}
 					}
 				}
-				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved, %zu shrubs by houses, %zu mailboxes\n",
-				    driveways, stalls, kerbside, paved, shrubs, mailboxes);
+				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved (%zu houses on the map's own), %zu shrubs "
+				            "by houses, %zu mailboxes\n",
+				    driveways, stalls, kerbside, paved, mappedDrives, shrubs, mailboxes);
 			}
 			// (the game's bushes - yellowish, some in flower: the reviewers' "dry brown shrubs" - swapped for our own dark green
 			// ones, scaled to the same height and spread)
@@ -3672,7 +3727,7 @@ namespace worldgen::build
 				{
 					const auto tex = static_cast<flora::Texture>(t);
 					const std::string name = std::format("{}_flora_{}", o.name, t);
-					shared.push_back(texture::Make(name, flora::Picture(tex), flora::Cutout(tex) ? texture::Format::Bc3 : texture::Format::Bc1));
+					shared.push_back(texture::Make(name, flora::Picture(tex), flora::Cutout(tex) ? texture::Format::Bc3 : texture::Format::Bc1, flora::Cutout(tex)));
 					ydr::Material m = flora::Cutout(tex) ? leaf : wallTemplate;
 					m.Texture(kDiffuseTex, name);
 					m.Texture(kBumpTex, o.name + "_flat_n");

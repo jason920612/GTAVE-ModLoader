@@ -87,8 +87,9 @@ namespace worldgen::world
 		float height = 0;
 	};
 
-	// A way people walk (OSM highway=footway, path, cycleway, pedestrian, steps, bridleway): its kind - "sidewalk" (footway=
-	// sidewalk: a street's, drawn on its own), "crossing" (footway=crossing), else the highway value -, its surface and width
+	// A way people walk (OSM highway=footway, path, cycleway, pedestrian, steps, bridleway; and a house's driveway, highway=
+	// service + service=driveway: kind "driveway"): its kind - "sidewalk" (footway=sidewalk: a street's, drawn on its own),
+	// "crossing" (footway=crossing), else the highway value -, its surface and width
 	// when tagged (0: not), on a bridge at a layer.
 	struct Walk
 	{

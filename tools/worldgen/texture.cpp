@@ -149,8 +149,54 @@ namespace worldgen::texture
 		}
 	}
 
-	loader::convert::DictionaryTexture Make(const std::string& name, const Image& image, Format format)
+	namespace
 	{
+		// A cut-out's next level: colour by alpha, alpha scaled to keep `coverage` (the share over half)
+		Image HalfCutout(const Image& in, float coverage)
+		{
+			Image out(std::max(1, in.width / 2), std::max(1, in.height / 2));
+			for (int y = 0; y < out.height; ++y)
+				for (int x = 0; x < out.width; ++x)
+				{
+					int sa = 0, sc[3]{}, sp[3]{};
+					for (int k = 0; k < 4; ++k)
+					{
+						const auto& p = in.At(std::min(in.width - 1, 2 * x + (k & 1)), std::min(in.height - 1, 2 * y + (k >> 1)));
+						sa += p[3];
+						for (int c = 0; c < 3; ++c)
+							sc[c] += p[c] * p[3], sp[c] += p[c];
+					}
+					auto& q = out.At(x, y);
+					for (int c = 0; c < 3; ++c)
+						q[c] = static_cast<uint8_t>(sa > 0 ? sc[c] / sa : sp[c] / 4);
+					q[3] = static_cast<uint8_t>(sa / 4);
+				}
+			// (the alpha's scale that keeps the coverage: halved until it is found)
+			float lo = 0.5f, hi = 8.0f;
+			for (int i = 0; i < 20; ++i)
+			{
+				const float k = (lo + hi) / 2;
+				size_t over = 0;
+				for (const auto& p : out.pixels)
+					over += p[3] * k >= 128;
+				(static_cast<float>(over) / out.pixels.size() < coverage ? lo : hi) = k;
+			}
+			for (auto& p : out.pixels)
+				p[3] = static_cast<uint8_t>(std::min(255.0f, p[3] * hi));
+			return out;
+		}
+	}
+
+	loader::convert::DictionaryTexture Make(const std::string& name, const Image& image, Format format, bool cutout)
+	{
+		float coverage = 0;
+		if (cutout)
+		{
+			size_t over = 0;
+			for (const auto& p : image.pixels)
+				over += p[3] >= 128;
+			coverage = static_cast<float>(over) / std::max<size_t>(1, image.pixels.size());
+		}
 		loader::convert::DictionaryTexture t;
 		t.name = name;
 		t.map = true;
@@ -192,7 +238,7 @@ namespace worldgen::texture
 				break;
 			if (level.width == 1 && level.height == 1)
 				break;
-			level = Half(level);
+			level = cutout ? HalfCutout(level, coverage) : Half(level);
 		}
 		t.mips = mips;
 		return t;

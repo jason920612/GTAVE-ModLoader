@@ -223,7 +223,21 @@ namespace worldgen::world
 			if (kRoads.contains(highway) && Tag(t, "area") != "yes")
 			{
 				const std::string& service = Tag(t, "service");
-				if (highway == "service" && (service == "parking_aisle" || service == "driveway" || service == "drive-through"))
+				// (a driveway: not a street - drawn as a walk of its own, concrete, by its house; parking aisles and
+				// drive-throughs not at all)
+				if (highway == "service" && service == "driveway")
+				{
+					Walk wk;
+					wk.id = id;
+					wk.points = Points(d, w, p);
+					wk.kind = "driveway";
+					wk.surface = Tag(t, "surface");
+					wk.width = static_cast<float>(Number(Tag(t, "width")));
+					if (wk.points.size() >= 2)
+						out.walks.push_back(std::move(wk));
+					continue;
+				}
+				if (highway == "service" && (service == "parking_aisle" || service == "drive-through"))
 					continue;
 				Road r;
 				r.id = id;
