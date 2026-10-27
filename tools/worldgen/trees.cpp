@@ -57,10 +57,10 @@ namespace worldgen::trees
 	namespace
 	{
 		// The scan's canopy in the box: `tree(x, y, height, crown radius, seed)` for each peak where a trunk may stand,
-		// `bush(x, y, height, seed)` for low growth on a 6 m lattice (half of it).
+		// `bush(x, y, height, seed)` for low growth on a lattice of `bushStep` m (half of it when `halve`).
 		template <typename Tree, typename Bush>
 		void Peaks(elevation::Scan& scan, const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground,
-		    const std::array<float, 4>& box, Tree&& tree, Bush&& bush)
+		    const std::array<float, 4>& box, Tree&& tree, Bush&& bush, float bushStep = 6, bool halve = true)
 		{
 		constexpr float kPi = 3.14159265f;
 		const float cell = scan.Cell();
@@ -70,14 +70,22 @@ namespace worldgen::trees
 			{
 				const float x0 = bx - margin, y0 = by - margin;
 				const int n = static_cast<int>((block + 2 * margin) / cell);
-				// the canopy over the ground: vegetation returns only
+				// the canopy over the ground: vegetation returns only - or, in a scan that classes no vegetation at all in the
+				// block (USGS's 2020 Panhandle scan: ground, buildings, water and bridges only), the returns 2 m and more over the
+				// ground that are none of those (poles and wires thin to nothing in the smoothing below)
+				bool classed = false;
+				for (int j = 0; j < n && !classed; j += 4)
+					for (int i = 0; i < n && !classed; i += 4)
+						classed = (scan.Flags(x0 + (i + 0.5f) * cell, y0 + (j + 0.5f) * cell) & elevation::kVegetation) != 0;
 				std::vector<float> v(static_cast<size_t>(n) * n, 0);
 				bool any = false;
 				for (int j = 0; j < n; ++j)
 					for (int i = 0; i < n; ++i)
 					{
 						const float x = x0 + (i + 0.5f) * cell, y = y0 + (j + 0.5f) * cell;
-						if (!(scan.Flags(x, y) & elevation::kVegetation))
+						const uint8_t fl = scan.Flags(x, y);
+						if (classed ? !(fl & elevation::kVegetation)
+						            : (fl & (elevation::kBuilding | elevation::kWater | elevation::kBridge)) || !scan.Count(x, y))
 							continue;
 						const float top = scan.Top(x, y);
 						if (std::isnan(top))
@@ -85,6 +93,8 @@ namespace worldgen::trees
 						float g = scan.Ground(x, y);
 						if (std::isnan(g))
 							g = ground(x, y);
+						if (!classed && top - g < 2.0f)
+							continue;
 						v[static_cast<size_t>(j) * n + i] = std::max(0.0f, top - g);
 						any = true;
 					}
@@ -107,6 +117,7 @@ namespace worldgen::trees
 				}
 				const auto at = [&](int i, int j) { return i < 0 || j < 0 || i >= n || j >= n ? 0.0f : v[static_cast<size_t>(j) * n + i]; };
 				const int inner0 = static_cast<int>(margin / cell), inner1 = n - inner0;
+				const int step = std::max(1, static_cast<int>(std::lround(bushStep / cell)));
 				for (int j = inner0; j < inner1; ++j)
 					for (int i = inner0; i < inner1; ++i)
 					{
@@ -119,8 +130,8 @@ namespace worldgen::trees
 						const uint32_t seed = Mix(static_cast<uint32_t>(i + static_cast<int>(bx)) * 73856093u ^ static_cast<uint32_t>(j + static_cast<int>(by)) * 19349663u);
 						if (h < 3.5f)
 						{
-							// low growth: a bush on a 6 m lattice, half of them (every entity counts against the game's pools)
-							if (((i - inner0) % 12) || ((j - inner0) % 12) || (seed & 1) || !open(x, y))
+							// low growth: a bush on a lattice, half of them (every entity counts against the game's pools)
+							if (((i - inner0) % step) || ((j - inner0) % step) || (halve && (seed & 1)) || !open(x, y))
 								continue;
 							bush(x, y, h, seed);
 							continue;
@@ -183,6 +194,48 @@ namespace worldgen::trees
 			        std::clamp(h / m.height, 0.6f, 1.4f)});
 			    ++stats.bushes;
 		    });
+	}
+
+	void Undergrowth(const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats)
+	{
+		constexpr float kPi = 3.14159265f, kStep = 6.0f;
+		// (the big ones - lrg_01, 01b, 03: 2.6-3.6 m tall, 6 m across - and a smaller one between)
+		constexpr Model kUnder[] = {{"prop_bush_lrg_01", 2.6f, 6.1f}, {"prop_bush_lrg_01b", 3.2f, 5.7f}, {"prop_bush_lrg_03", 3.6f, 5.7f},
+		    {"prop_bush_med_03", 2.5f, 3.1f}};
+		for (float y = std::floor(box[1] / kStep) * kStep; y < box[3]; y += kStep)
+			for (float x = std::floor(box[0] / kStep) * kStep; x < box[2]; x += kStep)
+			{
+				const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(x)) * 73856093u ^ static_cast<uint32_t>(std::lround(y)) * 19349663u ^ 0x5bd1e995u);
+				if (seed % 10 >= 7)
+					continue;
+				const float px = x + ((seed >> 4) % 1000 / 1000.0f - 0.5f) * 4, py = y + ((seed >> 14) % 1000 / 1000.0f - 0.5f) * 4;
+				if (px < box[0] || px >= box[2] || py < box[1] || py >= box[3] || !where(px, py) || !open(px, py))
+					continue;
+				const Model& m = kUnder[(seed >> 24) % std::size(kUnder)];
+				out.push_back({loader::convert::Joaat(m.name), {px, py, ground(px, py) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,
+				    0.8f + 0.6f * ((seed >> 20) % 16) / 15.0f});
+				++stats.bushes;
+			}
+	}
+
+	void LowGrowth(elevation::Scan& scan, const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats)
+	{
+		constexpr float kPi = 3.14159265f;
+		// (the medium ones, 3 m across: a hedge's run of them closes up)
+		constexpr Model kHedge[] = {{"prop_bush_med_06", 2.0f, 3.1f}, {"prop_bush_med_03", 2.5f, 3.1f}};
+		Peaks(
+		    scan, open, ground, box, [](float, float, float, float, uint32_t) {},
+		    [&](float x, float y, float h, uint32_t seed) {
+			    if (!where(x, y))
+				    return;
+			    const Model& m = kHedge[(seed >> 1) % std::size(kHedge)];
+			    out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,
+			        std::clamp(h / m.height, 0.6f, 1.4f)});
+			    ++stats.bushes;
+		    },
+		    3.0f, false);
 	}
 
 	std::vector<Seen> Detect(elevation::Scan& scan, const std::function<float(float, float)>& ground, const std::array<float, 4>& box)
@@ -318,6 +371,8 @@ namespace worldgen::trees
 		// (pines of every age - the small conifers looked like spruces, the birches' white bark is not Florida's -, live
 		// oaks, and the broadleaf trees that lose their leaves: maples and oaks)
 		constexpr Model kPines[] = {{"prop_tree_pine_02", 29.5f, 16.5f}, {"prop_tree_pine_01", 31.4f, 15.0f}};
+		// (the game has no crape myrtle - north Florida's small yard and street tree, in flower all summer -: its jacarandas)
+		constexpr Model kFlowering[] = {{"prop_tree_jacada_02", 11.2f, 11.5f}, {"prop_tree_jacada_01", 14.3f, 14.5f}};
 		constexpr Model kLiveOaks[] = {{"prop_tree_eng_oak_01", 17.5f, 17.2f}, {"prop_tree_oak_01", 23.4f, 29.7f}, {"prop_tree_olive_01", 17.2f, 18.9f}};
 		constexpr Model kDeciduous[] = {{"prop_tree_maple_03", 9.1f, 5.9f}, {"prop_tree_maple_02", 8.2f, 10.0f}, {"prop_tree_eng_oak_01", 17.5f, 17.2f},
 		    {"prop_tree_oak_01", 23.4f, 29.7f}};
@@ -327,10 +382,20 @@ namespace worldgen::trees
 
 	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
-	    std::vector<props::Prop>& out, Stats& stats)
+	    std::vector<props::Prop>& out, Stats& stats, const OwnTrees* own)
 	{
 		constexpr float kPi = 3.14159265f;
 		const bool south = latitude < 27.5;
+		// (one of our own of a kind: the nearest in height of the three nearest, by the tree's own number)
+		const auto ownOf = [&](int kind, float h, uint32_t seed) -> const Own* {
+			if (!own || (*own)[kind].empty())
+				return nullptr;
+			std::vector<const Own*> v;
+			for (const Own& o : (*own)[kind])
+				v.push_back(&o);
+			std::sort(v.begin(), v.end(), [&](const Own* a, const Own* b) { return std::fabs(a->height - h) < std::fabs(b->height - h); });
+			return v[seed % std::min<size_t>(3, v.size())];
+		};
 		for (const Seen& t : seen)
 		{
 			if (t.x < box[0] || t.y < box[1] || t.x >= box[2] || t.y >= box[3] || !open(t.x, t.y))
@@ -347,10 +412,31 @@ namespace worldgen::trees
 			const bool town = nlcd >= 21 && nlcd <= 24;
 			if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (south ? (seed & 3) == 0 : town && seed % 10 == 0)))
 				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
-			else if (t.kind == 0 && width >= 0.8f * h && h >= 8)
+			else if (own)
+			{
+				// (ours: an evergreen wide for its height a live oak, else a pine; a leafless one a laurel or water oak, a small
+				// one in town a crape myrtle)
+				const int kind = t.kind == 0 ? (width >= 0.6f * h && h >= 8 ? 0 : 1) : (town && h <= 9 && seed % 5 < 3 ? 3 : 2);
+				if (const Own* o = ownOf(kind, h, seed))
+				{
+					props::Prop p;
+					p.archetype = loader::convert::Joaat(o->name);
+					p.position = {t.x, t.y, ground(t.x, t.y) - 0.15f};
+					p.heading = static_cast<float>((seed >> 8) % 360) * kPi / 180;
+					p.lodDist = 600;
+					p.scaleZ = std::clamp(h / o->height, 0.4f, 1.6f);
+					p.scale = std::clamp(std::clamp(width / o->width, 0.4f, 1.8f), p.scaleZ * 0.6f, p.scaleZ * 1.7f);
+					out.push_back(p);
+					++stats.broadleaf;
+					continue;
+				}
+			}
+			else if (t.kind == 0 && width >= 0.6f * h && h >= 8)
 				m = &Choose(kLiveOaks, h, width, 0.7f, seed);
 			else if (t.kind == 0)
 				m = &Choose(kPines, h, width, 0.3f, seed);
+			else if (town && h <= 9 && seed % 5 < 2)
+				m = &Choose(kFlowering, h, width, 0.6f, seed); // (a town's small trees in flower: its crape myrtles)
 			else
 				m = &Choose(kDeciduous, h, width, nlcd == 90 ? 0.3f : 0.6f, seed);
 			// (height and crown scaled apart, but not so far apart that a trunk turns into a pole or a barrel)

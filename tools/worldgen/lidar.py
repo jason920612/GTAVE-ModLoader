@@ -7,6 +7,8 @@ usage (in a Python with laspy[lazrs], numpy and pyproj; keep the data outside th
   lidar.py ept    --ept <url> --world <world.json> [--area x0,y0,x1,y1] --out <laz dir>
   lidar.py raster --world <world.json> --laz <laz dir> --out <raster dir> [--area x0,y0,x1,y1] [--cell 0.5] [--tile 256]
                   [--crs <epsg>]
+  lidar.py poles  --raster <raster dir> --ground <ground.bin> --out <poles.json> [--world <world.json> (to check against the
+                  map's poles)]
 
 fetch: the scan's files that touch the world's box (or the area of it, in game metres), downloaded once (resumable).
 The index is either a USGS project's virtual point cloud (.vpc: a STAC FeatureCollection, each file's box in longitude
@@ -23,12 +25,17 @@ raster: every file's points into the world's raster tiles, `t_<i>_<j>.bin` (i = 
     roof   i16  the highest building return (class 6)               - roofs without the trees over them
     count  u8   returns in the cell (saturating)
     flags  u8   1 water (class 9), 2 bridge deck (17), 4 building (6), 8 vegetation (3-5)
+poles: the utility poles the rasters show (research/phase0.md §63): a pole is a thin column 7-17 m over the ground
+(ground.bin, the measured ground) - its top the highest point within 2.25 m, nothing round it near that height but its
+wires (within 1.5-3.5 m of it, under a quarter of the cells within 3 m of its top: a tree's crown fills that ring), its top
+narrow (at most 6 cells of 0.5 m that high within 0.75 m: the crossarm), no building within 3.5 m (antennas, chimneys);
+the highest of those within 2 m. Out: {"poles": [[x, y, height], ...]} in game metres.
 Points are turned from each file's own coordinates (its header's WKT, read with pyproj) to latitude and longitude
 (NAD83(2011); the world's OpenStreetMap footprints in Miami came from the county's own NAD83 data) and then by the
 world's projection (world.json "projection"). Partial tiles are kept between files (<out>/partial) so that tiles on
 the files' seams get the points of every file; `raster` keeps a list of the files done and can be run again.
 """
-import csv, json, os, shutil, struct, sys, time, urllib.request
+import csv, json, math, os, shutil, struct, sys, time, urllib.request
 
 def options(argv):
     o = {}
@@ -321,8 +328,106 @@ def raster(o):
         count += 1
     print(f'{count} raster tiles in {out}')
 
+def poles(o):
+    import numpy as np
+    from scipy import ndimage
+    folder = o['raster']
+    tiles = []
+    for name in os.listdir(folder):
+        if name.startswith('t_') and name.endswith('.bin'):
+            with open(os.path.join(folder, name), 'rb') as f:
+                head = f.read(32)
+                if head[:4] != b'WBLR':
+                    continue
+                _, x0, y0, cell, nx, ny, layers = struct.unpack('<Ifff3I', head[4:])
+                n = nx * ny
+                top = np.frombuffer(f.read(2 * n), '<i2').reshape(ny, nx)
+                f.seek(32 + 3 * 2 * n)
+                f.read(n)  # (count)
+                flags = np.frombuffer(f.read(n), np.uint8).reshape(ny, nx)
+            tiles.append((x0, y0, cell, nx, ny, top, flags))
+    if not tiles:
+        sys.exit('no raster tiles in ' + folder)
+    cell = tiles[0][2]
+    gx0, gy0 = min(t[0] for t in tiles), min(t[1] for t in tiles)
+    gx1, gy1 = max(t[0] + t[3] * t[2] for t in tiles), max(t[1] + t[4] * t[2] for t in tiles)
+    W, H = int(round((gx1 - gx0) / cell)), int(round((gy1 - gy0) / cell))
+    top = np.full((H, W), np.nan, np.float32)
+    building = np.zeros((H, W), bool)
+    for x0, y0, c, nx, ny, t, fl in tiles:
+        i0, j0 = int(round((x0 - gx0) / cell)), int(round((y0 - gy0) / cell))
+        top[j0:j0 + ny, i0:i0 + nx] = np.where(t > -32768, t / 100.0, np.nan)
+        building[j0:j0 + ny, i0:i0 + nx] = (fl & 4) != 0
+    # the measured ground under every cell (ground.bin: 'WBGR' version 1, x0 y0 cell nx ny, int16 cm rows south to north)
+    with open(o['ground'], 'rb') as f:
+        head = f.read(28)
+        _, gx, gy, gc, gnx, gny = struct.unpack('<Ifff2I', head[4:])
+        dem = np.frombuffer(f.read(2 * gnx * gny), '<i2').reshape(gny, gnx).astype(np.float32) / 100
+    dem[dem <= -327] = np.nan
+    ys = gy0 + (np.arange(H) + 0.5) * cell
+    xs = gx0 + (np.arange(W) + 0.5) * cell
+    gi = np.clip(((xs - gx) / gc).astype(int), 0, gnx - 1)
+    gj = np.clip(((ys - gy) / gc).astype(int), 0, gny - 1)
+    h = top - dem[gj][:, gi]
+    h[np.isnan(h)] = 0
+    print(f'{len(tiles)} tiles, {W} x {H} cells of {cell} m', flush=True)
+    near_building = ndimage.binary_dilation(building, iterations=int(3.5 / cell))
+    local = ndimage.maximum_filter(h, size=int(round(4.5 / cell)) | 1)
+    cand = (h >= 7) & (h <= 17) & (h >= local) & ~near_building
+    cj, ci = np.nonzero(cand)
+    print(f'{len(ci)} candidates', flush=True)
+    r = int(round(3.5 / cell))
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1] * cell
+    dist = np.hypot(xx, yy)
+    ring = (dist >= 1.5) & (dist <= 3.5)
+    core = dist <= 0.75
+    found = []
+    for j, i in zip(cj, ci):
+        if j < r or i < r or j >= H - r or i >= W - r:
+            continue
+        win = h[j - r:j + r + 1, i - r:i + r + 1]
+        hc = h[j, i]
+        tall = win >= hc - 3
+        if tall[ring].mean() >= 0.25 or (win[core] >= hc - 1.5).sum() > 6:
+            continue
+        found.append((gx0 + (i + 0.5) * cell, gy0 + (j + 0.5) * cell, float(hc)))
+    # (one a pole: the highest within 2 m)
+    found.sort(key=lambda q: -q[2])
+    kept, grid = [], {}
+    for x, y, hh in found:
+        k = (int(x // 4), int(y // 4))
+        if any(math.hypot(x - q[0], y - q[1]) < 2 for di in (-1, 0, 1) for dj in (-1, 0, 1) for q in grid.get((k[0] + di, k[1] + dj), ())):
+            continue
+        q = (round(x, 2), round(y, 2), round(hh, 2))
+        kept.append(q)
+        grid.setdefault(k, []).append(q)
+    with open(o['out'], 'w', encoding='utf-8') as f:
+        json.dump({'poles': kept}, f)
+    print(f'{len(kept)} poles', flush=True)
+    if 'world' in o:
+        # (against the map's poles inside the rasters: how many have one of ours within 3 m)
+        import urllib.parse
+        w, p = load_world(o['world'])
+        s, wl = to_latlon(p, gx0, gy0)
+        nn, e = to_latlon(p, gx1, gy1)
+        q = f'[out:json][timeout:90];node["power"="pole"]({s},{wl},{nn},{e});out;'
+        req = urllib.request.Request('https://overpass-api.de/api/interpreter', urllib.parse.urlencode({'data': q}).encode(), headers=AGENT)
+        try:
+            nodes = json.load(urllib.request.urlopen(req, timeout=120))['elements']
+        except OSError as ex:
+            print('the map\'s poles could not be fetched:', ex)
+            return
+        hit = 0
+        for nd in nodes:
+            x = p['x0'] + (nd['lon'] - p['lon0']) * p['kx']
+            y = p['y0'] + (nd['lat'] - p['lat0']) * p['ky']
+            k = (int(x // 4), int(y // 4))
+            hit += any(math.hypot(x - q[0], y - q[1]) < 3 for di in (-1, 0, 1) for dj in (-1, 0, 1) for q in grid.get((k[0] + di, k[1] + dj), ()))
+        print(f'the map\'s poles there: {len(nodes)}, {hit} with one of ours within 3 m')
+
+
 if __name__ == '__main__':
-    if len(sys.argv) < 2 or sys.argv[1] not in ('fetch', 'ept', 'raster'):
+    if len(sys.argv) < 2 or sys.argv[1] not in ('fetch', 'ept', 'raster', 'poles'):
         sys.exit(__doc__)
     o = options(sys.argv[2:])
-    {'fetch': fetch, 'ept': ept, 'raster': raster}[sys.argv[1]](o)
+    {'fetch': fetch, 'ept': ept, 'raster': raster, 'poles': poles}[sys.argv[1]](o)

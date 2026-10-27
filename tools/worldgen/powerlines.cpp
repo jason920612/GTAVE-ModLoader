@@ -94,7 +94,7 @@ namespace worldgen::powerlines
 
 	void Place(const roads::Network& n, const std::function<bool(float, float)>& clear, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& buried, const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires,
-	    Stats& stats)
+	    Stats& stats, const std::function<float(const roads::Edge&)>& sideOf)
 	{
 		std::vector<Pole> all;
 		std::vector<std::vector<int>> edgePoles(n.edges.size()); // (each road's, from its a to its b)
@@ -139,7 +139,9 @@ namespace worldgen::powerlines
 			// the side: a one-way road's outer one (the right of the way it goes); a two-way road's north-eastern one, by the
 			// road's general direction, so that a road going on in another way of the map keeps to its side
 			const P2 chord = Unit({e.points.back()[0] - e.points.front()[0], e.points.back()[1] - e.points.front()[1]});
-			const float side = e.forward > 0 && e.backward == 0   ? -1.0f
+			const float measured = sideOf ? sideOf(e) : 0.0f;
+			const float side = measured != 0                       ? measured
+			                 : e.forward > 0 && e.backward == 0   ? -1.0f
 			                 : e.forward == 0 && e.backward > 0 ? 1.0f
 			                 : -chord[1] * 0.6f + chord[0] * 0.8f >= 0 ? 1.0f
 			                                                           : -1.0f;

@@ -26,6 +26,9 @@ namespace worldgen::world
 		float sidewalkWidth = 0;     // (m; 0: by the road's kind - the build's, not saved)
 		float parking = 0;           // (m: a parking lane's width each side, 0 none - the build's, not saved)
 		bool bikeLanes = false;      // (OSM cycleway=lane: a painted bike lane by each kerb)
+		bool curb = false;           // (a kerb and gutter without a sidewalk: a town's street - the build's, not saved)
+		bool sidewalkLeft = true, sidewalkRight = true; // (with sidewalks: which sides have one, left and right of the points' way;
+		                                                // the other a kerb and gutter - the build's, not saved)
 		bool bridge = false, tunnel = false;
 		int layer = 0;
 		float speed = 0; // m/s (0: by kind)
@@ -51,7 +54,8 @@ namespace worldgen::world
 
 	struct Point
 	{
-		std::string kind; // tree, traffic_signals, stop, crossing (crossing:marked, crossing:unmarked when tagged so), ...;
+		std::string kind; // tree, traffic_signals, stop, crossing (crossing:marked, crossing:unmarked when tagged so), fire_hydrant,
+		                  // street_lamp, ...;
 		                  // place:city, place:town, place:village, place:suburb, ... (with a name)
 		P2 position{};
 		std::string name;
@@ -83,6 +87,19 @@ namespace worldgen::world
 		float height = 0;
 	};
 
+	// A way people walk (OSM highway=footway, path, cycleway, pedestrian, steps, bridleway): its kind - "sidewalk" (footway=
+	// sidewalk: a street's, drawn on its own), "crossing" (footway=crossing), else the highway value -, its surface and width
+	// when tagged (0: not), on a bridge at a layer.
+	struct Walk
+	{
+		int64_t id = 0;
+		std::vector<P2> points;
+		std::string kind, surface;
+		float width = 0;
+		bool bridge = false, tunnel = false;
+		int layer = 0;
+	};
+
 	// Latitude and longitude to game metres: (lat0, lon0) at (x0, y0), metres per degree at the box's middle.
 	struct Projection
 	{
@@ -111,6 +128,7 @@ namespace worldgen::world
 		std::vector<Rail> rails;
 		std::vector<Barrier> barriers;
 		std::vector<Road> roads;
+		std::vector<Walk> walks;
 		std::vector<Building> buildings;
 		std::vector<Point> points;
 		std::string attribution; // the data's source
@@ -131,6 +149,25 @@ namespace worldgen::world
 	// ones go; new buildings are added, any whose middle lies in a demolished ring goes (worldgen build also leaves out
 	// the scan's own there); the strokes and the climate are kept for the build.
 	bool ApplyEdits(World& w, const std::filesystem::path& file, std::string& error);
+	// The property rolls' word on the buildings (tools/worldgen/parcels.py's parcels.json: per building of the world, its
+	// parcel's land use code, year built, living area, storeys): a footprint on a vacant parcel (codes 000, 010, 040, 070,
+	// 080 with no living area: the house gone since the footprints were traced) is not built (as the editor's demolished);
+	// a building the map calls only "yes" takes the kind its use says (house, static_caravan - a mobile home -, apartments,
+	// retail, commercial, industrial, church, school, hospital, public); a height the map only guessed (its defaults: 4.5,
+	// 6, 7, 9, 14, 18 m) the storeys' (a house's: 4.8 m for one storey - a mobile home 3.6 -, else 3 m a storey and the
+	// roof; others 3.6 m a storey). For a build: not saved. False only when the file cannot be read.
+	struct ParcelStats
+	{
+		size_t vacant = 0, retyped = 0, raised = 0;
+	};
+	bool ApplyParcels(World& w, const std::filesystem::path& file, ParcelStats& stats, std::string& error);
+
+	// The buildings the map calls only "yes" (Microsoft's footprints all are) whose middle lies in the map's commercial or
+	// retail land become "commercial", in its industrial land "industrial": shops, offices and workshops, not houses with
+	// hip roofs and siding (the street pictures' block garage on a commercial street had become a sided house). For a
+	// build: not saved. Returns how many.
+	size_t KindsByLandUse(World& w);
+
 	// A footprint whose middle lies in one of the editor's demolished areas.
 	bool Demolished(const World& w, const std::vector<P2>& footprint);
 

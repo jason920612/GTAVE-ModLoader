@@ -61,6 +61,7 @@
 #include "roadedit.hpp"
 #include "facades.hpp"
 #include "structures.hpp"
+#include "flora.hpp"
 #include "texture.hpp"
 #include "mapfiles.hpp"
 #include "terrain.hpp"
@@ -1609,6 +1610,62 @@ int main(int argc, char** argv)
 		std::fprintf(stderr, "%zu dictionaries read\n", read);
 		return 0;
 	}
+	if (command == "flora-test")
+	{
+		// our own trees (flora.hpp): their pictures as PNGs and each kind's models' sizes and triangles: --out <dir>
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		for (int t = 0; t < worldgen::flora::kTextures; ++t)
+			if (!worldgen::texture::WritePng(out / std::format("flora_{}.png", t), worldgen::flora::Picture(static_cast<worldgen::flora::Texture>(t)), error))
+				return Fail(error);
+		for (int s = 0; s < worldgen::flora::kSpecies; ++s)
+			for (int k = 0; k < 4; ++k)
+			{
+				const auto m = worldgen::flora::Make(static_cast<worldgen::flora::Species>(s), static_cast<uint32_t>(s * 101 + k * 7 + 1));
+				std::printf("kind %d model %d: %.1f m tall, %.1f m wide, trunk %.2f m; triangles by level:", s, k, m.height, m.width, m.trunk);
+				for (const auto& lod : m.lods)
+				{
+					size_t n = 0;
+					for (const auto& mesh : lod)
+						n += mesh.indices.size() / 3;
+					std::printf(" %zu", n);
+				}
+				std::printf("\n");
+			}
+		return 0;
+	}
+	if (command == "texture-png")
+	{
+		// one of a texture dictionary's textures as a PNG (its first mip, decoded): --dictionary <file.ytd> --texture <name>
+		// --out <file.png>
+		Bytes data;
+		loader::convert::Resource res;
+		const auto* f = files.Find(g_options["dictionary"]);
+		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
+			return Fail("cannot read " + g_options["dictionary"] + ": " + error);
+		std::string wanted = g_options["texture"];
+		std::transform(wanted.begin(), wanted.end(), wanted.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		for (const auto& t : ue5export::drawable::Textures(ue5export::drawable::View(res), ue5export::drawable::View::kRoot))
+		{
+			std::string lower = t.name;
+			std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (lower != wanted)
+				continue;
+			const bool compact = t.dxgi == 71 || t.dxgi == 72 || t.dxgi == 80 || t.dxgi == 81; // (8-byte blocks)
+			loader::convert::TextureFormat format{t.dxgi, compact ? 8u : 16u, true};
+			uint8_t mips = t.mips;
+			Bytes pixels(t.data.begin(), t.data.end());
+			loader::convert::MakeRenderTargetFormat(format, mips, static_cast<uint16_t>(t.width), static_cast<uint16_t>(t.height), pixels);
+			worldgen::texture::Image image(t.width, t.height);
+			for (size_t i = 0; i < image.pixels.size() && 4 * i + 3 < pixels.size(); ++i)
+				image.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], pixels[4 * i + 3]};
+			if (!worldgen::texture::WritePng(g_options["out"], image, error))
+				return Fail(error);
+			std::printf("%s: %ux%u format %u -> %s\n", t.name.c_str(), t.width, t.height, t.dxgi, g_options["out"].c_str());
+			return 0;
+		}
+		return Fail(g_options["texture"] + " is not in " + g_options["dictionary"]);
+	}
 	if (command == "shader-find")
 	{
 		// the game's models (.ydr) with a shader of these effects: --shader name,name (file, the shader's index, its
@@ -1853,6 +1910,8 @@ int main(int argc, char** argv)
 					std::printf(" n %7.3f %7.3f %7.3f", s.normal[v * 3], s.normal[v * 3 + 1], s.normal[v * 3 + 2]);
 				if (s.color0.size() >= (v + 1) * 4)
 					std::printf(" c %3u %3u %3u %3u", s.color0[v * 4], s.color0[v * 4 + 1], s.color0[v * 4 + 2], s.color0[v * 4 + 3]);
+				if (s.color1.size() >= (v + 1) * 4)
+					std::printf(" c1 %3u %3u %3u %3u", s.color1[v * 4], s.color1[v * 4 + 1], s.color1[v * 4 + 2], s.color1[v * 4 + 3]);
 				for (const auto& uv : s.uv)
 					if (uv.size() >= (v + 1) * 2)
 						std::printf(" uv %7.3f %7.3f", uv[v * 2], uv[v * 2 + 1]);
@@ -2297,6 +2356,16 @@ int main(int argc, char** argv)
 		// (the world editor's changes on top: --edits <edits.json>)
 		if (g_options.contains("edits") && !worldgen::world::ApplyEdits(w, g_options["edits"], error))
 			return Fail(error);
+		// (the property rolls first: their land use is the parcel's own)
+		if (g_options.contains("parcels"))
+		{
+			worldgen::world::ParcelStats ps;
+			if (!worldgen::world::ApplyParcels(w, g_options["parcels"], ps, error))
+				return Fail(error);
+			std::printf("parcels: %zu footprints on vacant land left out, %zu buildings' kind and %zu heights by the property rolls\n", ps.vacant,
+			    ps.retyped, ps.raised);
+		}
+		std::printf("buildings: %zu of the map's \"yes\" in commercial or industrial land taken as such\n", worldgen::world::KindsByLandUse(w));
 		worldgen::build::Options o;
 		o.out = g_options["out"];
 		o.name = g_options.contains("name") ? g_options["name"] : w.name;
@@ -2313,6 +2382,10 @@ int main(int argc, char** argv)
 			o.cell = std::stof(g_options["cell"]);
 		if (g_options.contains("scan"))
 			o.scan = g_options["scan"];
+		if (g_options.contains("poles"))
+			o.poles = g_options["poles"];
+		if (g_options.contains("parcels"))
+			o.parcels = g_options["parcels"];
 		if (g_options.contains("aerial"))
 			o.aerial = g_options["aerial"];
 		if (g_options.contains("landcover"))

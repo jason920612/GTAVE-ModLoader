@@ -21,6 +21,8 @@ namespace worldgen::build
 		std::filesystem::path out;      // the pack's input folder
 		std::filesystem::path zonesOut; // the zones mod's folder (popzone.ipl, zonebind.ymt); empty: none
 		float tile = 200;               // terrain / road tile (m)
+		std::filesystem::path poles;    // the poles a laser scan shows (lidar.py poles: {"poles": [[x, y, height], ...]}; empty: none)
+		std::filesystem::path parcels;  // the property rolls per building (parcels.py: the year built picks a house's walls; empty: none)
 		float cell = 8;                 // terrain mesh cell (m)
 		float classify = 4;             // land / water raster (m)
 		float border = 300;             // how far in from the box's edges the land ends (m)

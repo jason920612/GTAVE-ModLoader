@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "elevation.hpp"
@@ -45,9 +46,30 @@ namespace worldgen::trees
 	// (height and crown apart, within what keeps a trunk a trunk; crowns a third wider: the canopy closes as in the
 	// pictures): the evergreens as pines of every age or, with a crown wide for their height, live oaks; south of 27.5 N
 	// some of them cabbage palms; the leafless as maples and oaks by their size. `cover`: the NLCD class.
+	// Trees of our own (flora.hpp) to use instead of the game's: per kind - 0 live oak, 1 pine, 2 oak, 3 crape myrtle -
+	// the models (their archetypes' names, heights and widths as made).
+	struct Own
+	{
+		std::string name;
+		float height = 0, width = 0;
+	};
+	using OwnTrees = std::array<std::vector<Own>, 4>;
+
+	// (`own`: north Florida's trees of our own in place of the game's California pines and English oaks, where given)
 	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
-	    std::vector<props::Prop>& out, Stats& stats);
+	    std::vector<props::Prop>& out, Stats& stats, const OwnTrees* own = nullptr);
+
+	// Undergrowth (the street pictures' wooded lots: a wall of shrubs and vines under the trees, nothing seen through):
+	// large shrubs on a 6 m lattice (jittered, seven in ten) where `where(x, y)` - the woods by the streets: every entity
+	// counts against the game's pools, and only there is it seen.
+	void Undergrowth(const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats);
+
+	// The scan's low growth (hedges, shrubs: 2-3.5 m over the ground - a 2020 scan that classes no vegetation shows nothing
+	// lower) where `where(x, y)`: a shrub 3 m across on a 3 m lattice, scaled to the height.
+	void LowGrowth(elevation::Scan& scan, const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats);
 
 	// The trees the scan saw in the box (its canopy's peaks, as Place finds them): where they stand, how tall, their crowns'
 	// radii; their kind left 0 (the caller's to set - the pictures', which tell a pine from a palm).

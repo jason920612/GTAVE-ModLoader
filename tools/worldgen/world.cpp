@@ -311,9 +311,31 @@ namespace worldgen::world
 				if (AreaKind(t).empty() && Tag(t, "building").empty())
 					continue;
 			}
+			// ways people walk: sidewalks drawn on their own, footways, paths, steps (not indoors, not the squares - area=yes)
+			if (const std::string& hw = Tag(t, "highway");
+			    (hw == "footway" || hw == "path" || hw == "cycleway" || hw == "pedestrian" || hw == "steps" || hw == "bridleway") && Tag(t, "area") != "yes" &&
+			    Tag(t, "indoor") != "yes" && (Tag(t, "tunnel").empty() || Tag(t, "tunnel") == "no"))
+			{
+				Walk wk;
+				wk.id = id;
+				wk.points = Points(d, w, p);
+				const std::string& footway = Tag(t, "footway");
+				wk.kind = hw == "footway" && (footway == "sidewalk" || footway == "crossing") ? footway : hw;
+				wk.surface = Tag(t, "surface");
+				wk.width = static_cast<float>(Number(Tag(t, "width")));
+				wk.bridge = !Tag(t, "bridge").empty() && Tag(t, "bridge") != "no";
+				wk.layer = static_cast<int>(Number(Tag(t, "layer")));
+				if (wk.points.size() >= 2)
+					out.walks.push_back(std::move(wk));
+				if (AreaKind(t).empty() && Tag(t, "building").empty())
+					continue;
+			}
 			const std::string& waterway = Tag(t, "waterway");
 			if (!closed && (waterway == "canal" || waterway == "river" || waterway == "stream" || waterway == "ditch" || waterway == "drain"))
 			{
+				// (not in a culvert or covered: Tallahassee's piped creeks had come out as ponds beside the streets)
+				if ((!Tag(t, "tunnel").empty() && Tag(t, "tunnel") != "no") || Tag(t, "covered") == "yes" || Tag(t, "location") == "underground")
+					continue;
 				Waterway ww;
 				ww.points = Points(d, w, p);
 				ww.kind = waterway;
@@ -386,6 +408,10 @@ namespace worldgen::world
 				kind = "traffic_signals";
 			else if (Tag(t, "highway") == "stop")
 				kind = "stop";
+			else if (Tag(t, "emergency") == "fire_hydrant")
+				kind = "fire_hydrant";
+			else if (Tag(t, "highway") == "street_lamp")
+				kind = "street_lamp";
 			else if (Tag(t, "highway") == "crossing" || (Tag(t, "footway") == "crossing" && Tag(t, "highway").empty()))
 			{
 				// (painted or not: the crossing tag's kinds, or crossing:markings)
@@ -462,6 +488,22 @@ namespace worldgen::world
 		auto& barriers = j["barriers"] = nlohmann::json::array();
 		for (const Barrier& br : w.barriers)
 			barriers.push_back({{"kind", br.kind}, {"material", br.material}, {"height", br.height}, {"points", Line(br.points)}});
+		auto& walks = j["walks"] = nlohmann::json::array();
+		for (const Walk& wk : w.walks)
+		{
+			nlohmann::json o{{"id", wk.id}, {"kind", wk.kind}, {"points", Line(wk.points)}};
+			if (!wk.surface.empty())
+				o["surface"] = wk.surface;
+			if (wk.width > 0)
+				o["width"] = wk.width;
+			if (wk.bridge)
+				o["bridge"] = true;
+			if (wk.tunnel)
+				o["tunnel"] = true;
+			if (wk.layer)
+				o["layer"] = wk.layer;
+			walks.push_back(std::move(o));
+		}
 		auto& roads = j["roads"] = nlohmann::json::array();
 		for (const Road& r : w.roads)
 		{
@@ -555,6 +597,10 @@ namespace worldgen::world
 				w.barriers.push_back({Line(o["points"]), o["kind"].get<std::string>(), o.value("material", ""), o.value("height", 0.0f)});
 		for (const auto& o : j["roads"])
 			w.roads.push_back(RoadFrom(o));
+		if (j.contains("walks"))
+			for (const auto& o : j["walks"])
+				w.walks.push_back({o["id"].get<int64_t>(), Line(o["points"]), o["kind"].get<std::string>(), o.value("surface", ""), o.value("width", 0.0f),
+				    o.value("bridge", false), o.value("tunnel", false), o.value("layer", 0)});
 		for (const auto& o : j["buildings"])
 			w.buildings.push_back({Line(o["footprint"]), o["height"].get<float>(), o["kind"].get<std::string>(), o["name"].get<std::string>()});
 		for (const auto& o : j["points"])
@@ -682,6 +728,109 @@ namespace worldgen::world
 		std::printf("edits: %zu buildings demolished in %zu areas, %zu added; %zu paint strokes, %zu terrain strokes; climate %s\n",
 		    cleared, w.demolish.size(), added, w.paint.size(), w.terrain.size(), w.climate.empty() ? "(the game's)" : w.climate.c_str());
 		return true;
+	}
+
+	bool ApplyParcels(World& w, const std::filesystem::path& file, ParcelStats& stats, std::string& error)
+	{
+		std::ifstream in(file, std::ios::binary);
+		const auto j = nlohmann::json::parse(in, nullptr, false);
+		if (j.is_discarded() || !j.contains("buildings"))
+			return error = "cannot read " + file.string(), false;
+		const auto guessed = [](float h) { return h == 4.5f || h == 6.0f || h == 7.0f || h == 9.0f || h == 14.0f || h == 18.0f; };
+		for (const auto& e : j["buildings"])
+		{
+			const size_t bi = e.value("building", static_cast<size_t>(-1));
+			if (bi >= w.buildings.size())
+				continue;
+			Building& b = w.buildings[bi];
+			const std::string use = e.value("use", "");
+			const float living = e.value("living", 0.0f);
+			const int storeys = e.value("storeys", 0);
+			const bool main = e.value("main", true);
+			const int code = use.empty() ? -1 : std::atoi(use.c_str());
+			// (vacant land: nothing there now)
+			if ((code == 0 || code == 10 || code == 40 || code == 70 || code == 80) && living <= 0 && !b.footprint.empty())
+			{
+				// (its footprint emptied - it keeps its place in the list, which the street pictures' walls and the rolls are
+				// keyed by -, the outline demolished: the scan's own building there left out too)
+				w.demolish.push_back(std::move(b.footprint));
+				b.footprint.clear();
+				++stats.vacant;
+				continue;
+			}
+			if ((b.kind == "yes" || b.kind.empty()) && code >= 0)
+			{
+				const char* kind = code == 1                              ? (main ? "house" : "garage")
+				                 : code == 2                              ? "static_caravan"
+				                 : code == 3 || code == 4 || code == 5 || code == 8 ? "apartments"
+				                 : code == 11                             ? "retail"
+				                 : code >= 12 && code <= 39               ? "commercial"
+				                 : code >= 41 && code <= 49               ? "industrial"
+				                 : code == 71                             ? "church"
+				                 : code == 72 || code == 83 || code == 84 ? "school"
+				                 : code == 73 || code == 85               ? "hospital"
+				                 : code >= 81 && code <= 89               ? "public"
+				                                                          : nullptr;
+				if (kind)
+					b.kind = kind, ++stats.retyped;
+			}
+			if (main && storeys > 0 && guessed(b.height))
+			{
+				const bool home = b.kind == "house" || b.kind == "static_caravan" || b.kind == "detached" || b.kind == "residential" ||
+				                  b.kind == "bungalow" || b.kind == "semidetached_house" || b.kind == "terrace";
+				const int n = home ? std::min(storeys, 3) : std::min(storeys, 30);
+				const float h = home ? (n == 1 ? (b.kind == "static_caravan" ? 3.6f : 4.8f) : 3.0f * n + 2.5f) : 3.6f * n + 1.0f;
+				if (h != b.height)
+					b.height = h, ++stats.raised;
+			}
+		}
+		return true;
+	}
+
+	size_t KindsByLandUse(World& w)
+	{
+		struct Use
+		{
+			const Area* area;
+			P2 lo, hi;
+			const char* kind;
+		};
+		std::vector<Use> uses;
+		for (const Area& a : w.areas)
+		{
+			const char* kind = a.kind == "commercial" || a.kind == "retail" ? "commercial" : a.kind == "industrial" ? "industrial" : nullptr;
+			if (!kind || a.outer.empty())
+				continue;
+			Use u{&a, {1e30f, 1e30f}, {-1e30f, -1e30f}, kind};
+			for (const auto& ring : a.outer)
+				for (const P2& p : ring)
+					u.lo = {std::min(u.lo[0], p[0]), std::min(u.lo[1], p[1])}, u.hi = {std::max(u.hi[0], p[0]), std::max(u.hi[1], p[1])};
+			uses.push_back(u);
+		}
+		const auto inside = [](const std::vector<std::vector<P2>>& rings, const P2& c) {
+			bool in = false;
+			for (const auto& ring : rings)
+				for (size_t i = 0, k = ring.size() - 1; i < ring.size(); k = i++)
+					if ((ring[i][1] > c[1]) != (ring[k][1] > c[1]) && c[0] < (ring[k][0] - ring[i][0]) * (c[1] - ring[i][1]) / (ring[k][1] - ring[i][1]) + ring[i][0])
+						in = !in;
+			return in;
+		};
+		size_t changed = 0;
+		for (Building& b : w.buildings)
+		{
+			if ((b.kind != "yes" && !b.kind.empty()) || b.footprint.empty())
+				continue;
+			P2 c{0, 0};
+			for (const P2& p : b.footprint)
+				c[0] += p[0] / b.footprint.size(), c[1] += p[1] / b.footprint.size();
+			for (const Use& u : uses)
+				if (c[0] >= u.lo[0] && c[0] <= u.hi[0] && c[1] >= u.lo[1] && c[1] <= u.hi[1] && inside(u.area->outer, c) && !inside(u.area->inner, c))
+				{
+					b.kind = u.kind, ++changed;
+					break;
+				}
+		}
+		return changed;
 	}
 
 	bool Demolished(const World& w, const std::vector<P2>& footprint)

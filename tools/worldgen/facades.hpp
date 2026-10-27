@@ -63,6 +63,9 @@ namespace worldgen::facades
 	// A building's wall style: by its map kind, height (m), footprint area (m²), latitude (north Florida's houses are
 	// mostly frame and brick, south Florida's concrete block and stucco; Art Deco only in Miami) and a number of its own;
 	// where the street pictures saw it, their material - brick or painted - in the style of it nearest their colour.
-	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed, double latitude = 25.8, const Seen* seen = nullptr);
+	// `year`: the year it was built (the property rolls; 0 not known): north Florida's houses by their era - frame houses
+	// before 1940, brick ranches 1940-1979, siding and brick after, stucco more from 2000.
+	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed, double latitude = 25.8, const Seen* seen = nullptr,
+	    int year = 0);
 	int Find(const Set& set, Kind kind);
 }

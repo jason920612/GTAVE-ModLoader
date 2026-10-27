@@ -26,7 +26,9 @@ namespace worldgen::powerlines
 	// post); `ground(x, y)`: the terrain's height; `buried(x, y)`: whether the lines there run underground (a district of
 	// high-rises: downtown Miami's, Brickell's - a road through it for a third or more carries none). The poles that stand
 	// in `box`, and the wires between them (cable vertices, see above; their positions in the world's coordinates).
+	// `sideOf(edge)`: the side its line runs on where something measured it (the poles a laser scan shows: 1 left of a -> b,
+	// -1 right, 0 not known: by the rule above).
 	void Place(const roads::Network& n, const std::function<bool(float, float)>& clear, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& buried, const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires,
-	    Stats& stats);
+	    Stats& stats, const std::function<float(const roads::Edge&)>& sideOf = {});
 }

@@ -570,16 +570,19 @@ namespace worldgen::structures
 		// (no measurement: a house's hip roof - each cell's height up from the nearest wall)
 		const double area = std::fabs(polygon::Area(ring));
 		const bool houseKind = b.kind == "house" || b.kind == "detached" || b.kind == "residential" || b.kind == "semidetached_house" ||
-		                       b.kind == "bungalow" || b.kind == "terrace" || b.kind == "cabin" || b.kind == "farm" ||
+		                       b.kind == "bungalow" || b.kind == "terrace" || b.kind == "cabin" || b.kind == "farm" || b.kind == "static_caravan" ||
 		                       ((b.kind == "yes" || b.kind.empty()) && area >= 50 && area <= 350);
 		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000;
-		const bool hip = !measure && !b.planned && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
-		const float eave = b.height > 7.5f ? b.height - 2.5f : 3.0f;
+		bool hip = !measure && !b.planned && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
+		// (a house the scan measured gets the same clean roof, at the eaves and ridge it measured: its lumpy surface with the
+		// aerial picture on it was a white blanket in the street pictures' comparison, not a roof)
+		const bool measuredHouse = measure && !b.planned && houseKind && area <= 700 && b.height <= 12 && nx * ny < 400000;
+		float eave = b.height > 7.5f ? b.height - 2.5f : 3.0f, riseCap = 3.5f;
 		// (a gable roof instead: on a footprint near its narrowest box - 85 % of it and more -, by the place's own number;
 		// the height then rises only from the walls along the long side, the short sides' walls - their edges across the
 		// ridge - becoming the gables)
 		std::vector<bool> eaveEdge(ring.size(), true);
-		if (hip && o.gableShare > 0)
+		if ((hip || measuredHouse) && o.gableShare > 0)
 		{
 			float bestArea = 1e30f, axis = 0;
 			for (size_t e = 0; e < ring.size(); ++e)
@@ -614,39 +617,79 @@ namespace worldgen::structures
 				}
 			}
 		}
-		for (int j = 0; j < ny && (measure || hip); ++j)
-			for (int i = 0; i < nx; ++i)
+		// the heights over the footprint: 0 a hip roof's, 1 the scan's building returns, 2 its highest returns of any kind
+		const auto fill = [&](int mode) {
+			std::fill(h.begin(), h.end(), nan);
+			std::fill(inside.begin(), inside.end(), uint8_t{0});
+			insideCount = 0, known = 0;
+			for (int j = 0; j < ny; ++j)
+				for (int i = 0; i < nx; ++i)
+				{
+					const P2 c{gx0 + (i + 0.5f) * cell, gy0 + (j + 0.5f) * cell};
+					if (!polygon::Inside(ring, c))
+						continue;
+					const size_t k = static_cast<size_t>(j) * nx + i;
+					inside[k] = 1;
+					++insideCount;
+					float d = 1e30f, de = 1e30f;
+					for (size_t e = 0; e < ring.size(); ++e)
+					{
+						const float de1 = polygon::DistanceToSegment(c, ring[e], ring[(e + 1) % ring.size()]);
+						d = std::min(d, de1);
+						if (eaveEdge[e])
+							de = std::min(de, de1);
+					}
+					edgeDistance[k] = d;
+					if (mode == 0)
+					{
+						h[k] = base + eave + std::min((de < 1e29f ? de : d) * 0.42f, riseCap), ++known;
+						continue;
+					}
+					const float roof = mode == 1 ? scan->Roof(c[0], c[1]) : scan->Top(c[0], c[1]);
+					if (!std::isnan(roof) && (mode == 1 || d > 0.5f))
+					{
+						h[k] = roof, ++known;
+						continue;
+					}
+					const float top = scan->Top(c[0], c[1]), g = scan->Ground(c[0], c[1]);
+					if (d > 1.5f && !std::isnan(top) && !std::isnan(g) && top - g < 0.8f)
+						h[k] = g, ++known;
+				}
+		};
+		if (measure || hip)
+			fill(hip ? 0 : 1);
+		if (measuredHouse && insideCount >= 8 && static_cast<float>(known) >= o.coverage * static_cast<float>(insideCount))
+		{
+			// (its eaves: the low fifth of the heights along the walls; its ridge: the high twentieth)
+			std::vector<float> edge, all;
+			for (size_t k = 0; k < h.size(); ++k)
+				if (inside[k] && !std::isnan(h[k]))
+				{
+					all.push_back(h[k]);
+					if (edgeDistance[k] < 1.0f)
+						edge.push_back(h[k]);
+				}
+			if (edge.size() >= 4 && all.size() >= 8)
 			{
-				const P2 c{gx0 + (i + 0.5f) * cell, gy0 + (j + 0.5f) * cell};
-				if (!polygon::Inside(ring, c))
-					continue;
-				const size_t k = static_cast<size_t>(j) * nx + i;
-				inside[k] = 1;
-				++insideCount;
-				float d = 1e30f, de = 1e30f;
-				for (size_t e = 0; e < ring.size(); ++e)
-				{
-					const float de1 = polygon::DistanceToSegment(c, ring[e], ring[(e + 1) % ring.size()]);
-					d = std::min(d, de1);
-					if (eaveEdge[e])
-						de = std::min(de, de1);
-				}
-				edgeDistance[k] = d;
-				if (hip)
-				{
-					h[k] = base + eave + std::min((de < 1e29f ? de : d) * 0.42f, 3.5f), ++known;
-					continue;
-				}
-				const float roof = scan->Roof(c[0], c[1]);
-				if (!std::isnan(roof))
-				{
-					h[k] = roof, ++known;
-					continue;
-				}
-				const float top = scan->Top(c[0], c[1]), g = scan->Ground(c[0], c[1]);
-				if (d > 1.5f && !std::isnan(top) && !std::isnan(g) && top - g < 0.8f)
-					h[k] = g, ++known;
+				std::sort(edge.begin(), edge.end());
+				std::sort(all.begin(), all.end());
+				const float eaveZ = edge[edge.size() / 5], ridgeZ = all[all.size() * 19 / 20];
+				eave = std::clamp(eaveZ - base, 2.4f, 9.0f);
+				riseCap = std::clamp(ridgeZ - eaveZ, 0.8f, 5.0f);
+				hip = true;
+				fill(0);
 			}
+		}
+		// (a measurement short of its coverage - too few of the scan's building returns -: a house gets its hip roof after all
+		// - a flat box had stood where the street pictures have a pitched roof -, a big structure its shape by the scan's
+		// highest returns of any kind - a stadium's open stands came as unclassified returns: a low box at the map's guess)
+		if (measure && !hip && (insideCount < 8 || static_cast<float>(known) < o.coverage * static_cast<float>(insideCount)))
+		{
+			if (houseKind && area <= 700 && b.height <= 12)
+				hip = true, fill(0);
+			else if (area >= 1500)
+				fill(2);
+		}
 		if (!(measure || hip) || insideCount < 8 || static_cast<float>(known) < o.coverage * static_cast<float>(insideCount))
 		{
 			// the map's height, a flat roof

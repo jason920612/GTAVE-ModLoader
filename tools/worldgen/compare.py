@@ -98,20 +98,27 @@ def road_near(x, y, z, compass, reach=12.0):
     return nx + 1.8 * math.cos(a), ny - 1.8 * math.sin(a)
 
 
-def road_along(roads, x, y, compass, reach=15.0):
+def road_along(roads, x, y, compass, reach=15.0, carriageway=False):
     """The street a car's camera was on, from the land's world.json roads: the nearest stretch within `reach` m that runs
-    within 35 degrees of the way the picture faces (either way along it), the camera in the lane on its right (a two-way
-    road's: half a lane right of the middle; a one-way road's middle); none: None."""
+    within 35 degrees of the way the picture faces (either way along a two-way road, its own way along a one-way one), the
+    camera in the middle of a lane it could drive in - a two-way road's on the right of its middle - the one nearest where
+    the picture says it was; none: None. `carriageway`: only when that place is on the road or by its edge (2.5 m; farther
+    out someone walking took it)."""
     hx, hy = math.sin(math.radians(compass)), math.cos(math.radians(compass))
     best = None
-    for pts, lane, two in roads:
+    for pts, lane, fwd, bwd in roads:
         a, b = pts[:-1], pts[1:]
         d = b - a
         length = np.hypot(d[:, 0], d[:, 1])
         ok = length > 0.5
         u = d[ok] / length[ok, None]
         aa, ll = a[ok], length[ok]
-        along = np.abs(u[:, 0] * hx + u[:, 1] * hy) >= math.cos(math.radians(35))
+        dot = u[:, 0] * hx + u[:, 1] * hy
+        along = np.abs(dot) >= math.cos(math.radians(35))
+        if fwd > 0 and bwd <= 0:
+            along &= dot > 0
+        elif bwd > 0 and fwd <= 0:
+            along &= dot < 0
         if not along.any():
             continue
         u, aa, ll = u[along], aa[along], ll[along]
@@ -120,11 +127,21 @@ def road_along(roads, x, y, compass, reach=15.0):
         dist = np.hypot(qx - x, qy - y)
         k = int(np.argmin(dist))
         if dist[k] < reach and (best is None or dist[k] < best[0]):
-            best = (float(dist[k]), float(qx[k]), float(qy[k]), lane if two else 0.0)
+            best = (float(dist[k]), float(qx[k]), float(qy[k]), float(u[k, 0] * hx + u[k, 1] * hy) > 0, lane, fwd, bwd)
     if best is None:
         return None
-    _, qx, qy, lane = best
-    return qx + 0.5 * lane * hy, qy - 0.5 * lane * hx  # (right of the way it faces: (hy, -hx))
+    _, qx, qy, same, lane, fwd, bwd = best
+    across = (x - qx) * hy - (y - qy) * hx  # (metres right of the way it faces: (hy, -hx))
+    half = max(fwd + bwd, 1) * lane / 2
+    if carriageway and abs(across) > half + 2.5:
+        return None
+    if fwd > 0 and bwd > 0:
+        n = fwd if same else bwd
+        off = (min(max(int(across // lane), 0), n - 1) + 0.5) * lane
+    else:
+        n = max(fwd, bwd, 1)
+        off = -half + (min(max(int((across + half) // lane), 0), n - 1) + 0.5) * lane
+    return qx + off * hy, qy - off * hx
 
 
 def land_roads(land):
@@ -141,12 +158,44 @@ def land_roads(land):
     for r in w.get('roads', []):
         if r.get('kind') in ('footway', 'path', 'cycleway', 'steps', 'pedestrian', 'track') or len(r.get('points', [])) < 2:
             continue
-        out.append((np.array(r['points'], np.float64)[:, :2], float(r.get('laneWidth', 3.5)), r.get('forward', 1) > 0 and r.get('backward', 1) > 0))
+        out.append((np.array(r['points'], np.float64)[:, :2], float(r.get('laneWidth', 3.5)), int(r.get('forward', 1)), int(r.get('backward', 1))))
     return out
 
 
-def ground_z(x, y):
-    out = gtactl(f'raw:native 0xC906A7DAB05C8D2B {x:.1f} {y:.1f} 1000.0 out 0 0')
+_dems = {}
+
+
+def dem_at(land, x, y):
+    """The land's measured ground (D:\GTAV-UE5\world\<land>\ground.bin, dem.py's: 'WBGR' version 1, x0 y0 cell nx ny, int16 cm
+    rows south to north) at a point; None where it is not known or there is none."""
+    if land.name not in _dems:
+        folder = 'miami' if land.name == 'wbmia' else land.name
+        path = os.path.join(r'D:\GTAV-UE5\world', folder, 'ground.bin')
+        _dems[land.name] = None
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                head = f.read(28)
+                if head[:4] == b'WBGR':
+                    import struct
+                    _, gx, gy, gc, nx, ny = struct.unpack('<Ifff2I', head[4:])
+                    _dems[land.name] = (gx, gy, gc, np.frombuffer(f.read(2 * nx * ny), '<i2').reshape(ny, nx))
+    d = _dems[land.name]
+    if d is None:
+        return None
+    gx, gy, gc, a = d
+    i, j = int((x - gx) / gc), int((y - gy) / gc)
+    if not (0 <= j < a.shape[0] and 0 <= i < a.shape[1]) or a[j, i] == -32768:
+        return None
+    return a[j, i] / 100.0
+
+
+def ground_z(x, y, land=None):
+    """The game's ground under a point: the first surface down from 3 m over the measured ground where that is known - from
+    high up it was a roof now and then, the camera on it (a campus walk between two buildings) -, else from 1000 m."""
+    top = 1000.0
+    if land is not None and (d := dem_at(land, x, y)) is not None:
+        top = d + 3.0
+    out = gtactl(f'raw:native 0xC906A7DAB05C8D2B {x:.1f} {y:.1f} {top:.1f} out 0 0')
     m = re.search(r'\| out \S+ (\S+)', out)
     return float(m.group(1)) if m and out.startswith('ok 1') else None
 
@@ -280,7 +329,7 @@ def photos(o):
         real = Image.open(io.BytesIO(fetch(info['url']))).convert('RGB')
         real.thumbnail((960, 720))
         x, y = land.game(lat, lon)
-        gz = ground_z(x, y)
+        gz = ground_z(x, y, land)
         if gz is None:
             gtactl(f'raw:cam {x:.1f} {y:.1f} 300 0 -89.9 {FOV}', 'wait:6')
             gz = ground_z(x, y) or 0.0
@@ -326,14 +375,14 @@ def mapillary(o):
         lat, lon, compass = float(r['lat']), float(r['lon']), float(r['heading'])
         x, y = land.game(lat, lon)
         gtactl(f'raw:cam {x:.1f} {y:.1f} 60 0 -89.9 {FOV}', 'wait:4')
-        gz = ground_z(x, y)
+        gz = ground_z(x, y, land)
         if gz is None:
             gtactl('wait:4')
-            gz = ground_z(x, y) or 1.0
+            gz = ground_z(x, y, land) or 1.0
         # (a phone's position is often some metres off: onto the road it was taken from when one is that near)
         snapped = road_along(roads, x, y, compass) if roads else None
         x, y = snapped if snapped else road_near(x, y, gz, compass)
-        gz = ground_z(x, y) or gz
+        gz = ground_z(x, y, land) or gz
         shot = os.path.join(out, f'game_{r["id"]}.png')
         gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} {(360 - compass) % 360:.1f} 0 {EYE_FOV}', 'wait:7', f'shot:{shot}')
         real = Image.open(os.path.join(folder, r['file'])).convert('RGB')
@@ -432,6 +481,10 @@ def pano(o):
             y0 + 50 <= land.game(float(r['lat']), float(r['lon']))[1] <= y1 - 50]
     rnd = random.Random(int(o.get('seed', 1)))
     rnd.shuffle(rows)
+    # (--ids a,b,...: only those pictures - a check of a few places, the same as a full comparison took them)
+    if 'ids' in o:
+        wanted = o['ids'].split(',')
+        rows = [r for r in rows if r['id'] in wanted]
     # (spread out: each at least --spacing m from those taken)
     spacing, chosen = float(o.get('spacing', 80)), []
     for r in rows:
@@ -443,17 +496,36 @@ def pano(o):
     views = [float(v) for v in o.get('views', '0,90,-90').split(',')]
     listed = []
     hud_off()
-    # (no traffic or people while the pictures are taken: they are not the place - a car had stopped on the camera; the
-    # parked cars stay)
-    gtactl('raw:every 36000 0x245A6883D966D537 0.0')
+    roads = land_roads(land)
+    # (the player's ped: PLAYER_PED_ID)
+    reply = gtactl('raw:native 0xD80958FC74E988A6')
+    m = re.match(r'ok (-?\d+)', reply)
+    ped = int(m.group(1)) if m else None
     for k, (x, y, r) in enumerate(chosen):
         compass = float(r['heading'])
+        # (no traffic or people while the pictures are taken - SET_VEHICLE_DENSITY_ and SET_PED_DENSITY_MULTIPLIER_THIS_FRAME 0:
+        # they are not the place, a car had stopped on the camera; the parked cars stay. The phone hidden (SET_MOBILE_PHONE_SCALE 0): a call came up over a view. Each place anew: an
+        # "every" lasts at most 600 s)
+        gtactl('raw:every 120 0x245A6883D966D537 0.0', 'raw:every 120 0x95E3D6257B166CF2 0.0', 'raw:every 120 0xCBDD322A73D6D932 0.0')
         gtactl(f'raw:cam {x:.1f} {y:.1f} 60 0 -89.9 {FOV}', 'wait:4')
-        gz = ground_z(x, y)
+        gz = ground_z(x, y, land)
         if gz is None:
             gtactl('wait:4')
-            gz = ground_z(x, y) or 1.0
-        gtactl(f'raw:native 0xA56F01F3765B93A0 {x:.1f} {y:.1f} {gz:.1f} 12.0 1 0 1 0')  # (CLEAR_AREA round the camera, objects kept)
+            gz = ground_z(x, y, land) or 1.0
+        # (the panorama's place is a few metres off as often as not - a camera on a car put on the wrong side of the middle
+        # line: onto the lane it drove in when it is on the road)
+        snapped = road_along(roads, x, y, compass, 12.0, carriageway=True) if roads else None
+        if snapped:
+            x, y = snapped
+            gz = ground_z(x, y, land) or gz
+        # (the parked cars: the game makes them only near the player and out of the camera's sight - the player there,
+        # unseen (SET_ENTITY_VISIBLE 0), the camera looking up at the sky a while; then only what stands on the camera's
+        # spot cleared (CLEAR_AREA 3 m, objects kept): the driveways' and the lots' cars stay)
+        gtactl(f'raw:tp {x:.1f} {y:.1f} {gz + 0.5:.1f}', 'wait:1')
+        if ped is not None:
+            gtactl(f'raw:native 0xEA1C610A04DB6BBB {ped} 0 0')
+        gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} 0 89 {EYE_FOV}', 'wait:6')
+        gtactl(f'raw:native 0xA56F01F3765B93A0 {x:.1f} {y:.1f} {gz:.1f} 3.0 1 0 1 0')  # (CLEAR_AREA round the camera, objects kept)
         picture = np.asarray(Image.open(r['path']).convert('RGB'), np.float32)
         small = np.asarray(Image.fromarray(picture.astype(np.uint8)).resize((1024, 512)), np.float32)
         for view in views:

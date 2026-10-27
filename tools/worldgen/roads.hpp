@@ -38,6 +38,9 @@ namespace worldgen::roads
 		float walkWidth = 2.6f; // its sidewalks' width (m)
 		float parking = 0;      // a parking lane each side, this wide (m; 0: none): the traffic lanes between them
 		float bike = 0;         // a painted bike lane each side (m; 0: none), between the parking and the traffic lanes
+		bool curb = false;      // without sidewalks, a kerb and gutter still (a town's street): a kerb top of kCurbTop
+		// with sidewalks: which sides (left and right of a -> b) have one; the other a kerb and gutter (kCurbTop)
+		bool walkLeft = true, walkRight = true;
 		float HalfWidth() const { return (forward + backward) * laneWidth / 2 + 0.3f + parking + bike; }
 		float Side() const { return parking + bike; }             // (what lies between a kerb and the traffic lanes)
 		float LanesHalf() const { return HalfWidth() - Side(); } // (the traffic lanes' half)
@@ -62,6 +65,8 @@ namespace worldgen::roads
 	// A road that is not a street: a driveway, alley or parking lane (service), a track, a path.
 	bool Minor(const Edge& e);
 
+	// (its edges have a point at least every kHeightStep m: their heights follow the ground's over the hills)
+	constexpr float kHeightStep = 8.0f;
 	Network Build(const world::World& w);
 
 	// How far round a street junction (three streets or more) its corners reach: the kerbs' curves end where the roads stop
@@ -133,7 +138,7 @@ namespace worldgen::roads
 		std::vector<Signal> signals;
 	};
 
-	constexpr float kSidewalk = 2.6f, kKerb = 0.15f;
+	constexpr float kSidewalk = 2.6f, kKerb = 0.15f, kCurbTop = 0.2f;
 
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).
@@ -148,6 +153,16 @@ namespace worldgen::roads
 	constexpr float kRailLevel = 8.0f;
 	void Rails(const std::vector<world::Rail>& rails, const std::function<float(float, float)>& ground, const std::function<bool(float, float)>& onRoad,
 	    Surfaces& out);
+
+	// The ways people walk drawn on their own (OpenStreetMap's sidewalks beside the streets, footways, paths, cycleways,
+	// steps: research/phase0.md §63) as strips on the ground, 5 cm over it (`ground`: the terrain mesh's height, sampled
+	// every metre along), their edges down into it (nothing lowered under them: not in the footprints), the walkers'
+	// (navmesh kind 2): sidewalks and footways concrete as the streets' sidewalks, the others of their surface (an
+	// untagged path earth, a cycleway asphalt), their width by the map or their kind. Left out: crossings (the road's),
+	// footbridges, where a point is on a road (`onRoad`: its asphalt or its own sidewalk) and the pieces `skip` names
+	// (per walk, per piece between its points: a street's sidewalk the street draws itself). Returns how many were drawn.
+	size_t Walkways(const std::vector<world::Walk>& walks, const std::vector<std::vector<bool>>& skip, const std::function<float(float, float)>& ground,
+	    const std::function<bool(float, float)>& onRoad, Surfaces& out);
 
 	// The traffic graph: nodes (junction nodes where three roads or more meet) and links with their lanes.
 	struct PathNode

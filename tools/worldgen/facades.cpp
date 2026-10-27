@@ -400,7 +400,7 @@ namespace worldgen::facades
 		for (size_t k = 0; k < (miami ? 0 : std::size(sidings)); ++k)
 			add(Kind::Siding, "siding", std::string("siding_") + sidings[k].first, 8, 6, [&](Canvas& c) {
 				Siding(c, sidings[k].second, ++seed);
-				const bool shutters = k % 3 != 0;
+				const bool shutters = k % 3 == 0; // (a third of them: the street pictures' houses mostly have none)
 				const Rgb shutter = k % 2 ? Rgb{40, 52, 44} : Rgb{34, 38, 46};
 				for (int f = 0; f < 2; ++f)
 					for (int b = 0; b < 2; ++b)
@@ -483,7 +483,7 @@ namespace worldgen::facades
 		return 0;
 	}
 
-	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed, double latitude, const Seen* seen)
+	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed, double latitude, const Seen* seen, int year)
 	{
 		const auto among = [&](Kind k) {
 			std::vector<int> v;
@@ -496,6 +496,7 @@ namespace worldgen::facades
 		// (a house's garage is the house's; the metal sheds only the warehouses, works and barns - a big store, a stadium's
 		// stands, a parking garage are block and concrete in the street pictures)
 		const bool house = kind == "house" || kind == "detached" || kind == "bungalow" || kind == "semidetached_house" || kind == "terrace" ||
+		                   kind == "static_caravan" ||
 		                   ((kind == "garage" || kind == "garages" || kind == "carport") && height < 6);
 		const bool industrial = kind == "industrial" || kind == "warehouse" || kind == "shed" || kind == "hangar" || kind == "manufacture" || kind == "barn" ||
 		                        kind == "farm_auxiliary" || kind == "storage_tank";
@@ -514,7 +515,7 @@ namespace worldgen::facades
 		if (seen && !industrial)
 		{
 			const float lum = (seen->colour[0] + seen->colour[1] + seen->colour[2]) / 3.0f;
-			const bool brick = seen->brick > 0.4f;
+			const bool brick = seen->brick > 0.3f; // (a wall band is windows, trim and leaves too: a third of it brick is a brick wall)
 			if (brick || lum >= 70)
 			{
 				std::vector<Kind> kinds;
@@ -549,12 +550,28 @@ namespace worldgen::facades
 		}
 		if (homely)
 		{
-			const float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
+			// (a mobile home: lap siding, the light vinyl of a single- or double-wide)
+			if (kind == "static_caravan")
+				return among(Kind::Siding);
+			float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
+			// (by its era, where the rolls say when it was built: north Florida's old frame houses, its post-war brick ranches)
+			if (north && year > 0)
+			{
+				if (year < 1940)
+					siding = 0.75f, brick = 0.15f;
+				else if (year < 1980)
+					siding = 0.3f, brick = 0.55f;
+				else if (year < 2000)
+					siding = 0.5f, brick = 0.3f;
+				else
+					siding = 0.45f, brick = 0.25f;
+			}
 			return among(r < siding ? Kind::Siding : r < siding + brick ? Kind::Brick : Kind::House);
 		}
 		const bool retail = kind == "retail" || kind == "commercial" || kind == "supermarket" || kind == "kiosk";
+		// (a third of the low shops with glass fronts all round: the street pictures' are painted block with a storefront)
 		if (retail && height <= 6.5f)
-			return among(Kind::Shop);
+			return among(r < 0.35f ? Kind::Shop : Kind::Concrete);
 		if (height >= 40)
 			return among(r < (office ? 0.75f : 0.45f) ? Kind::Glass : Kind::Balcony);
 		if (height >= 16)
@@ -564,8 +581,9 @@ namespace worldgen::facades
 			return among(office ? (r < 0.6f ? Kind::Glass : Kind::Concrete) : (r < 0.55f ? Kind::Balcony : r < 0.8f ? Kind::Concrete : Kind::Glass));
 		}
 		// (low and middling: red brick in the north's downtowns and campuses, Art Deco walk-ups only in Miami)
+		// (a third red brick: the street pictures' institutional blocks are as often white or grey)
 		if (north)
-			return among(r < 0.6f ? Kind::BrickCity : Kind::Concrete);
+			return among(r < 0.35f ? Kind::BrickCity : Kind::Concrete);
 		if (!miami)
 			return among(r < 0.5f ? Kind::Concrete : r < 0.8f ? Kind::House : Kind::BrickCity);
 		return among(office ? (r < 0.6f ? Kind::Concrete : Kind::Deco) : (r < 0.75f ? Kind::Deco : Kind::Concrete));

@@ -140,7 +140,9 @@ def main():
                 trim = len(cis) // 5
                 cis = cis[trim:len(cis) - trim]
                 height = float(w['buildings'][bi].get('height') or 4.5)
-                lo, hi = (1.2, height - 0.4) if height < 6 else (2.5, height - 0.5)
+                # (a house of one floor: its walls to the eaves 2.6 m up - the map's height is the ridge's, and the band
+                # up to it was the roof: a green metal roof taken for leaves, the house not seen)
+                lo, hi = (0.8, min(height - 0.4, 2.6)) if height < 6 else (2.5, height - 0.5)
                 # (the band's middle half: a wall's place in a picture is a metre or two out - the roof, the bushes)
                 lo, hi = lo + 0.25 * (hi - lo), hi - 0.25 * (hi - lo)
                 if hi <= lo:
@@ -191,8 +193,10 @@ def main():
         mx, mn = px.max(axis=1), px.min(axis=1)
         sat = (mx - mn) / np.maximum(mx, 1)
         r, g, b = px[:, 0], px[:, 1], px[:, 2]
-        # (brick: red to orange - red well over blue, green between -, saturated, neither bright nor black)
-        brick = (r > b + 25) & (g < r - 8) & (g > b - 10) & (sat > 0.22) & (sat < 0.8) & (mx > 50) & (mx < 200)
+        # (brick: red to orange - red well over blue, green between -, saturated, neither bright nor black; by ratios, not
+        # differences: a brick house in an overcast picture's shade, (76, 63, 52), had failed red 25 over blue - tan siding's
+        # green is nearer its red, 0.9 of it)
+        brick = (r > b * 1.25) & (g < r * 0.88) & (g > b * 0.85) & (sat > 0.2) & (sat < 0.8) & (mx > 40) & (mx < 210)
         out.append({'building': bi, 'colour': [int(round(c)) for c in rgb], 'brick': round(float(brick.mean()), 3), 'samples': int(len(px)),
                     'pictures': sorted({pid for _, pid in obs})[:8]})
     out.sort(key=lambda e: e['building'])

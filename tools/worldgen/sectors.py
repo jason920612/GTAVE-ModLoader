@@ -6,7 +6,8 @@ The grid is anchored at Miami's box (its south-west corner 25.745 N, -80.232 E):
 by 0.117 of longitude, cell (column, row) = (0, 0) Miami, (0, 1) the one north of it, (-1, 0) west. For each cell:
 its OpenStreetMap extract (worldgen osm) with the building footprints it lacks from Microsoft's US Building Footprints
 (msbuildings.py; ODbL), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its ground
-(dem.py: 3DEP's measured heights, the lakes' and rivers' levels), what its aerial pictures show (photo.py, in the venv
+(dem.py: 3DEP's measured heights, the lakes' and rivers' levels), its property rolls (parcels.py: the Department of
+Revenue's parcels - vacant lots, mobile homes, storeys, the year built), what its aerial pictures show (photo.py, in the venv
 of numpy, scipy, tifffile, zarr and Pillow: every tree, the ground's cover and colour - research/phase0.md §63), its build
 (every building our own - hip-roofed houses, walls in the region's styles: the game's Los Santos models looked nothing
 like Florida's -, the walls' colour and brick from the street pictures where there are any (photofacade.py, --mapillary),
@@ -36,6 +37,8 @@ O = {
     'photo': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photo.py'),
     'photofacade': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photofacade.py'),
     'msbuildings': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'msbuildings.py'),
+    'parcels': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'parcels.py'),
+    'parcelIndex': r'D:\GTAV-UE5\parcels\fl\index.json',  # (parcels.py fetch's: every county's parcels and property roll)
     'mscells': r'D:\GTAV-UE5\buildings\ms\cells',  # (msbuildings.py split's)
     'venv': r'D:\GTAV-UE5\venv\Scripts\python.exe',
     'keys': r'D:\GTAV-UE5\keys\ng.bin',
@@ -103,7 +106,8 @@ def build(c, r, flags):
     if not os.path.exists(cover) and run([sys.executable, '-I', O['nlcd'], '--world', world, '--out', cover], log):
         return name, f'land cover failed (see {log})'
     ground = os.path.join(folder, 'ground.bin')
-    if not os.path.exists(ground) and run([sys.executable, '-I', O['dem'], '--world', world, '--out', ground], log):
+    # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests)
+    if not os.path.exists(ground) and run([sys.executable, '-I', O['dem'], '--world', world, '--out', ground, '--step', '2', '--cell', '4'], log):
         return name, f'ground failed (see {log})'
     photo = os.path.join(folder, 'photo')
     if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo], log):
@@ -117,10 +121,18 @@ def build(c, r, flags):
         with open(seen, encoding='utf-8') as f:
             if '"building"' in f.read(4096):
                 walls = ['--facades', seen]
+    # (what the property rolls say of its buildings - vacant lots, mobile homes, storeys, the year built -, when the counties'
+    # parcels are there)
+    rolls = []
+    if os.path.exists(O['parcelIndex']):
+        parcels = os.path.join(folder, 'parcels.json')
+        if run([O['venv'], '-I', O['parcels'], 'join', '--world', world, '--index', O['parcelIndex'], '--out', parcels], log):
+            return name, f'property rolls failed (see {log})'
+        rolls = ['--parcels', parcels]
     gen = os.path.join(folder, 'full_gen')
     shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--landcover', cover,
-            '--ground', ground, '--photo', photo, *walls, '--navmesh', 'near', '--climate', 'tropical'], log):
+            '--ground', ground, '--photo', photo, *walls, *rolls, '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     os.makedirs(os.path.dirname(pack), exist_ok=True)
     out = pack + '.new' if os.path.exists(pack) else pack
