@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <limits>
@@ -32,41 +31,19 @@ namespace worldgen::ydr
 			uint8_t dxgi;
 			uint32_t size;
 		};
-		// (WG_COMPACT_VERTICES: normals and tangents as signed bytes, the second to fourth texture coordinates as half
-		// floats - the first stays float: the ground's are world metres over a few metres, which half floats lose; the
-		// game's own map geometry is all float, the game's reading these not tried yet)
-		const bool g_compact = std::getenv("WG_COMPACT_VERTICES") != nullptr;
+		// (the game's own map geometry is all float; normals as signed bytes and texture coordinates as half floats drew
+		// white or not at all - research/phase0.md §63.8)
 		Element Format(uint8_t slot)
 		{
 			switch (slot)
 			{
-			case kPosition: return {6, 12}; // R32G32B32_FLOAT
-			case kNormal: return g_compact ? Element{31, 4} : Element{6, 12};  // R8G8B8A8_SNORM / R32G32B32_FLOAT
-			case kTangent: return g_compact ? Element{31, 4} : Element{2, 16}; // R8G8B8A8_SNORM / R32G32B32A32_FLOAT
+			case kPosition:
+			case kNormal: return {6, 12};  // R32G32B32_FLOAT
+			case kTangent: return {2, 16}; // R32G32B32A32_FLOAT
 			case kColour0:
 			case kColour1: return {28, 4}; // R8G8B8A8_UNORM
-			case kUv0: return {16, 8};     // R32G32_FLOAT (texture coordinates)
-			default: return g_compact ? Element{34, 4} : Element{16, 8}; // R16G16_FLOAT / R32G32_FLOAT
+			default: return {16, 8};       // R32G32_FLOAT (texture coordinates)
 			}
-		}
-
-		int8_t Snorm(float f) { return static_cast<int8_t>(std::lround(std::clamp(f, -1.0f, 1.0f) * 127.0f)); }
-
-		uint16_t Half(float f)
-		{
-			uint32_t x;
-			std::memcpy(&x, &f, 4);
-			const uint32_t sign = (x >> 16) & 0x8000;
-			const int exponent = static_cast<int>((x >> 23) & 0xFF) - 127 + 15;
-			uint32_t mantissa = x & 0x7FFFFF;
-			if (exponent <= 0)
-				return static_cast<uint16_t>(sign); // (too small: 0)
-			if (exponent >= 31)
-				return static_cast<uint16_t>(sign | 0x7BFF); // (too big: the largest)
-			mantissa += 0x1000; // (rounded to the nearest)
-			if (mantissa & 0x800000)
-				return static_cast<uint16_t>(sign | (exponent + 1 >= 31 ? 0x7BFF : (exponent + 1) << 10));
-			return static_cast<uint16_t>(sign | exponent << 10 | mantissa >> 13);
 		}
 
 		uint32_t Stride(const std::vector<uint8_t>& slots)
@@ -224,35 +201,11 @@ namespace worldgen::ydr
 				switch (s)
 				{
 				case kPosition: std::memcpy(p, v.position.data(), 12); break;
-				case kNormal:
-					if (g_compact)
-					{
-						const int8_t b[4] = {Snorm(v.normal[0]), Snorm(v.normal[1]), Snorm(v.normal[2]), 0};
-						std::memcpy(p, b, 4);
-					}
-					else
-						std::memcpy(p, v.normal.data(), 12);
-					break;
-				case kTangent:
-					if (g_compact)
-					{
-						const int8_t b[4] = {Snorm(v.tangent[0]), Snorm(v.tangent[1]), Snorm(v.tangent[2]), Snorm(v.tangent[3])};
-						std::memcpy(p, b, 4);
-					}
-					else
-						std::memcpy(p, v.tangent.data(), 16);
-					break;
+				case kNormal: std::memcpy(p, v.normal.data(), 12); break;
+				case kTangent: std::memcpy(p, v.tangent.data(), 16); break;
 				case kColour0: std::memcpy(p, v.colour0.data(), 4); break;
 				case kColour1: std::memcpy(p, v.colour1.data(), 4); break;
-				default:
-					if (Format(s).size == 4)
-					{
-						const uint16_t h[2] = {Half(v.uv[s - kUv0][0]), Half(v.uv[s - kUv0][1])};
-						std::memcpy(p, h, 4);
-					}
-					else
-						std::memcpy(p, v.uv[s - kUv0].data(), 8);
-					break;
+				default: std::memcpy(p, v.uv[s - kUv0].data(), 8); break;
 				}
 				p += Format(s).size;
 			}
