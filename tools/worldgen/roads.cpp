@@ -227,7 +227,9 @@ namespace worldgen::roads
 					// (the kerb picture's plain concrete strip, its last quarter, down from the top: the rest are painted red
 					// and yellow - no stopping, everywhere - as LS's kerbs)
 					constexpr float kPlain = 0.76f;
-					const float vb = kPlain + height / 0.625f;
+					// (a taller wall - the sidewalk's outer edge over the verge, 0.4 m - squeezed into that strip: past its end
+					// the picture wraps round to the red rows, every sidewalk's back painted as LS's no-stopping kerbs)
+					const float vb = kPlain + std::min(height / 0.625f, 0.235f);
 					const uint32_t i0 = Add(m, b0, normal, {s / kTexture, vb}), i1 = Add(m, b1, normal, {(s + l) / kTexture, vb}),
 					               i2 = Add(m, t1, normal, {(s + l) / kTexture, kPlain}), i3 = Add(m, t0, normal, {s / kTexture, kPlain});
 					if (faceLeft)

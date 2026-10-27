@@ -93,7 +93,8 @@ namespace worldgen::powerlines
 	}
 
 	void Place(const roads::Network& n, const std::function<bool(float, float)>& clear, const std::function<float(float, float)>& ground,
-	    const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires, Stats& stats)
+	    const std::function<bool(float, float)>& buried, const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires,
+	    Stats& stats)
 	{
 		std::vector<Pole> all;
 		std::vector<std::vector<int>> edgePoles(n.edges.size()); // (each road's, from its a to its b)
@@ -110,6 +111,14 @@ namespace worldgen::powerlines
 			const roads::Edge& e = n.edges[ei];
 			if (!Carries(e) || e.a == e.b)
 				continue;
+			if (buried)
+			{
+				size_t under = 0, samples = 0;
+				for (size_t k = 0; k < e.points.size(); k += std::max<size_t>(1, e.points.size() / 8))
+					under += buried(e.points[k][0], e.points[k][1]), ++samples;
+				if (under * 3 >= samples)
+					continue;
+			}
 			const float total = Length(e);
 			// (clear of a street junction's corners, as the street lights are; half a span from where the road just goes on,
 			// the next road's poles the other half away; a little from a dead end)

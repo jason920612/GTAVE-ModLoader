@@ -2019,7 +2019,17 @@ namespace worldgen::build
 				};
 				std::vector<props::Prop> poles;
 				powerlines::Stats ps;
-				powerlines::Place(network, poleClear, ground, {bx0, by0, bx1, by1}, poles, wires, ps);
+				// (the high-rise districts' lines are buried: within 60 m of a building of 30 m and more)
+				raster::Grid<uint8_t> tall;
+				tall.Init(gx0, gy0, gx1, gy1, 20.0f, 0);
+				for (size_t k = 0; k < shapes.size(); ++k)
+					if (shapes[k].top >= 30)
+						raster::DrawLine(tall, {shapeCentre[k], P2{shapeCentre[k][0] + 0.01f, shapeCentre[k][1]}}, 60.0f, uint8_t{1});
+				const auto buried = [&](float x, float y) {
+					const auto cc = tall.Cell({x, y});
+					return tall.In(cc[0], cc[1]) && tall.At(cc[0], cc[1]) != 0;
+				};
+				powerlines::Place(network, poleClear, ground, buried, {bx0, by0, bx1, by1}, poles, wires, ps);
 				postAt.clear();
 				for (const auto& p : poles)
 					postAt[postKey(p.position[0], p.position[1])].push_back({p.position[0], p.position[1]});

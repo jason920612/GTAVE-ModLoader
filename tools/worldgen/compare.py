@@ -14,6 +14,14 @@ usage: python -I tools/worldgen/compare.py aerial --land <name> --out <dir> [--a
           four ways round); <dir>/photos.json: each photo's title, licence, author, place
   mapillary: street pictures someone downloaded from Mapillary (CC BY-SA 4.0: their creators named on each sheet),
           not panoramas, at their places and headings: <dir>/street_<k>_<id>.png
+       python -I tools/worldgen/compare.py pano --land <name> --metadata <metadata.csv>[,...] --out <dir> [--limit 12] [--seed 1]
+          [--spacing 80] [--views 0,90,-90]
+  pano: the downloads' panoramas - where the comparison is exact: the game's camera at the picture's place (2 m up), and
+          out of the panorama the very view the game's camera has (its field of view, 16:9) towards the picture's heading
+          and the --views offsets (degrees: ahead, right, left); the panorama's own heading error (a few degrees) and tilt
+          taken out by fitting its skyline to the game's (yaw within 15, pitch within 4 degrees): <dir>/pano_<k>_<id>_<view>.png
+          (the picture above, the game below) and <dir>/pano.json (each sheet's place, heading, the fit and how well the
+          skylines agree - a fit worse than 0.06 of the height: the place or the scene does not match)
 """
 import io, json, math, os, random, re, subprocess, sys, time, urllib.parse, urllib.request
 
@@ -343,12 +351,128 @@ def mapillary(o):
         json.dump(listed, f, ensure_ascii=False, indent=1)
 
 
+def pano_view(pano, heading, yaw, pitch, vfov, w, h):
+    """A perspective view (w x h, `vfov` degrees tall) out of an equirectangular panorama whose middle column faces
+    `heading` (compass degrees): towards compass `yaw`, `pitch` degrees up; bilinear."""
+    H, W = pano.shape[:2]
+    f = (h / 2) / math.tan(math.radians(vfov) / 2)
+    X, Y = np.meshgrid((np.arange(w) - w / 2 + 0.5) / f, (h / 2 - np.arange(h) - 0.5) / f)
+    cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+    Y2, Z2 = Y * cp + sp, -Y * sp + cp
+    az = np.degrees(np.arctan2(X, Z2)) + yaw
+    el = np.degrees(np.arctan2(Y2, np.hypot(X, Z2)))
+    px = (((az - heading) / 360 + 0.5) % 1.0) * W - 0.5
+    py = np.clip((0.5 - el / 180) * H - 0.5, 0, H - 1.001)
+    x0, y0 = np.floor(px).astype(np.int64), np.floor(py).astype(np.int64)
+    fx, fy = (px - x0)[..., None], (py - y0)[..., None]
+    x0 %= W
+    x1 = (x0 + 1) % W
+    y1 = np.minimum(y0 + 1, H - 1)
+    return pano[y0, x0] * (1 - fx) * (1 - fy) + pano[y0, x1] * fx * (1 - fy) + pano[y1, x0] * (1 - fx) * fy + pano[y1, x1] * fx * fy
+
+
+def skyline(img):
+    """Per column, how far down the sky reaches (a share of the height): the first run of four pixels from the top that
+    are not sky (wires and gaps in the leaves passed over); sky: bluish and bright, or near white."""
+    a = np.asarray(img, np.float32)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    mx, mn = a.max(-1), a.min(-1)
+    sat = (mx - mn) / np.maximum(mx, 1)
+    ground = ~(((b >= r) & (b >= g - 8) & (mx > 110)) | ((mx > 190) & (sat < 0.12)))
+    run = ground[:-3] & ground[1:-2] & ground[2:-1] & ground[3:]
+    h = a.shape[0]
+    return np.where(run.any(axis=0), run.argmax(axis=0), h) / h
+
+
+def fit_view(pano, heading, yaw, game_small):
+    """The panorama's yaw and pitch (within 15 and 4 degrees of `yaw`, 0) whose skyline fits the game's best, and how far
+    apart the skylines then are (the mean over the columns where either has one, a share of the height)."""
+    target = skyline(game_small)
+    h, w = game_small.shape[:2]
+    best = (1e9, 0.0, 0.0)
+    for pitch in (-4, -2, 0, 2, 4):
+        for dy in range(-15, 16):
+            sky = skyline(pano_view(pano, heading, yaw + dy, pitch, EYE_FOV, w, h))
+            both = (sky < 0.98) | (target < 0.98)
+            if both.sum() < w // 4:
+                continue
+            score = float(np.abs(sky - target)[both].mean())
+            if score < best[0]:
+                best = (score, float(dy), float(pitch))
+    score, dy, pitch = best
+    for fine in (-0.5, 0.5):
+        sky = skyline(pano_view(pano, heading, yaw + dy + fine, pitch, EYE_FOV, w, h))
+        both = (sky < 0.98) | (target < 0.98)
+        if both.sum() >= w // 4 and float(np.abs(sky - target)[both].mean()) < score:
+            score, dy = float(np.abs(sky - target)[both].mean()), dy + fine
+    return dy, pitch, score
+
+
+def pano(o):
+    """Mapillary panoramas (CC BY-SA 4.0) beside the game's exact view at their places (see the usage)."""
+    land = Land(o['land'])
+    out = o['out']
+    os.makedirs(out, exist_ok=True)
+    import csv
+    rows = []
+    for meta in o['metadata'].split(','):
+        with open(meta, encoding='utf-8') as f:
+            for r in csv.DictReader(f):
+                if r.get('pano') == 'True' and os.path.exists(os.path.join(os.path.dirname(meta), r['file'])):
+                    r['path'] = os.path.join(os.path.dirname(meta), r['file'])
+                    rows.append(r)
+    x0, y0, x1, y1 = land.world
+    rows = [r for r in rows if x0 + 50 <= land.game(float(r['lat']), float(r['lon']))[0] <= x1 - 50 and
+            y0 + 50 <= land.game(float(r['lat']), float(r['lon']))[1] <= y1 - 50]
+    rnd = random.Random(int(o.get('seed', 1)))
+    rnd.shuffle(rows)
+    # (spread out: each at least --spacing m from those taken)
+    spacing, chosen = float(o.get('spacing', 80)), []
+    for r in rows:
+        x, y = land.game(float(r['lat']), float(r['lon']))
+        if all(math.hypot(x - cx, y - cy) >= spacing for cx, cy, _ in chosen):
+            chosen.append((x, y, r))
+        if len(chosen) >= int(o.get('limit', 12)):
+            break
+    views = [float(v) for v in o.get('views', '0,90,-90').split(',')]
+    listed = []
+    hud_off()
+    for k, (x, y, r) in enumerate(chosen):
+        compass = float(r['heading'])
+        gtactl(f'raw:cam {x:.1f} {y:.1f} 60 0 -89.9 {FOV}', 'wait:4')
+        gz = ground_z(x, y)
+        if gz is None:
+            gtactl('wait:4')
+            gz = ground_z(x, y) or 1.0
+        picture = np.asarray(Image.open(r['path']).convert('RGB'), np.float32)
+        small = np.asarray(Image.fromarray(picture.astype(np.uint8)).resize((1024, 512)), np.float32)
+        for view in views:
+            yaw = (compass + view) % 360
+            shot = os.path.join(out, f'game_{r["id"]}_{view:+.0f}.png')
+            gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} {(360 - yaw) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
+            game = Image.open(shot).convert('RGB').resize((960, 540))
+            dy, pitch, score = fit_view(small, compass, yaw, np.asarray(game.resize((320, 180)), np.float32))
+            real = Image.fromarray(np.clip(pano_view(picture, compass, yaw + dy, pitch, EYE_FOV, 960, 540), 0, 255).astype(np.uint8))
+            sheet = Image.new('RGB', (960, 540 * 2 + 8), (255, 255, 255))
+            sheet.paste(label(real, f'Mapillary {r["id"]} {r["date"]} by {r["creator"]} (CC BY-SA 4.0), facing {yaw + dy:.0f} '
+                                    f'(fit {dy:+.1f}, pitch {pitch:+.0f})'), (0, 0))
+            sheet.paste(label(game, f'game {land.name} {x:.0f},{y:.0f},{gz + 2:.1f} facing {yaw:.0f}'), (0, 548))
+            name = f'pano_{k:02d}_{r["id"]}_{view:+.0f}.png'
+            sheet.save(os.path.join(out, name))
+            listed.append({'sheet': name, 'id': r['id'], 'lat': float(r['lat']), 'lon': float(r['lon']), 'x': round(x, 1), 'y': round(y, 1),
+                           'heading': round(yaw, 1), 'fit': dy, 'pitch': pitch, 'skyline': round(score, 3), 'date': r['date'],
+                           'creator': r['creator'], 'page': r.get('page', '')})
+            print(f'{k}: {r["id"]} view {view:+.0f} at {x:.0f},{y:.0f}: fit {dy:+.1f}, pitch {pitch:+.0f}, skylines {score:.3f}', flush=True)
+    with open(os.path.join(out, 'pano.json'), 'w', encoding='utf-8') as f:
+        json.dump(listed, f, ensure_ascii=False, indent=1)
+
+
 def main():
-    commands = {'aerial': aerial, 'photos': photos, 'mapillary': mapillary}
+    commands = {'aerial': aerial, 'photos': photos, 'mapillary': mapillary, 'pano': pano}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         sys.exit(__doc__)
     o = options(sys.argv[2:])
-    if 'land' not in o or 'out' not in o or (sys.argv[1] == 'mapillary' and 'metadata' not in o):
+    if 'land' not in o or 'out' not in o or (sys.argv[1] in ('mapillary', 'pano') and 'metadata' not in o):
         sys.exit(__doc__)
     commands[sys.argv[1]](o)
 

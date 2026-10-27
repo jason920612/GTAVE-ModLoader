@@ -19,6 +19,7 @@ usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.t
        [--keep] [--mapillary <metadata.csv>[,<metadata.csv>...]]
   --mapillary: street picture downloads (Mapillary, CC BY-SA 4.0): a sector with pictures in it gets its walls' colours
           from them
+  --first c,r;c,r...: these cells before the others (the street pictures' places: compared first)
   --list: the survey's land cells (worldgen survey, then the sea flood-filled away: a tsv with column and row), built
           nearest Miami first
   --names col,row=name;...  existing packs for some cells (not built again; by default Miami's full build)
@@ -157,6 +158,8 @@ def main():
                 if len(p) > max(ci, ri):
                     cells.append((int(p[ci]), int(p[ri])))
         cells.sort(key=lambda t: (t[0] ** 2 + t[1] ** 2, t))
+        first = [tuple(int(v) for v in item.split(',')) for item in filter(None, O.get('first', '').split(';'))]
+        cells.sort(key=lambda t: first.index(t) if t in first else len(first))
     elif 'cells' in O:
         c0, r0, c1, r1 = (int(v) for v in O['cells'].split(','))
         cells = [(c, r) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
