@@ -24,6 +24,7 @@ usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.t
   --list: the survey's land cells (worldgen survey, then the sea flood-filled away: a tsv with column and row), built
           nearest Miami first
   --names col,row=name;...  existing packs for some cells (not built again; by default Miami's full build)
+  --free <GB>: no cell started with less than this left on the game's drive (120)
 Paths: --game, --worldgen, --keys, --pbf, --worlds (the world folders), --log as below by default.
 """
 import concurrent.futures, os, shutil, subprocess, sys, threading, time
@@ -85,9 +86,17 @@ def run(cmd, log):
         return subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT).returncode
 
 
+g_full = threading.Event()
+
+
 def build(c, r, flags):
     """One cell: its name, and "" when it was built, else what went wrong."""
     name = f'wbfl_{100 + c:03d}_{100 + r:03d}'
+    # (none started with less than --free GB, 120 by default, left on the game's drive: the rest of the list waits for the
+    # next run, --skip-built)
+    if g_full.is_set() or shutil.disk_usage(O['game']).free < float(O.get('free', 120)) * 1e9:
+        g_full.set()
+        return name, 'not started: the disk is nearly full'
     s, w = LAT0 + r * DLAT, LON0 + c * DLON
     n, e = s + DLAT, w + DLON
     folder = os.path.join(O['worlds'], name)
@@ -106,8 +115,10 @@ def build(c, r, flags):
     if not os.path.exists(cover) and run([sys.executable, '-I', O['nlcd'], '--world', world, '--out', cover], log):
         return name, f'land cover failed (see {log})'
     ground = os.path.join(folder, 'ground.bin')
-    # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests)
-    if not os.path.exists(ground) and run([sys.executable, '-I', O['dem'], '--world', world, '--out', ground, '--step', '2', '--cell', '4'], log):
+    # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests; its downloads in the sector's
+    # folder, removed with the build's files - over 100 MB a sector, the state's would fill the disk)
+    if not os.path.exists(ground) and run([sys.executable, '-I', O['dem'], '--world', world, '--out', ground, '--step', '2', '--cell', '4',
+                                           '--cache', os.path.join(folder, 'dem_cache')], log):
         return name, f'ground failed (see {log})'
     photo = os.path.join(folder, 'photo')
     if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo], log):
@@ -145,7 +156,9 @@ def build(c, r, flags):
     if 'keep' not in flags:
         shutil.rmtree(gen, ignore_errors=True)
         shutil.rmtree(photo, ignore_errors=True)  # (about 200 MB a sector: made again from the pictures if wanted)
-        for f in ('world.json',):
+        shutil.rmtree(os.path.join(folder, 'dem_cache'), ignore_errors=True)
+        # (and the build's lists - the props, the roads' wear, the buildings found: 30 MB a sector, for looking into one)
+        for f in ('world.json', name + '_props.txt', name + '_wear.txt', name + '_found.txt'):
             try:
                 os.remove(os.path.join(folder, f))
             except OSError:

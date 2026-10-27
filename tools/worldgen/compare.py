@@ -22,8 +22,9 @@ usage: python -I tools/worldgen/compare.py aerial --land <name> --out <dir> [--a
           taken out by fitting its skyline to the game's (yaw within 15, pitch within 4 degrees): <dir>/pano_<k>_<id>_<view>.png
           (the picture above, the game below) and <dir>/pano.json (each sheet's place, heading, the fit and how well the
           skylines agree - a fit worse than 0.06 of the height: the place or the scene does not match). --poses: phototex.py's
-          fits (place, heading, camera height and tilt against the laser scan's skyline) where they are good, instead of the
-          picture's own place snapped to a lane and the skyline fit against the game's
+          fits (place, heading, camera height and tilt against the laser scan's skyline) where they are good (--agree 0.35,
+          --miss 6), and only the pictures with one (--any 1: all, the others at their own place snapped to a lane and the
+          skyline fit against the game's)
 """
 import io, json, math, os, random, re, subprocess, sys, time, urllib.parse, urllib.request
 
@@ -487,6 +488,16 @@ def pano(o):
     if 'ids' in o:
         wanted = o['ids'].split(',')
         rows = [r for r in rows if r['id'] in wanted]
+    fits = {}
+    if 'poses' in o:
+        with open(o['poses'], encoding='utf-8') as f:
+            fits = {p['id']: p for p in json.load(f) if p.get('ok') and p.get('agree', 0) >= float(o.get('agree', 0.35)) and
+                    p.get('miss', 99) <= float(o.get('miss', 6))}
+        # (only the pictures whose place and heading the fit found: the others' places are the GPS's - metres off, now and
+        # then on another stretch of road, their headings half a turn off - and what they were compared with was not what
+        # they show; --any 1: all of them)
+        if o.get('any') != '1':
+            rows = [r for r in rows if r['id'] in fits]
     # (spread out: each at least --spacing m from those taken)
     spacing, chosen = float(o.get('spacing', 80)), []
     for r in rows:
@@ -496,10 +507,6 @@ def pano(o):
         if len(chosen) >= int(o.get('limit', 12)):
             break
     views = [float(v) for v in o.get('views', '0,90,-90').split(',')]
-    fits = {}
-    if 'poses' in o:
-        with open(o['poses'], encoding='utf-8') as f:
-            fits = {p['id']: p for p in json.load(f) if p.get('ok') and p.get('agree', 0) >= float(o.get('agree', 0.35))}
     listed = []
     hud_off()
     roads = land_roads(land)

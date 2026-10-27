@@ -1444,8 +1444,9 @@ namespace worldgen::build
 					if (landCoverAt && grassy > 0)
 						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24 && out[0] > out[2] + 10 && out[0] >= out[1] - 5)
 						{
-							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.7f * grassy / n;
-							const std::array<float, 3> lawn{l * 0.8f, l * 1.08f, l * 0.6f};
+							// (the street pictures' summer lawns - St. Augustine grass - a deep green: the reviewers' "pale olive")
+							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.85f * grassy / n;
+							const std::array<float, 3> lawn{l * 0.72f, l * 1.18f, l * 0.48f};
 							for (int k = 0; k < 3; ++k)
 								out[k] = std::clamp(out[k] + (lawn[k] - out[k]) * share, 0.0f, 255.0f);
 						}
@@ -4336,6 +4337,7 @@ namespace worldgen::build
 		std::map<std::pair<int, int>, std::vector<mapfiles::Entity>> lodBlocks; // their LOD maps' (the buildings' LODs)
 		bounds::Mesh navMesh;
 		std::vector<navgen::Surface> navSurfaces;
+		std::vector<uint8_t> navGround; // (per triangle: 1 the terrain's - its paving the aerial pictures' grey, a country road's too)
 		// (what lies in which tile, looked up once: each tile going through all of them was most of a city's build)
 		const auto index = [&]() { return TileIndex(w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1); };
 		TileIndex collisionTiles = index(), placedTiles = index(), shapeTiles = index(), furnitureTiles = index();
@@ -4363,7 +4365,6 @@ namespace worldgen::build
 		// (how far each point is from a road or a walk: our own trees' trunks have collision only within 40 m - where cars and
 		// people go; every one of the woods' was 13 million triangles)
 		raster::Grid<float> toWays;
-		if (!floraTrunk.empty())
 		{
 			raster::Grid<uint8_t> off = roadCells;
 			for (auto& v : off.v)
@@ -4391,6 +4392,7 @@ namespace worldgen::build
 			std::vector<std::pair<std::string, std::string>> parents;
 			bounds::Mesh nav;
 			std::vector<navgen::Surface> navSurfaces;
+			std::vector<uint8_t> navGround;
 			size_t terrainTriangles = 0, roadTriangles = 0, generatedTiles = 0, tiles = 0;
 		};
 		const auto makeTile = [&](int ti, int tj, elevation::Aerial& aerial, TileResult& r, std::string& error) -> bool {
@@ -4544,6 +4546,27 @@ namespace worldgen::build
 					                                  coverAt(x, y) == kSandy);
 				}
 			std::string terrainDictionary = facadeDictionary;
+			// (deep in the woods - a closed canopy 28 m round, its own cell under it, 20 m from any road, walk or building and
+			// 8 m from water -, where no one sees the ground: 8 cm more tolerance for its mesh and collision, a third fewer
+			// triangles there; Florida's countryside is mostly woods)
+			const auto deepWoods = [&](int i, int j) {
+				const float x = x0 + i * o.cell, y = y0 + j * o.cell;
+				if (woodsAt(x, y) < 0.85f || !thicketAt(x, y))
+					return 0.0f;
+				const auto wc = toWays.Cell({x, y});
+				if (!toWays.In(wc[0], wc[1]) || toWays.At(wc[0], wc[1]) < 20)
+					return 0.0f;
+				const auto bc = toBuilding.Cell({x, y});
+				if (toBuilding.In(bc[0], bc[1]) && toBuilding.At(bc[0], bc[1]) < 20)
+					return 0.0f;
+				for (const auto& [dx, dy] : {std::pair{0.0f, 0.0f}, {8.0f, 0.0f}, {-8.0f, 0.0f}, {0.0f, 8.0f}, {0.0f, -8.0f}})
+				{
+					const auto lc = land.Cell({x + dx, y + dy});
+					if (!land.In(lc[0], lc[1]) || land.At(lc[0], lc[1]) == kWater)
+						return 0.0f;
+				}
+				return 0.08f;
+			};
 			if (photographed)
 			{
 				// the ground as the aerial pictures show it: each vertex the palette's colour of the ground round it (the woods'
@@ -4577,7 +4600,12 @@ namespace worldgen::build
 								return 0;
 						return 4;
 					case 1: return 4;
-					case 4: return 1;
+					case 4:
+						// (dry grass - but a town's lawns are green: the winter's pictures see them dormant, the game is summer)
+						if (landCoverAt)
+							if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
+								return 0;
+						return 1;
 					case 5: return 2;
 					case 6: return 3;
 					default: return 0;
@@ -4654,11 +4682,14 @@ namespace worldgen::build
 				ydr::Mesh mesh = terrain::TileMesh(f, 0, 0, per, cx, cy, 3.0f);
 				// (coarser where flat and alike: a vertex's tint the same colour within 10 a channel - Florida's flat land, a
 				// third of the triangles)
-				terrain::Simplify(mesh, f, 0, 0, per, 0.04f, [&](uint32_t a, uint32_t b) {
-					const auto& ca = photoPalette[mesh.vertices[a].colour0[2]];
-					const auto& cb = photoPalette[mesh.vertices[b].colour0[2]];
-					return std::abs(ca[0] - cb[0]) <= 10 && std::abs(ca[1] - cb[1]) <= 10 && std::abs(ca[2] - cb[2]) <= 10;
-				});
+				terrain::Simplify(
+				    mesh, f, 0, 0, per, 0.04f,
+				    [&](uint32_t a, uint32_t b) {
+					    const auto& ca = photoPalette[mesh.vertices[a].colour0[2]];
+					    const auto& cb = photoPalette[mesh.vertices[b].colour0[2]];
+					    return std::abs(ca[0] - cb[0]) <= 10 && std::abs(ca[1] - cb[1]) <= 10 && std::abs(ca[2] - cb[2]) <= 10;
+				    },
+				    deepWoods);
 				r.terrainTriangles += mesh.indices.size() / 3;
 				td.lods[0].push_back(std::move(mesh));
 			}
@@ -4768,7 +4799,8 @@ namespace worldgen::build
 			te.radius = o.tile * 0.75f;
 			r.entities.push_back(te);
 			// collision: the terrain, and the roads' triangles centred in this tile
-			auto parts = terrain::TileCollision(f, 0, 0, per);
+			auto parts = terrain::TileCollision(f, 0, 0, per, false, deepWoods);
+			const size_t groundParts = parts.size();
 			// (what each road triangle is to the pedestrians' navmesh, carriageway or sidewalk: by part)
 			std::map<size_t, std::vector<uint8_t>> roadKinds;
 			ybn::Part part;
@@ -5223,6 +5255,7 @@ namespace worldgen::build
 					r.nav.triangles.push_back({base + t[0], base + t[1], base + t[2]});
 					r.nav.materials.push_back(kConcrete);
 					r.navSurfaces.push_back(navgen::Surface::None);
+					r.navGround.push_back(0);
 				}
 			}
 			std::set<std::array<P3, 3>> boxSet;
@@ -5242,6 +5275,7 @@ namespace worldgen::build
 					const uint8_t m = p.materials[p.triangleMaterials[t]][0];
 					r.nav.materials.push_back(m);
 					const uint8_t kind = kinds != roadKinds.end() ? kinds->second[t] : 0;
+					r.navGround.push_back(pi < groundParts ? 1 : 0);
 					r.navSurfaces.push_back(kind == barriers::kCollisionKind ? navgen::Surface::None
 					                      : kind == 1                        ? navgen::Surface::Road
 					                      : kind == 2 || (kind == 0 && (m == 1 || m == 15 || m == 174)) ? navgen::Surface::Pavement
@@ -5534,6 +5568,7 @@ namespace worldgen::build
 					navMesh.triangles.push_back({base + tri[0], base + tri[1], base + tri[2]});
 				navMesh.materials.insert(navMesh.materials.end(), r.nav.materials.begin(), r.nav.materials.end());
 				navSurfaces.insert(navSurfaces.end(), r.navSurfaces.begin(), r.navSurfaces.end());
+				navGround.insert(navGround.end(), r.navGround.begin(), r.navGround.end());
 				stats.terrainTriangles += r.terrainTriangles, stats.roadTriangles += r.roadTriangles;
 				stats.generatedTiles += r.generatedTiles, stats.tiles += r.tiles;
 			}
@@ -5754,8 +5789,10 @@ namespace worldgen::build
 					    (navMesh.vertices[tri[0]][1] + navMesh.vertices[tri[1]][1] + navMesh.vertices[tri[2]][1]) / 3);
 				};
 				std::set<std::pair<int, int>> wanted;
+				// (the terrain's paving - what the aerial pictures see grey: country roads, roofs - not: in the countryside
+				// six squares in ten had been kept)
 				for (size_t t = 0; t < navMesh.triangles.size(); ++t)
-					if (navSurfaces[t] == navgen::Surface::Pavement)
+					if (navSurfaces[t] == navgen::Surface::Pavement && !navGround[t])
 						wanted.insert(middle(t));
 				for (const auto& b : w.buildings)
 					if (!b.footprint.empty())

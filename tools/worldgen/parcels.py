@@ -143,8 +143,14 @@ def join(o):
             tr = pyproj.Transformer.from_crs(pyproj.CRS.from_wkt(f.read()), 'EPSG:4326', always_xy=True)
         names = [f[0] for f in r.fields[1:]]
         idx = [names.index(k) for k in FIELDS]
-        for sr in r.iterShapeRecords():
-            pts = sr.shape.points
+        for k in range(r.numRecords):
+            # (a record whose polygon has no points - some counties' rolls have them - is no parcel: the reader will not
+            # make its shape, and iterating stops there)
+            try:
+                shape = r.shape(k)
+            except shapefile.ShapefileException:
+                continue
+            pts = shape.points
             if len(pts) < 3:
                 continue
             # (the box first: a parcel outside the land is not looked at)
@@ -159,7 +165,7 @@ def join(o):
             lon, lat = tr.transform(xs, ys)
             # (each part a ring; the parts' even-odd inside: holes too)
             ring = [(p['x0'] + (lo - p['lon0']) * p['kx'], p['y0'] + (la - p['lat0']) * p['ky']) for lo, la in zip(lon, lat)]
-            parts = list(sr.shape.parts) + [len(ring)]
+            parts = list(shape.parts) + [len(ring)]
             rings = [ring[parts[k]:parts[k + 1]] for k in range(len(parts) - 1)]
             bx0, bx1 = min(q[0] for q in ring), max(q[0] for q in ring)
             by0, by1 = min(q[1] for q in ring), max(q[1] for q in ring)
@@ -172,7 +178,7 @@ def join(o):
                             members.append(bi)
             if not members:
                 continue
-            rec = sr.record
+            rec = r.record(k)
             use, year, living, count, units, quality, cls = (rec[k] for k in idx)
             living = float(living or 0) * 0.09290304  # (square feet)
             members.sort(key=lambda bi: -mids[bi][2])

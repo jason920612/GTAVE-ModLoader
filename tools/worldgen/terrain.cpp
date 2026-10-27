@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 
 namespace worldgen::terrain
@@ -104,6 +105,132 @@ namespace worldgen::terrain
 			part.triangleMaterials = std::move(materials);
 		}
 
+		// The collision of a tile's ground (TileCollision's, not the procedural plants'): the field's cells made coarser where
+		// the ground is flat - each block of 32 x 32, 16 x 16, 8 x 8, 4 x 4 or 2 x 2 cells (the largest first, at multiples of
+		// its size) whose vertices all lie within 8 cm of the two triangles over its corners becomes those two (the model's
+		// mesh keeps 4 cm: the wheels and feet never more than a few centimetres off it; a sector's collision had been the
+		// biggest part of its pack, over 100 MB) - and cut into
+		// parts of at most 1000 triangles (the blocks in Morton order: compact parts). A block is of one material, or of the
+		// soft grounds mixed - grass, short grass, leaf litter, dirt: they sound and grip alike, and the photographed ground
+		// changes between them every few metres, which had kept most blocks apart (the collision most of a sector's pack) -,
+		// its cells' commonest. Where a coarse cell meets finer ones the surfaces differ only up and down - no gap a thing
+		// could fall through -, by at most those 8 cm.
+		std::vector<ybn::Part> Coarse(const Field& f, int i0, int j0, int cells, const std::function<float(int, int)>& slack)
+		{
+			const int n = std::min({cells, f.nx - i0, f.ny - j0});
+			const auto Z = [&](int i, int j) { return f.H(i0 + i, j0 + j); };
+			std::vector<float> extra(static_cast<size_t>(n + 1) * (n + 1), 0.0f);
+			if (slack)
+				for (int j = 0; j <= n; ++j)
+					for (int i = 0; i <= n; ++i)
+						extra[static_cast<size_t>(j) * (n + 1) + i] = slack(i0 + i, j0 + j);
+			const auto M = [&](int i, int j) { return static_cast<uint8_t>(f.material[static_cast<size_t>(j0 + j) * f.nx + i0 + i] & 0xFF); };
+			const auto soft = [](uint8_t m) { return m == 43 || m == 47 || m == 48 || m == 52; };
+			struct Block
+			{
+				int i, j, size;
+				uint8_t material;
+				bool ad; // (split from its south-west to its north-east corner)
+			};
+			std::vector<Block> blocks;
+			std::vector<uint8_t> taken(static_cast<size_t>(n) * n, 0);
+			for (const int s : {32, 16, 8, 4, 2})
+				for (int bj = 0; bj + s <= n; bj += s)
+					for (int bi = 0; bi + s <= n; bi += s)
+					{
+						const uint8_t first = M(bi, bj);
+						std::map<uint8_t, int> count;
+						bool free = true;
+						for (int dj = 0; dj < s && free; ++dj)
+							for (int di = 0; di < s && free; ++di)
+							{
+								const uint8_t m = M(bi + di, bj + dj);
+								free = !taken[static_cast<size_t>(bj + dj) * n + bi + di] && (m == first || (soft(m) && soft(first)));
+								count[m] += 1;
+							}
+						if (!free)
+							continue;
+						// (the coarse cell's diagonal along the flatter way; the height there of each of its vertices)
+						const float za = Z(bi, bj), zb = Z(bi + s, bj), zc = Z(bi, bj + s), zd = Z(bi + s, bj + s);
+						const bool ad = std::fabs(za - zd) <= std::fabs(zb - zc);
+						const auto plane = [&](float u, float v) {
+							if (ad) // (triangles a b d and a d c)
+								return u >= v ? za + (zb - za) * u + (zd - zb) * v : za + (zd - zc) * u + (zc - za) * v;
+							// (triangles a b c and b d c)
+							return u + v <= 1 ? za + (zb - za) * u + (zc - za) * v : zd + (zc - zd) * (1 - u) + (zb - zd) * (1 - v);
+						};
+						float tolerance = 0.08f + 1e9f;
+						for (int dj = 0; dj <= s; ++dj)
+							for (int di = 0; di <= s; ++di)
+								tolerance = std::min(tolerance, 0.08f + extra[static_cast<size_t>(bj + dj) * (n + 1) + bi + di]);
+						bool flat = true;
+						for (int dj = 0; dj <= s && flat; ++dj)
+							for (int di = 0; di <= s && flat; ++di)
+								flat = std::fabs(Z(bi + di, bj + dj) - plane(static_cast<float>(di) / s, static_cast<float>(dj) / s)) < tolerance;
+						if (!flat)
+							continue;
+						for (int dj = 0; dj < s; ++dj)
+							for (int di = 0; di < s; ++di)
+								taken[static_cast<size_t>(bj + dj) * n + bi + di] = 1;
+						uint8_t material = first;
+						for (const auto& [m, c] : count)
+							if (c > count[material])
+								material = m;
+						blocks.push_back({bi, bj, s, material, ad});
+					}
+			for (int j = 0; j < n; ++j)
+				for (int i = 0; i < n; ++i)
+					if (!taken[static_cast<size_t>(j) * n + i])
+						blocks.push_back({i, j, 1, M(i, j), std::fabs(Z(i, j) - Z(i + 1, j + 1)) <= std::fabs(Z(i + 1, j) - Z(i, j + 1))});
+			const auto morton = [](int i, int j) {
+				uint32_t m = 0;
+				for (int k = 0; k < 16; ++k)
+					m |= (static_cast<uint32_t>(i) >> k & 1u) << (2 * k) | (static_cast<uint32_t>(j) >> k & 1u) << (2 * k + 1);
+				return m;
+			};
+			std::sort(blocks.begin(), blocks.end(), [&](const Block& p, const Block& q) { return morton(p.i, p.j) < morton(q.i, q.j); });
+			std::vector<ybn::Part> parts;
+			ybn::Part part;
+			std::map<uint32_t, uint32_t> vertexOf;
+			std::map<uint8_t, uint8_t> materialOf;
+			const auto flush = [&] {
+				if (!part.triangles.empty())
+					parts.push_back(std::move(part));
+				part = {};
+				vertexOf.clear();
+				materialOf.clear();
+			};
+			const auto vertex = [&](int i, int j) {
+				auto it = vertexOf.find(static_cast<uint32_t>(j * (n + 1) + i));
+				if (it == vertexOf.end())
+				{
+					it = vertexOf.emplace(static_cast<uint32_t>(j * (n + 1) + i), static_cast<uint32_t>(part.vertices.size())).first;
+					part.vertices.push_back({f.x0 + (i0 + i) * f.cell, f.y0 + (j0 + j) * f.cell, Z(i, j)});
+				}
+				return it->second;
+			};
+			for (const Block& bl : blocks)
+			{
+				if (part.triangles.size() + 2 > 1000 || part.vertices.size() + 4 > 2730)
+					flush();
+				auto mat = materialOf.find(bl.material);
+				if (mat == materialOf.end())
+				{
+					mat = materialOf.emplace(bl.material, static_cast<uint8_t>(part.materials.size())).first;
+					part.materials.push_back(ybn::Material(bl.material));
+				}
+				const uint32_t a = vertex(bl.i, bl.j), b = vertex(bl.i + bl.size, bl.j), c = vertex(bl.i, bl.j + bl.size), d = vertex(bl.i + bl.size, bl.j + bl.size);
+				if (bl.ad)
+					part.triangles.push_back({a, b, d}), part.triangles.push_back({a, d, c});
+				else
+					part.triangles.push_back({a, b, c}), part.triangles.push_back({b, d, c});
+				part.triangleMaterials.push_back(mat->second);
+				part.triangleMaterials.push_back(mat->second);
+			}
+			flush();
+			return parts;
+		}
+
 		std::array<float, 3> Normalised(std::array<float, 3> v)
 		{
 			const float l = std::hypot(v[0], v[1], v[2]);
@@ -171,82 +298,109 @@ namespace worldgen::terrain
 		return m;
 	}
 
-	void Simplify(ydr::Mesh& m, const Field& f, int i0, int j0, int cells, float tolerance, const std::function<bool(uint32_t, uint32_t)>& alike)
+	void Simplify(ydr::Mesh& m, const Field& f, int i0, int j0, int cells, float tolerance, const std::function<bool(uint32_t, uint32_t)>& alike,
+	    const std::function<float(int, int)>& slack)
 	{
 		const int n = std::min({cells, f.nx - i0, f.ny - j0});
-		const int nb = n / 2; // (2 x 2 blocks a side; an odd last row and column stay as they are)
 		const auto V = [&](int i, int j) { return static_cast<uint32_t>(j * (n + 1) + i); };
 		const auto H = [&](int i, int j) { return f.H(i0 + i, j0 + j); };
-		std::vector<uint8_t> merged(static_cast<size_t>(nb) * nb, 0);
-		std::vector<uint8_t> diagonal(merged.size(), 0); // (1: the coarse cell split from its south-west to north-east corner)
-		for (int bj = 0; bj < nb; ++bj)
-			for (int bi = 0; bi < nb; ++bi)
-			{
-				const int i = 2 * bi, j = 2 * bj;
-				const float za = H(i, j), zb = H(i + 2, j), zc = H(i, j + 2), zd = H(i + 2, j + 2);
-				const bool ad = std::fabs(za - zd) <= std::fabs(zb - zc);
-				bool ok = true;
-				for (int dj = 0; dj <= 2 && ok; ++dj)
-					for (int di = 0; di <= 2 && ok; ++di)
-					{
-						const float u = di / 2.0f, v = dj / 2.0f;
-						const float plane = ad ? (u >= v ? za + (zb - za) * u + (zd - zb) * v : za + (zd - zc) * u + (zc - za) * v)
-						                       : (u + v <= 1 ? za + (zb - za) * u + (zc - za) * v : zd + (zc - zd) * (1 - u) + (zb - zd) * (1 - v));
-						ok = std::fabs(H(i + di, j + dj) - plane) < tolerance && alike(V(i, j), V(i + di, j + dj));
-					}
-				merged[static_cast<size_t>(bj) * nb + bi] = ok;
-				diagonal[static_cast<size_t>(bj) * nb + bi] = ad;
-			}
-		const auto isMerged = [&](int bi, int bj) { return bi >= 0 && bj >= 0 && bi < nb && bj < nb && merged[static_cast<size_t>(bj) * nb + bi]; };
-		std::vector<uint32_t> indices;
-		const auto cell = [&](int i, int j) {
-			const uint32_t a = V(i, j), b = V(i + 1, j), c = V(i, j + 1), d = V(i + 1, j + 1);
-			const float ad = std::fabs(H(i, j) - H(i + 1, j + 1)), bc = std::fabs(H(i + 1, j) - H(i, j + 1));
-			if (ad <= bc)
-				indices.insert(indices.end(), {a, b, d, a, d, c});
-			else
-				indices.insert(indices.end(), {a, b, c, b, d, c});
+		std::vector<float> extra(static_cast<size_t>(n + 1) * (n + 1), 0.0f);
+		if (slack)
+			for (int j = 0; j <= n; ++j)
+				for (int i = 0; i <= n; ++i)
+					extra[V(i, j)] = slack(i0 + i, j0 + j);
+		// the blocks: squares of 16, 8, 4 or 2 cells (the largest first, at multiples of their size) whose vertices all lie
+		// within `tolerance` of the two triangles over their corners and are `alike` its south-west corner
+		struct Block
+		{
+			int i, j, size;
+			bool ad; // (split from its south-west to its north-east corner)
 		};
+		std::vector<Block> blocks;
+		std::vector<uint8_t> taken(static_cast<size_t>(n) * n, 0);
+		for (const int s : {16, 8, 4, 2})
+			for (int j = 0; j + s <= n; j += s)
+				for (int i = 0; i + s <= n; i += s)
+				{
+					bool ok = true;
+					for (int dj = 0; dj < s && ok; ++dj)
+						for (int di = 0; di < s && ok; ++di)
+							ok = !taken[static_cast<size_t>(j + dj) * n + i + di];
+					const float za = H(i, j), zb = H(i + s, j), zc = H(i, j + s), zd = H(i + s, j + s);
+					const bool ad = std::fabs(za - zd) <= std::fabs(zb - zc);
+					float allowed = tolerance + 1e9f;
+					for (int dj = 0; dj <= s && ok; ++dj)
+						for (int di = 0; di <= s && ok; ++di)
+							allowed = std::min(allowed, tolerance + extra[V(i + di, j + dj)]);
+					for (int dj = 0; dj <= s && ok; ++dj)
+						for (int di = 0; di <= s && ok; ++di)
+						{
+							const float u = static_cast<float>(di) / s, v = static_cast<float>(dj) / s;
+							const float plane = ad ? (u >= v ? za + (zb - za) * u + (zd - zb) * v : za + (zd - zc) * u + (zc - za) * v)
+							                       : (u + v <= 1 ? za + (zb - za) * u + (zc - za) * v : zd + (zc - zd) * (1 - u) + (zb - zd) * (1 - v));
+							ok = std::fabs(H(i + di, j + dj) - plane) < allowed && alike(V(i, j), V(i + di, j + dj));
+						}
+					if (!ok)
+						continue;
+					for (int dj = 0; dj < s; ++dj)
+						for (int di = 0; di < s; ++di)
+							taken[static_cast<size_t>(j + dj) * n + i + di] = 1;
+					blocks.push_back({i, j, s, ad});
+				}
+		// the vertices kept: the blocks' corners, every vertex of a cell in none, and all of the tile's edge (the
+		// neighbouring tile's mesh has blocks of its own)
+		std::vector<uint8_t> kept(static_cast<size_t>(n + 1) * (n + 1), 0);
+		for (const Block& bl : blocks)
+			kept[V(bl.i, bl.j)] = kept[V(bl.i + bl.size, bl.j)] = kept[V(bl.i, bl.j + bl.size)] = kept[V(bl.i + bl.size, bl.j + bl.size)] = 1;
 		for (int j = 0; j < n; ++j)
 			for (int i = 0; i < n; ++i)
-			{
-				const int bi = i / 2, bj = j / 2;
-				if (!isMerged(bi, bj) || i >= 2 * nb || j >= 2 * nb)
+				if (!taken[static_cast<size_t>(j) * n + i])
+					kept[V(i, j)] = kept[V(i + 1, j)] = kept[V(i, j + 1)] = kept[V(i + 1, j + 1)] = 1;
+		for (int k = 0; k <= n; ++k)
+			kept[V(k, 0)] = kept[V(k, n)] = kept[V(0, k)] = kept[V(n, k)] = 1;
+		std::vector<uint32_t> indices;
+		for (int j = 0; j < n; ++j)
+			for (int i = 0; i < n; ++i)
+				if (!taken[static_cast<size_t>(j) * n + i])
 				{
-					cell(i, j);
-					continue;
-				}
-				if (i % 2 || j % 2)
-					continue; // (the block: once, from its south-west cell)
-				// the block's corners and the middles of its edges kept (a neighbour not merged, or the tile's edge)
-				const bool keepS = bj == 0 || !isMerged(bi, bj - 1), keepN = 2 * bj + 2 >= n || !isMerged(bi, bj + 1);
-				const bool keepW = bi == 0 || !isMerged(bi - 1, bj), keepE = 2 * bi + 2 >= n || !isMerged(bi + 1, bj);
-				const uint32_t a = V(i, j), b = V(i + 2, j), c = V(i, j + 2), d = V(i + 2, j + 2);
-				if (!keepS && !keepN && !keepW && !keepE)
-				{
-					if (diagonal[static_cast<size_t>(bj) * nb + bi])
+					const uint32_t a = V(i, j), b = V(i + 1, j), c = V(i, j + 1), d = V(i + 1, j + 1);
+					const float ad = std::fabs(H(i, j) - H(i + 1, j + 1)), bc = std::fabs(H(i + 1, j) - H(i, j + 1));
+					if (ad <= bc)
 						indices.insert(indices.end(), {a, b, d, a, d, c});
 					else
 						indices.insert(indices.end(), {a, b, c, b, d, c});
-					continue;
 				}
-				// (a fan from the middle round the corners and the middles kept, anticlockwise)
-				std::vector<uint32_t> ring{a};
-				if (keepS)
-					ring.push_back(V(i + 1, j));
-				ring.push_back(b);
-				if (keepE)
-					ring.push_back(V(i + 2, j + 1));
-				ring.push_back(d);
-				if (keepN)
-					ring.push_back(V(i + 1, j + 2));
-				ring.push_back(c);
-				if (keepW)
-					ring.push_back(V(i, j + 1));
-				const uint32_t o = V(i + 1, j + 1);
-				for (size_t k = 0; k < ring.size(); ++k)
-					indices.insert(indices.end(), {o, ring[k], ring[(k + 1) % ring.size()]});
+		for (const Block& bl : blocks)
+		{
+			const int i = bl.i, j = bl.j, s = bl.size;
+			// (the kept vertices of its edge anticlockwise from the south-west corner - where the blocks and cells round it
+			// end: no crack -, two triangles if only the corners, else a fan from the middle)
+			std::vector<uint32_t> ring;
+			for (int k = 0; k < s; ++k)
+				if (kept[V(i + k, j)])
+					ring.push_back(V(i + k, j));
+			for (int k = 0; k < s; ++k)
+				if (kept[V(i + s, j + k)])
+					ring.push_back(V(i + s, j + k));
+			for (int k = 0; k < s; ++k)
+				if (kept[V(i + s - k, j + s)])
+					ring.push_back(V(i + s - k, j + s));
+			for (int k = 0; k < s; ++k)
+				if (kept[V(i, j + s - k)])
+					ring.push_back(V(i, j + s - k));
+			const uint32_t a = V(i, j), b = V(i + s, j), c = V(i, j + s), d = V(i + s, j + s);
+			if (ring.size() == 4)
+			{
+				if (bl.ad)
+					indices.insert(indices.end(), {a, b, d, a, d, c});
+				else
+					indices.insert(indices.end(), {a, b, c, b, d, c});
+				continue;
 			}
+			const uint32_t o = V(i + s / 2, j + s / 2);
+			for (size_t k = 0; k < ring.size(); ++k)
+				indices.insert(indices.end(), {o, ring[k], ring[(k + 1) % ring.size()]});
+		}
 		// (the vertices used, in order)
 		std::vector<int32_t> remap(m.vertices.size(), -1);
 		std::vector<ydr::Vertex> vertices;
@@ -305,8 +459,13 @@ namespace worldgen::terrain
 		return out;
 	}
 
-	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural)
+	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural, const std::function<float(int, int)>& slack)
 	{
+		// (Coarse - the whole tile's cells in blocks of up to 32, soft grounds mixed, 8 cm - only with WG_COARSE set: on a third of
+		// a country sector's tiles a car dropped on it stayed frozen in the air, the game holding the collision round it not
+		// loaded - HAS_COLLISION_LOADED_AROUND_ENTITY false - where the ground's per-part Coarsen never does; not found yet)
+		if (!procedural && std::getenv("WG_COARSE"))
+			return Coarse(f, i0, j0, cells, slack);
 		std::vector<ybn::Part> parts;
 		const int n = std::min({cells, f.nx - i0, f.ny - j0});
 		// (procedural: cells of 2 x 2 of the field's, 3 cm down - its plants then sink a little rather than float where the

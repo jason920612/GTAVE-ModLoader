@@ -212,19 +212,22 @@ namespace worldgen::flora
 			}
 		}
 
-		// A live oak: a trunk to its first fork 1.6-2.8 m up, four to six huge limbs out almost level and drooping at their
-		// ends, the crown wide and low (as wide as 1.3-1.8 times its height), Spanish moss hanging from the limbs.
+		// A live oak: a trunk to its first fork 2.4-3.6 m up (a town's are pruned clear of the street: the street pictures'
+		// leaves start 3-4 m up), four to six huge limbs out almost level and drooping at their ends, the crown wide and low
+		// (as wide as 1.3-1.8 times its height), Spanish moss hanging from the limbs.
 		Model LiveOak(uint32_t seed)
 		{
 			Random rnd(seed);
 			Model out;
-			const float H = rnd.Range(12, 16), W = H * rnd.Range(1.3f, 1.8f), fork = rnd.Range(1.6f, 2.8f);
+			const float H = rnd.Range(12, 16), W = H * rnd.Range(1.3f, 1.8f), fork = rnd.Range(2.4f, 3.6f);
 			std::vector<std::pair<Limb, Texture>> limbs;
 			std::vector<Leaf> leaves;
 			const P3 lean{rnd.Range(-0.12f, 0.12f), rnd.Range(-0.12f, 0.12f), 1};
 			Limb trunk = Grow({0, 0, -0.3f}, lean, {0, 0, 1}, 0.05f, fork + 0.3f, 3, rnd.Range(0.55f, 0.75f), 0.48f, rnd, 0.05f);
 			limbs.push_back({trunk, kBarkOak});
 			const P3 top = trunk.p.back(), middle{top[0], top[1], H * 0.6f};
+			// (the trunk going on up into the fork, thinning: its top no flat cut between the limbs)
+			limbs.push_back({Grow(top, lean, {0, 0, 1}, 0.05f, 1.4f, 2, 0.46f, 0.16f, rnd, 0.05f), kBarkOak});
 			const int n = 4 + static_cast<int>(rnd.Next() % 3);
 			const float az0 = rnd.Range(0, 2 * kPi);
 			for (int i = 0; i < n; ++i)
@@ -236,10 +239,15 @@ namespace worldgen::flora
 				// (up at 40-55 degrees, levelling off over its length: a hammock's swoop where it bent down past level)
 				Limb limb = Grow(Add(top, Mul(out2, 0.25f)), Add(Mul(out2, 0.75f), P3{0, 0, rnd.Range(0.65f, 0.9f)}), Add(out2, P3{0, 0, -0.06f}), 0.11f, len, 8,
 				    0.36f, 0.07f, rnd, 0.06f);
-				// (its height kept under the crown's top and over the fork's: the street pictures' live oaks' limbs sweep out
-				// level, they do not come down to the ground)
+				// (its height kept under the crown's top and, 2 m out from the trunk on, 1.8 m over the fork: the street
+				// pictures' live oaks' limbs sweep out level, they do not come down to the ground - and they grow out of the
+				// trunk's top: a floor under them nearer had lifted them off it, the crown floating over a cut stump)
 				for (P3& q : limb.p)
-					q[2] = std::clamp(q[2], fork + 0.8f, H - 1.5f);
+				{
+					q[2] = std::min(q[2], H - 1.5f);
+					if (std::hypot(q[0] - top[0], q[1] - top[1]) > 2.0f)
+						q[2] = std::max(q[2], fork + 1.8f);
+				}
 				limbs.push_back({limb, kBarkOak});
 				for (float t = 0.3f; t < 1.0f; t += 0.07f)
 				{
@@ -266,8 +274,8 @@ namespace worldgen::flora
 					const P3 sideDir{std::cos(az + turn), std::sin(az + turn), rnd.Range(0.1f, 0.35f)};
 					Limb br = Grow(At(limb, t), sideDir, {sideDir[0], sideDir[1], -0.05f}, 0.1f, len * rnd.Range(0.35f, 0.5f), 4, RadiusAt(limb, t) * 0.55f, 0.04f,
 					    rnd, 0.12f);
-					for (P3& q : br.p)
-						q[2] = std::clamp(q[2], fork + 0.6f, H - 1.2f);
+					for (size_t q = 1; q < br.p.size(); ++q) // (not where it leaves the limb)
+						br.p[q][2] = std::clamp(br.p[q][2], fork + 1.6f, H - 1.2f);
 					limbs.push_back({br, kBarkOak});
 					for (float s = 0.25f; s < 1.0f; s += 0.12f)
 					{

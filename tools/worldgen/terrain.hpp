@@ -46,11 +46,14 @@ namespace worldgen::terrain
 	// The mesh of the tile of `cells` x `cells` from cell (i0, j0), around (cx, cy); texture coordinates: world
 	// metres / uvMetres.
 	ydr::Mesh TileMesh(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres);
-	// TileMesh's mesh made coarser (research/phase0.md §63): each 2 x 2 cells whose nine vertices lie within `tolerance` of
-	// the two triangles over their corners and are `alike` (vertex indices: their tints) become those two triangles; the
-	// middle of an edge stays where the cells across it are not merged, or on the tile's edge (the neighbouring tile's
-	// mesh), so that no crack opens. Vertices no triangle uses are left out.
-	void Simplify(ydr::Mesh& m, const Field& f, int i0, int j0, int cells, float tolerance, const std::function<bool(uint32_t, uint32_t)>& alike);
+	// TileMesh's mesh made coarser (research/phase0.md §63): each block of 16 x 16, 8 x 8, 4 x 4 or 2 x 2 cells (the
+	// largest first, at multiples of its size) whose vertices all lie within `tolerance` of the two triangles over its
+	// corners and are `alike` (vertex indices: their tints) its south-west corner becomes those two triangles - or a fan
+	// from its middle round the vertices of its edge that the blocks and cells round it keep, and all of the tile's edge
+	// (the neighbouring tile's mesh), so that no crack opens. Vertices no triangle uses are left out. `slack` (field vertex
+	// indices; none: 0): more tolerance there - a block's the least of its vertices'.
+	void Simplify(ydr::Mesh& m, const Field& f, int i0, int j0, int cells, float tolerance, const std::function<bool(uint32_t, uint32_t)>& alike,
+	    const std::function<float(int, int)>& slack = {});
 	// The same split by material (research/phase0.md §61.25): the lawn cells (Field::lawnCell) in a mesh of their own
 	// for the game's lawn shader (terrain_cb_w_4lyr_2tex_blend: its blend map, on the second texture coordinates every
 	// `blendMetres`, mixes four grasses where the vertex colour's alpha is 0; at alpha 1 the vertex colour picks layer 3),
@@ -60,9 +63,12 @@ namespace worldgen::terrain
 		ydr::Mesh ground, lawn, forest;
 	};
 	Meshes TileMeshes(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres, float blendMetres);
-	// Its collision: parts of at most 20 x 20 cells. `procedural`: instead the game's material bounds (ma@ files, research/
+	// Its collision: parts of at most 20 x 20 cells, made coarser where flat (blocks of up to 16 x 16 cells of one material
+	// within 4 cm; WG_COARSE: the whole tile in blocks of up to 32 x 32 within 8 cm, the soft grounds mixed - cars froze on
+	// it, see terrain.cpp). `procedural`: instead the game's material bounds (ma@ files, research/
 	// phase0.md §63: the only collision its procedural plants are looked for in) - each cell its material's procedural tag
 	// (Field::material's high byte) and its ground colour (Field::colour), every vertex its colour and how dense the plants
 	// grow; the parts without a tagged cell left out.
-	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural = false);
+	// `slack` as Simplify's.
+	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural = false, const std::function<float(int, int)>& slack = {});
 }
