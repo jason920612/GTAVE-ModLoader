@@ -36,6 +36,8 @@ namespace worldgen::build
 		std::filesystem::path photo;     // what the aerial pictures show (tools/worldgen/photo.py): every tree, the ground's cover
 		                                 // and colour (trees.bin, classes.bin, cover.bin)
 		std::filesystem::path facades;   // the buildings' walls as the street pictures show them (tools/worldgen/photofacade.py)
+		std::filesystem::path phototex;  // the street panoramas on the walls (tools/worldgen/phototex.py: phototex.json, walls.bin)
+		bool surfaceOnly = false;        // only <phototex>/surface.bin (for phototex.py --ground), nothing built
 		std::string climate;             // land.json's climate (the loader's weather), over the world's (edits.json)
 		float datum = 0.2f;             // added to the scan's heights (NAVD88, about the mean sea level in Miami; the game's sea is at 0)
 		float waves = 0.2f;             // the swell of the sea round the land (land.json: the loader's game/sea.cpp), the open ocean's 1

@@ -106,7 +106,7 @@ namespace worldgen::flora
 			// (the game's tree shader reads its vertices' colours - the oak's leaves: red 0-105, green 64-126, blue near 0, alpha
 			// 220-235; the second colour's blue 0-255, the rest 0 -: as those, a card's own within them)
 			const uint32_t h = static_cast<uint32_t>(std::fabs(c[0] * 131 + c[1] * 71 + c[2] * 37));
-			const std::array<uint8_t, 4> c0{static_cast<uint8_t>(30 + h % 70), static_cast<uint8_t>(70 + (h >> 7) % 50), static_cast<uint8_t>((h >> 13) % 12), 228};
+			const std::array<uint8_t, 4> c0{static_cast<uint8_t>(40 + h % 36), static_cast<uint8_t>(80 + (h >> 7) % 28), static_cast<uint8_t>((h >> 13) % 12), 228};
 			const std::array<uint8_t, 4> c1{0, 0, static_cast<uint8_t>((h >> 17) % 120), 0};
 			for (int face = 0; face < 2; ++face)
 			{
@@ -244,7 +244,7 @@ namespace worldgen::flora
 				for (float t = 0.3f; t < 1.0f; t += 0.07f)
 				{
 					const P3 at = At(limb, t);
-					Cluster(leaves, at, middle, 6, 1.5f, rnd.Range(1.3f, 1.8f), kOakLeaves, rnd, 0.5f);
+					Cluster(leaves, at, middle, 9, 1.5f, rnd.Range(0.9f, 1.25f), kOakLeaves, rnd, 0.5f);
 					// (moss under the limb)
 					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.3f)
 					{
@@ -272,7 +272,7 @@ namespace worldgen::flora
 					for (float s = 0.25f; s < 1.0f; s += 0.12f)
 					{
 						const P3 at = At(br, s);
-						Cluster(leaves, at, middle, 5, 1.2f, rnd.Range(1.2f, 1.7f), kOakLeaves, rnd, 0.4f);
+						Cluster(leaves, at, middle, 7, 1.2f, rnd.Range(0.85f, 1.2f), kOakLeaves, rnd, 0.4f);
 						if (s < 0.85f && rnd.Unit() < 0.2f)
 						{
 							const P3 drop{at[0], at[1], at[2] - 0.05f};
@@ -290,14 +290,14 @@ namespace worldgen::flora
 			for (int k = 0; k < 10; ++k)
 			{
 				const float a = rnd.Range(0, 2 * kPi), d = rnd.Range(0, W * 0.25f);
-				Cluster(leaves, {top[0] + std::cos(a) * d, top[1] + std::sin(a) * d, H * rnd.Range(0.7f, 0.85f)}, middle, 4, 1.5f, 1.8f, kOakLeaves, rnd, 0.3f);
+				Cluster(leaves, {top[0] + std::cos(a) * d, top[1] + std::sin(a) * d, H * rnd.Range(0.7f, 0.85f)}, middle, 6, 1.5f, 1.25f, kOakLeaves, rnd, 0.3f);
 			}
-			for (int k = 0; k < 260; ++k)
+			for (int k = 0; k < 620; ++k)
 			{
 				const float a = rnd.Range(0, 2 * kPi), up = std::asin(rnd.Range(-0.15f, 1.0f));
 				const float rx = W * 0.47f * std::cos(up), rz = (H - fork) * 0.55f * std::sin(up);
 				const P3 c{top[0] + std::cos(a) * rx, top[1] + std::sin(a) * rx, std::min(H - 0.6f, fork + (H - fork) * 0.45f + rz)};
-				Cluster(leaves, c, middle, 1, 0.3f, rnd.Range(1.4f, 1.9f), kOakLeaves, rnd, 0.0f);
+				Cluster(leaves, c, middle, 1, 0.3f, rnd.Range(0.95f, 1.3f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
 			out.height = H, out.width = W, out.trunk = trunk.r[0];
@@ -380,10 +380,19 @@ namespace worldgen::flora
 					Limb br = Grow(At(limb, t), d2, {d2[0], d2[1], 0}, 0.15f, len * rnd.Range(0.35f, 0.55f), 4, RadiusAt(limb, t) * 0.55f, 0.03f, rnd);
 					limbs.push_back({br, kBarkOak});
 					for (float s = 0.3f; s <= 1.0f; s += 0.14f)
-						Cluster(leaves, At(br, s), middle, 3, 1.1f, rnd.Range(1.7f, 2.3f), kOakLeaves, rnd, 0.3f);
+						Cluster(leaves, At(br, s), middle, 5, 1.1f, rnd.Range(1.0f, 1.4f), kOakLeaves, rnd, 0.3f);
 				}
 				for (float t = 0.45f; t <= 1.0f; t += 0.1f)
-					Cluster(leaves, At(limb, t), middle, 3, 1.3f, rnd.Range(1.8f, 2.4f), kOakLeaves, rnd, 0.3f);
+					Cluster(leaves, At(limb, t), middle, 5, 1.3f, rnd.Range(1.0f, 1.4f), kOakLeaves, rnd, 0.3f);
+			}
+			// (the round crown closed: a shell of leaves over it and some through it - the reviewers' "lollipops", a bare trunk
+			// under a few clumps, were the limbs' leaves alone)
+			const float cz = fork + (H - fork) * 0.55f, rh = W * 0.5f, rv = (H - fork) * 0.5f;
+			for (int k = 0; k < 420; ++k)
+			{
+				const float a = rnd.Range(0, 2 * kPi), up = std::asin(rnd.Range(-0.55f, 1.0f)), depth = k % 4 ? 1.0f : rnd.Range(0.4f, 0.85f);
+				const P3 c{top[0] + std::cos(a) * rh * std::cos(up) * depth, top[1] + std::sin(a) * rh * std::cos(up) * depth, cz + rv * std::sin(up) * depth};
+				Cluster(leaves, c, middle, 1, 0.3f, rnd.Range(1.0f, 1.35f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
 			out.height = H, out.width = W, out.trunk = trunk.r[0];
@@ -488,9 +497,12 @@ namespace worldgen::flora
 					auto& p = im.pixels[static_cast<size_t>(y) * im.width + x];
 					if (t == kBarkOak)
 					{
-						const float ridge = 0.5f + 0.5f * std::sin((x + 18 * Noise(x, y, 40, 3)) * 2 * kPi / 26);
-						const float k = 0.55f + 0.35f * ridge + 0.2f * Noise(x, y, 6, 4);
-						p = Shade({86, 80, 72}, k);
+						// (an oak's bark: dark grey ridges, long and irregular, up and down, the furrows between them
+						// wandering and joining - noise stretched five times along the trunk: no stripes of one width, no
+						// bricks of rows of cracks)
+						const float ridge = 0.65f * Noise(x, y * 0.2f, 16, 3) + 0.35f * Noise(x, y * 0.25f, 6, 4);
+						const float k = ridge < 0.42f ? 0.42f + 0.4f * ridge : 0.7f + 0.35f * Noise(x, y * 0.5f, 10, 5);
+						p = Shade({60, 56, 52}, k * (0.9f + 0.2f * Noise(x, y, 3, 6)));
 					}
 					else if (t == kBarkPine)
 					{

@@ -81,6 +81,26 @@ namespace worldgen::powerlines
 			return false;
 		}
 
+		// how far along the road's line the point nearest q is
+		float Along(const roads::Edge& e, const P2& q)
+		{
+			float run = 0, best = 1e30f, at = 0;
+			for (size_t i = 0; i + 1 < e.points.size(); ++i)
+			{
+				const P2& a = e.points[i];
+				const P2& b = e.points[i + 1];
+				const float l = std::hypot(b[0] - a[0], b[1] - a[1]);
+				if (l <= 0)
+					continue;
+				const float t = std::clamp(((q[0] - a[0]) * (b[0] - a[0]) + (q[1] - a[1]) * (b[1] - a[1])) / (l * l), 0.0f, 1.0f);
+				const float d = std::hypot(a[0] + (b[0] - a[0]) * t - q[0], a[1] + (b[1] - a[1]) * t - q[1]);
+				if (d < best)
+					best = d, at = run + t * l;
+				run += l;
+			}
+			return at;
+		}
+
 		struct Pole
 		{
 			P2 p{};
@@ -94,7 +114,7 @@ namespace worldgen::powerlines
 
 	void Place(const roads::Network& n, const std::function<bool(float, float)>& clear, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& buried, const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires,
-	    Stats& stats, const std::function<float(const roads::Edge&)>& sideOf)
+	    Stats& stats, const std::function<float(const roads::Edge&, std::vector<std::array<float, 2>>&)>& measured)
 	{
 		std::vector<Pole> all;
 		std::vector<std::vector<int>> edgePoles(n.edges.size()); // (each road's, from its a to its b)
@@ -139,14 +159,62 @@ namespace worldgen::powerlines
 			// the side: a one-way road's outer one (the right of the way it goes); a two-way road's north-eastern one, by the
 			// road's general direction, so that a road going on in another way of the map keeps to its side
 			const P2 chord = Unit({e.points.back()[0] - e.points.front()[0], e.points.back()[1] - e.points.front()[1]});
-			const float measured = sideOf ? sideOf(e) : 0.0f;
-			const float side = measured != 0                       ? measured
+			std::vector<P2> scanned;
+			const float measuredSide = measured ? measured(e, scanned) : 0.0f;
+			const float side = measuredSide != 0                       ? measuredSide
 			                 : e.forward > 0 && e.backward == 0   ? -1.0f
 			                 : e.forward == 0 && e.backward > 0 ? 1.0f
 			                 : -chord[1] * 0.6f + chord[0] * 0.8f >= 0 ? 1.0f
 			                                                           : -1.0f;
 			// (behind the sidewalk, or in the verge 2 m off the asphalt)
 			const float off = e.HalfWidth() + (e.sidewalks ? e.Walk() + 0.9f : 2.0f);
+			// the poles the scan shows, where it shows two or more on the line's side: each where it stands, one more evenly
+			// between two farther apart than 60 m
+			if (measuredSide != 0 && scanned.size() >= 2)
+			{
+				std::vector<std::pair<float, P2>> found;
+				for (const P2& q : scanned)
+					found.push_back({Along(e, q), q});
+				std::sort(found.begin(), found.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+				std::vector<std::pair<float, P2>> kept;
+				for (const auto& f : found)
+					if (kept.empty() || f.first - kept.back().first >= 8)
+						kept.push_back(f);
+				const auto add = [&](const P2& q, float s, uint32_t seed) {
+					P2 p, d;
+					if (!At(e, std::clamp(s, 0.0f, total), p, d))
+						d = Unit({e.points.back()[0] - e.points.front()[0], e.points.back()[1] - e.points.front()[1]});
+					Pole pole;
+					pole.p = q;
+					pole.z = ground(q[0], q[1]) - 0.2f;
+					pole.road = d;
+					pole.transformer = (seed >> 12) % 7 == 0;
+					edgePoles[ei].push_back(static_cast<int>(all.size()));
+					all.push_back(std::move(pole));
+				};
+				for (size_t k = 0; k < kept.size(); ++k)
+				{
+					const uint32_t seed = Mix(static_cast<uint32_t>(ei) * 2654435761u ^ static_cast<uint32_t>(k) * 40503u);
+					if (k > 0)
+					{
+						const float gap = kept[k].first - kept[k - 1].first;
+						const int extra = gap > 60 ? static_cast<int>(std::ceil(gap / 45)) - 1 : 0;
+						for (int x = 1; x <= extra; ++x)
+						{
+							const float s = kept[k - 1].first + gap * static_cast<float>(x) / static_cast<float>(extra + 1);
+							P2 p, d;
+							if (!At(e, s, p, d))
+								continue;
+							const P2 q{p[0] - d[1] * side * off, p[1] + d[0] * side * off};
+							if (clear(q[0], q[1]))
+								add(q, s, Mix(seed + static_cast<uint32_t>(x)));
+						}
+					}
+					if (clear(kept[k].second[0], kept[k].second[1]))
+						add(kept[k].second, kept[k].first, seed);
+				}
+				at.clear();
+			}
 			for (size_t k = 0; k < at.size(); ++k)
 			{
 				const uint32_t seed = Mix(static_cast<uint32_t>(ei) * 2654435761u ^ static_cast<uint32_t>(k) * 40503u);

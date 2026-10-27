@@ -546,6 +546,309 @@ namespace worldgen::build
 			}
 		}
 
+		// A wall the street panoramas show (tools/worldgen/phototex.py): its ends (a footprint's edge, outside on the right), the
+		// heights its texture spans (the game's: the datum in) and the texture's size and place in walls.bin (RGB rows from z1
+		// down, columns from `a`)
+		struct PhotoWall
+		{
+			P2 a{}, b{};
+			float z0 = 0, z1 = 0;
+			int width = 0, height = 0;
+			uint64_t offset = 0;
+			size_t building = SIZE_MAX; // (its place in the world's list)
+		};
+
+		// A photo wall's place in its tile's atlas: the material's key, its corners' texture coordinates (u0 at `a`, v0 at z1)
+		struct PhotoPlace
+		{
+			uint32_t key = 0;
+			float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+		};
+
+		// (the photo walls, by 16 m cell, and those placed in a tile's atlases: AddBuilding's)
+		struct PhotoSet
+		{
+			const std::vector<PhotoWall>& walls;
+			const std::unordered_map<int64_t, std::vector<uint32_t>>& near;
+			const std::unordered_map<uint32_t, PhotoPlace>& places;
+		};
+		constexpr uint32_t kPhotoKeyBase = 0x100000; // (the atlases' material keys in a tile's meshes)
+
+		int64_t PhotoCell(float x, float y)
+		{
+			return static_cast<int64_t>(std::floor(x / 16)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 16)));
+		}
+
+		// The photo wall a wall of ours stands on (its corners `points`, its outward normal `normal`): within 0.4 m of the photo
+		// wall's line, inside its ends by 0.6 m, facing the same way; -1 none. `near`: the photo walls by 16 m cell.
+		int FindPhotoWall(const std::vector<PhotoWall>& walls, const std::unordered_map<int64_t, std::vector<uint32_t>>& near, const std::vector<P2>& points,
+		    const P2& normal)
+		{
+			P2 mid{0, 0};
+			for (const P2& p : points)
+				mid[0] += p[0] / points.size(), mid[1] += p[1] / points.size();
+			const auto it = near.find(PhotoCell(mid[0], mid[1]));
+			if (it == near.end())
+				return -1;
+			for (const uint32_t k : it->second)
+			{
+				const PhotoWall& w = walls[k];
+				const float dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], len = std::hypot(dx, dy);
+				if (len < 0.5f)
+					continue;
+				const P2 u{dx / len, dy / len}, n{u[1], -u[0]};
+				if (n[0] * normal[0] + n[1] * normal[1] < 0.97f)
+					continue;
+				bool on = true;
+				for (const P2& p : points)
+				{
+					const float s = (p[0] - w.a[0]) * u[0] + (p[1] - w.a[1]) * u[1], off = (p[0] - w.a[0]) * n[0] + (p[1] - w.a[1]) * n[1];
+					on = on && std::fabs(off) < 0.4f && s > -0.6f && s < len + 0.6f;
+				}
+				if (on)
+					return static_cast<int>(k);
+			}
+			return -1;
+		}
+
+		// The photo walls along a wall of ours from a to b (its outward normal `normal`): their ends on its line (within 0.4 m),
+		// facing the same way, over 0.3 m or more of it - as stretches of it from a, in order, not overlapping (the build's
+		// outline joins a footprint's edges that run on in a line: a wall of ours over two photo walls or more)
+		struct PhotoStretch
+		{
+			float s0 = 0, s1 = 0;
+			uint32_t wall = 0;
+		};
+		std::vector<PhotoStretch> PhotoStretches(const std::vector<PhotoWall>& walls, const std::unordered_map<int64_t, std::vector<uint32_t>>& near, const P2& a,
+		    const P2& b, const P2& normal)
+		{
+			std::vector<PhotoStretch> out;
+			const float len = std::hypot(b[0] - a[0], b[1] - a[1]);
+			if (len < 1e-3f)
+				return out;
+			const P2 u{(b[0] - a[0]) / len, (b[1] - a[1]) / len};
+			std::set<uint32_t> seen;
+			const int steps = std::max(1, static_cast<int>(std::ceil(len / 8)));
+			for (int st = 0; st <= steps; ++st)
+			{
+				const float f = len * static_cast<float>(st) / static_cast<float>(steps);
+				const auto it = near.find(PhotoCell(a[0] + u[0] * f, a[1] + u[1] * f));
+				if (it == near.end())
+					continue;
+				for (const uint32_t k : it->second)
+				{
+					if (!seen.insert(k).second)
+						continue;
+					const PhotoWall& w = walls[k];
+					const float dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], wl = std::hypot(dx, dy);
+					if (wl < 0.5f || dy / wl * normal[0] - dx / wl * normal[1] < 0.97f)
+						continue;
+					const auto off = [&](const P2& p) { return (p[0] - a[0]) * normal[0] + (p[1] - a[1]) * normal[1]; };
+					if (std::fabs(off(w.a)) > 0.4f || std::fabs(off(w.b)) > 0.4f)
+						continue;
+					float s0 = (w.a[0] - a[0]) * u[0] + (w.a[1] - a[1]) * u[1], s1 = (w.b[0] - a[0]) * u[0] + (w.b[1] - a[1]) * u[1];
+					if (s0 > s1)
+						std::swap(s0, s1);
+					s0 = std::max(s0, 0.0f), s1 = std::min(s1, len);
+					if (s1 - s0 >= 0.3f)
+						out.push_back({s0, s1, k});
+				}
+			}
+			std::sort(out.begin(), out.end(), [](const PhotoStretch& p, const PhotoStretch& q) { return p.s0 < q.s0; });
+			for (size_t i = 1; i < out.size(); ++i)
+				out[i].s0 = std::max(out[i].s0, out[i - 1].s1);
+			std::erase_if(out, [](const PhotoStretch& p) { return p.s1 - p.s0 < 0.3f; });
+			return out;
+		}
+
+		// The photo walls a building of ours stands its walls on: its outline's edges' and its steep roof faces' (gable ends)
+		std::set<uint32_t> PhotoWallsOf(const structures::Shape& s, const std::vector<PhotoWall>& walls, const std::unordered_map<int64_t, std::vector<uint32_t>>& near)
+		{
+			std::set<uint32_t> out;
+			const auto p2 = [&](uint32_t i) { return P2{static_cast<float>(s.vertices[i][0]), static_cast<float>(s.vertices[i][1])}; };
+			for (const auto& e : s.outline)
+			{
+				const P2 a = p2(e[0]), b = p2(e[1]);
+				const float dx = b[0] - a[0], dy = b[1] - a[1], len = std::hypot(dx, dy);
+				if (len < 1e-3f)
+					continue;
+				for (const PhotoStretch& ps : PhotoStretches(walls, near, a, b, {dy / len, -dx / len}))
+					out.insert(ps.wall);
+			}
+			for (const auto& tri : s.roof)
+			{
+				const auto &a = s.vertices[tri[0]], &b = s.vertices[tri[1]], &c = s.vertices[tri[2]];
+				const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+				const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = std::sqrt(nx * nx + ny * ny + nz * nz);
+				const double hl = std::hypot(nx, ny);
+				if (l < 1e-6 || nz / l >= 0.45 || hl < 1e-6)
+					continue;
+				if (const int k = FindPhotoWall(walls, near, {p2(tri[0]), p2(tri[1]), p2(tri[2])}, {static_cast<float>(nx / hl), static_cast<float>(ny / hl)}); k >= 0)
+					out.insert(static_cast<uint32_t>(k));
+			}
+			return out;
+		}
+
+		// A tile's photo walls into atlases 2048 texels a side (a wall bigger than that scaled down to fit): rows of walls by
+		// height, each with 4 texels round it repeating its edges (the mip levels), at multiples of 4 (BC1's blocks); an atlas
+		// as tall as the power of two its rows need. Places by photo wall, the keys from kPhotoKeyBase. (walls.bin read here
+		// for each tile: the tiles are made on all the cores at once)
+		void PackPhotoWalls(const std::vector<PhotoWall>& walls, const std::set<uint32_t>& used, const std::filesystem::path& binPath,
+		    std::vector<texture::Image>& atlases, std::unordered_map<uint32_t, PhotoPlace>& places)
+		{
+			std::ifstream bin(binPath, std::ios::binary);
+			constexpr int kSide = 2048, kPad = 4;
+			std::vector<uint32_t> order(used.begin(), used.end());
+			std::sort(order.begin(), order.end(), [&](uint32_t p, uint32_t q) { return walls[p].height > walls[q].height; });
+			struct Rect
+			{
+				uint32_t wall = 0;
+				int atlas = 0, x = 0, y = 0, w = 0, h = 0;
+			};
+			std::vector<Rect> rects;
+			std::vector<int> heights;
+			int ax = 0, ay = 0, rowH = 0;
+			for (const uint32_t k : order)
+			{
+				const PhotoWall& pw = walls[k];
+				const float scale = std::min({1.0f, (kSide - 2.0f * kPad) / pw.width, (kSide - 2.0f * kPad) / pw.height});
+				const int w = std::max(4, static_cast<int>(pw.width * scale)), h = std::max(4, static_cast<int>(pw.height * scale));
+				const int cw = (w + 2 * kPad + 3) / 4 * 4, ch = (h + 2 * kPad + 3) / 4 * 4;
+				if (!heights.empty() && ax + cw > kSide)
+					ax = 0, ay += rowH, rowH = 0;
+				if (heights.empty() || ay + ch > kSide)
+					heights.push_back(0), ax = ay = rowH = 0;
+				rects.push_back({k, static_cast<int>(heights.size()) - 1, ax + kPad, ay + kPad, w, h});
+				ax += cw;
+				rowH = std::max(rowH, ch);
+				heights.back() = std::max(heights.back(), ay + ch);
+			}
+			const size_t first = atlases.size();
+			for (const int h : heights)
+			{
+				int p = 4;
+				while (p < h)
+					p *= 2;
+				atlases.emplace_back(kSide, p);
+			}
+			std::vector<uint8_t> px;
+			for (const Rect& r : rects)
+			{
+				const PhotoWall& pw = walls[r.wall];
+				px.resize(static_cast<size_t>(pw.width) * pw.height * 3);
+				bin.seekg(static_cast<std::streamoff>(pw.offset));
+				bin.read(reinterpret_cast<char*>(px.data()), static_cast<std::streamsize>(px.size()));
+				texture::Image& im = atlases[first + r.atlas];
+				for (int y = -kPad; y < r.h + kPad; ++y)
+					for (int x = -kPad; x < r.w + kPad; ++x)
+					{
+						const int sx = std::min(pw.width - 1, static_cast<int>((std::clamp(x, 0, r.w - 1) + 0.5f) * pw.width / r.w));
+						const int sy = std::min(pw.height - 1, static_cast<int>((std::clamp(y, 0, r.h - 1) + 0.5f) * pw.height / r.h));
+						const uint8_t* q = &px[(static_cast<size_t>(sy) * pw.width + sx) * 3];
+						im.At(r.x + x, r.y + y) = {q[0], q[1], q[2], 255};
+					}
+				places[r.wall] = {kPhotoKeyBase + static_cast<uint32_t>(first + r.atlas), static_cast<float>(r.x) / kSide, static_cast<float>(r.y) / im.height,
+				    static_cast<float>(r.x + r.w) / kSide, static_cast<float>(r.y + r.h) / im.height};
+			}
+		}
+
+		// The ground's top surface where the street panoramas see it, for tools/worldgen/phototex.py's pictures of the ground:
+		// every 0.1 m in blocks of 25.6 m within 16 m of a picture - the roads', sidewalks' and paving's tops (no higher than 3 m
+		// over the terrain: no bridges' decks), else the terrain's -: `out` ('WBSF' version 1: the cell (f32), a block's cells
+		// a side (u32), the blocks (u32); each block its indices (i32 x 2: its corner at i * 25.6, j * 25.6) and its heights in
+		// cm (int16, -32768 none), rows south to north).
+		constexpr float kGroundCell = 0.1f;
+		constexpr int kGroundSide = 256;
+		constexpr float kGroundBlock = kGroundCell * kGroundSide;
+		bool ExportSurface(const std::filesystem::path& out, const std::vector<P2>& panos, const std::vector<const roads::Mesh*>& meshes,
+		    const std::function<float(float, float)>& terrainAt, size_t& count, std::string& error)
+		{
+			std::map<std::pair<int, int>, std::pair<std::vector<float>, std::vector<float>>> blocks; // (terrain, top)
+			for (const P2& p : panos)
+				for (int bj = static_cast<int>(std::floor((p[1] - 16) / kGroundBlock)); bj <= static_cast<int>(std::floor((p[1] + 16) / kGroundBlock)); ++bj)
+					for (int bi = static_cast<int>(std::floor((p[0] - 16) / kGroundBlock)); bi <= static_cast<int>(std::floor((p[0] + 16) / kGroundBlock)); ++bi)
+						blocks.try_emplace({bi, bj});
+			for (auto& [key, b] : blocks)
+			{
+				auto& [ter, top] = b;
+				ter.resize(static_cast<size_t>(kGroundSide) * kGroundSide);
+				for (int j = 0; j < kGroundSide; ++j)
+					for (int i = 0; i < kGroundSide; ++i)
+						ter[static_cast<size_t>(j) * kGroundSide + i] = terrainAt(key.first * kGroundBlock + (i + 0.5f) * kGroundCell, key.second * kGroundBlock + (j + 0.5f) * kGroundCell);
+				top = ter;
+			}
+			for (const roads::Mesh* m : meshes)
+				for (size_t t = 0; t + 2 < m->indices.size(); t += 3)
+				{
+					const auto& a = m->vertices[m->indices[t]].position;
+					const auto& b = m->vertices[m->indices[t + 1]].position;
+					const auto& c = m->vertices[m->indices[t + 2]].position;
+					const float den = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+					if (std::fabs(den) < 1e-6f)
+						continue;
+					const float minX = std::min({a[0], b[0], c[0]}), maxX = std::max({a[0], b[0], c[0]});
+					const float minY = std::min({a[1], b[1], c[1]}), maxY = std::max({a[1], b[1], c[1]});
+					for (int bj = static_cast<int>(std::floor(minY / kGroundBlock)); bj <= static_cast<int>(std::floor(maxY / kGroundBlock)); ++bj)
+						for (int bi = static_cast<int>(std::floor(minX / kGroundBlock)); bi <= static_cast<int>(std::floor(maxX / kGroundBlock)); ++bi)
+						{
+							const auto it = blocks.find({bi, bj});
+							if (it == blocks.end())
+								continue;
+							auto& [ter, top] = it->second;
+							const float bx = bi * kGroundBlock, by = bj * kGroundBlock;
+							const int i0 = std::max(0, static_cast<int>(std::floor((minX - bx) / kGroundCell - 0.5f))),
+							          i1 = std::min(kGroundSide - 1, static_cast<int>(std::ceil((maxX - bx) / kGroundCell - 0.5f)));
+							const int j0 = std::max(0, static_cast<int>(std::floor((minY - by) / kGroundCell - 0.5f))),
+							          j1 = std::min(kGroundSide - 1, static_cast<int>(std::ceil((maxY - by) / kGroundCell - 0.5f)));
+							for (int j = j0; j <= j1; ++j)
+								for (int i = i0; i <= i1; ++i)
+								{
+									const float x = bx + (i + 0.5f) * kGroundCell, y = by + (j + 0.5f) * kGroundCell;
+									const float l0 = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / den;
+									const float l1 = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / den;
+									const float l2 = 1 - l0 - l1;
+									if (l0 < -1e-4f || l1 < -1e-4f || l2 < -1e-4f)
+										continue;
+									const float z = l0 * a[2] + l1 * b[2] + l2 * c[2];
+									const size_t k = static_cast<size_t>(j) * kGroundSide + i;
+									if (z <= ter[k] + 3.0f && z > top[k])
+										top[k] = z;
+								}
+						}
+				}
+			std::ofstream f(out, std::ios::binary);
+			if (!f)
+				return error = "cannot write " + out.string(), false;
+			const uint32_t version = 1, side = kGroundSide, n = static_cast<uint32_t>(blocks.size());
+			const float cell = kGroundCell;
+			f.write("WBSF", 4);
+			f.write(reinterpret_cast<const char*>(&version), 4);
+			f.write(reinterpret_cast<const char*>(&cell), 4);
+			f.write(reinterpret_cast<const char*>(&side), 4);
+			f.write(reinterpret_cast<const char*>(&n), 4);
+			std::vector<int16_t> cm(static_cast<size_t>(kGroundSide) * kGroundSide);
+			for (const auto& [key, b] : blocks)
+			{
+				const int32_t ij[2] = {key.first, key.second};
+				f.write(reinterpret_cast<const char*>(ij), 8);
+				for (size_t k = 0; k < cm.size(); ++k)
+					cm[k] = static_cast<int16_t>(std::clamp(std::lround(b.second[k] * 100), -32767L, 32767L));
+				f.write(reinterpret_cast<const char*>(cm.data()), static_cast<std::streamsize>(cm.size() * 2));
+			}
+			count = blocks.size();
+			return true;
+		}
+
+		// A block of the ground as the street panoramas show it (phototex.py's ground.bin): the decal's heights every 0.8 m
+		// (33 x 33, f32, rows south to north) and its picture (256 x 256 RGBA, rows from the north; alpha: seen)
+		struct GroundBlock
+		{
+			int i = 0, j = 0;
+			uint64_t offset = 0;
+		};
+		constexpr int kGroundGrid = 33; // (0.8 m: 8 texels)
+		constexpr int kGroundStep = kGroundSide / (kGroundGrid - 1);
+
 		// (the woods' floor where the pictures see none, as a palette colour: NAIP's leaf litter in the shade about (95, 80, 60))
 		constexpr std::array<float, 3> kForestFloor{95 * kPhotoGain / kNeutralMean * 255, 80 * kPhotoGain / kNeutralMean * 255, 60 * kPhotoGain / kNeutralMean * 255};
 		// (and a town's lawns under its trees: NAIP's grass in the shade about (72, 86, 54))
@@ -571,14 +874,18 @@ namespace worldgen::build
 		// over the tile from its north-west corner) or the gravel texture (planar).
 		void AddBuilding(const structures::Shape& s, const facades::Style& wall, uint32_t wallKey, int aerialRoof, uint32_t genericRoof,
 		    const facades::Style& gravel, float cx, float cy, float tx0, float ty1, float tile, uint32_t seed, std::map<uint32_t, roads::Mesh>& meshes,
-		    std::vector<P3>& colVertices, std::vector<std::array<uint32_t, 3>>& colTriangles, int coveringKey = -1, float coveringMetres = 3)
+		    std::vector<P3>& colVertices, std::vector<std::array<uint32_t, 3>>& colTriangles, int coveringKey = -1, float coveringMetres = 3,
+		    const PhotoSet* photo = nullptr, float inset = 0)
 		{
 			const auto at = [&](uint32_t i) { return P3{static_cast<float>(s.vertices[i][0]), static_cast<float>(s.vertices[i][1]), static_cast<float>(s.vertices[i][2])}; };
 			// (ambient light: a little less at the foot of the walls)
 			const auto shade = [&](float z) { return static_cast<uint8_t>(255 * std::clamp(0.7f + 0.3f * (z - s.base) / 3, 0.7f, 1.0f)); };
+			// (`inset`: the walls - faces steeper than the roofs' - that far in: a LOD model's, behind its HD model's walls
+			// where the game draws both - the HD's photo walls had fought the LOD's walls in its style in steps)
 			const auto add = [&](roads::Mesh& m, const P3& p, const P3& n, const P3& t, float u, float v) {
 				ydr::Vertex x;
-				x.position = {p[0] - cx, p[1] - cy, p[2]};
+				const float in = n[2] < 0.45f ? inset : 0.0f;
+				x.position = {p[0] - n[0] * in - cx, p[1] - n[1] * in - cy, p[2]};
 				x.normal = n;
 				x.tangent = {t[0], t[1], t[2], 1};
 				x.colour0 = {shade(p[2]), 12, 255, 255};
@@ -590,6 +897,16 @@ namespace worldgen::build
 				const uint32_t k = static_cast<uint32_t>(colVertices.size());
 				colVertices.insert(colVertices.end(), {a, b, c});
 				colTriangles.push_back({k, k + 1, k + 2});
+			};
+			// (a photo wall's vertex: u along it from its first end, v down from its texture's top; no shade at the foot - the
+			// picture has its own light)
+			const auto addPhoto = [&](roads::Mesh& m, const P3& p, const P3& n, const P3& t, const PhotoWall& w, const PhotoPlace& pl) {
+				const float dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], ll = std::max(1e-6f, dx * dx + dy * dy);
+				const float along = std::clamp(((p[0] - w.a[0]) * dx + (p[1] - w.a[1]) * dy) / ll, 0.0f, 1.0f);
+				const float down = std::clamp((w.z1 - p[2]) / std::max(0.1f, w.z1 - w.z0), 0.0f, 1.0f);
+				const uint32_t i = add(m, p, n, t, pl.u0 + (pl.u1 - pl.u0) * along, pl.v0 + (pl.v1 - pl.v0) * down);
+				m.vertices[i].colour0[0] = 255;
+				return i;
 			};
 			const float sink = s.base - 0.6f;
 			// the outline in order (each corner starts one edge), for u running on round the corners
@@ -625,6 +942,44 @@ namespace worldgen::build
 					const float u0 = run / wall.width, u1 = (run + len) / wall.width;
 					run += len;
 					const P3 a0{pa[0], pa[1], sink}, b0{pb[0], pb[1], sink}, am{pa[0], pa[1], split}, bm{pb[0], pb[1], split};
+					// (a wall the street panoramas show: where a photo wall lies along it, one face from under the ground to the
+					// roof's edge with the picture on it; the rest of it plain faces in its style)
+					std::vector<PhotoStretch> stretches;
+					if (photo)
+					{
+						stretches = PhotoStretches(photo->walls, photo->near, {pa[0], pa[1]}, {pb[0], pb[1]}, {n[0], n[1]});
+						std::erase_if(stretches, [&](const PhotoStretch& p) { return !photo->places.contains(p.wall); });
+					}
+					if (!stretches.empty())
+					{
+						const auto point = [&](float s, float z) { return P3{pa[0] + dx * s / len, pa[1] + dy * s / len, z}; };
+						const auto topAt = [&](float s) { return pa[2] + (pb[2] - pa[2]) * s / len; };
+						const auto plain = [&](float s0, float s1) {
+							if (s1 - s0 < 0.01f)
+								return;
+							const float su0 = u0 + (u1 - u0) * s0 / len, su1 = u0 + (u1 - u0) * s1 / len;
+							const P3 q0 = point(s0, topAt(s0)), q1 = point(s1, topAt(s1));
+							const uint32_t i0 = add(wm, point(s0, sink), n, t, su0, wallV(sink)), i1 = add(wm, point(s1, sink), n, t, su1, wallV(sink)),
+							               i2 = add(wm, q1, n, t, su1, wallV(q1[2])), i3 = add(wm, q0, n, t, su0, wallV(q0[2]));
+							wm.indices.insert(wm.indices.end(), {i0, i1, i2, i0, i2, i3});
+						};
+						float cursor = 0;
+						for (const PhotoStretch& ps : stretches)
+						{
+							plain(cursor, ps.s0);
+							const PhotoWall& pw = photo->walls[ps.wall];
+							const PhotoPlace& pp = photo->places.at(ps.wall);
+							roads::Mesh& pm = meshes[pp.key];
+							const uint32_t j0 = addPhoto(pm, point(ps.s0, sink), n, t, pw, pp), j1 = addPhoto(pm, point(ps.s1, sink), n, t, pw, pp),
+							               j2 = addPhoto(pm, point(ps.s1, topAt(ps.s1)), n, t, pw, pp), j3 = addPhoto(pm, point(ps.s0, topAt(ps.s0)), n, t, pw, pp);
+							pm.indices.insert(pm.indices.end(), {j0, j1, j2, j0, j2, j3});
+							cursor = ps.s1;
+						}
+						plain(cursor, len);
+						collide(a0, b0, pb);
+						collide(a0, pb, pa);
+						continue;
+					}
 					// (below a house's floor of windows: the foundation - the texture's bottom 0.5 m again every 0.5 m down; one row
 					// stretched down the wall was a fence of stripes)
 					for (float zt = split; zt > sink + 0.01f; zt -= 0.5f)
@@ -653,9 +1008,19 @@ namespace worldgen::build
 				collide(a, b, c);
 				if (n[2] < 0.45f)
 				{
-					// a steep face: wall, u along its level line
+					// a steep face: wall, u along its level line (over a photo wall: the picture)
 					const float hl = std::max(1e-4f, std::hypot(n[0], n[1]));
 					const P3 t{-n[1] / hl, n[0] / hl, 0};
+					const int fk = photo ? FindPhotoWall(photo->walls, photo->near, {P2{a[0], a[1]}, P2{b[0], b[1]}, P2{c[0], c[1]}}, P2{n[0] / hl, n[1] / hl}) : -1;
+					if (fk >= 0 && photo->places.contains(static_cast<uint32_t>(fk)))
+					{
+						const PhotoWall& pw = photo->walls[static_cast<size_t>(fk)];
+						const PhotoPlace& pp = photo->places.at(static_cast<uint32_t>(fk));
+						roads::Mesh& pm = meshes[pp.key];
+						const uint32_t i0 = addPhoto(pm, a, n, t, pw, pp), i1 = addPhoto(pm, b, n, t, pw, pp), i2 = addPhoto(pm, c, n, t, pw, pp);
+						pm.indices.insert(pm.indices.end(), {i0, i1, i2});
+						continue;
+					}
 					const auto u = [&](const P3& p) { return (p[0] * t[0] + p[1] * t[1]) / wall.width; };
 					const uint32_t i0 = add(wm, a, n, t, u(a), wallV(a[2])), i1 = add(wm, b, n, t, u(b), wallV(b[2])), i2 = add(wm, c, n, t, u(c), wallV(c[2]));
 					wm.indices.insert(wm.indices.end(), {i0, i1, i2});
@@ -2182,6 +2547,71 @@ namespace worldgen::build
 				if (const int year = e.value("year", 0); year > 1700)
 					builtYear[e.value("building", static_cast<size_t>(0))] = year;
 		}
+		// (the walls the street panoramas show - tools/worldgen/phototex.py -, by 16 m cell along them; their pictures in walls.bin)
+		std::vector<PhotoWall> photoWalls;
+		std::unordered_map<int64_t, std::vector<uint32_t>> photoNear;
+		std::mutex photoMutex;
+		std::set<uint32_t> photoMatched; // (the photo walls some wall of ours stands on)
+		if (!o.phototex.empty())
+		{
+			std::ifstream in(o.phototex / "phototex.json");
+			const nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
+			if (j.is_discarded() || !j.contains("walls"))
+				return error = "cannot read " + (o.phototex / "phototex.json").string(), false;
+			if (!std::filesystem::is_regular_file(o.phototex / "walls.bin"))
+				return error = "cannot read " + (o.phototex / "walls.bin").string(), false;
+			for (const auto& e : j["walls"])
+			{
+				PhotoWall pw;
+				pw.a = {e["a"][0].get<float>(), e["a"][1].get<float>()};
+				pw.b = {e["b"][0].get<float>(), e["b"][1].get<float>()};
+				pw.z0 = e["z0"].get<float>() + o.datum;
+				pw.z1 = e["z1"].get<float>() + o.datum;
+				pw.width = e["width"].get<int>();
+				pw.height = e["height"].get<int>();
+				pw.offset = e["offset"].get<uint64_t>();
+				pw.building = e.value("building", SIZE_MAX);
+				if (pw.width < 1 || pw.height < 1)
+					continue;
+				const uint32_t k = static_cast<uint32_t>(photoWalls.size());
+				photoWalls.push_back(pw);
+				std::set<int64_t> cells;
+				const float len = std::hypot(pw.b[0] - pw.a[0], pw.b[1] - pw.a[1]);
+				const int steps = std::max(1, static_cast<int>(std::ceil(len / 4)));
+				for (int st = 0; st <= steps; ++st)
+				{
+					const float x = pw.a[0] + (pw.b[0] - pw.a[0]) * st / steps, y = pw.a[1] + (pw.b[1] - pw.a[1]) * st / steps;
+					for (int dj = -1; dj <= 1; ++dj)
+						for (int di = -1; di <= 1; ++di)
+							cells.insert(PhotoCell(x + di * 16.0f, y + dj * 16.0f));
+				}
+				for (const int64_t c : cells)
+					photoNear[c].push_back(k);
+			}
+			std::string creators;
+			for (const auto& c : j.value("creators", nlohmann::json::array()))
+				creators += (creators.empty() ? "" : ", ") + c.get<std::string>();
+			std::printf("phototex: %zu walls from the street panoramas (%s; by %s)\n", photoWalls.size(), j.value("licence", "").c_str(), creators.c_str());
+		}
+		// (the ground as the street panoramas show it - phototex.py's ground step -: its blocks by the tile of their middle)
+		std::map<std::pair<int, int>, std::vector<GroundBlock>> groundBlocks;
+		if (!o.phototex.empty() && std::filesystem::is_regular_file(o.phototex / "ground.json"))
+		{
+			std::ifstream in(o.phototex / "ground.json");
+			const nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
+			if (j.is_discarded() || !j.contains("blocks"))
+				return error = "cannot read " + (o.phototex / "ground.json").string(), false;
+			size_t n = 0;
+			for (const auto& e : j["blocks"])
+			{
+				GroundBlock g;
+				g.i = e["i"].get<int>(), g.j = e["j"].get<int>(), g.offset = e["offset"].get<uint64_t>();
+				const float mx = (g.i + 0.5f) * kGroundBlock, my = (g.j + 0.5f) * kGroundBlock;
+				groundBlocks[{static_cast<int>(std::floor((mx - w.min[0]) / o.tile)), static_cast<int>(std::floor((my - w.min[1]) / o.tile))}].push_back(g);
+				++n;
+			}
+			std::printf("phototex: %zu blocks of the ground from the street panoramas\n", n);
+		}
 		// (the walls the street pictures saw: by the building's place in the world's list)
 		std::map<size_t, facades::Seen> seenWalls;
 		if (!o.facades.empty())
@@ -2590,10 +3020,19 @@ namespace worldgen::build
 				std::printf("undergrowth: %zu shrubs in the woods by the streets\n", us.bushes);
 				if (scanned)
 				{
-					// (and the hedges and shrubs the scan measured, where the streets see them: within 30 m)
+					// (and the hedges and shrubs the scan measured, where the streets see them: within 30 m - where the aerial
+					// pictures see a crown or green there: the scan's low things on paving and lawns were the cars parked that
+					// day, fences, signs, a cemetery's railing, the reviewers' "shrub blobs on open verges")
 					trees::Stats ls;
-					trees::LowGrowth(scan, [&](float x, float y) { const float r = roomAt(x, y); return r >= 1.0f && r < 30; }, open, ground,
-					    {bx0, by0, bx1, by1}, furniture, ls);
+					trees::LowGrowth(scan,
+					    [&](float x, float y) {
+						    const float r = roomAt(x, y);
+						    if (r < 1.0f || r >= 30)
+							    return false;
+						    const auto pc = photoClass.Cell({x, y});
+						    return !photoClass.In(pc[0], pc[1]) || photoClass.At(pc[0], pc[1]) == 2;
+					    },
+					    open, ground, {bx0, by0, bx1, by1}, furniture, ls);
 					std::printf("low growth: %zu shrubs and hedges the scan measured by the streets\n", ls.bushes);
 				}
 			}
@@ -2709,7 +3148,7 @@ namespace worldgen::build
 						scanPoles[poleKey(q[0].get<float>(), q[1].get<float>())].push_back({q[0].get<float>(), q[1].get<float>()});
 				}
 				size_t sided = 0;
-				const auto sideOf = [&](const roads::Edge& e) -> float {
+				const auto sideOf = [&](const roads::Edge& e, std::vector<P2>& on) -> float {
 					if (scanPoles.empty())
 						return 0;
 					const float inner = e.HalfWidth() + 0.3f, outer = e.HalfWidth() + e.Walk() + 6;
@@ -2742,6 +3181,9 @@ namespace worldgen::build
 					const size_t left = seen[0].size(), right = seen[1].size();
 					const float side = left >= 2 && left >= 2 * right ? 1.0f : right >= 2 && right >= 2 * left ? -1.0f : 0.0f;
 					sided += side != 0;
+					if (side != 0)
+						for (const auto& [key, q] : seen[side > 0 ? 0 : 1])
+							on.push_back(scanPoles.at(key)[q]);
 					return side;
 				};
 				powerlines::Place(network, poleClear, ground, buried, {bx0, by0, bx1, by1}, poles, wires, ps, sideOf);
@@ -3206,6 +3648,47 @@ namespace worldgen::build
 		}
 
 		took("props and trees");
+		// the ground's surface where the street panoramas see it, for phototex.py's pictures of it (<phototex>/surface.bin)
+		if (!o.phototex.empty())
+		{
+			std::vector<P2> seenFrom;
+			{
+				std::ifstream in(o.phototex / "poses.json");
+				const nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
+				if (!j.is_discarded() && j.is_array())
+					for (const auto& p : j)
+						if (p.value("ok", false) && p.value("agree", 0.0) >= 0.35 && p.value("miss", 99.0) <= 6.0)
+							seenFrom.push_back({p["fx"].get<float>(), p["fy"].get<float>()});
+			}
+			// (the terrain's mesh: as the walks' - its cells' two triangles, the diagonal the flatter way, lowered under the roads)
+			const float cell = o.cell;
+			const auto vertexZ = [&](int gi, int gj) {
+				const float x = w.min[0] + gi * cell, y = w.min[1] + gj * cell;
+				float h = ground(x, y);
+				const auto c = floor.Cell({x, y});
+				if (floor.In(c[0], c[1]) && floor.At(c[0], c[1]) < std::numeric_limits<float>::max())
+					h = std::min(h, floor.At(c[0], c[1]) - 0.15f);
+				return h;
+			};
+			const auto terrainTop = [&](float x, float y) {
+				const float fx = (x - w.min[0]) / cell, fy = (y - w.min[1]) / cell;
+				const int i = static_cast<int>(std::floor(fx)), j = static_cast<int>(std::floor(fy));
+				const float u = fx - i, v = fy - j;
+				const float a = vertexZ(i, j), b = vertexZ(i + 1, j), c = vertexZ(i, j + 1), d = vertexZ(i + 1, j + 1);
+				if (std::fabs(a - d) <= std::fabs(b - c))
+					return u >= v ? a + (b - a) * u + (d - b) * v : a + (d - c) * u + (c - a) * v;
+				return u + v <= 1 ? a + (b - a) * u + (c - a) * v : d + (c - d) * (1 - u) + (b - d) * (1 - v);
+			};
+			std::vector<const roads::Mesh*> tops{&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb};
+			for (const auto& m : surfaces.paved)
+				tops.push_back(&m);
+			size_t exported = 0;
+			if (!seenFrom.empty() && !ExportSurface(o.phototex / "surface.bin", seenFrom, tops, terrainTop, exported, error))
+				return false;
+			std::printf("phototex: the ground's surface in %zu blocks round %zu pictures\n", exported, seenFrom.size());
+			if (o.surfaceOnly)
+				return true;
+		}
 		// barriers along lines (barriers.hpp): the map's fences, walls, hedges and guard rails, none over a road or its
 		// sidewalks; their collision with the roads'
 		barriers::Meshes fences;
@@ -3267,6 +3750,14 @@ namespace worldgen::build
 		    !GameMaterial(files, "dt1_rd1_r1_05.ydr", 3, sidewalk, error) || !GameMaterial(files, "dt1_rd1_r1_05.ydr", 0, kerb, error) ||
 		    !GameMaterial(files, "dt1_rd1_r1_05.ydr", 5, marking, error))
 			return false;
+		ydr::Material groundDecal; // (the ground's pictures: the wear decals' shader, its alpha the picture's)
+		if (!groundBlocks.empty())
+		{
+			if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, groundDecal, error))
+				return false;
+			groundDecal.Texture(kBumpTex, o.name + "_flat_n");
+			groundDecal.Texture(kSpecularTex, o.name + "_asphalt_s");
+		}
 		// the lawns' (terrain_cb_w_4lyr_2tex_blend: the game's own lawns', a Rockford Hills ground model's; the only
 		// blending terrain shader the game has is this one with the rain's puddles - after rain they mirrored the sky over
 		// half a lawn: grass holds little standing water, so its layers' materialWetnessMultiplier (the game's 0.2-0.35)
@@ -3296,6 +3787,7 @@ namespace worldgen::build
 		// textures in one dictionary, the parent of each tile's roof picture (gtxd.meta)
 		std::vector<ydr::Material> wallMaterials;
 		ydr::Material roofMaterial;
+		ydr::Material photoMaterial; // (the photo walls': the walls' shader, flat, dull; the diffuse the tile's atlas)
 		uint32_t coveringBase = 0; // (wallMaterials' index of the first pitched roof covering)
 		uint32_t doorBase = 0;     // (and of the doors': kDoorColours' front doors, then the garage doors)
 		std::vector<mapfiles::Archetype> floraArchetypes; // (our own trees': added to the archetypes below)
@@ -3557,7 +4049,9 @@ namespace worldgen::build
 					const PhotoLayer kinds[5] = {{"ch1_06e_land+hi.ytd", "im_grass10b", "ch1_09_arc007+hidr.ytd", "im_grass07_n", 2, 1.0f},
 					    {"ch1_05_terrain+hi.ytd", "cs_tf_rsn_redgrass1", "ch1_05_terrain+hi.ytd", "cs_tf_rsn_redgrass1_n", 2, 1.0f},
 					    {"venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints", "venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints_n", 2, 1.0f},
-					    {"sp1_03_ground+hidr.ytd", "im_concrete25", "paletoroadtemp+hi.ytd", "im_concrete25_n", 2, 1.0f},
+					    // (paving: the roads' asphalt - im_concrete25's cracks under a car park's pale grey from above had made the
+					    // reviewers' "dry cracked mud")
+					    {"cityeastrd+hi.ytd", "im_road_019", "paletoroadtemp+hi.ytd", "im_concrete25_n", 2, 1.0f},
 					    {"bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", "bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n", 2, 1.0f}};
 					for (int k = 0; k < 5; ++k)
 					{
@@ -3680,6 +4174,9 @@ namespace worldgen::build
 			ydr::Material wallTemplate;
 			if (!GameMaterial(files, "sm_14_bld2.ydr", 6, wallTemplate, error) || !GameMaterial(files, "sm_14_bld2.ydr", 1, roofMaterial, error))
 				return false;
+			photoMaterial = wallTemplate;
+			photoMaterial.Texture(kBumpTex, o.name + "_flat_n");
+			photoMaterial.Texture(kSpecularTex, o.name + "_patch_s");
 			for (const auto& style : facadeSet.styles)
 			{
 				ydr::Material m = wallTemplate;
@@ -4359,6 +4856,53 @@ namespace worldgen::build
 				const uint32_t aerialKey = coveringBase + static_cast<uint32_t>(std::size(kRoofCoverings)), gravelKey = static_cast<uint32_t>(gravelStyle);
 				float tallest = 0;
 				size_t standing = 0;
+				// (the walls of these the street panoramas show: their pictures into the tile's atlases)
+				std::unordered_map<uint32_t, PhotoPlace> photoPlaces;
+				std::vector<texture::Image> photoAtlases;
+				if (!photoWalls.empty())
+				{
+					std::set<uint32_t> used;
+					for (const uint32_t k : nearShapes)
+					{
+						const P2& c = shapeCentre[k];
+						if (c[0] >= x0 && c[0] < x1 && c[1] >= y0 && c[1] < y1)
+						{
+							used.merge(PhotoWallsOf(shapes[k], photoWalls, photoNear));
+							// (WG_PHOTO_DEBUG=<building>: its walls and the photo walls along them)
+							if (const char* dbg = std::getenv("WG_PHOTO_DEBUG"); dbg && shapeBuilding[k] == std::strtoull(dbg, nullptr, 10))
+							{
+								const auto& s = shapes[k];
+								std::printf("photo debug: building %zu (shape %u) in tile %d,%d: %zu walls, measured %d\n", shapeBuilding[k], k, ti, tj, s.outline.size(),
+								    static_cast<int>(s.measured));
+								for (const auto& e : s.outline)
+								{
+									const P2 a{static_cast<float>(s.vertices[e[0]][0]), static_cast<float>(s.vertices[e[0]][1])};
+									const P2 b{static_cast<float>(s.vertices[e[1]][0]), static_cast<float>(s.vertices[e[1]][1])};
+									const float l = std::max(1e-3f, std::hypot(b[0] - a[0], b[1] - a[1]));
+									std::printf("  wall %.1f,%.1f -> %.1f,%.1f:", a[0], a[1], b[0], b[1]);
+									for (const PhotoStretch& ps : PhotoStretches(photoWalls, photoNear, a, b, {(b[1] - a[1]) / l, -(b[0] - a[0]) / l}))
+										std::printf(" photo wall %u %.1f-%.1f", ps.wall, ps.s0, ps.s1);
+									std::printf("\n");
+								}
+							}
+						}
+					}
+					if (!used.empty())
+					{
+						PackPhotoWalls(photoWalls, used, o.phototex / "walls.bin", photoAtlases, photoPlaces);
+						std::lock_guard lock(photoMutex);
+						photoMatched.insert(used.begin(), used.end());
+					}
+				}
+				const PhotoSet photoSet{photoWalls, photoNear, photoPlaces};
+				// (a door or a porch the rules put on a photo wall: the picture shows the real ones)
+				const auto onPhoto = [&](const P2& a, const P2& b) {
+					const float len = std::hypot(b[0] - a[0], b[1] - a[1]);
+					if (len < 1e-3f)
+						return false;
+					const int k = FindPhotoWall(photoWalls, photoNear, {a, b}, {(b[1] - a[1]) / len, -(b[0] - a[0]) / len});
+					return k >= 0 && photoPlaces.contains(static_cast<uint32_t>(k));
+				};
 				for (const uint32_t k : nearShapes)
 				{
 					const P2& c = shapeCentre[k];
@@ -4370,8 +4914,9 @@ namespace worldgen::build
 					const bool fromPicture = pictured && s.top < 25 && s.measured;
 					AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1, gravelKey,
 					    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), meshes, cv, ct,
-					    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f);
-					if (shapePorch[k].has)
+					    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f,
+					    photoPlaces.empty() ? nullptr : &photoSet);
+					if (shapePorch[k].has && !onPhoto(shapePorch[k].a, shapePorch[k].b))
 					{
 						const int whiteStyle = facades::Find(facadeSet, facades::Kind::House);
 						AddPorch(s, shapePorch[k], static_cast<uint32_t>(whiteStyle), facadeSet.styles[whiteStyle], gravelKey, facadeSet.styles[gravelStyle],
@@ -4379,7 +4924,13 @@ namespace worldgen::build
 						    cx, cy, meshes, cv, ct);
 					}
 					if (const auto dit = doorsOf.find(shapeBuilding[k]); dit != doorsOf.end())
-						AddDoors(dit->second, doorBase, cx, cy, meshes);
+					{
+						std::vector<Door> kept;
+						for (const Door& d : dit->second)
+							if (photoPlaces.empty() || !onPhoto(d.a, d.b))
+								kept.push_back(d);
+						AddDoors(kept, doorBase, cx, cy, meshes);
+					}
 					tallest = std::max(tallest, s.top);
 					++standing;
 				}
@@ -4388,6 +4939,7 @@ namespace worldgen::build
 					const std::string bname = std::format("{}_b_{}_{}", o.name, ti, tj);
 					std::string txd = facadeDictionary;
 					texture::Image lodRoof;
+					std::vector<loader::convert::DictionaryTexture> tileTextures;
 					if (meshes.contains(aerialKey))
 					{
 						// the tile's roof picture
@@ -4419,12 +4971,7 @@ namespace worldgen::build
 											sum += img.At(x * 4 + (k & 3), y * 4 + (k >> 2))[ch];
 										lodRoof.At(x, y)[ch] = static_cast<uint8_t>(sum / 16);
 									}
-							txd = std::format("{}_rt_{}_{}", o.name, ti, tj);
-							Bytes ytd;
-							if (!loader::convert::WriteTextureDictionary({texture::Make(std::format("{}_roof_{}_{}", o.name, ti, tj), img, texture::Format::Bc1)}, ytd, error))
-								return error = txd + ": " + error, false;
-							WriteFile(o.out / (txd + ".ytd"), ytd);
-							r.parents.push_back({txd, facadeDictionary});
+							tileTextures.push_back(texture::Make(std::format("{}_roof_{}_{}", o.name, ti, tj), img, texture::Format::Bc1));
 						}
 						else
 						{
@@ -4442,6 +4989,18 @@ namespace worldgen::build
 							meshes.erase(aerialKey);
 						}
 					}
+					// (the photo walls' atlases)
+					for (size_t k = 0; k < photoAtlases.size(); ++k)
+						tileTextures.push_back(texture::Make(std::format("{}_ph_{}_{}_{}", o.name, ti, tj, k), photoAtlases[k], texture::Format::Bc1));
+					if (!tileTextures.empty())
+					{
+						txd = std::format("{}_rt_{}_{}", o.name, ti, tj);
+						Bytes ytd;
+						if (!loader::convert::WriteTextureDictionary(tileTextures, ytd, error))
+							return error = txd + ": " + error, false;
+						WriteFile(o.out / (txd + ".ytd"), ytd);
+						r.parents.push_back({txd, facadeDictionary});
+					}
 					ydr::Drawable bd;
 					bd.name = bname;
 					for (const auto& [key, mesh] : meshes)
@@ -4450,6 +5009,12 @@ namespace worldgen::build
 						{
 							ydr::Material m = roofMaterial;
 							m.Texture(kDiffuseTex, std::format("{}_roof_{}_{}", o.name, ti, tj));
+							bd.materials.push_back(m);
+						}
+						else if (key >= kPhotoKeyBase)
+						{
+							ydr::Material m = photoMaterial;
+							m.Texture(kDiffuseTex, std::format("{}_ph_{}_{}_{}", o.name, ti, tj, key - kPhotoKeyBase));
 							bd.materials.push_back(m);
 						}
 						else
@@ -4499,7 +5064,7 @@ namespace worldgen::build
 							const bool fromPicture = lodRoof.width > 0 && s.top < 25;
 							AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
 							    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), lodMeshes, unusedV, unusedT,
-							    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f);
+							    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f, nullptr, 0.1f);
 						}
 						const std::string lname = std::format("{}_bl_{}_{}", o.name, ti, tj);
 						ydr::Drawable ld;
@@ -4708,6 +5273,89 @@ namespace worldgen::build
 			add(potholeDecal, surfaces.potholes);
 			add(breakupDecal, surfaces.breakups);
 			add(marking, surfaces.markings);
+			// the ground as the street panoramas show it: each block's picture in the tile's atlases (7 x 7 blocks of 256
+			// texels with 4 round each, the edges repeated), a decal over each 0.8 m cell of it that the pictures see
+			std::string roadTxd = facadeDictionary;
+			if (const auto git = groundBlocks.find({ti, tj}); git != groundBlocks.end())
+			{
+				std::ifstream gb(o.phototex / "ground.bin", std::ios::binary);
+				constexpr int kPerRow = 7, kStep = kGroundSide + 8, kAtlas = 2048;
+				std::vector<texture::Image> atlases;
+				std::vector<roads::Mesh> decals;
+				std::vector<float> grid(static_cast<size_t>(kGroundGrid) * kGroundGrid);
+				std::vector<uint8_t> px(static_cast<size_t>(kGroundSide) * kGroundSide * 4);
+				for (size_t k = 0; k < git->second.size(); ++k)
+				{
+					const GroundBlock& g = git->second[k];
+					const size_t atlas = k / (kPerRow * kPerRow);
+					if (atlas >= atlases.size())
+						atlases.emplace_back(kAtlas, kAtlas), decals.emplace_back();
+					const int ax = static_cast<int>(k % kPerRow) * kStep + 4, ay = static_cast<int>((k / kPerRow) % kPerRow) * kStep + 4;
+					gb.seekg(static_cast<std::streamoff>(g.offset));
+					gb.read(reinterpret_cast<char*>(grid.data()), static_cast<std::streamsize>(grid.size() * 4));
+					gb.read(reinterpret_cast<char*>(px.data()), static_cast<std::streamsize>(px.size()));
+					texture::Image& im = atlases[atlas];
+					for (int y = -4; y < kGroundSide + 4; ++y)
+						for (int x = -4; x < kGroundSide + 4; ++x)
+						{
+							const uint8_t* q = &px[(static_cast<size_t>(std::clamp(y, 0, kGroundSide - 1)) * kGroundSide + std::clamp(x, 0, kGroundSide - 1)) * 4];
+							im.At(ax + x, ay + y) = {q[0], q[1], q[2], q[3]};
+						}
+					roads::Mesh& m = decals[atlas];
+					const float bx = g.i * kGroundBlock, by = g.j * kGroundBlock;
+					std::vector<int> index(static_cast<size_t>(kGroundGrid) * kGroundGrid, -1);
+					const auto vertex = [&](int gi, int gj) {
+						int& v = index[static_cast<size_t>(gj) * kGroundGrid + gi];
+						if (v < 0)
+						{
+							ydr::Vertex x;
+							x.position = {bx + gi * kGroundStep * kGroundCell - cx, by + gj * kGroundStep * kGroundCell - cy, grid[static_cast<size_t>(gj) * kGroundGrid + gi]};
+							x.normal = {0, 0, 1};
+							x.tangent = {1, 0, 0, 1};
+							x.colour0 = {255, 255, 255, 255};
+							// (the picture's rows from the north)
+							x.uv[0] = {static_cast<float>(ax + gi * kGroundStep) / kAtlas, static_cast<float>(ay + kGroundSide - gj * kGroundStep) / kAtlas};
+							v = static_cast<int>(m.vertices.size());
+							m.vertices.push_back(x);
+						}
+						return static_cast<uint32_t>(v);
+					};
+					for (int gj = 0; gj + 1 < kGroundGrid; ++gj)
+						for (int gi = 0; gi + 1 < kGroundGrid; ++gi)
+						{
+							// (a cell any of whose texels the pictures see)
+							bool seen = false;
+							for (int ty = 0; ty < kGroundStep && !seen; ++ty)
+								for (int tx = 0; tx < kGroundStep && !seen; ++tx)
+									seen = px[(static_cast<size_t>(kGroundSide - 1 - (gj * kGroundStep + ty)) * kGroundSide + gi * kGroundStep + tx) * 4 + 3] > 0;
+							if (!seen)
+								continue;
+							const uint32_t a = vertex(gi, gj), b = vertex(gi + 1, gj), c = vertex(gi + 1, gj + 1), d = vertex(gi, gj + 1);
+							m.indices.insert(m.indices.end(), {a, b, c, a, c, d});
+						}
+				}
+				std::vector<loader::convert::DictionaryTexture> textures;
+				for (size_t k = 0; k < atlases.size(); ++k)
+				{
+					if (decals[k].indices.empty())
+						continue;
+					const std::string name = std::format("{}_gp_{}_{}_{}", o.name, ti, tj, k);
+					textures.push_back(texture::Make(name, atlases[k], texture::Format::Bc3));
+					ydr::Material mat = groundDecal;
+					mat.Texture(kDiffuseTex, name);
+					rd.materials.push_back(mat);
+					AddMeshes(rd, static_cast<uint32_t>(rd.materials.size() - 1), decals[k]);
+				}
+				if (!textures.empty())
+				{
+					roadTxd = std::format("{}_gt_{}_{}", o.name, ti, tj);
+					Bytes ytd;
+					if (!loader::convert::WriteTextureDictionary(textures, ytd, error))
+						return error = roadTxd + ": " + error, false;
+					WriteFile(o.out / (roadTxd + ".ytd"), ytd);
+					r.parents.push_back({roadTxd, facadeDictionary});
+				}
+			}
 			if (!rd.lods[0].empty())
 			{
 				if (!ydr::Write(rd, file, error))
@@ -4715,7 +5363,7 @@ namespace worldgen::build
 				WriteFile(o.out / (rname + ".ydr"), file);
 				mapfiles::Archetype ra;
 				ra.name = rname;
-				ra.textureDictionary = loader::convert::Joaat(facadeDictionary);
+				ra.textureDictionary = loader::convert::Joaat(roadTxd);
 				ra.lodDist = 1200;
 				ydr::Box(rd, ra.min, ra.max);
 				r.archetypes.push_back(ra);
@@ -4843,6 +5491,55 @@ namespace worldgen::build
 				stats.generatedTiles += r.generatedTiles, stats.tiles += r.tiles;
 			}
 		}
+		// (the photo walls no wall of ours stood on, and why: <name>_phototex.txt - the building's not built, or its nearest
+		// wall's ends off the photo wall's line, past its ends, facing another way)
+		if (!photoWalls.empty())
+		{
+			std::unordered_map<size_t, std::vector<uint32_t>> shapesOf;
+			for (size_t k = 0; k < shapeBuilding.size(); ++k)
+				shapesOf[shapeBuilding[k]].push_back(static_cast<uint32_t>(k));
+			std::ofstream list(o.out.parent_path() / (o.name + "_phototex.txt"));
+			size_t unbuilt = 0, inArea = 0;
+			for (uint32_t k = 0; k < photoWalls.size(); ++k)
+			{
+				const PhotoWall& pw = photoWalls[k];
+				const P2 mid{(pw.a[0] + pw.b[0]) / 2, (pw.a[1] + pw.b[1]) / 2};
+				if (mid[0] < bx0 || mid[0] >= bx1 || mid[1] < by0 || mid[1] >= by1)
+					continue;
+				++inArea;
+				if (photoMatched.contains(k))
+					continue;
+				const auto it = shapesOf.find(pw.building);
+				if (it == shapesOf.end())
+				{
+					++unbuilt;
+					list << std::format("{} building {}: not built\n", k, pw.building);
+					continue;
+				}
+				const float dx = pw.b[0] - pw.a[0], dy = pw.b[1] - pw.a[1], len = std::max(1e-3f, std::hypot(dx, dy));
+				const P2 u{dx / len, dy / len}, n{u[1], -u[0]};
+				float bestOff = 1e30f, bestDot = 0, bestS0 = 0, bestS1 = 0;
+				for (const uint32_t si : it->second)
+				{
+					const auto& s = shapes[si];
+					for (const auto& e : s.outline)
+					{
+						const P2 a{static_cast<float>(s.vertices[e[0]][0]), static_cast<float>(s.vertices[e[0]][1])};
+						const P2 b{static_cast<float>(s.vertices[e[1]][0]), static_cast<float>(s.vertices[e[1]][1])};
+						const float off = std::max(std::fabs((a[0] - pw.a[0]) * n[0] + (a[1] - pw.a[1]) * n[1]), std::fabs((b[0] - pw.a[0]) * n[0] + (b[1] - pw.a[1]) * n[1]));
+						const float el = std::max(1e-3f, std::hypot(b[0] - a[0], b[1] - a[1]));
+						const float dot = ((b[1] - a[1]) / el) * n[0] - ((b[0] - a[0]) / el) * n[1];
+						if (off < bestOff)
+							bestOff = off, bestDot = dot, bestS0 = (a[0] - pw.a[0]) * u[0] + (a[1] - pw.a[1]) * u[1],
+							bestS1 = (b[0] - pw.a[0]) * u[0] + (b[1] - pw.a[1]) * u[1];
+					}
+				}
+				list << std::format("{} building {}: nearest wall {:.2f} m off its line, facing {:.2f}, from {:.1f} to {:.1f} of {:.1f} m\n", k, pw.building, bestOff,
+				    bestDot, bestS0, bestS1, len);
+			}
+			std::printf("phototex: %zu of the %zu photo walls here on walls of ours (%zu buildings not built; the rest in %s_phototex.txt)\n", photoMatched.size(),
+			    inArea, unbuilt, o.name.c_str());
+		}
 		// the roof pictures' dictionaries under the walls' (worldgen pack puts gtxd.meta in the pack's data)
 		if (!parents.empty())
 		{
@@ -4950,6 +5647,22 @@ namespace worldgen::build
 		// entities, had none of them made; the game's own are in its maps with entities too; at most 4 maps' worth a cell, 816)
 		std::map<std::pair<int, int>, std::vector<mapfiles::CarGen>> carCells;
 		size_t carsOver = 0;
+		// (and every one of them for the loader, which makes them itself - the car generators made none on our lands:
+		// parked.bin, 'WBPK' version 1, the count, then each car's x, y, z and heading (degrees, the game's: anticlockwise
+		// from north), f32; next to the pack, game/sectors.cpp)
+		{
+			std::ofstream pk(o.out / "parked.bin", std::ios::binary);
+			const uint32_t version = 1, count = static_cast<uint32_t>(parked.size());
+			pk.write("WBPK", 4);
+			pk.write(reinterpret_cast<const char*>(&version), 4);
+			pk.write(reinterpret_cast<const char*>(&count), 4);
+			for (const auto& c : parked)
+			{
+				const float rec[4] = {c.position[0], c.position[1], c.position[2],
+				    static_cast<float>(std::atan2(-c.direction[0], c.direction[1]) * 180.0 / 3.14159265358979)};
+				pk.write(reinterpret_cast<const char*>(rec), sizeof(rec));
+			}
+		}
 		for (const auto& c : parked)
 			if (auto& list = carCells[{static_cast<int>(std::floor((c.position[0] - w.min[0]) / 250)), static_cast<int>(std::floor((c.position[1] - w.min[1]) / 250))}];
 			    list.size() < 816)

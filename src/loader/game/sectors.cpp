@@ -4,9 +4,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -128,6 +131,158 @@ namespace loader::game::sectors
 		std::vector<std::string> g_farMaps, g_farAway; // (all; those put away)
 		int g_far = -1;                                 // (-1 not known yet, 0 there, 1 away)
 		ULONGLONG g_lastFar = 0;
+
+		// Parked cars (research/phase0.md §63.3): the game's car generators on our lands made no car (their maps written -
+		// CCarGen - and not one ever came), so the loader makes them: a land's parked.bin (worldgen build: each car's place on
+		// a driveway, in a car park's stall, by a kerb - 'WBPK' version 1, the count, then x, y, z, heading, f32) read once
+		// the camera is on it; the cars within 120 m of the camera made (a sedan, an SUV or a pickup, a common colour, by
+		// the place), those past 180 m taken away again; one the player gets into or moves is the game's from then on.
+		constexpr float kParkNear = 120, kParkFar = 180;
+		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
+		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF;
+		struct ParkedCar
+		{
+			float x = 0, y = 0, z = 0, heading = 0;
+			uint32_t model = 0;
+			int32_t colour = 0;
+			int32_t vehicle = 0; // (0 none, -1 taken: not made again)
+			bool asked = false;
+		};
+		struct ParkedLand
+		{
+			bool read = false;
+			std::vector<ParkedCar> cars;
+			std::unordered_map<int64_t, std::vector<uint32_t>> cells; // (by 50 m cell)
+		};
+		std::map<std::string, ParkedLand> g_parked;
+		std::vector<std::pair<std::string, uint32_t>> g_parkedLive; // (the cars made: their land, their place in its list)
+		ULONGLONG g_lastPark = 0;
+
+		int64_t ParkCell(float x, float y)
+		{
+			return static_cast<int64_t>(std::floor(x / 50)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 50)));
+		}
+
+		void ReadParked(const Land& l, ParkedLand& pl)
+		{
+			pl.read = true;
+			std::ifstream in(paths::Get().mods / l.name / L"parked.bin", std::ios::binary);
+			char magic[4]{};
+			uint32_t version = 0, count = 0;
+			in.read(magic, 4);
+			in.read(reinterpret_cast<char*>(&version), 4);
+			in.read(reinterpret_cast<char*>(&count), 4);
+			if (!in || std::memcmp(magic, "WBPK", 4) != 0 || version != 1 || count > 2000000)
+				return;
+			// (the Florida streets' cars: sedans, SUVs, pickups and minivans; common colours - white, black, greys, silver, a
+			// few blue and red)
+			static const char* const kModels[] = {"asea", "premier", "fugitive", "tailgater", "intruder", "primo", "stanier", "washington", "emperor",
+			    "glendale", "baller", "granger", "cavalcade", "rebla", "landstalker", "huntley", "seminole", "gresley", "habanero", "fq2", "sadler", "bison",
+			    "minivan", "serrano"};
+			static const int32_t kColours[] = {111, 111, 111, 0, 0, 0, 4, 4, 5, 6, 7, 8, 13, 64, 62, 27, 112, 2};
+			pl.cars.resize(count);
+			for (uint32_t k = 0; k < count; ++k)
+			{
+				float rec[4];
+				in.read(reinterpret_cast<char*>(rec), sizeof(rec));
+				ParkedCar& c = pl.cars[k];
+				c.x = rec[0], c.y = rec[1], c.z = rec[2], c.heading = rec[3];
+				uint32_t h = static_cast<uint32_t>(std::lround(c.x * 10)) * 2654435761u ^ static_cast<uint32_t>(std::lround(c.y * 10)) * 40503u;
+				h ^= h >> 15, h *= 0x2c1b3c6d, h ^= h >> 12;
+				c.model = convert::Joaat(kModels[h % std::size(kModels)]);
+				c.colour = kColours[(h >> 8) % std::size(kColours)];
+				pl.cells[ParkCell(c.x, c.y)].push_back(k);
+			}
+			if (!in)
+				pl.cars.clear(), pl.cells.clear();
+			log::Info("sectors: {}: {} parked cars", l.name, pl.cars.size());
+		}
+
+		void WatchParked()
+		{
+			const ULONGLONG now = GetTickCount64();
+			if (now - g_lastPark < 300)
+				return;
+			g_lastPark = now;
+			const auto c = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
+			const Land* here = nullptr;
+			for (const Land& l : g_lands)
+				if (!l.dormant && c.x >= l.box[0] && c.x < l.box[2] && c.y >= l.box[1] && c.y < l.box[3])
+				{
+					here = &l;
+					break;
+				}
+			// those made: taken away far off (or off the land), the game's once the player is in one or it was moved
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			for (size_t k = 0; k < g_parkedLive.size();)
+			{
+				ParkedCar& car = g_parked[g_parkedLive[k].first].cars[g_parkedLive[k].second];
+				bool gone = !natives::Invoke<int32_t>(kDoesEntityExist, car.vehicle);
+				if (gone)
+					car.vehicle = 0;
+				else
+				{
+					const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, car.vehicle, 1);
+					if (natives::Invoke<int32_t>(kIsPedInVehicle, player, car.vehicle, 0) || std::hypot(p.x - car.x, p.y - car.y) > 3)
+					{
+						natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle);
+						car.vehicle = -1;
+						gone = true;
+					}
+					else if (!here || g_parkedLive[k].first != here->name || std::hypot(c.x - car.x, c.y - car.y) > kParkFar)
+					{
+						natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
+						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
+						car.vehicle = 0;
+						gone = true;
+					}
+				}
+				if (gone)
+				{
+					g_parkedLive[k] = g_parkedLive.back();
+					g_parkedLive.pop_back();
+				}
+				else
+					++k;
+			}
+			if (!here)
+				return;
+			ParkedLand& pl = g_parked[here->name];
+			if (!pl.read)
+				ReadParked(*here, pl);
+			// the near ones made, a few each time (each once its model is in)
+			int made = 0;
+			const int reach = static_cast<int>(std::ceil(kParkNear / 50));
+			for (int dj = -reach; dj <= reach; ++dj)
+				for (int di = -reach; di <= reach; ++di)
+				{
+					const auto it = pl.cells.find(ParkCell(c.x + di * 50.0f, c.y + dj * 50.0f));
+					if (it == pl.cells.end())
+						continue;
+					for (const uint32_t k : it->second)
+					{
+						ParkedCar& car = pl.cars[k];
+						if (car.vehicle != 0 || std::hypot(c.x - car.x, c.y - car.y) > kParkNear)
+							continue;
+						if (!car.asked)
+						{
+							natives::Invoke<void>(kRequestModel, car.model);
+							car.asked = true;
+							continue;
+						}
+						if (made >= 8 || !natives::Invoke<int32_t>(kHasModelLoaded, car.model))
+							continue;
+						const int32_t v = natives::Invoke<int32_t>(kCreateVehicle, car.model, car.x, car.y, car.z + 0.3f, car.heading, 0, 0, 0);
+						if (!v)
+							continue;
+						natives::Invoke<void>(kSetVehicleOnGroundProperly, v, 5.0f);
+						natives::Invoke<void>(kSetVehicleColours, v, car.colour, car.colour);
+						car.vehicle = v;
+						g_parkedLive.push_back({here->name, k});
+						++made;
+					}
+				}
+		}
 
 		void WatchFar()
 		{
@@ -496,6 +651,7 @@ namespace loader::game::sectors
 					}
 			WatchFar();
 			WatchEdges();
+			WatchParked();
 			return;
 		}
 		const ULONGLONG now = GetTickCount64(), spent = now - g_switch.since;

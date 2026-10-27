@@ -1459,22 +1459,11 @@ namespace worldgen::roads
 					}
 				};
 				const auto slice = [](const auto& v, size_t i0, size_t i1) { return std::decay_t<decltype(v)>(v.begin() + i0, v.begin() + i1); };
-				// the kerb's face: painted yellow within 9 m of a junction's corner - Florida's no parking there, the street
-				// pictures' corners all have it -, plain concrete elsewhere (the kerb picture's yellow row, its plain one)
-				constexpr float kYellowRow = 0.405f, kPlainRow = 0.81f;
+				// the kerb's face: plain concrete (the kerb picture's plain row; its yellow paint, put at every corner by a rule,
+				// was where the street pictures have none - which kerbs are painted the map does not say)
+				constexpr float kPlainRow = 0.81f;
 				const auto kerb = [&](const std::vector<P3>& line, size_t i0, size_t i1, bool faceLeft) {
-					const auto yellow = [&](size_t i) {
-						const float mid = (s[i] + s[std::min(i + 1, s.size() - 1)]) / 2;
-						return !Minor(e) && ((crossA && mid < sStart + 9) || (crossB && mid > sEnd - 9));
-					};
-					for (size_t a = i0; a + 1 < i1;)
-					{
-						size_t z = a + 1;
-						while (z + 1 < i1 && yellow(z) == yellow(a))
-							++z;
-						b.Wall(out.kerb, slice(line, a, z + 1), kKerb, faceLeft, kConcrete, yellow(a) ? kYellowRow : kPlainRow);
-						a = z;
-					}
+					b.Wall(out.kerb, slice(line, i0, i1), kKerb, faceLeft, kConcrete, kPlainRow);
 				};
 				stretches(fillL, [&](size_t i0, size_t i1) {
 					b.Strip(out.sidewalk, slice(walkLi, i0, i1), slice(walkLo, i0, i1), slice(uvWi, i0, i1), slice(uvWoL, i0, i1), kPavement, !e.bridge,

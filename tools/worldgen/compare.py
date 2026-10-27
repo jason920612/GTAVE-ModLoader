@@ -15,13 +15,15 @@ usage: python -I tools/worldgen/compare.py aerial --land <name> --out <dir> [--a
   mapillary: street pictures someone downloaded from Mapillary (CC BY-SA 4.0: their creators named on each sheet),
           not panoramas, at their places and headings: <dir>/street_<k>_<id>.png
        python -I tools/worldgen/compare.py pano --land <name> --metadata <metadata.csv>[,...] --out <dir> [--limit 12] [--seed 1]
-          [--spacing 80] [--views 0,90,-90]
+          [--spacing 80] [--views 0,90,-90] [--poses <poses.json>]
   pano: the downloads' panoramas - where the comparison is exact: the game's camera at the picture's place (2 m up), and
           out of the panorama the very view the game's camera has (its field of view, 16:9) towards the picture's heading
           and the --views offsets (degrees: ahead, right, left); the panorama's own heading error (a few degrees) and tilt
           taken out by fitting its skyline to the game's (yaw within 15, pitch within 4 degrees): <dir>/pano_<k>_<id>_<view>.png
           (the picture above, the game below) and <dir>/pano.json (each sheet's place, heading, the fit and how well the
-          skylines agree - a fit worse than 0.06 of the height: the place or the scene does not match)
+          skylines agree - a fit worse than 0.06 of the height: the place or the scene does not match). --poses: phototex.py's
+          fits (place, heading, camera height and tilt against the laser scan's skyline) where they are good, instead of the
+          picture's own place snapped to a lane and the skyline fit against the game's
 """
 import io, json, math, os, random, re, subprocess, sys, time, urllib.parse, urllib.request
 
@@ -494,6 +496,10 @@ def pano(o):
         if len(chosen) >= int(o.get('limit', 12)):
             break
     views = [float(v) for v in o.get('views', '0,90,-90').split(',')]
+    fits = {}
+    if 'poses' in o:
+        with open(o['poses'], encoding='utf-8') as f:
+            fits = {p['id']: p for p in json.load(f) if p.get('ok') and p.get('agree', 0) >= float(o.get('agree', 0.35))}
     listed = []
     hud_off()
     roads = land_roads(land)
@@ -513,32 +519,46 @@ def pano(o):
             gtactl('wait:4')
             gz = ground_z(x, y, land) or 1.0
         # (the panorama's place is a few metres off as often as not - a camera on a car put on the wrong side of the middle
-        # line: onto the lane it drove in when it is on the road)
-        snapped = road_along(roads, x, y, compass, 12.0, carriageway=True) if roads else None
-        if snapped:
-            x, y = snapped
+        # line: onto the lane it drove in when it is on the road; phototex.py's fit where there is a good one)
+        fit = fits.get(r['id'])
+        cam_up = 2.0
+        if fit:
+            x, y, compass = fit['fx'], fit['fy'], fit['fh']
             gz = ground_z(x, y, land) or gz
+            cam_up = max(1.2, fit['zc'] - gz)
+        else:
+            snapped = road_along(roads, x, y, compass, 12.0, carriageway=True) if roads else None
+            if snapped:
+                x, y = snapped
+                gz = ground_z(x, y, land) or gz
         # (the parked cars: the game makes them only near the player and out of the camera's sight - the player there,
         # unseen (SET_ENTITY_VISIBLE 0), the camera looking up at the sky a while; then only what stands on the camera's
         # spot cleared (CLEAR_AREA 3 m, objects kept): the driveways' and the lots' cars stay)
         gtactl(f'raw:tp {x:.1f} {y:.1f} {gz + 0.5:.1f}', 'wait:1')
         if ped is not None:
             gtactl(f'raw:native 0xEA1C610A04DB6BBB {ped} 0 0')
-        gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} 0 89 {EYE_FOV}', 'wait:6')
+        gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + cam_up:.1f} 0 89 {EYE_FOV}', 'wait:6')
         gtactl(f'raw:native 0xA56F01F3765B93A0 {x:.1f} {y:.1f} {gz:.1f} 3.0 1 0 1 0')  # (CLEAR_AREA round the camera, objects kept)
         picture = np.asarray(Image.open(r['path']).convert('RGB'), np.float32)
         small = np.asarray(Image.fromarray(picture.astype(np.uint8)).resize((1024, 512)), np.float32)
         for view in views:
             yaw = (compass + view) % 360
             shot = os.path.join(out, f'game_{r["id"]}_{view:+.0f}.png')
-            gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} {(360 - yaw) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
+            gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + cam_up:.2f} {(360 - yaw) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
             game = Image.open(shot).convert('RGB').resize((960, 540))
-            dy, pitch, score = fit_view(small, compass, yaw, np.asarray(game.resize((320, 180)), np.float32))
+            if fit:
+                # (the fit's tilt at this view: the picture's elevations are off by it - the view's pitch)
+                rel = math.radians(view)
+                dy, pitch = 0.0, fit['tilt'][0] * math.cos(rel) + fit['tilt'][1] * math.sin(rel)
+                score = float(np.abs(skyline(np.asarray(pano_view(small, compass, yaw, pitch, EYE_FOV, 320, 180), np.float32)) -
+                                     skyline(np.asarray(game.resize((320, 180)), np.float32))).mean())
+            else:
+                dy, pitch, score = fit_view(small, compass, yaw, np.asarray(game.resize((320, 180)), np.float32))
             real = Image.fromarray(np.clip(pano_view(picture, compass, yaw + dy, pitch, EYE_FOV, 960, 540), 0, 255).astype(np.uint8))
             sheet = Image.new('RGB', (960, 540 * 2 + 8), (255, 255, 255))
             sheet.paste(label(real, f'Mapillary {r["id"]} {r["date"]} by {r["creator"]} (CC BY-SA 4.0), facing {yaw + dy:.0f} '
                                     f'(fit {dy:+.1f}, pitch {pitch:+.0f})'), (0, 0))
-            sheet.paste(label(game, f'game {land.name} {x:.0f},{y:.0f},{gz + 2:.1f} facing {yaw:.0f}'), (0, 548))
+            sheet.paste(label(game, f'game {land.name} {x:.0f},{y:.0f},{gz + cam_up:.1f} facing {yaw:.0f}'), (0, 548))
             name = f'pano_{k:02d}_{r["id"]}_{view:+.0f}.png'
             sheet.save(os.path.join(out, name))
             listed.append({'sheet': name, 'id': r['id'], 'lat': float(r['lat']), 'lon': float(r['lon']), 'x': round(x, 1), 'y': round(y, 1),

@@ -2083,9 +2083,9 @@ int main(int argc, char** argv)
 				continue;
 			std::string file = entry.path().filename().string();
 			std::transform(file.begin(), file.end(), file.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			if (file == "land.json" || file == "water.bin")
+			if (file == "land.json" || file == "water.bin" || file == "parked.bin")
 			{
-				// (the loader's, next to the pack: game/sea.cpp, game/minimap.cpp)
+				// (the loader's, next to the pack: game/sea.cpp, game/minimap.cpp, game/sectors.cpp's parked cars)
 				std::error_code ec;
 				fs::create_directories(out.parent_path(), ec);
 				fs::copy_file(entry.path(), out.parent_path() / file, fs::copy_options::overwrite_existing, ec);
@@ -2348,6 +2348,7 @@ int main(int argc, char** argv)
 		// a world description -> its pack's files (build.hpp): --world <world.json> --out <dir> [--zones <mod dir>] [--name n]
 		// [--area x0,y0,x1,y1] [--tile m] [--cell m] [--navmesh 0] [--paths 0] [--scan <lidar.py rasters> [--aerial <aerial.py
 		// tiles>] [--datum m]: measured ground and buildings of our own] [--waves s: the sea's swell round it, 1 the open ocean's]
+		// [--phototex <dir>: the street panoramas on the walls, tools/worldgen/phototex.py's]
 		if (!g_options.contains("world") || !g_options.contains("out"))
 			return Fail("--world <world.json> --out <dir> are needed");
 		worldgen::world::World w;
@@ -2396,6 +2397,9 @@ int main(int argc, char** argv)
 			o.photo = g_options["photo"];
 		if (g_options.contains("facades"))
 			o.facades = g_options["facades"];
+		if (g_options.contains("phototex"))
+			o.phototex = g_options["phototex"];
+		o.surfaceOnly = g_options.contains("surface-only") && g_options["surface-only"] != "0";
 		if (g_options.contains("climate"))
 			o.climate = g_options["climate"];
 		if (g_options.contains("datum"))
