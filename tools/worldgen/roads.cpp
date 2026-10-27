@@ -829,6 +829,7 @@ namespace worldgen::roads
 			e.bike = r.bikeLanes ? 1.5f : 0.0f;
 			e.curb = r.curb && !r.sidewalks;
 			e.walkLeft = r.sidewalkLeft, e.walkRight = r.sidewalkRight;
+			e.centre = r.centreLanes;
 			e.forward = r.forward, e.backward = r.backward, e.laneWidth = r.laneWidth, e.sidewalks = r.sidewalks, e.bridge = r.bridge, e.layer = r.layer, e.kind = r.kind,
 			e.name = r.name, e.speed = r.speed, e.id = r.id, e.surface = r.surface, e.smoothness = r.smoothness;
 			e.a = vertex(r.points.front());
@@ -1177,7 +1178,7 @@ namespace worldgen::roads
 		{
 			bool any = false;
 			float half = 0;
-			int lanesF = 0, lanesB = 0;
+			int lanesF = 0, lanesB = 0, centre = 0;
 			float laneWidth = 3.5f, parking = 0;
 			bool sidewalks = false;
 			int other = -1;
@@ -1205,6 +1206,7 @@ namespace worldgen::roads
 			x.laneWidth = o.laneWidth;
 			x.parking = o.Side();
 			x.sidewalks = o.sidewalks;
+			x.centre = o.centre;
 			// traffic going our way: at our start it comes out of the other; at our end it goes into it
 			const bool otherPointsHere = o.b == v;
 			if (atA)
@@ -1285,11 +1287,13 @@ namespace worldgen::roads
 				const float t = std::clamp(1 - d / tap, 0.0f, 1.0f);
 				return t * t * (3 - 2 * t);
 			};
-			std::vector<float> halfAt(p.size()), walkAt(p.size()), walkAtL(p.size()), walkAtR(p.size()), centreAt(p.size()), parkAt(p.size());
+			// (centreAt: the left edge of the lanes going along; a centre turn lane, turnAt wide, between it and the lanes against)
+			std::vector<float> halfAt(p.size()), walkAt(p.size()), walkAtL(p.size()), walkAtR(p.size()), centreAt(p.size()), parkAt(p.size()), turnAt(p.size());
 			for (size_t i = 0; i < p.size(); ++i)
 			{
 				const float ta = into(s[i], true), tb = into(s[i], false);
 				float h = half, c = centreOf(half, e.forward, w, e.Side()), wk = e.Walk() > 0 ? e.Walk() : e.curb ? kCurbTop : 0.0f, pk = e.Side();
+				float turn = e.centre * w;
 				// (a side without its sidewalk: the kerb and gutter)
 				float wl = e.sidewalks && !e.walkLeft ? kCurbTop : wk, wr = e.sidewalks && !e.walkRight ? kCurbTop : wk;
 				for (const auto& [t, x] : {std::pair{ta, &na}, std::pair{tb, &nb}})
@@ -1303,8 +1307,9 @@ namespace worldgen::roads
 						c = c + (centreOf(x->half, x->lanesF, x->laneWidth, x->parking) - centreOf(half, e.forward, w, e.Side())) * t;
 					if ((e.sidewalks || e.curb) && !x->sidewalks)
 						wk = wk * (1 - t), wl = wl * (1 - t), wr = wr * (1 - t);
+					turn = turn + (x->centre * x->laneWidth - e.centre * w) * t;
 				}
-				halfAt[i] = h, walkAt[i] = std::max(wl, wr), walkAtL[i] = wl, walkAtR[i] = wr, centreAt[i] = c, parkAt[i] = pk;
+				halfAt[i] = h, walkAt[i] = std::max(wl, wr), walkAtL[i] = wl, walkAtR[i] = wr, centreAt[i] = c, parkAt[i] = pk, turnAt[i] = turn;
 			}
 			// the median paving beyond each side at each point (and so no sidewalk there)
 			const Median& md = medians[ei];
@@ -1366,13 +1371,15 @@ namespace worldgen::roads
 			const bool major = e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary");
 			{
 				std::vector<float> lines;
-				const float c0 = centreOf(half, e.forward, w, e.Side());
-				if (e.forward && e.backward && through)
+				const float c0 = centreOf(half, e.forward, w, e.Side()), t0 = e.centre * w;
+				if (e.forward && e.backward && e.centre)
+					lines.insert(lines.end(), {c0 + 0.08f, c0 + 0.32f, c0 + t0 - 0.08f, c0 + t0 - 0.32f});
+				else if (e.forward && e.backward && through)
 					lines.insert(lines.end(), {c0 - 0.12f, c0 + 0.12f});
 				for (int j = 1; j < e.forward; ++j)
 					lines.push_back(c0 - j * w);
 				for (int j = 1; j < e.backward; ++j)
-					lines.push_back(c0 + j * w);
+					lines.push_back(c0 + t0 + j * w);
 				if (major || e.bike > 0)
 					lines.insert(lines.end(), {-half + 0.45f + e.Side(), half - 0.45f - e.Side()});
 				const uint32_t seed = static_cast<uint32_t>(e.id) * 2654435761u ^ static_cast<uint32_t>(std::lround(p.front()[0] * 10)) * 40503u ^
@@ -1599,7 +1606,16 @@ namespace worldgen::roads
 				if (painted && to - from > 0.5f)
 					b.Marking(p, z, s, o, width, u0, u1, repeat, dash, period, v0, v1, from, to);
 			};
-			if (e.forward && e.backward && through)
+			if (e.forward && e.backward && e.centre)
+			{
+				// (a two-way left turn lane: each edge a solid yellow line by the lanes going on, a dashed one inside it)
+				line(offsets([&](size_t i) { return centreAt[i] + 0.08f; }), 0.15f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
+				line(offsets([&](size_t i) { return centreAt[i] + 0.32f; }), 0.15f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB, 3.0f, 12.0f, 0.15f, 0.85f);
+				line(offsets([&](size_t i) { return centreAt[i] + turnAt[i] - 0.08f; }), 0.15f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
+				line(offsets([&](size_t i) { return centreAt[i] + turnAt[i] - 0.32f; }), 0.15f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB, 3.0f,
+				    12.0f, 0.15f, 0.85f);
+			}
+			else if (e.forward && e.backward && through)
 			{
 				line(offsets([&](size_t i) { return centreAt[i] + 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
 				line(offsets([&](size_t i) { return centreAt[i] - 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
@@ -1615,7 +1631,7 @@ namespace worldgen::roads
 			{
 				const float from = sStart + std::max(clearA, na.any && j >= na.lanesB ? tapA : 0.0f);
 				const float to = sEnd - std::max(clearB, nb.any && j >= nb.lanesB ? tapB : 0.0f);
-				line(offsets([&](size_t i) { return centreAt[i] + j * w; }), 0.2f, kDashU0, kDashU1, 4.0f, from, to, 3.0f, 12.0f, 0.15f, 0.85f);
+				line(offsets([&](size_t i) { return centreAt[i] + turnAt[i] + j * w; }), 0.2f, kDashU0, kDashU1, 4.0f, from, to, 3.0f, 12.0f, 0.15f, 0.85f);
 			}
 			if (major || e.bike > 0)
 			{
@@ -1644,8 +1660,8 @@ namespace worldgen::roads
 					return;
 				const float sl = atB ? sEnd - 4.2f : sStart + 4.2f;
 				// (the stop line across the lanes coming in: the right of the centre going to b, the left coming to a)
-				const float c = centreAt[i];
-				const float o0 = atB ? c - lanes * w : c, o1 = atB ? c : c + lanes * w;
+				const float c = centreAt[i], turn = turnAt[i];
+				const float o0 = atB ? c - lanes * w : c + turn, o1 = atB ? c : c + turn + lanes * w;
 				P2 q{}, d{};
 				float qz = z[i];
 				// the point at sl and the road's direction there
@@ -2281,10 +2297,10 @@ namespace worldgen::roads
 				node.light = light;
 				nodes.push_back(node);
 				const int here = static_cast<int>(nodes.size() - 1);
-				links.push_back({previous, here, e.forward, e.backward, e.LanesHalf() * 2});
+				links.push_back({previous, here, e.forward, e.backward, e.LanesHalf() * 2, e.centre * e.laneWidth});
 				previous = here;
 			}
-			links.push_back({previous, vertexNode[e.b], e.forward, e.backward, e.LanesHalf() * 2});
+			links.push_back({previous, vertexNode[e.b], e.forward, e.backward, e.LanesHalf() * 2, e.centre * e.laneWidth});
 		}
 	}
 }

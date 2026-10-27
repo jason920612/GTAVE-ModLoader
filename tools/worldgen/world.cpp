@@ -257,7 +257,11 @@ namespace worldgen::world
 				                         : one && (base == "residential" || base == "service" || base == "unclassified" || base == "living_street" || base == "road")
 				                             ? 1
 				                             : 2;
-				const int total = lanes > 0 ? lanes : defaultLanes;
+				// (a two-way left turn lane down the middle - lanes:both_ways, or turn:lanes:both_ways left -, Florida's
+				// arterials' fifth lane: in the lanes counted, not one of either way's)
+				const int both = static_cast<int>(Number(Tag(t, "lanes:both_ways")));
+				r.centreLanes = !one && (both > 0 || Tag(t, "turn:lanes:both_ways").find("left") != std::string::npos) ? 1 : 0;
+				const int total = lanes > 0 ? std::max(r.centreLanes ? 2 : 1, lanes - r.centreLanes) : defaultLanes;
 				if (one)
 					r.forward = std::max(1, total), r.backward = 0;
 				else
@@ -525,6 +529,8 @@ namespace worldgen::world
 			    {"sidewalks", r.sidewalks}, {"sidewalkTagged", r.sidewalkTagged}, {"bridge", r.bridge}, {"tunnel", r.tunnel}, {"layer", r.layer}, {"speed", r.speed}, {"points", Line(r.points)}};
 			if (r.bikeLanes)
 				o["bikeLanes"] = true;
+			if (r.centreLanes)
+				o["centre"] = r.centreLanes;
 			if (!r.surface.empty())
 				o["surface"] = r.surface;
 			if (!r.smoothness.empty())
@@ -561,6 +567,7 @@ namespace worldgen::world
 			r.sidewalks = o["sidewalks"];
 			r.sidewalkTagged = o.value("sidewalkTagged", false);
 			r.bikeLanes = o.value("bikeLanes", false);
+			r.centreLanes = o.value("centre", 0);
 			r.bridge = o.value("bridge", false);
 			r.tunnel = o.value("tunnel", false);
 			r.layer = o.value("layer", 0);

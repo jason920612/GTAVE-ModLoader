@@ -5840,7 +5840,7 @@ namespace worldgen::build
 				std::vector<roads::PathLink> keptLinks;
 				for (const auto& l : links)
 					if (keep[l.a] >= 0 && keep[l.b] >= 0)
-						keptLinks.push_back({keep[l.a], keep[l.b], l.lanesAB, l.lanesBA, l.width});
+						keptLinks.push_back({keep[l.a], keep[l.b], l.lanesAB, l.lanesBA, l.width, l.gap});
 				nodes = std::move(kept), links = std::move(keptLinks);
 			}
 			paths::Stats ps;

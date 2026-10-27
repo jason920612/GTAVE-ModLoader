@@ -78,7 +78,20 @@ def fetch_one(south, west, width, height, cache, step):
     a = np.array(Image.open(file), dtype=np.float32)
     if a.shape != (height, width):
         raise IOError(f'{file}: {a.shape} for {height} x {width}')
-    a[(a < -500) | (a > 9000) | ~np.isfinite(a)] = np.nan
+    # (Florida's ground lies between -30 and 120 m; over the sea the service answers 0 with single pixels of 100 m, 300 m,
+    # -300 m and more scattered in it - Miami's coast had thousands: a pixel more than 5 m off the median of the 3 x 3 round
+    # it is that median - no ground has such a spike, a wall is a line, a landfill a slope)
+    a[(a < -30) | (a > 120) | ~np.isfinite(a)] = np.nan
+    # (and a mound standing more than 10 m over the median of the 7 x 7 round it - a building's returns the bare-earth
+    # model kept: downtown Miami had hundreds - that median too; a hill's or a landfill's slope is no such step)
+    from scipy import ndimage
+    known = np.isfinite(a)
+    med = ndimage.median_filter(np.where(known, a, 0), 3)
+    spike = known & (np.abs(a - med) > 5)
+    a[spike] = med[spike]
+    med = ndimage.median_filter(np.where(known, a, 0), 7)
+    mound = known & (a - med > 10)
+    a[mound] = med[mound]
     return a
 
 

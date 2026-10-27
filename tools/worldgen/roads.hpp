@@ -26,6 +26,7 @@ namespace worldgen::roads
 		std::vector<P2> points;   // from a to b
 		std::vector<float> z;     // the surface height at each point
 		int forward = 1, backward = 1; // lanes along a -> b, against it
+		int centre = 0;                // a two-way left turn lane between them (lanes)
 		float laneWidth = 3.5f;
 		bool sidewalks = false, bridge = false;
 		int layer = 0; // (OpenStreetMap's: a bridge's level over the ground's roads, 1 and up)
@@ -41,7 +42,7 @@ namespace worldgen::roads
 		bool curb = false;      // without sidewalks, a kerb and gutter still (a town's street): a kerb top of kCurbTop
 		// with sidewalks: which sides (left and right of a -> b) have one; the other a kerb and gutter (kCurbTop)
 		bool walkLeft = true, walkRight = true;
-		float HalfWidth() const { return (forward + backward) * laneWidth / 2 + 0.3f + parking + bike; }
+		float HalfWidth() const { return (forward + backward + centre) * laneWidth / 2 + 0.3f + parking + bike; }
 		float Side() const { return parking + bike; }             // (what lies between a kerb and the traffic lanes)
 		float LanesHalf() const { return HalfWidth() - Side(); } // (the traffic lanes' half)
 		float Walk() const { return sidewalks ? walkWidth : 0.0f; } // (0: none)
@@ -179,7 +180,8 @@ namespace worldgen::roads
 	{
 		int a, b;
 		int lanesAB, lanesBA;
-		float width; // the road's (m)
+		float width;    // the road's (m)
+		float gap = 0;  // between the directions' lanes (m: a centre turn lane's - the AI keeps off it)
 	};
 	void Paths(const Network& n, float spacing, std::vector<PathNode>& nodes, std::vector<PathLink>& links);
 }

@@ -145,11 +145,13 @@ namespace worldgen::paths
 				Out o{to, {}};
 				std::memcpy(o.flags, ahead.flags, 4);
 				o.flags[2] = static_cast<uint8_t>((o.flags[2] & 3) | std::clamp(along, 0, 7) << 5 | std::clamp(against, 0, 7) << 2);
-				// the second byte: bits 4-7 the gap between the directions (the template's 6 pushed the cars out over the
-				// kerbs), bit 1 a narrow road - the AI's lanes 4.0 m wide instead of 5.4 (0x263AC00), as real roads' lanes
-				// (3-3.7 m) are nearer to (research/phase0.md §61.27)
-				const float lane = (l.width - 0.6f) / static_cast<float>(std::max(1, l.lanesAB + l.lanesBA));
-				o.flags[1] = lane < 4.7f ? 0x02 : 0x00;
+				// the second byte: bits 4-7 the gap between the directions in metres (0x161E0D0: the first lane's middle half
+				// a lane and half the gap off the line - the template's 6 pushed the cars out over the kerbs; a centre turn
+				// lane's width keeps them off it), bit 1 a narrow road - the AI's lanes 4.0 m wide instead of 5.4 (0x263AC00),
+				// as real roads' lanes (3-3.7 m) are nearer to (research/phase0.md §61.27)
+				const float lane = (l.width - 0.6f - l.gap) / static_cast<float>(std::max(1, l.lanesAB + l.lanesBA));
+				const int gap = along && against ? std::clamp(static_cast<int>(std::lround(l.gap)), 0, 15) : 0;
+				o.flags[1] = static_cast<uint8_t>((lane < 4.7f ? 0x02 : 0x00) | gap << 4);
 				o.flags[3] = static_cast<uint8_t>(std::min(255.0f, std::round(length)));
 				all[from].links.push_back(o);
 			}

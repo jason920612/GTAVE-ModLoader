@@ -142,6 +142,10 @@ def join(o):
         with open(path + '.prj', encoding='utf-8') as f:
             tr = pyproj.Transformer.from_crs(pyproj.CRS.from_wkt(f.read()), 'EPSG:4326', always_xy=True)
         names = [f[0] for f in r.fields[1:]]
+        # (a county's other downloads - Miami-Dade's condominium points - are no property roll: left out)
+        if any(k not in names for k in FIELDS):
+            print(f'{os.path.basename(path)}: no {", ".join(k for k in FIELDS if k not in names)} - not a property roll, left out', flush=True)
+            continue
         idx = [names.index(k) for k in FIELDS]
         for k in range(r.numRecords):
             # (a record whose polygon has no points - some counties' rolls have them - is no parcel: the reader will not

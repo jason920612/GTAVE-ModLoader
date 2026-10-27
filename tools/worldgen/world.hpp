@@ -20,6 +20,7 @@ namespace worldgen::world
 		std::vector<P2> points;
 		std::string kind; // OSM highway: motorway, primary, residential, service, ..._link
 		int forward = 1, backward = 1; // lanes along the points / against them
+		int centreLanes = 0;           // a two-way left turn lane down the middle (OSM lanes:both_ways): not one of those
 		float laneWidth = 3.5f;
 		bool sidewalks = false;
 		bool sidewalkTagged = false; // (OSM said so - sidewalk=both/left/right/no/separate; else the build decides by the land)
