@@ -140,7 +140,8 @@ namespace loader::game::sectors
 		// the place), those past 180 m taken away again; one the player gets into or moves is the game's from then on.
 		constexpr float kParkNear = 120, kParkFar = 180;
 		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
-		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E;
+		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E,
+		                   kGetEntityUprightValue = 0x95EED5A694951F9F;
 		struct ParkedCar
 		{
 			float x = 0, y = 0, z = 0, heading = 0;
@@ -235,7 +236,16 @@ namespace loader::game::sectors
 				else
 				{
 					const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, car.vehicle, 1);
-					if (natives::Invoke<int32_t>(kIsPedInVehicle, player, car.vehicle, 0) || std::hypot(p.x - car.x, p.y - car.y) > 3)
+					const bool inside = natives::Invoke<int32_t>(kIsPedInVehicle, player, car.vehicle, 0) != 0;
+					// (on its side or roof - made where something stood: taken away, the place not used again)
+					if (!inside && natives::Invoke<float>(kGetEntityUprightValue, car.vehicle) < 0.5f)
+					{
+						natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
+						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
+						car.vehicle = -1;
+						gone = true;
+					}
+					else if (inside || std::hypot(p.x - car.x, p.y - car.y) > 3)
 					{
 						natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle);
 						car.vehicle = -1;

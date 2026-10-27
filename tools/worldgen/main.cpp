@@ -1622,6 +1622,24 @@ int main(int argc, char** argv)
 			for (int k = 0; k < 4; ++k)
 			{
 				const auto m = worldgen::flora::Make(static_cast<worldgen::flora::Species>(s), static_cast<uint32_t>(s * 101 + k * 7 + 1));
+				// (--obj 1: the nearest level as an OBJ, a group per picture, texture coordinates kept)
+				if (g_options.contains("obj"))
+				{
+					std::ofstream obj(out / std::format("tree_{}_{}.obj", s, k));
+					size_t base = 1;
+					for (int t = 0; t < worldgen::flora::kTextures; ++t)
+					{
+						const auto& mesh = m.lods[0][t];
+						if (mesh.indices.empty())
+							continue;
+						obj << "g picture" << t << "\n";
+						for (const auto& v : mesh.vertices)
+							obj << std::format("v {} {} {}\nvt {} {}\n", v.position[0], v.position[1], v.position[2], v.uv[0][0], v.uv[0][1]);
+						for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
+							obj << std::format("f {0}/{0} {1}/{1} {2}/{2}\n", base + mesh.indices[i], base + mesh.indices[i + 1], base + mesh.indices[i + 2]);
+						base += mesh.vertices.size();
+					}
+				}
 				std::printf("kind %d model %d: %.1f m tall, %.1f m wide, trunk %.2f m; triangles by level:", s, k, m.height, m.width, m.trunk);
 				for (const auto& lod : m.lods)
 				{

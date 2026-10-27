@@ -300,11 +300,20 @@ namespace worldgen::flora
 				const float a = rnd.Range(0, 2 * kPi), d = rnd.Range(0, W * 0.25f);
 				Cluster(leaves, {top[0] + std::cos(a) * d, top[1] + std::sin(a) * d, H * rnd.Range(0.7f, 0.85f)}, middle, 6, 1.5f, 1.25f, kOakLeaves, rnd, 0.3f);
 			}
-			for (int k = 0; k < 620; ++k)
+			// (the shell lumpy: its reach and its height waving round the tree - three to five big lobes, a dip or two in its
+			// top -, its underside only out past the limbs' middles: the street pictures' oaks are no domes, the reviewers saw
+			// "umbrella trees")
+			const float p1 = rnd.Range(0, 2 * kPi), p2 = rnd.Range(0, 2 * kPi), p3 = rnd.Range(0, 2 * kPi);
+			const int lobes = 3 + static_cast<int>(rnd.Next() % 3);
+			for (int k = 0; k < 560; ++k)
 			{
 				const float a = rnd.Range(0, 2 * kPi), up = std::asin(rnd.Range(-0.15f, 1.0f));
-				const float rx = W * 0.47f * std::cos(up), rz = (H - fork) * 0.55f * std::sin(up);
-				const P3 c{top[0] + std::cos(a) * rx, top[1] + std::sin(a) * rx, std::min(H - 0.6f, fork + (H - fork) * 0.45f + rz)};
+				const float reach = 1 + 0.16f * std::sin(lobes * a + p1) + 0.08f * std::sin((lobes + 2) * a + p2);
+				const float rise = (H - fork) * (0.1f * std::sin(2 * a + p3) - 0.06f * std::sin(lobes * a + p2));
+				const float rx = W * 0.47f * std::cos(up) * reach, rz = (H - fork) * 0.55f * std::sin(up);
+				if (up < 0.1f && rnd.Unit() < 0.5f)
+					continue; // (the underside thinner: the limbs seen between)
+				const P3 c{top[0] + std::cos(a) * rx, top[1] + std::sin(a) * rx, std::min(H - 0.6f, fork + (H - fork) * 0.45f + rz + rise * std::sin(up))};
 				Cluster(leaves, c, middle, 1, 0.3f, rnd.Range(0.95f, 1.3f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
