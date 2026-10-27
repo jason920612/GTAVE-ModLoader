@@ -13,8 +13,10 @@
 // effect's layout by name, as the legacy converter's do), textures by name (found in the archetype's texture
 // dictionary and its parents). Every pointer is written where it is known, never guessed from the data.
 //   Drawable (0xD0): +0x08 page map, +0x10 shader group, +0x20 sphere, +0x30 / +0x40 box (w 0x7F800001), +0x50 the
-//   four levels' model lists ({models, u16 count, capacity}), +0x70 their distances, +0x80 1, 0xFF, +0xA8 name.
-//   Shader group (0x40): +0x10 the shaders, u16 count, capacity. Model (0x30): +0x08 geometries, u16 count, capacity,
+//   four levels' model lists ({models, u16 count, capacity}), +0x70 their distances, +0x80 the render buckets its
+//   shaders are in (a bit each: the game draws none of them in a bucket missing there), 0xFF, +0xA8 name.
+//   Shader group (0x40): +0x10 the shaders, u16 count, capacity; a shader's +0x39 its bucket, +0x3C that bucket's bit.
+//   Model (0x30): +0x08 geometries, u16 count, capacity,
 //   +0x18 boxes (32 bytes: all, then each geometry's; one when one geometry), +0x20 each geometry's shader (u16),
 //   +0x2C 0xFF (drawn in every pass), +0x2E the geometry count. Geometry (0xA0): +0x18 vertex buffer, +0x38 index
 //   buffer, +0x58 index count, +0x5C triangles, +0x60 u16 vertices, u16 3, +0x70 stride, +0x78 the vertex data.

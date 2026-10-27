@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <format>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
@@ -18,6 +19,7 @@
 #include "dlcpacks.hpp"
 #include "minimap.hpp"
 #include "natives.hpp"
+#include "text_override.hpp"
 
 namespace loader::game::sectors
 {
@@ -36,6 +38,14 @@ namespace loader::game::sectors
 			double proj[6]{};
 			float world[4]{};
 			std::string open;
+			// its population zones (land.json "zones": [i, j, kind, name] for each 1 km block, tools/worldgen/zones.py)
+			struct Zone
+			{
+				int i, j;
+				char kind;
+				std::string name;
+			};
+			std::vector<Zone> zones;
 
 			void ToWorld(float x, float y, double& lat, double& lon) const
 			{
@@ -108,6 +118,64 @@ namespace loader::game::sectors
 		ULONGLONG g_lastWatch = 0, g_ended = 0;
 		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
 		std::vector<std::string> g_unmountable; // (lands whose pack could not be mounted: not switched to again)
+
+		// The population zones every land shares (the mod tools/worldgen/zones.py --mod makes): each 1 km block of the box
+		// (i 4..16, j -3..10) as three zones, W<ii><jj><kind> (i and j + 3 in two digits: the game keeps 7 characters of a
+		// zone's name) - B beach, U town, R country, each bound like a game zone of its kind - named by the label W<ii><jj>.
+		// Of each block's three the one the land there has is on, the others
+		// off (SET_ZONE_ENABLED: the game's position lookup, 0xD8D7B0, skips a zone whose enabled bit is clear); the label
+		// shows the block's place.
+		constexpr int kZoneI0 = 4, kZoneI1 = 16, kZoneJ0 = -3, kZoneJ1 = 10;
+		constexpr char kZoneKinds[3] = {'B', 'U', 'R'};
+		constexpr uint64_t kGetZoneFromNameId = 0x98CD1D2934B76CC1, kSetZoneEnabled = 0xBA5ECEEA120E5611;
+		std::vector<int32_t> g_zoneIds; // (per block and kind; -1: the game has no such zone)
+		std::string g_zonesOf;          // (the land whose zones are on)
+
+		// The land's zones on, the others off, its blocks' names shown. Game thread, story mode.
+		void ApplyZones(const Land& land)
+		{
+			const int blocks = (kZoneI1 - kZoneI0 + 1) * (kZoneJ1 - kZoneJ0 + 1);
+			if (g_zoneIds.empty())
+			{
+				g_zoneIds.resize(static_cast<size_t>(blocks) * 3);
+				int found = 0;
+				for (int b = 0; b < blocks; ++b)
+					for (int k = 0; k < 3; ++k)
+					{
+						const std::string name = std::format("W{:02}{:02}{}", kZoneI0 + b % (kZoneI1 - kZoneI0 + 1), b / (kZoneI1 - kZoneI0 + 1), kZoneKinds[k]);
+						const int32_t id = natives::Invoke<int32_t>(kGetZoneFromNameId, name.c_str());
+						g_zoneIds[static_cast<size_t>(b) * 3 + k] = id;
+						found += id >= 0;
+					}
+				log::Info("sectors: {} of the lands' {} population zones found", found, blocks * 3);
+			}
+			// (a land without zones of its own: its blocks a town's, named after the land)
+			std::vector<char> kind(static_cast<size_t>(blocks), 0);
+			std::vector<std::string> name(static_cast<size_t>(blocks));
+			for (const Land::Zone& z : land.zones)
+				if (z.i >= kZoneI0 && z.i <= kZoneI1 && z.j >= kZoneJ0 && z.j <= kZoneJ1)
+				{
+					const size_t b = static_cast<size_t>(z.j - kZoneJ0) * (kZoneI1 - kZoneI0 + 1) + (z.i - kZoneI0);
+					kind[b] = z.kind == 'S' ? 'U' : z.kind, name[b] = z.name; // (suburbs: a town's, as the kinds once were four)
+				}
+			if (land.zones.empty())
+				std::fill(kind.begin(), kind.end(), 'U');
+			int on = 0;
+			for (int b = 0; b < blocks; ++b)
+			{
+				for (int k = 0; k < 3; ++k)
+					if (const int32_t id = g_zoneIds[static_cast<size_t>(b) * 3 + k]; id >= 0)
+					{
+						const bool enabled = kind[b] == kZoneKinds[k];
+						natives::Invoke<void>(kSetZoneEnabled, id, enabled ? 1 : 0);
+						on += enabled;
+					}
+				const std::string label = std::format("W{:02}{:02}", kZoneI0 + b % (kZoneI1 - kZoneI0 + 1), b / (kZoneI1 - kZoneI0 + 1));
+				text_override::Set(convert::Joaat(label), name[b].empty() ? land.name : name[b]);
+			}
+			g_zonesOf = land.name;
+			log::Info("sectors: {}'s population zones on ({} blocks)", land.name, on);
+		}
 
 		bool Overlap(const Land& a, const Land& b)
 		{
@@ -222,6 +290,10 @@ namespace loader::game::sectors
 					land.projected = land.proj[4] != 0 && land.proj[5] != 0;
 					land.open = j.value("open", "");
 				}
+				if (j.contains("zones"))
+					for (const auto& z : j["zones"])
+						if (z.size() >= 4 && z[2].is_string() && !z[2].get<std::string>().empty())
+							land.zones.push_back({z[0].get<int>(), z[1].get<int>(), z[2].get<std::string>()[0], z[3].get<std::string>()});
 				g_lands.push_back(std::move(land));
 			}
 			catch (const std::exception& e)
@@ -272,8 +344,10 @@ namespace loader::game::sectors
 			return to + " is there already";
 		if (g_switch.step != Step::None)
 			return "a switch is under way";
-		g_switch = {Step::Fade, to, at != nullptr, {at ? at[0] : 0, at ? at[1] : 0}, GetTickCount64()};
 		const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+		// (no place given: where the player is now - a save loaded in the other land's place)
+		const auto here = natives::Invoke<natives::ScrVector>(kGetEntityCoords, player, 1);
+		g_switch = {Step::Fade, to, true, {at ? at[0] : here.x, at ? at[1] : here.y}, GetTickCount64()};
 		if (natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0))
 		{
 			const int32_t v = natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0);
@@ -349,6 +423,14 @@ namespace loader::game::sectors
 	{
 		if (g_switch.step == Step::None)
 		{
+			// (the zones of the land there, once the game has its zones: story mode is running)
+			if (g_zonesOf.empty() && text_override::Ready())
+				for (const Land& l : g_lands)
+					if (!l.dormant && l.projected)
+					{
+						ApplyZones(l);
+						break;
+					}
 			WatchEdges();
 			return;
 		}
@@ -445,6 +527,8 @@ namespace loader::game::sectors
 			config::Get().worldSector = to->name;
 			config::Save();
 			log::Info("sectors: {} is there now", to->name);
+			if (!g_zonesOf.empty())
+				ApplyZones(*to);
 			g_switch.step = Step::SettleNew;
 			g_switch.since = GetTickCount64();
 			break;
@@ -515,5 +599,58 @@ namespace loader::game::sectors
 	bool Switching()
 	{
 		return g_switch.step != Step::None || (g_ended && GetTickCount64() - g_ended < 15000);
+	}
+
+	namespace
+	{
+		// The lands there at each save (its number: mods.cpp's ML_SAVE_NONCE): ModLoader\data\sector_saves.json, {"<save>":
+		// "<land> <land>..."}.
+		std::filesystem::path SavesFile()
+		{
+			return paths::Get().root / L"data" / L"sector_saves.json";
+		}
+
+		nlohmann::json ReadSaves()
+		{
+			std::ifstream in(SavesFile());
+			auto j = in ? nlohmann::json::parse(in, nullptr, false) : nlohmann::json::object();
+			return j.is_object() ? j : nlohmann::json::object();
+		}
+	}
+
+	void Saved(int32_t save)
+	{
+		if (!save || g_lands.empty())
+			return;
+		auto j = ReadSaves();
+		j[std::format("{:08x}", static_cast<uint32_t>(save))] = Active();
+		std::error_code ec;
+		std::filesystem::create_directories(SavesFile().parent_path(), ec);
+		std::ofstream(SavesFile(), std::ios::trunc) << j.dump(1) << "\n";
+	}
+
+	void Loaded(int32_t save)
+	{
+		if (!save || g_lands.empty())
+			return;
+		const auto j = ReadSaves();
+		const auto it = j.find(std::format("{:08x}", static_cast<uint32_t>(save)));
+		if (it == j.end() || !it->is_string())
+			return;
+		// (the first land of the save's that waits now: switched to, the player kept where the save put them)
+		const std::string lands = it->get<std::string>();
+		for (size_t a = 0; a < lands.size();)
+		{
+			const size_t b = std::min(lands.find(' ', a), lands.size());
+			const std::string name = lands.substr(a, b - a);
+			a = b + 1;
+			if (const Land* land = Find(name); land && land->dormant)
+			{
+				log::Info("sectors: the save loaded was made in {}", name);
+				if (const std::string error = Switch(name, nullptr); !error.empty())
+					log::Warn("sectors: {}: {}", name, error);
+				return;
+			}
+		}
 	}
 }

@@ -47,8 +47,9 @@ namespace worldgen::world
 
 	struct Point
 	{
-		std::string kind; // tree, traffic_signals, ...
+		std::string kind; // tree, traffic_signals, ...; place:city, place:town, place:village, place:suburb, ... (with a name)
 		P2 position{};
+		std::string name;
 	};
 
 	struct Waterway

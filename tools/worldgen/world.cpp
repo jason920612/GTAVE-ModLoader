@@ -181,6 +181,7 @@ namespace worldgen::world
 
 	bool FromOsm(const osm::Data& d, const Projection& p, World& out, std::string& error)
 	{
+		error.clear();
 		out.projection = p;
 		out.min = p.To(d.south, d.west);
 		out.max = p.To(d.north, d.east);
@@ -338,11 +339,21 @@ namespace worldgen::world
 				kind = "stop";
 			else if (Tag(t, "highway") == "crossing")
 				kind = "crossing";
+			else if (const std::string& place = Tag(t, "place");
+			         !Tag(t, "name").empty() && (place == "city" || place == "town" || place == "village" || place == "hamlet" || place == "suburb" ||
+			                                     place == "neighbourhood" || place == "quarter" || place == "locality" || place == "island"))
+			{
+				// (the places' names: the population zones', the area names the game shows)
+				out.points.push_back({"place:" + place, p.To(n->second.lat, n->second.lon), Tag(t, "name")});
+				continue;
+			}
 			if (!kind.empty())
 				out.points.push_back({kind, p.To(n->second.lat, n->second.lon)});
 		}
-		if (out.roads.empty() && out.buildings.empty() && out.coastlines.empty())
-			return error = "nothing usable in the data", false;
+		// (nothing at all: a sector of wild land - marsh, woods - all land; whether a box is worth building is the
+		// caller's to say: tools/worldgen/sectors.py's survey)
+		if (out.roads.empty() && out.buildings.empty() && out.coastlines.empty() && out.areas.empty())
+			std::printf("nothing but land in the data\n");
 		return true;
 	}
 
@@ -405,7 +416,10 @@ namespace worldgen::world
 			buildings.push_back({{"kind", b.kind}, {"name", b.name}, {"height", b.height}, {"footprint", Line(b.footprint)}});
 		auto& points = j["points"] = nlohmann::json::array();
 		for (const Point& p : w.points)
-			points.push_back({{"kind", p.kind}, {"at", {p.position[0], p.position[1]}}});
+			if (p.name.empty())
+				points.push_back({{"kind", p.kind}, {"at", {p.position[0], p.position[1]}}});
+			else
+				points.push_back({{"kind", p.kind}, {"at", {p.position[0], p.position[1]}}, {"name", p.name}});
 		std::ofstream o(file, std::ios::binary);
 		if (!o)
 			return error = "cannot write " + file.string(), false;
@@ -472,7 +486,7 @@ namespace worldgen::world
 		for (const auto& o : j["buildings"])
 			w.buildings.push_back({Line(o["footprint"]), o["height"].get<float>(), o["kind"].get<std::string>(), o["name"].get<std::string>()});
 		for (const auto& o : j["points"])
-			w.points.push_back({o["kind"].get<std::string>(), {o["at"][0].get<float>(), o["at"][1].get<float>()}});
+			w.points.push_back({o["kind"].get<std::string>(), {o["at"][0].get<float>(), o["at"][1].get<float>()}, o.value("name", "")});
 		return true;
 	}
 

@@ -102,6 +102,12 @@ namespace worldgen::ydr
 			std::fill(o.blk.data.begin() + at + 0x12, o.blk.data.begin() + at + 0x18, uint8_t{0xFF});
 		}
 
+		// A shader's render bucket as the bit the game's models carry for it (in the shader, and or'ed in the drawable).
+		uint8_t BucketMask(const Material& m)
+		{
+			return m.bucket < 8 ? static_cast<uint8_t>(1u << m.bucket) : uint8_t{1};
+		}
+
 		// A shader instance with its parameter table (research/phase0.md §15, §16): textures in our array (their slots
 		// in the table), constants back to back in buffer 0 of the parameter block (16-byte aligned).
 		size_t Shader(Out& o, const Material& m)
@@ -158,7 +164,7 @@ namespace worldgen::ydr
 			o.Ptr(inst + 0x20, meta);
 			o.Set<uint8_t>(inst + 0x39, m.bucket);
 			o.Set<uint16_t>(inst + 0x3A, static_cast<uint16_t>(block));
-			o.Set<uint8_t>(inst + 0x3C, 1);
+			o.Set<uint8_t>(inst + 0x3C, BucketMask(m)); // (the bucket it is drawn in, as a bit)
 			o.Set<uint8_t>(inst + 0x3D, 0xFF);
 			return inst;
 		}
@@ -426,7 +432,12 @@ namespace worldgen::ydr
 			o.Vec(root + 0x40, max, kTag);
 			for (int lod = 0; lod < 4; ++lod)
 				o.Set<float>(root + 0x70 + 4 * lod, d.lodDistances[lod]);
-			o.Set<uint8_t>(root + 0x80, 1);
+			// (the buckets its shaders are drawn in: without a shader's bucket the game never draws it there - water,
+			// decals, cut-outs)
+			uint8_t buckets = 0;
+			for (const Material& m : d.materials)
+				buckets |= BucketMask(m);
+			o.Set<uint8_t>(root + 0x80, buckets ? buckets : 1);
 			o.Set<uint8_t>(root + 0x81, 0xFF);
 			o.Ptr(root + 0xA8, o.String(d.name + ".#dr"));
 

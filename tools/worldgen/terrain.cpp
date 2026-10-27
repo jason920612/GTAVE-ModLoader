@@ -94,22 +94,23 @@ namespace worldgen::terrain
 			return {all, {}};
 		Meshes out;
 		const int n = std::min({cells, f.nx - i0, f.ny - j0});
-		std::vector<int> groundIndex(all.vertices.size(), -1), lawnIndex(all.vertices.size(), -1);
-		const auto take = [&](ydr::Mesh& m, std::vector<int>& index, uint32_t v, bool lawn) {
+		std::vector<int> groundIndex(all.vertices.size(), -1), lawnIndex(all.vertices.size(), -1), forestIndex(all.vertices.size(), -1);
+		const auto take = [&](ydr::Mesh& m, std::vector<int>& index, uint32_t v, int kind) {
+			const bool lawn = kind != 0;
 			if (index[v] < 0)
 			{
 				ydr::Vertex vertex = all.vertices[v];
 				if (lawn)
 				{
-					// The weights: lerp(blend map, vertex colour, its alpha). Inside, as the game's own lawns have them (the
-					// colour about half, mostly the first pair - two even grasses - the blend map's patches of the others
-					// kept to a share: one of them is patchy, every 3.5 m a repeat that shows as a grid), varying over tens
-					// of metres; towards the edge layer 3 (green and blue full, alpha 1), the ground material's grass.
+					// The weights: lerp(blend map, vertex colour, its alpha). Inside mostly the blend map's (the build's own,
+					// noise over 128 m: no repeat a grid shows in), the colour a quarter - mostly the first pair, two even
+					// grasses, varying over tens of metres; towards the edge layer 3 (green and blue full, alpha 1), the
+					// ground material's grass.
 					const int vi = static_cast<int>(v) % (n + 1), vj = static_cast<int>(v) / (n + 1);
 					const float x = vertex.position[0] + cx, y = vertex.position[1] + cy;
-					const float l = f.lawn[f.V(i0 + vi, j0 + vj)];
+					const float l = kind == 2 ? f.forest[f.V(i0 + vi, j0 + vj)] : f.lawn[f.V(i0 + vi, j0 + vj)];
 					const float gIn = std::clamp(0.12f + 0.12f * Noise(x, y, 53.0f, 7), 0.0f, 1.0f), bIn = std::clamp(0.5f + 0.4f * Noise(x, y, 37.0f, 3), 0.0f, 1.0f);
-					vertex.colour1 = {0, Byte(1 + (gIn - 1) * l), Byte(1 + (bIn - 1) * l), Byte(1 + (0.55f - 1) * l)};
+					vertex.colour1 = {vertex.colour1[0], Byte(1 + (gIn - 1) * l), Byte(1 + (bIn - 1) * l), Byte(1 + (0.25f - 1) * l)}; // (red: the ground's darkening, the same where the two meet)
 					vertex.uv[1] = {x / blendMetres - std::floor(cx / blendMetres), -y / blendMetres - std::floor(-cy / blendMetres)};
 				}
 				index[v] = static_cast<int>(m.vertices.size());
@@ -121,10 +122,12 @@ namespace worldgen::terrain
 		for (int j = 0; j < n; ++j)
 			for (int i = 0; i < n; ++i)
 			{
-				const bool lawn = f.lawnCell[static_cast<size_t>(j0 + j) * f.nx + (i0 + i)] != 0;
+				const size_t cell = static_cast<size_t>(j0 + j) * f.nx + (i0 + i);
+				const int kind = f.lawnCell[cell] ? 1 : !f.forestCell.empty() && f.forestCell[cell] ? 2 : 0;
 				const size_t first = (static_cast<size_t>(j) * n + i) * 6;
 				for (size_t k = first; k < first + 6; ++k)
-					take(lawn ? out.lawn : out.ground, lawn ? lawnIndex : groundIndex, all.indices[k], lawn);
+					take(kind == 1 ? out.lawn : kind == 2 ? out.forest : out.ground, kind == 1 ? lawnIndex : kind == 2 ? forestIndex : groundIndex,
+					    all.indices[k], kind);
 			}
 		return out;
 	}

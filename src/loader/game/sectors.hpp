@@ -32,4 +32,9 @@ namespace loader::game::sectors
 	void Tick();
 	// A switch under way, or one ended in the last 15 s (its loading screen is not a save being loaded).
 	bool Switching();
+
+	// Game thread (mods.cpp, by the number each save carries): the game saved - the lands there are remembered with the
+	// save; a save was loaded - one made with another sector there is switched to, the player kept where it put them.
+	void Saved(int32_t save);
+	void Loaded(int32_t save);
 }

@@ -910,6 +910,7 @@ namespace loader::mods
 				mod->saveDirty = false;
 			}
 			game::char4::Saved(saved);
+			game::sectors::Saved(saved);
 			if (saved)
 				NewSaveNonce();
 		}
@@ -942,6 +943,7 @@ namespace loader::mods
 			}
 			log::Info("save loaded: it carries save number {:08x}; {} mod(s) have data for it", static_cast<uint32_t>(carried), found);
 			game::char4::Loaded(carried);
+			game::sectors::Loaded(carried);
 			NewSaveNonce();
 		}
 

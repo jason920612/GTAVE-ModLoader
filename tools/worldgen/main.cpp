@@ -1926,6 +1926,7 @@ int main(int argc, char** argv)
 			{
 				// (the loader's, next to the pack: game/sea.cpp, game/minimap.cpp)
 				std::error_code ec;
+				fs::create_directories(out.parent_path(), ec);
 				fs::copy_file(entry.path(), out.parent_path() / file, fs::copy_options::overwrite_existing, ec);
 				continue;
 			}
@@ -2214,6 +2215,10 @@ int main(int argc, char** argv)
 			o.aerial = g_options["aerial"];
 		if (g_options.contains("landcover"))
 			o.landcover = g_options["landcover"];
+		if (g_options.contains("ground"))
+			o.ground = g_options["ground"];
+		if (g_options.contains("climate"))
+			o.climate = g_options["climate"];
 		if (g_options.contains("datum"))
 			o.datum = std::stof(g_options["datum"]);
 		if (g_options.contains("waves"))
@@ -2547,10 +2552,12 @@ int main(int argc, char** argv)
 			const auto v = root.Get<std::array<float, 4>>(Hash(field));
 			std::printf("%s %.1f %.1f %.1f\n", field, v[0], v[1], v[2]);
 		}
+		// (--archetype a: every entity of that archetype, else the first 12)
+		const uint32_t only = g_options.contains("archetype") ? Hash(g_options["archetype"].c_str()) : 0;
 		int shown = 0;
 		for (const ue5export::meta::Ref& e : root.Array(Hash("entities")))
 		{
-			if (!e || shown++ >= 12)
+			if (!e || (only ? e.Get<uint32_t>(Hash("archetypeName")) != only : shown++ >= 12))
 				continue;
 			const auto p = e.Get<std::array<float, 4>>(Hash("position"));
 			const auto q = e.Get<std::array<float, 4>>(Hash("rotation"));

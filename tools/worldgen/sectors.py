@@ -4,9 +4,10 @@ and switches to the next one where the player crosses their shared edge.
 
 The grid is anchored at Miami's box (its south-west corner 25.745 N, -80.232 E): a sector is 0.121 degrees of latitude
 by 0.117 of longitude, cell (column, row) = (0, 0) Miami, (0, 1) the one north of it, (-1, 0) west. For each cell:
-its OpenStreetMap extract (worldgen osm), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its build (the
-light kind: the map's buildings as the game's models, trees by the land cover, navmeshes only where people go, 16 m
-terrain cells, no laser scan or aerial pictures; every edge open: the land goes on into the neighbours) and its pack
+its OpenStreetMap extract (worldgen osm), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its ground
+(dem.py: 3DEP's measured heights, the lakes' and rivers' levels), its build (the light kind: the map's buildings as the
+game's models, trees by the land cover, navmeshes only where people go, no laser scan or aerial pictures; every edge
+open: the land goes on into the neighbours), its population zones (zones.py, into the land.json) and its pack
 (ModLoader\\mods\\<name>; dlc.rpf.new when a pack is there already: the loader takes it at the next start). The build's
 own files are removed once packed (--keep: kept).
 
@@ -23,6 +24,8 @@ O = {
     'game': r'D:\SteamLibrary\steamapps\common\Grand Theft Auto V Enhanced',
     'worldgen': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'build', 'Release', 'worldgen.exe'),
     'nlcd': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nlcd.py'),
+    'dem': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dem.py'),
+    'zones': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zones.py'),
     'keys': r'D:\GTAV-UE5\keys\ng.bin',
     'pbf': r'D:\GTAV-UE5\osm\pbf\florida.osm.pbf',
     'catalog': r'D:\GTAV-UE5\catalog.tsv',
@@ -84,14 +87,21 @@ def build(c, r, flags):
     cover = os.path.join(folder, 'landcover.bin')
     if not os.path.exists(cover) and run([sys.executable, '-I', O['nlcd'], '--world', world, '--out', cover], log):
         return name, f'land cover failed (see {log})'
+    ground = os.path.join(folder, 'ground.bin')
+    if not os.path.exists(ground) and run([sys.executable, '-I', O['dem'], '--world', world, '--out', ground], log):
+        return name, f'ground failed (see {log})'
     gen = os.path.join(folder, 'full_gen')
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--catalog', O['catalog'], '--open', 'nsew',
-            '--landcover', cover, '--navmesh', 'near', '--cell', '16'], log):
+            '--landcover', cover, '--ground', ground, '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     os.makedirs(os.path.dirname(pack), exist_ok=True)
     out = pack + '.new' if os.path.exists(pack) else pack
     if run([O['worldgen'], 'pack', *common, '--in', gen, '--out', out, '--name', name], log):
         return name, f'pack failed (see {log})'
+    # (its population zones into the land.json next to the pack)
+    if run([sys.executable, '-I', O['zones'], '--world', world, '--land', os.path.join(folder, name + '_land.png'), '--landcover', cover, '--out',
+            os.path.join(os.path.dirname(pack), 'land.json')], log):
+        return name, f'zones failed (see {log})'
     if 'keep' not in flags:
         shutil.rmtree(gen, ignore_errors=True)
         for f in ('world.json',):

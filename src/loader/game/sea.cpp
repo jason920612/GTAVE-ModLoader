@@ -46,6 +46,10 @@ namespace loader::game::sea
 		constexpr uintptr_t kDrawQuad = 0x36D3B0;
 		constexpr uintptr_t kStripCalls[] = {0x36CF9B, 0x36D011, 0x36D067, 0x36D0E2, 0x3704FB, 0x370684, 0x3705D5, 0x370795, 0x370842, 0x370946, 0x3708D7,
 		    0x370A13};
+		// The waves' heights added to a level found (0x358b50: x, y, the level's address, a flag; the level query's two
+		// callers 0x3587b0, 0x35ac40, which use nothing it returns): push r15; push r14; push r13 first.
+		constexpr uintptr_t kWaves = 0x358B50;
+		constexpr uint8_t kWavesBytes[] = {0x41, 0x57, 0x41, 0x56, 0x41, 0x55};
 		constexpr uintptr_t kDefaultLevel = 0x2FAA758;
 		// where the water is drawn in detail this frame (round the camera): min x, max x, min y, max y
 		constexpr uintptr_t kDetailRegion = 0x2FAA770;
@@ -53,6 +57,7 @@ namespace loader::game::sea
 		struct Rect
 		{
 			int32_t x0, x1, y0, y1;
+			float z = 0; // (a land's water: its level over the sea's)
 		};
 
 		// The rectangles drawn for a land's water, from its mask: blocks of 64 cells (256 m) at 8 m near the camera and 32 m
@@ -81,10 +86,20 @@ namespace loader::game::sea
 			int blocksX = 0, blocksY = 0, farX = 0, farY = 0;
 			std::vector<std::vector<Rect>> nearRects, middleRects, farRects;
 
+			// (version 2: each water body at its own level - a lake, a river up the land - over the sea's: the levels, and
+			// which of them each 8 x 8 cells' water is at)
+			std::vector<float> levels{0.0f};
+			std::vector<uint8_t> levelGrid;
+			uint32_t lnx = 0, lny = 0;
+
 			bool Wet(int i, int j) const
 			{
 				const size_t k = static_cast<size_t>(j) * nx + static_cast<size_t>(i);
 				return (bits[k >> 3] >> (k & 7)) & 1;
+			}
+			uint8_t LevelIndex(int i, int j) const
+			{
+				return levelGrid.empty() ? 0 : levelGrid[static_cast<size_t>(j / 8) * lnx + static_cast<size_t>(i / 8)];
 			}
 		};
 
@@ -95,8 +110,9 @@ namespace loader::game::sea
 		using DrawQuadFn = void(__fastcall*)(int32_t, int32_t, int32_t, int32_t, float, float, float, float, float, float, float);
 		DrawQuadFn g_drawQuad = nullptr;
 
-		// The cells [i0, i0 + n) x [j0, j0 + n) of the mask as rectangles of k x k cells (greedy: runs along x grown along y).
-		std::vector<Rect> Cover(const Land& land, int i0, int j0, int n, int k)
+		// The cells [i0, i0 + n) x [j0, j0 + n) of the mask as rectangles of k x k cells (greedy: runs along x grown along y),
+		// each level's on its own.
+		void CoverLevel(const Land& land, int i0, int j0, int n, int k, uint8_t level, std::vector<Rect>& out)
 		{
 			const int m = (n + k - 1) / k;
 			std::vector<uint8_t> coarse(static_cast<size_t>(m) * m, 0);
@@ -108,11 +124,11 @@ namespace loader::game::sea
 						for (int di = 0; di < k && !any; ++di)
 						{
 							const int a = i0 + i * k + di, b = j0 + j * k + dj;
-							any = a < static_cast<int>(land.nx) && b < static_cast<int>(land.ny) && land.Wet(a, b);
+							any = a < static_cast<int>(land.nx) && b < static_cast<int>(land.ny) && land.Wet(a, b) && land.LevelIndex(a, b) == level;
 						}
 					coarse[static_cast<size_t>(j) * m + i] = any;
 				}
-			std::vector<Rect> out;
+			const float z = land.levels[level];
 			const auto edgeX = [&](int cells) { return static_cast<int32_t>(std::lround(land.x0 + std::min<int>(cells, land.nx) * land.cell)); };
 			const auto edgeY = [&](int cells) { return static_cast<int32_t>(std::lround(land.y0 + std::min<int>(cells, land.ny) * land.cell)); };
 			for (int j = 0; j < m; ++j)
@@ -131,9 +147,21 @@ namespace loader::game::sea
 						++j1;
 					for (int jj = j; jj < j1; ++jj)
 						std::fill(coarse.begin() + static_cast<size_t>(jj) * m + i, coarse.begin() + static_cast<size_t>(jj) * m + i1, uint8_t{0});
-					out.push_back({edgeX(i0 + i * k), edgeX(i0 + i1 * k), edgeY(j0 + j * k), edgeY(j0 + j1 * k)});
+					out.push_back({edgeX(i0 + i * k), edgeX(i0 + i1 * k), edgeY(j0 + j * k), edgeY(j0 + j1 * k), z});
 					i = i1;
 				}
+		}
+
+		std::vector<Rect> Cover(const Land& land, int i0, int j0, int n, int k)
+		{
+			std::vector<Rect> out;
+			bool levels[256]{};
+			for (int j = j0; j < std::min<int>(j0 + n, land.ny); j += 8)
+				for (int i = i0; i < std::min<int>(i0 + n, land.nx); i += 8)
+					levels[land.LevelIndex(i, j)] = true;
+			for (int level = 0; level < 256; ++level)
+				if (levels[level])
+					CoverLevel(land, i0, j0, n, k, static_cast<uint8_t>(level), out);
 			return out;
 		}
 
@@ -151,12 +179,27 @@ namespace loader::game::sea
 			in.read(reinterpret_cast<char*>(&land.nx), 4);
 			in.read(reinterpret_cast<char*>(&land.ny), 4);
 			in.read(reinterpret_cast<char*>(&level), 4);
-			if (!in || std::memcmp(magic, "WBWM", 4) != 0 || version != 1 || land.cell <= 0 || !land.nx || !land.ny || land.nx > 65536 || land.ny > 65536)
+			if (!in || std::memcmp(magic, "WBWM", 4) != 0 || (version != 1 && version != 2) || land.cell <= 0 || !land.nx || !land.ny || land.nx > 65536 ||
+			    land.ny > 65536)
 				return false;
 			land.bits.resize((static_cast<size_t>(land.nx) * land.ny + 7) / 8);
 			in.read(reinterpret_cast<char*>(land.bits.data()), static_cast<std::streamsize>(land.bits.size()));
 			if (!in)
 				return false;
+			if (version == 2)
+			{
+				uint8_t n = 0;
+				in.read(reinterpret_cast<char*>(&n), 1);
+				if (!in || n == 0)
+					return false;
+				land.levels.resize(n);
+				in.read(reinterpret_cast<char*>(land.levels.data()), static_cast<std::streamsize>(n * sizeof(float)));
+				land.lnx = (land.nx + 7) / 8, land.lny = (land.ny + 7) / 8;
+				land.levelGrid.resize(static_cast<size_t>(land.lnx) * land.lny);
+				in.read(reinterpret_cast<char*>(land.levelGrid.data()), static_cast<std::streamsize>(land.levelGrid.size()));
+				if (!in || std::any_of(land.levelGrid.begin(), land.levelGrid.end(), [&](uint8_t v) { return v >= n; }))
+					return false;
+			}
 			land.area = {static_cast<int32_t>(std::lround(land.x0)), static_cast<int32_t>(std::lround(land.x0 + land.nx * land.cell)),
 			    static_cast<int32_t>(std::lround(land.y0)), static_cast<int32_t>(std::lround(land.y0 + land.ny * land.cell))};
 			land.blocksX = static_cast<int>((land.nx + kBlock - 1) / kBlock), land.blocksY = static_cast<int>((land.ny + kBlock - 1) / kBlock);
@@ -176,8 +219,8 @@ namespace loader::game::sea
 					farCount += land.farRects.back().size();
 				}
 			land.water = true;
-			log::Info("sea: land {}: water mask {} x {} cells of {:.0f} m; {} / {} / {} rectangles near / further / far", land.name, land.nx, land.ny,
-			    land.cell, nearCount, middleCount, farCount);
+			log::Info("sea: land {}: water mask {} x {} cells of {:.0f} m, {} level(s); {} / {} / {} rectangles near / further / far", land.name, land.nx,
+			    land.ny, land.cell, land.levels.size(), nearCount, middleCount, farCount);
 			return true;
 		}
 
@@ -228,17 +271,51 @@ namespace loader::game::sea
 				}
 		}
 
-		// Whether the sea outside the game's grid is at a point (x, y, z): a land's mask in its box, else the sea.
-		bool __fastcall SeaAt(const float* p)
+		// Whether there is water outside the game's grid at a point (x, y, z), and its level over the sea's: a land's mask in
+		// its box (each water body at its level), else the sea.
+		bool __fastcall LevelAt(const float* p, float* level)
 		{
 			for (const Land& land : g_lands)
 				if (land.water && land.there && p[0] >= land.x0 && p[1] >= land.y0)
 				{
 					const auto i = static_cast<uint32_t>((p[0] - land.x0) / land.cell), j = static_cast<uint32_t>((p[1] - land.y0) / land.cell);
 					if (i < land.nx && j < land.ny)
-						return land.Wet(static_cast<int>(i), static_cast<int>(j));
+					{
+						if (!land.Wet(static_cast<int>(i), static_cast<int>(j)))
+							return false;
+						*level = land.levels[land.LevelIndex(static_cast<int>(i), static_cast<int>(j))];
+						return true;
+					}
 				}
+			*level = 0;
 			return true;
+		}
+
+		// The level query's answer: the sea's level and the water's over it (the game's [default level] + LevelAt's).
+		bool __fastcall WaterAt(const float* p, float* level)
+		{
+			float over = 0;
+			if (!LevelAt(p, &over))
+				return false;
+			*level = *reinterpret_cast<const float*>(g_base + kDefaultLevel) + over;
+			return true;
+		}
+
+		// The waves' (0x358b50): none on the water up the land - a lake, a river: its surface is its meshes', flat; the sea's
+		// waves (half a metre and more there) had boats and swimmers bob on a pond.
+		bool __fastcall Calm(float x, float y)
+		{
+			const float p[3] = {x, y, 0};
+			float over = 0;
+			return LevelAt(p, &over) && over != 0;
+		}
+
+		// The segment test's: the sea's own water there (the game found its crossing of the sea level; water up the land
+		// is not crossed there).
+		bool __fastcall SeaAt(const float* p)
+		{
+			float over = 0;
+			return LevelAt(p, &over) && over == 0;
 		}
 
 		float Distance(float x, float y, const Rect& r)
@@ -257,7 +334,11 @@ namespace loader::game::sea
 			const auto draw = [&](const std::vector<Rect>& rects) {
 				for (const Rect& r : rects)
 				{
-					const Rect c{std::max(r.x0, clip.x0), std::min(r.x1, clip.x1), std::max(r.y0, clip.y0), std::min(r.y1, clip.y1)};
+					// (the water up the land - a lake's, a river's - is the land's own meshes': the game's renderer near the
+					// camera draws all its water at the sea's level)
+					if (r.z != 0)
+						continue;
+					const Rect c{std::max(r.x0, clip.x0), std::min(r.x1, clip.x1), std::max(r.y0, clip.y0), std::min(r.y1, clip.y1), r.z};
 					if (c.x0 < c.x1 && c.y0 < c.y1)
 						emit(c);
 				}
@@ -332,7 +413,7 @@ namespace loader::game::sea
 		{
 			SplitStrip(
 			    {x0, x1, y0, y1}, [&](const Rect& r) { g_drawQuad(r.x0, r.x1, r.y0, r.y1, z, a1, a2, a3, a4, slope, offset); },
-			    [&](const Rect& r) { g_drawQuad(r.x0, r.x1, r.y0, r.y1, z, a1, a2, a3, a4, 0, 0); });
+			    [&](const Rect& r) { g_drawQuad(r.x0, r.x1, r.y0, r.y1, z + r.z, a1, a2, a3, a4, 0, 0); });
 		}
 
 		// The water's flat pass (0x3731d0, positions only: x, y as int16, z) writes the strips into 24 vertices (0x372f80:
@@ -360,7 +441,8 @@ namespace loader::game::sea
 				if (n + 6 > kFlatVertices)
 					return;
 				const auto x0 = static_cast<int16_t>(r.x0), x1 = static_cast<int16_t>(r.x1), y0 = static_cast<int16_t>(r.y0), y1 = static_cast<int16_t>(r.y1);
-				const FlatVertex v[6] = {{x0, y0, z}, {x1, y0, z}, {x1, y1, z}, {x0, y0, z}, {x1, y1, z}, {x0, y1, z}};
+				const float rz = z + r.z;
+				const FlatVertex v[6] = {{x0, y0, rz}, {x1, y0, rz}, {x1, y1, rz}, {x0, y0, rz}, {x1, y1, rz}, {x0, y1, rz}};
 				std::memcpy(out + n, v, sizeof(v));
 				n += 6;
 			};
@@ -430,7 +512,8 @@ namespace loader::game::sea
 			const auto module = pattern::Module::Main();
 			g_base = module.base;
 			const auto same = [&](uintptr_t rva, const uint8_t* bytes, size_t size) { return std::memcmp(reinterpret_cast<const void*>(g_base + rva), bytes, size) == 0; };
-			bool ok = same(kLevelQuery, kLevelQueryBytes, sizeof(kLevelQueryBytes)) && same(kSegmentHit, kSegmentHitBytes, sizeof(kSegmentHitBytes));
+			bool ok = same(kLevelQuery, kLevelQueryBytes, sizeof(kLevelQueryBytes)) && same(kSegmentHit, kSegmentHitBytes, sizeof(kSegmentHitBytes)) &&
+			          same(kWaves, kWavesBytes, sizeof(kWavesBytes));
 			const auto calls = [&](uintptr_t call, uintptr_t target) {
 				const auto* p = reinterpret_cast<const uint8_t*>(g_base + call);
 				int32_t rel = 0;
@@ -451,17 +534,17 @@ namespace loader::game::sea
 			g_drawQuad = reinterpret_cast<DrawQuadFn>(g_base + kDrawQuad);
 			g_writeStrips = reinterpret_cast<WriteStripsFn>(g_base + kWriteStrips);
 
-			// the level query: SeaAt(r12) or no water
+			// the level query: WaterAt(r12, &level) - that level, or no water
 			Code level;
-			level.Add({0x48, 0x83, 0xEC, 0x20});       // sub rsp,20h
-			level.Add({0x4C, 0x89, 0xE1});             // mov rcx,r12
-			level.MovRax(reinterpret_cast<uint64_t>(&SeaAt));
-			level.Add({0xFF, 0xD0});                   // call rax
-			level.Add({0x48, 0x83, 0xC4, 0x20});       // add rsp,20h
-			level.Add({0x84, 0xC0, 0x74, 10 + 4 + 14}); // test al,al; jz (past the next three)
-			level.MovRax(g_base + kDefaultLevel);        // (10 bytes)
-			level.Add({0xF3, 0x0F, 0x10, 0x00});         // movss xmm0,[rax] (4)
-			level.JumpTo(g_base + kLevelQueryWater);     // (14)
+			level.Add({0x48, 0x83, 0xEC, 0x30});             // sub rsp,30h (the stack stays 16-byte aligned for the call)
+			level.Add({0x4C, 0x89, 0xE1});                   // mov rcx,r12
+			level.Add({0x48, 0x8D, 0x54, 0x24, 0x20});       // lea rdx,[rsp+20h]
+			level.MovRax(reinterpret_cast<uint64_t>(&WaterAt));
+			level.Add({0xFF, 0xD0});                         // call rax
+			level.Add({0xF3, 0x0F, 0x10, 0x44, 0x24, 0x20}); // movss xmm0,[rsp+20h]
+			level.Add({0x48, 0x83, 0xC4, 0x30});             // add rsp,30h
+			level.Add({0x84, 0xC0, 0x74, 14});               // test al,al; jz (past the next)
+			level.JumpTo(g_base + kLevelQueryWater);         // (14)
 			level.JumpTo(g_base + kLevelQueryNone);
 
 			// the segment test: SeaAt([r8]) or on to the next block
@@ -480,6 +563,28 @@ namespace loader::game::sea
 			segment.JumpTo(g_base + kSegmentHitBack);
 			segment.JumpTo(g_base + kSegmentNext);
 
+			// the waves: Calm(xmm0, xmm1) - out with the level as it is, or on into the function (its arguments kept)
+			Code waves;
+			waves.Add({0x48, 0x83, 0xEC, 0x48});             // sub rsp,48h (16-byte aligned for the call)
+			waves.Add({0x48, 0x89, 0x4C, 0x24, 0x20});       // mov [rsp+20h],rcx
+			waves.Add({0x48, 0x89, 0x54, 0x24, 0x28});       // mov [rsp+28h],rdx
+			waves.Add({0x4C, 0x89, 0x44, 0x24, 0x30});       // mov [rsp+30h],r8
+			waves.Add({0x4C, 0x89, 0x4C, 0x24, 0x38});       // mov [rsp+38h],r9
+			waves.Add({0xF3, 0x0F, 0x11, 0x44, 0x24, 0x40}); // movss [rsp+40h],xmm0
+			waves.Add({0xF3, 0x0F, 0x11, 0x4C, 0x24, 0x44}); // movss [rsp+44h],xmm1
+			waves.MovRax(reinterpret_cast<uint64_t>(&Calm));
+			waves.Add({0xFF, 0xD0});                         // call rax
+			waves.Add({0x48, 0x8B, 0x4C, 0x24, 0x20});       // mov rcx,[rsp+20h]
+			waves.Add({0x48, 0x8B, 0x54, 0x24, 0x28});       // mov rdx,[rsp+28h]
+			waves.Add({0x4C, 0x8B, 0x44, 0x24, 0x30});       // mov r8,[rsp+30h]
+			waves.Add({0x4C, 0x8B, 0x4C, 0x24, 0x38});       // mov r9,[rsp+38h]
+			waves.Add({0xF3, 0x0F, 0x10, 0x44, 0x24, 0x40}); // movss xmm0,[rsp+40h]
+			waves.Add({0xF3, 0x0F, 0x10, 0x4C, 0x24, 0x44}); // movss xmm1,[rsp+44h]
+			waves.Add({0x48, 0x83, 0xC4, 0x48});             // add rsp,48h
+			waves.Add({0x84, 0xC0, 0x74, 0x01, 0xC3});       // test al,al; jz (past the ret); ret
+			waves.Add({0x41, 0x57, 0x41, 0x56, 0x41, 0x55}); // push r15; push r14; push r13 (the function's own)
+			waves.JumpTo(g_base + kWaves + sizeof(kWavesBytes));
+
 			// the strips: jumps on to OuterStrip and FlatStrips, which take the calls' arguments as they are
 			Code strip, flat;
 			strip.JumpTo(reinterpret_cast<uintptr_t>(&OuterStrip));
@@ -492,7 +597,7 @@ namespace loader::game::sea
 				at += (c.bytes.size() + 15) & ~size_t{15};
 				return reinterpret_cast<uintptr_t>(start);
 			};
-			const uintptr_t levelStub = place(level), segmentStub = place(segment), stripStub = place(strip), flatStub = place(flat);
+			const uintptr_t levelStub = place(level), segmentStub = place(segment), stripStub = place(strip), flatStub = place(flat), wavesStub = place(waves);
 			FlushInstructionCache(GetCurrentProcess(), stubs, 512);
 			const auto callTo = [&](uintptr_t call, uintptr_t to) {
 				uint8_t b[5] = {0xE8};
@@ -502,6 +607,7 @@ namespace loader::game::sea
 			};
 			JumpPatch(g_base + kLevelQuery, levelStub, sizeof(kLevelQueryBytes));
 			JumpPatch(g_base + kSegmentHit, segmentStub, sizeof(kSegmentHitBytes));
+			JumpPatch(g_base + kWaves, wavesStub, sizeof(kWavesBytes));
 			for (const uintptr_t call : kStripCalls)
 				callTo(call, stripStub);
 			const uint8_t flatBegin[] = {0xBA, static_cast<uint8_t>(kFlatVertices & 0xFF), static_cast<uint8_t>(kFlatVertices >> 8 & 0xFF), 0x00, 0x00};

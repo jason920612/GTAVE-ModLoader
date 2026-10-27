@@ -24,6 +24,10 @@ namespace worldgen::terrain
 		// layer 3; 1 inside, where the lawn's blend map mixes its four grasses)
 		std::vector<uint8_t> lawnCell;
 		std::vector<float> lawn;
+		// forest floors (as the lawns, with a material of leaf litters, grass and earth: its layer 3 the ground material's
+		// leaf litter): per cell, per vertex how far in
+		std::vector<uint8_t> forestCell;
+		std::vector<float> forest;
 
 		float H(int i, int j) const { return height[static_cast<size_t>(j) * (nx + 1) + i]; }
 		size_t V(int i, int j) const { return static_cast<size_t>(j) * (nx + 1) + i; }
@@ -41,7 +45,7 @@ namespace worldgen::terrain
 	// the rest as TileMesh.
 	struct Meshes
 	{
-		ydr::Mesh ground, lawn;
+		ydr::Mesh ground, lawn, forest;
 	};
 	Meshes TileMeshes(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres, float blendMetres);
 	// Its collision: parts of at most 20 x 20 cells.

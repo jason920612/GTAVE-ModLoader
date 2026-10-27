@@ -57,6 +57,23 @@ namespace worldgen::build
 			return t * t * (3 - 2 * t);
 		}
 
+		// Value noise on a lattice of `cell` (smoothed), -1..1; `period` lattice cells: it repeats (0: never).
+		float Lattice(float x, float y, float cell, uint32_t seed, int period = 0)
+		{
+			const auto at = [&](int i, int j) {
+				if (period)
+					i = ((i % period) + period) % period, j = ((j % period) + period) % period;
+				uint32_t h = static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(j) * 19349663u ^ seed * 83492791u;
+				h ^= h >> 16, h *= 0x7feb352du, h ^= h >> 15, h *= 0x846ca68bu, h ^= h >> 16;
+				return static_cast<float>(h >> 8) / 8388608.0f - 1.0f;
+			};
+			const float fx = x / cell, fy = y / cell;
+			const int i = static_cast<int>(std::floor(fx)), j = static_cast<int>(std::floor(fy));
+			float tx = fx - i, ty = fy - j;
+			tx = tx * tx * (3 - 2 * tx), ty = ty * ty * (3 - 2 * ty);
+			return (at(i, j) * (1 - tx) + at(i + 1, j) * tx) * (1 - ty) + (at(i, j + 1) * (1 - tx) + at(i + 1, j + 1) * tx) * ty;
+		}
+
 		// Gentle rolling ground (a few metres' worth of waves at several scales), deterministic.
 		float Noise(float x, float y)
 		{
@@ -204,6 +221,60 @@ namespace worldgen::build
 			for (size_t i = 0; i < out.pixels.size() && 4 * i + 3 < pixels.size(); ++i)
 				out.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], pixels[4 * i + 3]};
 			return true;
+		}
+
+		// A ground texture with what changes across it at large - patches, a lighter corner - taken out: each channel
+		// divided by its blur over about an eighth of the side (wrapping: it repeats), times its mean. Repeated every few
+		// metres those patches were a grid of squares from a little way off; the ground's larger changes come from the
+		// vertices' noise and the blend map, which do not repeat.
+		void Flatten(texture::Image& image)
+		{
+			const int w = image.width, h = image.height, rx = std::max(1, w / 16), ry = std::max(1, h / 16);
+			const auto wrap = [](int v, int n) { return ((v % n) + n) % n; };
+			std::vector<float> a(static_cast<size_t>(w) * h), b(a.size());
+			std::array<std::vector<float>, 3> blur;
+			std::array<double, 3> mean{};
+			for (int c = 0; c < 3; ++c)
+			{
+				mean[c] = 0;
+				for (size_t k = 0; k < a.size(); ++k)
+					a[k] = image.pixels[k][c], mean[c] += a[k];
+				mean[c] /= static_cast<double>(a.size());
+				// (three box passes each way: about a Gaussian)
+				for (int pass = 0; pass < 3; ++pass)
+				{
+					for (int y = 0; y < h; ++y)
+					{
+						float* row = &a[static_cast<size_t>(y) * w];
+						float s = 0;
+						for (int x = -rx; x <= rx; ++x)
+							s += row[wrap(x, w)];
+						for (int x = 0; x < w; ++x)
+						{
+							b[static_cast<size_t>(y) * w + x] = s / (2 * rx + 1);
+							s += row[wrap(x + rx + 1, w)] - row[wrap(x - rx, w)];
+						}
+					}
+					for (int x = 0; x < w; ++x)
+					{
+						float s = 0;
+						for (int y = -ry; y <= ry; ++y)
+							s += b[static_cast<size_t>(wrap(y, h)) * w + x];
+						for (int y = 0; y < h; ++y)
+						{
+							a[static_cast<size_t>(y) * w + x] = s / (2 * ry + 1);
+							s += b[static_cast<size_t>(wrap(y + ry + 1, h)) * w + x] - b[static_cast<size_t>(wrap(y - ry, h)) * w + x];
+						}
+					}
+				}
+				blur[c] = a;
+			}
+			for (size_t k = 0; k < image.pixels.size(); ++k)
+				for (int c = 0; c < 3; ++c)
+				{
+					const float f = std::clamp(static_cast<float>(mean[c]) / std::max(1.0f, blur[c][k]), 0.5f, 2.0f);
+					image.pixels[k][c] = static_cast<uint8_t>(std::clamp(std::lround(image.pixels[k][c] * f), 0L, 255L));
+				}
 		}
 
 		// The name of the game's texture dictionary with this hash (its file's).
@@ -373,6 +444,10 @@ namespace worldgen::build
 		raster::Grid<uint8_t> land;
 		land.Init(gx0, gy0, gx1, gy1, o.classify, kWater);
 		raster::ClassifyCoast(land, w.coastlines, 200.0f);
+		// (the coastline's water: the sea, before the map's lakes and rivers are drawn in - theirs are levels of their own)
+		std::vector<uint8_t> seaCells(land.v.size());
+		for (size_t k = 0; k < land.v.size(); ++k)
+			seaCells[k] = land.v[k] == kWater;
 		const auto fill = [&](const char* kind, uint8_t value) {
 			for (const auto& a : w.areas)
 				if (a.kind == kind)
@@ -444,6 +519,10 @@ namespace worldgen::build
 		// grid's cells (1: water) reaching 8 m in over the shore so that waves still run up the beaches. land.json (written
 		// with the map, below): that box and how calm the sea round the land is.
 		std::array<float, 4> built{}; // (the terrain tiles' box: what is built)
+		// (the mask, written with the water's levels once the heights are known)
+		std::vector<uint8_t> maskBits;
+		float maskX0 = 0, maskY0 = 0;
+		uint32_t maskNx = 0, maskNy = 0;
 		{
 			const float tx0 = w.min[0] + std::floor((bx0 - w.min[0]) / o.tile) * o.tile, ty0 = w.min[1] + std::floor((by0 - w.min[1]) / o.tile) * o.tile;
 			const float tx1 = w.min[0] + std::ceil((bx1 - w.min[0]) / o.tile) * o.tile, ty1 = w.min[1] + std::ceil((by1 - w.min[1]) / o.tile) * o.tile;
@@ -465,19 +544,8 @@ namespace worldgen::build
 					if (water)
 						bits[(static_cast<size_t>(j) * nx + i) / 8] |= static_cast<uint8_t>(1u << ((static_cast<size_t>(j) * nx + i) % 8));
 				}
-			// 'WBWM' version 1: x0, y0, cell (float), nx, ny (uint32), the water's level (float); the bits, rows south to north
-			std::ofstream mask(o.out / "water.bin", std::ios::binary);
-			const float level = 0, cell = land.cell;
-			const uint32_t version = 1;
-			mask.write("WBWM", 4);
-			mask.write(reinterpret_cast<const char*>(&version), 4);
-			mask.write(reinterpret_cast<const char*>(&tx0), 4);
-			mask.write(reinterpret_cast<const char*>(&ty0), 4);
-			mask.write(reinterpret_cast<const char*>(&cell), 4);
-			mask.write(reinterpret_cast<const char*>(&nx), 4);
-			mask.write(reinterpret_cast<const char*>(&ny), 4);
-			mask.write(reinterpret_cast<const char*>(&level), 4);
-			mask.write(reinterpret_cast<const char*>(bits.data()), static_cast<std::streamsize>(bits.size()));
+			maskBits = std::move(bits);
+			maskX0 = tx0, maskY0 = ty0, maskNx = nx, maskNy = ny;
 			built = {tx0, ty0, tx1, ty1};
 		}
 		// the land cover (tools/worldgen/nlcd.py's landcover.bin, 'WBLC' version 1: x0, y0, cell (float), nx, ny (uint32),
@@ -502,8 +570,11 @@ namespace worldgen::build
 			if (!in.read(reinterpret_cast<char*>(landCover.v.data()), static_cast<std::streamsize>(landCover.v.size())))
 				return error = "a land cover file cut short: " + o.landcover.string(), false;
 		}
+		// (looked up through noise that bends its edges - 12 m over 50 m, 4 m over 17 m: NLCD's 30 m squares had every
+		// edge between covers - lawns, fields, woods, the trees - in stair steps; they now wander as a field's or a wood's)
 		const std::function<uint8_t(float, float)> landCoverAt = landCover.v.empty() ? std::function<uint8_t(float, float)>() : [&](float x, float y) {
-			const auto c = landCover.Cell({x, y});
+			const float wx = x + 12.0f * Lattice(x, y, 50, 101) + 4.0f * Lattice(x, y, 17, 103), wy = y + 12.0f * Lattice(x, y, 50, 107) + 4.0f * Lattice(x, y, 17, 109);
+			const auto c = landCover.Cell({wx, wy});
 			return landCover.In(c[0], c[1]) ? landCover.At(c[0], c[1]) : uint8_t{0};
 		};
 		took("land and water");
@@ -514,30 +585,234 @@ namespace worldgen::build
 			dry.v[k] = land.v[k] != kWater, wet.v[k] = land.v[k] == kWater;
 		const auto toWater = raster::DistanceTo(dry, 1); // land cells: how far the water is
 		const auto toLand = raster::DistanceTo(wet, 1);  // water cells: how far the land is
+		// the measured ground (tools/worldgen/dem.py's ground.bin, 'WBGR' version 1: x0, y0, cell (float), nx, ny (uint32), then
+		// each cell's height in centimetres (int16, -32768 not known), rows south to north): heights above NAVD88, about the
+		// mean sea level here, the game's sea at 0
+		raster::Grid<float> dem;
+		if (!o.ground.empty())
+		{
+			std::ifstream in(o.ground, std::ios::binary);
+			char magic[4]{};
+			uint32_t version = 0, nx = 0, ny = 0;
+			in.read(magic, 4);
+			in.read(reinterpret_cast<char*>(&version), 4);
+			in.read(reinterpret_cast<char*>(&dem.x0), 4);
+			in.read(reinterpret_cast<char*>(&dem.y0), 4);
+			in.read(reinterpret_cast<char*>(&dem.cell), 4);
+			in.read(reinterpret_cast<char*>(&nx), 4);
+			in.read(reinterpret_cast<char*>(&ny), 4);
+			if (!in || std::memcmp(magic, "WBGR", 4) != 0 || version != 1 || dem.cell <= 0 || !nx || !ny || nx > 65536 || ny > 65536)
+				return error = "not a ground file: " + o.ground.string(), false;
+			std::vector<int16_t> cm(static_cast<size_t>(nx) * ny);
+			if (!in.read(reinterpret_cast<char*>(cm.data()), static_cast<std::streamsize>(cm.size() * 2)))
+				return error = "a ground file cut short: " + o.ground.string(), false;
+			dem.nx = static_cast<int>(nx), dem.ny = static_cast<int>(ny);
+			dem.v.resize(cm.size());
+			for (size_t k = 0; k < cm.size(); ++k)
+				dem.v[k] = cm[k] == -32768 ? std::numeric_limits<float>::quiet_NaN() : cm[k] / 100.0f;
+		}
+		// (bilinear; NaN where it is not known)
+		const auto demAt = [&](float x, float y) {
+			if (dem.v.empty())
+				return std::numeric_limits<float>::quiet_NaN();
+			const float fx = std::clamp((x - dem.x0) / dem.cell - 0.5f, 0.0f, dem.nx - 1.001f), fy = std::clamp((y - dem.y0) / dem.cell - 0.5f, 0.0f, dem.ny - 1.001f);
+			const int i = static_cast<int>(fx), j = static_cast<int>(fy);
+			const float tx = fx - i, ty = fy - j;
+			const float a = dem.At(i, j), b = dem.At(i + 1, j), c = dem.At(i, j + 1), d = dem.At(i + 1, j + 1);
+			if (std::isnan(a) || std::isnan(b) || std::isnan(c) || std::isnan(d))
+			{
+				const float nearest = tx < 0.5f ? (ty < 0.5f ? a : c) : (ty < 0.5f ? b : d);
+				return nearest;
+			}
+			return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+		};
+		// The water bodies (the land grid's water cells joined by their sides) and their levels: a body the coastline's
+		// water is part of at the sea's (0); another at its ground's - the elevation is hydro-flattened: a lake's surface one
+		// height, a river's stepping down along it - a body whose heights keep within 1.5 m all at their median, another
+		// (a river) at its heights smoothed along it (60 m round each cell, within the body); in quarter metres. Without
+		// measured ground all are the sea's.
+		raster::Grid<float> waterLevel; // (NaN: land)
+		waterLevel.x0 = land.x0, waterLevel.y0 = land.y0, waterLevel.cell = land.cell, waterLevel.nx = land.nx, waterLevel.ny = land.ny;
+		waterLevel.v.assign(land.v.size(), std::numeric_limits<float>::quiet_NaN());
+		std::vector<uint8_t> seaBody(land.v.size(), 0); // (a cell of a body at the sea's level)
+		size_t lakes = 0, rivers = 0;
+		{
+			std::vector<int32_t> body(land.v.size(), -1);
+			std::vector<int32_t> queue;
+			int32_t bodies = 0;
+			for (size_t start = 0; start < land.v.size(); ++start)
+			{
+				if (land.v[start] != kWater || body[start] >= 0)
+					continue;
+				queue.clear();
+				queue.push_back(static_cast<int32_t>(start));
+				body[start] = bodies;
+				bool sea = false;
+				for (size_t q = 0; q < queue.size(); ++q)
+				{
+					const int32_t k = queue[q];
+					sea |= seaCells[k] != 0;
+					const int i = k % land.nx, j = k / land.nx;
+					const int next[4][2] = {{i - 1, j}, {i + 1, j}, {i, j - 1}, {i, j + 1}};
+					for (const auto& n : next)
+						if (n[0] >= 0 && n[1] >= 0 && n[0] < land.nx && n[1] < land.ny)
+						{
+							const int32_t kk = n[1] * land.nx + n[0];
+							if (land.v[kk] == kWater && body[kk] < 0)
+								body[kk] = bodies, queue.push_back(kk);
+						}
+				}
+				++bodies;
+				std::vector<float> heights;
+				if (!sea && !dem.v.empty())
+					for (const int32_t k : queue)
+					{
+						const P2 c = land.Centre(k % land.nx, k / land.nx);
+						if (const float h = demAt(c[0], c[1]); !std::isnan(h))
+							heights.push_back(h);
+					}
+				if (sea || heights.size() < queue.size() / 2 + 1)
+				{
+					for (const int32_t k : queue)
+						waterLevel.v[k] = 0, seaBody[k] = 1;
+					continue;
+				}
+				std::sort(heights.begin(), heights.end());
+				const float p10 = heights[heights.size() / 10], p50 = heights[heights.size() / 2], p90 = heights[heights.size() * 9 / 10];
+				const auto quarter = [](float h) { return std::max(0.0f, std::round(h * 4) / 4); };
+				if (p90 - p10 <= 1.5f)
+				{
+					for (const int32_t k : queue)
+						waterLevel.v[k] = quarter(p50);
+					++lakes;
+					continue;
+				}
+				// (a river: each cell its body's heights round it, by a sum table over the body's box)
+				int i0 = land.nx, j0 = land.ny, i1 = 0, j1 = 0;
+				for (const int32_t k : queue)
+					i0 = std::min(i0, k % land.nx), i1 = std::max(i1, k % land.nx), j0 = std::min(j0, k / land.nx), j1 = std::max(j1, k / land.nx);
+				const int bw = i1 - i0 + 1, bh = j1 - j0 + 1;
+				std::vector<double> sum(static_cast<size_t>(bw + 1) * (bh + 1), 0.0), count(sum.size(), 0.0);
+				for (int j = 0; j < bh; ++j)
+					for (int i = 0; i < bw; ++i)
+					{
+						const int32_t k = (j0 + j) * land.nx + (i0 + i);
+						double v = 0, n = 0;
+						if (body[k] == bodies - 1)
+						{
+							const P2 c = land.Centre(i0 + i, j0 + j);
+							if (const float h = demAt(c[0], c[1]); !std::isnan(h))
+								v = h, n = 1;
+						}
+						const size_t at = static_cast<size_t>(j + 1) * (bw + 1) + (i + 1);
+						sum[at] = v + sum[at - 1] + sum[at - (bw + 1)] - sum[at - (bw + 1) - 1];
+						count[at] = n + count[at - 1] + count[at - (bw + 1)] - count[at - (bw + 1) - 1];
+					}
+				const int r = std::max(1, static_cast<int>(std::lround(60 / land.cell)));
+				for (const int32_t k : queue)
+				{
+					const int i = k % land.nx - i0, j = k / land.nx - j0;
+					const int a0 = std::max(0, i - r), a1 = std::min(bw, i + r + 1), b0 = std::max(0, j - r), b1 = std::min(bh, j + r + 1);
+					const auto box = [&](const std::vector<double>& t) {
+						return t[static_cast<size_t>(b1) * (bw + 1) + a1] - t[static_cast<size_t>(b0) * (bw + 1) + a1] - t[static_cast<size_t>(b1) * (bw + 1) + a0] +
+						       t[static_cast<size_t>(b0) * (bw + 1) + a0];
+					};
+					const double n = box(count);
+					waterLevel.v[k] = quarter(n > 0 ? static_cast<float>(box(sum) / n) : p50);
+				}
+				++rivers;
+			}
+			if (!dem.v.empty())
+				std::printf("water: %d bodies, %zu lakes and %zu rivers above the sea's level\n", bodies, lakes, rivers);
+		}
+		const auto waterLevelAt = [&](float x, float y) {
+			const auto c = waterLevel.Cell({x, y});
+			return waterLevel.In(c[0], c[1]) ? waterLevel.At(c[0], c[1]) : std::numeric_limits<float>::quiet_NaN();
+		};
+		// (each land cell near water: the level of the water nearest it, 40 m in; the sea's or not)
+		raster::Grid<float> shoreLevel = waterLevel;
+		std::vector<uint8_t> shoreSea = seaBody;
+		{
+			std::vector<int32_t> queue;
+			std::vector<uint8_t> steps(land.v.size(), 0);
+			for (size_t k = 0; k < land.v.size(); ++k)
+				if (!std::isnan(waterLevel.v[k]))
+					queue.push_back(static_cast<int32_t>(k));
+			const int reach = static_cast<int>(40 / land.cell);
+			for (size_t q = 0; q < queue.size(); ++q)
+			{
+				const int32_t k = queue[q];
+				if (steps[k] >= reach)
+					continue;
+				const int i = k % land.nx, j = k / land.nx;
+				const int next[4][2] = {{i - 1, j}, {i + 1, j}, {i, j - 1}, {i, j + 1}};
+				for (const auto& n : next)
+					if (n[0] >= 0 && n[1] >= 0 && n[0] < land.nx && n[1] < land.ny)
+					{
+						const int32_t kk = n[1] * land.nx + n[0];
+						if (std::isnan(shoreLevel.v[kk]))
+							shoreLevel.v[kk] = shoreLevel.v[k], shoreSea[kk] = shoreSea[k], steps[kk] = steps[k] + 1, queue.push_back(kk);
+					}
+			}
+		}
+		// (the water up the land - a lake's, a river's - for their meshes: each water cell of a body over the sea's at its
+		// level, the land 16 m round it at the nearest one's: the surface reaches under the banks, no gap at the shore)
+		raster::Grid<float> upLand = waterLevel;
+		for (size_t k = 0; k < upLand.v.size(); ++k)
+		{
+			if (seaBody[k])
+				upLand.v[k] = std::numeric_limits<float>::quiet_NaN();
+			else if (land.v[k] != kWater)
+				upLand.v[k] = !shoreSea[k] && toWater.v[k] <= 16 ? shoreLevel.v[k] : std::numeric_limits<float>::quiet_NaN();
+		}
 		raster::Grid<float> height;
 		height.x0 = land.x0, height.y0 = land.y0, height.cell = land.cell, height.nx = land.nx, height.ny = land.ny;
 		height.v.resize(land.v.size());
+		size_t measuredLand = 0;
 		for (int j = 0; j < land.ny; ++j)
 			for (int i = 0; i < land.nx; ++i)
 			{
 				const P2 c = land.Centre(i, j);
+				const size_t at = static_cast<size_t>(j) * land.nx + i;
 				const uint8_t k = land.At(i, j);
 				float h;
 				if (k != kWater)
 				{
 					const float d = toWater.At(i, j);
-					// (high enough that the sea's waves stay off it but on beaches, which they wash)
-					h = 1.4f + 2.2f * Smooth(d / 150) + 0.4f * Noise(c[0], c[1]) * Smooth(d / 150);
-					if (k == kBeach)
-						h = std::min(h, 0.6f + 1.6f * Smooth(d / 60));
+					const float measured = demAt(c[0], c[1]);
+					if (!std::isnan(measured))
+					{
+						// the ground as measured; by water at least a little over its level, rising from it (by the sea
+						// higher: its waves stay off the land but on beaches)
+						h = measured, ++measuredLand;
+						if (const float near = shoreLevel.v[at]; !std::isnan(near))
+						{
+							h = std::max(h, near + 0.25f + 0.04f * d);
+							if (shoreSea[at] && k != kBeach)
+								h = std::max(h, 0.6f + 0.8f * Smooth(d / 60));
+						}
+					}
+					else
+					{
+						// (high enough that the sea's waves stay off it but on beaches, which they wash)
+						h = 1.4f + 2.2f * Smooth(d / 150) + 0.4f * Noise(c[0], c[1]) * Smooth(d / 150);
+						if (k == kBeach)
+							h = std::min(h, 0.6f + 1.6f * Smooth(d / 60));
+					}
 				}
 				else
 				{
+					// below its level, deepening from the shore (the sea further down off it; a lake or a river steeper - a
+					// few metres deep a little way in, its murk then hides the bed)
 					const float d = toLand.At(i, j);
-					h = -(0.7f + 3.3f * (1 - std::exp(-d / 70)) + 22.0f * (1 - std::exp(-std::max(0.0f, d - 300) / 1500)));
+					const float level = std::isnan(waterLevel.v[at]) ? 0.0f : waterLevel.v[at];
+					h = seaBody[at] ? -(0.7f + 3.3f * (1 - std::exp(-d / 70)) + 22.0f * (1 - std::exp(-std::max(0.0f, d - 300) / 1500)))
+					                : level - (1.0f + 4.0f * (1 - std::exp(-d / 25)));
 				}
 				height.At(i, j) = h;
 			}
+		if (!dem.v.empty())
+			std::printf("ground: %zu land cells of %.0f m from the measured elevation\n", measuredLand, land.cell);
 		for (int pass = 0; pass < 2; ++pass)
 		{
 			auto copy = height.v;
@@ -551,6 +826,11 @@ namespace worldgen::build
 					height.At(i, j) = s / 9;
 				}
 		}
+		// (the banks of the water up the land over its level again: the smoothing pulled the land by a lake down into it,
+		// and the water then spread over the land to its mesh's edge, in 8 m steps)
+		for (size_t k = 0; k < height.v.size(); ++k)
+			if (land.v[k] != kWater && !shoreSea[k] && !std::isnan(shoreLevel.v[k]))
+				height.v[k] = std::max(height.v[k], shoreLevel.v[k] + 0.1f + 0.04f * toWater.v[k]);
 		// measured ground: the laser scan's ground returns (above the datum) on land where there is a scan; land cells
 		// without (under buildings, thick trees) from the measured ones around them
 		elevation::Scan scan;
@@ -646,6 +926,57 @@ namespace worldgen::build
 						h += (level - h) * weight;
 				}
 		}
+		// The land's water, for the loader (game/sea.cpp; next to the pack's dlc.rpf): 'WBWM' version 2: x0, y0, cell (float),
+		// nx, ny (uint32), the sea's level (float); the bits (1: water), rows south to north; then its levels: how many (uint8)
+		// and each (float, over the sea's); and a grid of 8 x 8 cells, each the index of the commonest level of its water
+		// cells (uint8), ceil(nx / 8) x ceil(ny / 8), rows south to north.
+		{
+			const uint32_t lnx = (maskNx + 7) / 8, lny = (maskNy + 7) / 8;
+			std::vector<float> levels{0.0f};
+			std::vector<uint8_t> levelGrid(static_cast<size_t>(lnx) * lny, 0);
+			for (uint32_t bj = 0; bj < lny; ++bj)
+				for (uint32_t bi = 0; bi < lnx; ++bi)
+				{
+					std::map<float, int> seen;
+					for (uint32_t j = bj * 8; j < std::min(maskNy, bj * 8 + 8); ++j)
+						for (uint32_t i = bi * 8; i < std::min(maskNx, bi * 8 + 8); ++i)
+						{
+							const float lv = waterLevelAt(maskX0 + (i + 0.5f) * land.cell, maskY0 + (j + 0.5f) * land.cell);
+							if (!std::isnan(lv))
+								++seen[lv];
+						}
+					if (seen.empty())
+						continue;
+					const float lv = std::max_element(seen.begin(), seen.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first;
+					auto it = std::find(levels.begin(), levels.end(), lv);
+					if (it == levels.end())
+					{
+						if (levels.size() < 255)
+							it = levels.insert(levels.end(), lv);
+						else // (more than the index holds: the nearest kept)
+							it = std::min_element(levels.begin(), levels.end(), [&](float a, float b) { return std::abs(a - lv) < std::abs(b - lv); });
+					}
+					levelGrid[static_cast<size_t>(bj) * lnx + bi] = static_cast<uint8_t>(it - levels.begin());
+				}
+			std::ofstream mask(o.out / "water.bin", std::ios::binary);
+			const float sea = 0, cell = land.cell;
+			const uint32_t version = 2;
+			const uint8_t n = static_cast<uint8_t>(levels.size());
+			mask.write("WBWM", 4);
+			mask.write(reinterpret_cast<const char*>(&version), 4);
+			mask.write(reinterpret_cast<const char*>(&maskX0), 4);
+			mask.write(reinterpret_cast<const char*>(&maskY0), 4);
+			mask.write(reinterpret_cast<const char*>(&cell), 4);
+			mask.write(reinterpret_cast<const char*>(&maskNx), 4);
+			mask.write(reinterpret_cast<const char*>(&maskNy), 4);
+			mask.write(reinterpret_cast<const char*>(&sea), 4);
+			mask.write(reinterpret_cast<const char*>(maskBits.data()), static_cast<std::streamsize>(maskBits.size()));
+			mask.write(reinterpret_cast<const char*>(&n), 1);
+			mask.write(reinterpret_cast<const char*>(levels.data()), static_cast<std::streamsize>(levels.size() * sizeof(float)));
+			mask.write(reinterpret_cast<const char*>(levelGrid.data()), static_cast<std::streamsize>(levelGrid.size()));
+			if (levels.size() > 1)
+				std::printf("water: %zu levels above the sea's (up to %.2f m)\n", levels.size() - 1, *std::max_element(levels.begin(), levels.end()));
+		}
 		const auto ground = [&](float x, float y) {
 			const float fx = std::clamp((x - height.x0) / height.cell - 0.5f, 0.0f, height.nx - 1.001f),
 			            fy = std::clamp((y - height.y0) / height.cell - 0.5f, 0.0f, height.ny - 1.001f);
@@ -660,7 +991,7 @@ namespace worldgen::build
 		// where there is an aerial picture, what it shows - its near infrared (vegetation: NDVI 0.12 and more, or green
 		// to the eye: artificial turf) in built-up land, parks and the rest; on land, lawns from 14 m off the water
 		enum : uint8_t { kLawn, kPaving, kBare, kSandy, kUnder };
-		raster::Grid<uint8_t> cover = land, lawnCapable = land;
+		raster::Grid<uint8_t> cover = land, lawnCapable = land, forestCapable = land;
 		{
 			elevation::Aerial photo;
 			const bool photographed = !o.aerial.empty() && photo.Open(o.aerial);
@@ -708,6 +1039,7 @@ namespace worldgen::build
 					cover.At(i, j) = what;
 					++counts[what];
 					lawnCapable.At(i, j) = what == kLawn && toWater.At(i, j) >= 14;
+					forestCapable.At(i, j) = what == kBare && toWater.At(i, j) >= 6;
 				}
 			// (the picture's specks smoothed: on land each cell takes what most of the nine round it are - lawn, paving or
 			// bare earth)
@@ -738,6 +1070,11 @@ namespace worldgen::build
 		}
 		// (how far into a lawn: from its edge)
 		const auto lawnDepth = raster::DistanceTo(lawnCapable, 1);
+		const auto forestDepth = raster::DistanceTo(forestCapable, 1);
+		const auto forestDepthAt = [&](float x, float y) {
+			const auto c = forestDepth.Cell({x, y});
+			return forestDepth.In(c[0], c[1]) ? forestDepth.At(c[0], c[1]) : 0.0f;
+		};
 		const auto coverAt = [&](float x, float y) {
 			const auto c = cover.Cell({x, y});
 			return cover.In(c[0], c[1]) ? cover.At(c[0], c[1]) : uint8_t{kUnder};
@@ -831,7 +1168,11 @@ namespace worldgen::build
 			}
 			std::printf("roads: %zu points in the sea round the island cut, %zu road pieces to them pruned\n", cuts, pruned);
 		}
-		roads::Heights(network, ground);
+		// (over water - a stream the map has no bridge over - a road at least a little above its level)
+		roads::Heights(network, [&](float x, float y) {
+			const float g = ground(x, y), lv = waterLevelAt(x, y);
+			return std::isnan(lv) ? g : std::max(g, lv + 0.4f);
+		});
 		roads::Surfaces surfaces;
 		{
 			// (a divided road's median: planted where the aerial picture shows vegetation, as the ground cover - but on the
@@ -1174,7 +1515,7 @@ namespace worldgen::build
 			    "{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\", \"climate\": \"{}\", \"map\": {{\"name\": \"{}\", "
 			    "\"radar\": [{}], \"pictures\": [{}]}}, \"projection\": [{:.9f}, {:.9f}, {:.3f}, {:.3f}, {:.6f}, {:.6f}], \"world\": [{:.1f}, {:.1f}, "
 			    "{:.1f}, {:.1f}], \"open\": \"{}\"}}\n",
-			    built[0], built[1], built[2], built[3], o.waves, w.climate, o.name, radar, pictures, pr.lat0, pr.lon0, pr.x0, pr.y0, pr.kx, pr.ky,
+			    built[0], built[1], built[2], built[3], o.waves, o.climate.empty() ? w.climate : o.climate, o.name, radar, pictures, pr.lat0, pr.lon0, pr.x0, pr.y0, pr.kx, pr.ky,
 			    w.min[0], w.min[1], w.max[0], w.max[1], o.open);
 		}
 
@@ -1190,7 +1531,7 @@ namespace worldgen::build
 		// blending terrain shader the game has is this one with the rain's puddles - after rain they mirrored the sky over
 		// half a lawn: grass holds little standing water, so its layers' materialWetnessMultiplier (the game's 0.2-0.35)
 		// down to a tenth of that)
-		ydr::Material lawnMaterial;
+		ydr::Material lawnMaterial, groundForest, riverMaterial, forestMaterial;
 		if (!GameMaterial(files, "bh1_21_grnd02_1.ydr", 2, lawnMaterial, error))
 			return false;
 		for (auto& [parameter, bytes] : lawnMaterial.constants)
@@ -1244,14 +1585,23 @@ namespace worldgen::build
 		ydr::Material patchDecal, potholeDecal, breakupDecal;
 		{
 			std::map<std::pair<std::string, std::string>, std::string> copied; // (dictionary, texture) -> our name
-			const auto use = [&](const char* dictionary, const char* texture, std::string& name) {
-				const auto key = std::make_pair(std::string(dictionary), std::string(texture));
+			// (flat: a ground's texture, Flatten'ed - in the format it had)
+			const auto use = [&](const char* dictionary, const char* texture, std::string& name, bool flat = false) {
+				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + (flat ? "#flat" : ""));
 				if (const auto it = copied.find(key); it != copied.end())
 					return name = it->second, true;
 				loader::convert::DictionaryTexture t;
-				name = std::format("{}_{}", o.name, texture);
+				name = std::format("{}_{}{}", o.name, texture, flat ? "_flat" : "");
 				if (!CopyTexture(files, dictionary, texture, name, t, error))
 					return false;
+				if (flat)
+				{
+					texture::Image image;
+					if (!GameImage(files, dictionary, texture, image, error))
+						return false;
+					Flatten(image);
+					t = texture::Make(name, image, t.format.dxgi == 77 ? texture::Format::Bc3 : texture::Format::Bc1);
+				}
 				shared.push_back(std::move(t));
 				copied[key] = name;
 				return true;
@@ -1269,18 +1619,78 @@ namespace worldgen::build
 				std::string d, n;
 				for (int k = 0; k < 4; ++k)
 				{
-					if (!use(groundLayers[k][0], groundLayers[k][1], d) || !use(groundLayers[k][2], groundLayers[k][3], n))
+					if (!use(groundLayers[k][0], groundLayers[k][1], d, true) || !use(groundLayers[k][2], groundLayers[k][3], n))
 						return false;
 					ground3.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
 					ground3.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
-					if (!use(lawns[k][0], lawns[k][1], d) || !use("ch1_09_arc007+hidr.ytd", "im_grass07_n", n))
+					if (!use(lawns[k][0], lawns[k][1], d, true) || !use("ch1_09_arc007+hidr.ytd", "im_grass07_n", n))
 						return false;
 					lawnMaterial.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
 					lawnMaterial.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
 				}
-				if (!use("bh1_05_ground1+hidr.ytd", "ss1_rd_grassblendmap_01", d))
+				// The lawns' blend map: one of our own, 128 m a side (the game's repeats every 22 m - a grid seen from a little
+				// way off): value noise at 1.5 to 40 m, repeating with the map. Its green the second pair's share (their
+				// patchy grass in patches, a quarter of the lawn), blue the layer in each pair, red a little darkening.
+				{
+					constexpr int kSide = 512;
+					texture::Image blend(kSide, kSide);
+					const auto octaves = [&](float x, float y, uint32_t seed) {
+						float v = 0, total = 0, amplitude = 1;
+						for (int k = 0, cell = 128; cell >= 6; ++k, cell /= 2, amplitude *= 0.55f)
+							v += amplitude * Lattice(x, y, static_cast<float>(cell), seed + k, kSide / cell), total += amplitude;
+						return v / total;
+					};
+					for (int y = 0; y < kSide; ++y)
+						for (int x = 0; x < kSide; ++x)
+						{
+							const float g = Smooth((octaves(static_cast<float>(x), static_cast<float>(y), 11) - 0.15f) / 0.5f);
+							const float b = std::clamp(0.5f + 0.9f * octaves(static_cast<float>(x), static_cast<float>(y), 29), 0.0f, 1.0f);
+							const float r = std::clamp(0.06f + 0.12f * octaves(static_cast<float>(x), static_cast<float>(y), 47), 0.0f, 0.2f);
+							blend.At(x, y) = {static_cast<uint8_t>(r * 255), static_cast<uint8_t>(g * 255), static_cast<uint8_t>(b * 255), 255};
+						}
+					shared.push_back(texture::Make(o.name + "_grassblend", blend, texture::Format::Bc1));
+					lawnMaterial.Texture(loader::convert::Joaat("lookupTexture"), o.name + "_grassblend");
+				}
+				// The forest floors' (bare earth inland: woods, swamps, fields) - the lawns' shader and blend map with two leaf
+				// litters, grass and earth, its layer 3 the ground material's leaf litter (where the two meet)
+				forestMaterial = lawnMaterial;
+				{
+					// (each pair a litter and a grass - the woods' floors grassy in places, as Florida's pine flatwoods are - so
+					// that the blend map's mix never leaves one litter's repeat on its own)
+					const std::array<std::array<const char*, 4>, 4> litter{{{"bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", "bh1_36_terrain+hi.ytd",
+					                                                           "rsn_am_ground_dirt_leaflitter_n"},
+					    {"bh1_15_alleygr+hidr.ytd", "im_grass07b", "ch1_09_arc007+hidr.ytd", "im_grass07_n"},
+					    {"bh1_43.ytd", "rsn_am_ground_dirt_dry_leaflitter", "bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n"},
+					    {"bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", "bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n"}}};
+					for (int k = 0; k < 4; ++k)
+					{
+						if (!use(litter[k][0], litter[k][1], d, true) || !use(litter[k][2], litter[k][3], n))
+							return false;
+						forestMaterial.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
+						forestMaterial.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
+					}
+				}
+				// the forest floor (inland tiles: leaf litter in place of the beach's sand, mud in place of the wet sand)
+				groundForest = ground3;
+				if (!use("bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", d, true) || !use("bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n", n))
 					return false;
-				lawnMaterial.Texture(loader::convert::Joaat("lookupTexture"), d);
+				groundForest.Texture(loader::convert::Joaat("DiffuseTexture_layer2"), d);
+				groundForest.Texture(loader::convert::Joaat("BumpTexture_layer2"), n);
+				// (and under the lakes and rivers a mud bank's mud, not the beach's wet sand: through the water it had shown as a
+				// bright sandy floor)
+				if (!use("ch1_09_terrain+hi.ytd", "rn_tf_mudbank_003", d, true) || !use("ch1_09_terrain+hi.ytd", "rn_tf_mudbank_002_n", n))
+					return false;
+				groundForest.Texture(loader::convert::Joaat("DiffuseTexture_layer3"), d);
+				groundForest.Texture(loader::convert::Joaat("BumpTexture_layer3"), n);
+				// the water up the land: the game's river water (water_river: a golf course pond's, still) with a brown creek's
+				// fog (one colour, 4 x 4 - the pond's is a picture laid over its own texture coordinates): Florida's lakes,
+				// ponds and rivers are mostly tea-coloured with tannin, black from above (the aerial pictures); the country
+				// creek's dark green fog had them blue and clear over a pale floor
+				if (!GameMaterial(files, "bh1_43_water004.ydr", 0, riverMaterial, error) || !use("bh1_43_water.ytd", "flow_blank", d) ||
+				    !use("ch3_12_water.ytd", "ch3_12_fog", n))
+					return false;
+				riverMaterial.Texture(0x8FC59620, d); // (its flow map)
+				riverMaterial.Texture(0x85261019, n); // (its fog)
 			}
 			struct Look
 			{
@@ -1451,23 +1861,35 @@ namespace worldgen::build
 					anyLand |= k != kWater || h > -3;
 					const float d = land.In(lc[0], lc[1]) ? toWater.At(lc[0], lc[1]) : 0;
 					// the ground material's layers: grass (the lawn's layer 3), paving, sand (beaches, bare earth, the
-					// shore), wet sand (under water)
-					const uint8_t what = h < 0.2f ? uint8_t{kUnder} : coverAt(x, y);
+					// shore; inland the forest floor's leaf litter), wet sand (under water) - each vertex the share of five
+					// samples round it (their places jittered by noise: the edges between covers soft and irregular, not
+					// the mesh's grid)
 					float grass = 0, paving = 0, soft = 0, wetSand = 0;
-					if (what == kUnder)
-						wetSand = 1;
-					else if (what == kSandy || what == kBare)
-						soft = 1;
-					else if (what == kPaving)
-						paving = 1;
-					else
-						grass = 1;
+					const float lw = h < 0.2f ? 1.0f : 0.0f;
+					for (int sample = 0; sample < 5; ++sample)
+					{
+						const float a = sample * 1.2566f + Lattice(x, y, 23, 5) * 3.0f, rr = sample ? o.cell * (0.45f + 0.35f * Lattice(x, y, 17, 9 + sample)) : 0;
+						const float sx = x + rr * std::cos(a) + 3.0f * Lattice(x, y, 11, 13), sy = y + rr * std::sin(a) + 3.0f * Lattice(x, y, 13, 17);
+						const uint8_t what = lw > 0 ? uint8_t{kUnder} : coverAt(sx, sy);
+						if (what == kUnder)
+							wetSand += 0.2f;
+						else if (what == kSandy || what == kBare)
+							soft += 0.2f;
+						else if (what == kPaving)
+							paving += 0.2f;
+						else
+							grass += 0.2f;
+					}
 					if (k != kWater && k != kBeach && d < 14)
 					{
 						const float t = Smooth(d / 14);
 						grass *= t, paving *= t, soft = soft * t + (1 - t);
 					}
-					f.layers.push_back(terrain::Layers(grass, paving, soft, wetSand));
+					// (and a little darkening, noise over 29 and 71 m: the textures' repeats under larger patches - none finer than
+					// a few vertices: 9 m noise at 8 m vertices was each vertex's own, every cell's shade a checkerboard square)
+					auto layers = terrain::Layers(grass, paving, soft, wetSand);
+					layers[0] = static_cast<uint8_t>(std::lround(std::clamp(0.1f + 0.08f * Lattice(x, y, 29, 71) + 0.05f * Lattice(x, y, 71, 73), 0.0f, 0.25f) * 255));
+					f.layers.push_back(layers);
 				}
 			for (int j = 0; j < per; ++j)
 				for (int i = 0; i < per; ++i)
@@ -1475,6 +1897,22 @@ namespace worldgen::build
 					const uint8_t what = coverAt(x0 + (i + 0.5f) * o.cell, y0 + (j + 0.5f) * o.cell);
 					f.material.push_back(what == kUnder || what == kSandy ? kSand : what == kPaving ? kConcrete : what == kBare ? kDirt : kGrass);
 				}
+			// the forest floors: as the lawns (below), from 4 m in, easing over the next 10 m
+			{
+				const auto capable = [&](int vi, int vj) { return forestDepthAt(x0 + vi * o.cell, y0 + vj * o.cell) > 4; };
+				const auto forestCell = [&](int ci, int cj) { return capable(ci, cj) && capable(ci + 1, cj) && capable(ci, cj + 1) && capable(ci + 1, cj + 1); };
+				f.forestCell.resize(static_cast<size_t>(per) * per);
+				for (int j = 0; j < per; ++j)
+					for (int i = 0; i < per; ++i)
+						f.forestCell[static_cast<size_t>(j) * per + i] = forestCell(i, j);
+				f.forest.resize(static_cast<size_t>(per + 1) * (per + 1));
+				for (int j = 0; j <= per; ++j)
+					for (int i = 0; i <= per; ++i)
+					{
+						const bool inside = forestCell(i - 1, j - 1) && forestCell(i, j - 1) && forestCell(i - 1, j) && forestCell(i, j);
+						f.forest[f.V(i, j)] = inside ? Smooth((forestDepthAt(x0 + i * o.cell, y0 + j * o.cell) - 4) / 10) : 0.0f;
+					}
+			}
 			// the lawns: cells whose four corners are 6 m and more into a lawn; a vertex's depth into it eases over the
 			// next 14 m, 0 where it touches a cell of the ground material (there both draw the same grass)
 			{
@@ -1498,12 +1936,23 @@ namespace worldgen::build
 			                  cname = std::format("{}_c_{}_{}", o.name, ti, tj);
 			ydr::Drawable td;
 			td.name = tname;
-			td.materials = {ground3, lawnMaterial};
+			// (a tile with sand by the sea or a beach: the sand; inland the forest floor)
+			bool sandy = false;
+			for (int j = 0; j <= per && !sandy; j += 2)
+				for (int i = 0; i <= per && !sandy; i += 2)
+				{
+					const float x = x0 + i * o.cell, y = y0 + j * o.cell;
+					const auto lc = land.Cell({x, y});
+					sandy = land.In(lc[0], lc[1]) && (land.At(lc[0], lc[1]) == kBeach || (land.At(lc[0], lc[1]) == kWater && seaBody[static_cast<size_t>(lc[1]) * land.nx + lc[0]]) ||
+					                                  coverAt(x, y) == kSandy);
+				}
+			td.materials = {sandy ? ground3 : groundForest, lawnMaterial, forestMaterial};
 			{
-				// (the textures every 3.5 m as the game's lawns have them, its blend map every 22 m)
-				auto [rest, lawn] = terrain::TileMeshes(f, 0, 0, per, cx, cy, 3.5f, 22.0f);
+				// (the textures every 3.5 m as the game's lawns have them, our blend map every 128 m)
+				auto [rest, lawn, forest] = terrain::TileMeshes(f, 0, 0, per, cx, cy, 3.5f, 128.0f);
 				lawn.material = 1;
-				for (ydr::Mesh* m : {&rest, &lawn})
+				forest.material = 2;
+				for (ydr::Mesh* m : {&rest, &lawn, &forest})
 					if (!m->indices.empty())
 					{
 						r.terrainTriangles += m->indices.size() / 3;
@@ -1514,6 +1963,78 @@ namespace worldgen::build
 			if (!ydr::Write(td, file, error))
 				return error = tname + ": " + error, false;
 			WriteFile(o.out / (tname + ".ydr"), file);
+			// The water up the land in this tile (the game's sea renderer draws only the sea's level): a mesh of the river
+			// water, 8 m cells, each corner at the surface there (a lake flat, a river following its levels).
+			{
+				const auto surfaceAt = [&](float x, float y) {
+					const auto c = upLand.Cell({x, y});
+					return upLand.In(c[0], c[1]) ? upLand.At(c[0], c[1]) : std::numeric_limits<float>::quiet_NaN();
+				};
+				constexpr float kWaterCell = 8;
+				const int wn = static_cast<int>(std::lround(o.tile / kWaterCell));
+				std::vector<float> corner(static_cast<size_t>(wn + 1) * (wn + 1), std::numeric_limits<float>::quiet_NaN());
+				for (int j = 0; j <= wn; ++j)
+					for (int i = 0; i <= wn; ++i)
+					{
+						float sum = 0;
+						int count = 0;
+						for (int dj = -1; dj <= 0; ++dj)
+							for (int di = -1; di <= 0; ++di)
+								if (const float lv = surfaceAt(x0 + (i + di + 0.5f) * kWaterCell, y0 + (j + dj + 0.5f) * kWaterCell); !std::isnan(lv))
+									sum += lv, ++count;
+						if (count)
+							corner[static_cast<size_t>(j) * (wn + 1) + i] = sum / count;
+					}
+				ydr::Mesh wm;
+				std::vector<int32_t> index(corner.size(), -1);
+				const auto vertex = [&](int i, int j, float fallback) {
+					const size_t k = static_cast<size_t>(j) * (wn + 1) + i;
+					if (index[k] < 0)
+					{
+						const float x = x0 + i * kWaterCell, y = y0 + j * kWaterCell;
+						ydr::Vertex v;
+						v.position = {x - cx, y - cy, std::isnan(corner[k]) ? fallback : corner[k]};
+						v.colour0 = {92, 34, 0, 255};
+						v.uv[0] = {(x - cx) * 0.008f, -(y - cy) * 0.008f};
+						index[k] = static_cast<int32_t>(wm.vertices.size());
+						wm.vertices.push_back(v);
+					}
+					return static_cast<uint32_t>(index[k]);
+				};
+				for (int j = 0; j < wn; ++j)
+					for (int i = 0; i < wn; ++i)
+					{
+						const float lv = surfaceAt(x0 + (i + 0.5f) * kWaterCell, y0 + (j + 0.5f) * kWaterCell);
+						if (std::isnan(lv))
+							continue;
+						const uint32_t a = vertex(i, j, lv), b = vertex(i + 1, j, lv), c = vertex(i, j + 1, lv), d = vertex(i + 1, j + 1, lv);
+						wm.indices.insert(wm.indices.end(), {a, b, d, a, d, c});
+					}
+				if (!wm.indices.empty())
+				{
+					const std::string wname = std::format("{}_w_{}_{}", o.name, ti, tj);
+					ydr::Drawable wd;
+					wd.name = wname;
+					wd.materials = {riverMaterial};
+					wd.lods[0].push_back(std::move(wm));
+					if (!ydr::Write(wd, file, error))
+						return error = wname + ": " + error, false;
+					WriteFile(o.out / (wname + ".ydr"), file);
+					mapfiles::Archetype wa;
+					wa.name = wname;
+					wa.textureDictionary = loader::convert::Joaat(facadeDictionary);
+					wa.lodDist = 3000;
+					wa.flags = 0x2000; // (water: drawn in the water's pass, as the game's ponds and rivers of water_river are)
+					ydr::Box(wd, wa.min, wa.max);
+					r.archetypes.push_back(wa);
+					mapfiles::Entity we;
+					we.archetype = loader::convert::Joaat(wname);
+					we.position = {cx, cy, 0};
+					we.lodDist = 3000;
+					we.radius = o.tile * 0.75f;
+					r.entities.push_back(we);
+				}
+			}
 			mapfiles::Archetype ta;
 			ta.name = tname;
 			ta.textureDictionary = loader::convert::Joaat(facadeDictionary);
@@ -2071,7 +2592,10 @@ namespace worldgen::build
 		if (o.navmesh && !navMesh.triangles.empty())
 		{
 			for (size_t t = 0; t < navMesh.triangles.size(); ++t)
-				if (std::all_of(navMesh.triangles[t].begin(), navMesh.triangles[t].end(), [&](uint32_t v) { return navMesh.vertices[v][2] < -0.5f; }))
+				if (std::all_of(navMesh.triangles[t].begin(), navMesh.triangles[t].end(), [&](uint32_t v) {
+					    const float lv = waterLevelAt(navMesh.vertices[v][0], navMesh.vertices[v][1]);
+					    return navMesh.vertices[v][2] < (std::isnan(lv) ? 0.0f : lv) - 0.5f;
+				    }))
 					navSurfaces[t] = navgen::Surface::None;
 			if (o.navmeshNearOnly)
 			{

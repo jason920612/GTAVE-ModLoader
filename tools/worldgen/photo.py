@@ -1,0 +1,281 @@
+"""What the aerial pictures show of a sector (research/phase0.md §63), for worldgen build --photo: every tree that
+stands there and the ground's cover and colour, from the USDA's NAIP (public domain; over Florida 2023, 0.3 m: red, green,
+blue, near infrared) through The National Map, read at 1 m onto the sector's game coordinates, with Meta and WRI's
+canopy heights (CC BY 4.0: "High Resolution Canopy Height Maps", 1 m from satellite pictures of about 2018-2020, tiles
+in EPSG:3857) for how tall the trees are.
+
+usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
+  photo.py --world <world.json> --out <dir> [--area x0,y0,x1,y1] [--chm D:\\GTAV-UE5\\chm] [--keep <dir>]
+  <dir>/trees.bin  'WBTR' version 1, count (u32); each tree: x, y, height, crown radius (f32), kind (u8: 0 evergreen, 1 bare
+                   - leafless in the pictures' winter, 2 palm-like: small round crown), pad (3 bytes)
+  <dir>/cover.bin  'WBPC' version 1, x0, y0, cell (f32), nx, ny (u32); each 4 m cell (rows south to north): its class (u8:
+                   0 not seen, 1 water, 2 tree canopy, 3 green grass, 4 dry grass, 5 bare earth or sand, 6 paving or roof),
+                   red, green, blue (u8: the mean colour of the cell's ground the pictures see, not the trees')
+  --keep: the 1 m pictures (naip_<i>_<j>.npz) kept there, read from there again
+The pictures are asked for in blocks of 2 km (4 bands, JPEG); a tree is a peak of the canopy's brightness in the near
+infrared (its sunlit crown) - the canopy where the canopy heights say 3 m and more or the near infrared is high and
+uneven (crowns and their shadows, not a lawn's even green) - at least a crown's reach from a taller one.
+"""
+import io, json, math, os, struct, sys, time, urllib.parse, urllib.request
+
+import numpy as np
+from PIL import Image
+from scipy import ndimage
+
+NAIP = 'https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage'
+CHM_URL = 'https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/{}.tif'
+AGENT = {'User-Agent': 'GTAVE-ModLoader-worldgen/1.0'}
+BLOCK, OVERLAP, CELL, GROUND = 2000, 32, 1.0, 4.0
+R_EARTH = 6378137.0
+
+
+def options(argv):
+    o = {'chm': r'D:\GTAV-UE5\chm'}
+    for i in range(0, len(argv) - 1, 2):
+        if not argv[i].startswith('--'):
+            sys.exit(__doc__)
+        o[argv[i][2:]] = argv[i + 1]
+    if 'world' not in o or 'out' not in o:
+        sys.exit(__doc__)
+    return o
+
+
+def fetch(url, tries=4):
+    for k in range(tries):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=180) as r:
+                return r.read()
+        except Exception:
+            if k == tries - 1:
+                raise
+            time.sleep(3 + 5 * k)
+
+
+class Projection:
+    def __init__(self, p):
+        self.lat0, self.lon0, self.x0, self.y0, self.kx, self.ky = p['lat0'], p['lon0'], p['x0'], p['y0'], p['kx'], p['ky']
+
+    def latlon(self, x, y):
+        return self.lat0 + (y - self.y0) / self.ky, self.lon0 + (x - self.x0) / self.kx
+
+
+def naip_block(pr, x0, y0, nx, ny):
+    """RGBN of the game box [x0, x0 + nx) x [y0, y0 + ny) at 1 m, rows north to south (as the picture's)."""
+    s, w = pr.latlon(x0, y0)
+    n, e = pr.latlon(x0 + nx * CELL, y0 + ny * CELL)
+    out = np.zeros((ny, nx, 4), np.uint8)
+    for bands, at in (('0,1,2', slice(0, 3)), ('3', slice(3, 4))):
+        q = urllib.parse.urlencode({'bbox': f'{w},{s},{e},{n}', 'bboxSR': 4326, 'imageSR': 4326, 'size': f'{nx},{ny}', 'bandIds': bands,
+                                    'format': 'jpg', 'compressionQuality': 92, 'f': 'image'})
+        im = Image.open(io.BytesIO(fetch(f'{NAIP}?{q}')))
+        a = np.asarray(im.convert('RGB' if bands != '3' else 'L'))
+        if a.shape[:2] != (ny, nx):
+            a = np.asarray(Image.fromarray(a).resize((nx, ny), Image.BILINEAR))
+        out[..., at] = a.reshape(ny, nx, -1)
+    return out
+
+
+class Canopy:
+    """Meta and WRI's canopy heights (m, uint8) by latitude and longitude: their zoom-9 Web Mercator tiles, downloaded
+    once into the folder."""
+
+    def __init__(self, folder):
+        self.folder = folder
+        self.tiles = {}
+
+    @staticmethod
+    def quadkey(tx, ty, z=9):
+        k = ''
+        for i in range(z, 0, -1):
+            d = 0
+            m = 1 << (i - 1)
+            if tx & m:
+                d += 1
+            if ty & m:
+                d += 2
+            k += str(d)
+        return k
+
+    def tile(self, key):
+        if key not in self.tiles:
+            import tifffile, zarr
+            path = os.path.join(self.folder, key + '.tif')
+            if not os.path.exists(path):
+                os.makedirs(self.folder, exist_ok=True)
+                print(f'  canopy tile {key}: downloading', flush=True)
+                with urllib.request.urlopen(urllib.request.Request(CHM_URL.format(key), headers=AGENT), timeout=600) as r, open(path + '.part', 'wb') as f:
+                    while True:
+                        b = r.read(1 << 22)
+                        if not b:
+                            break
+                        f.write(b)
+                os.replace(path + '.part', path)
+            with tifffile.TiffFile(path) as t:
+                p = t.pages[0]
+                scale = p.tags['ModelPixelScaleTag'].value
+                tie = p.tags['ModelTiepointTag'].value
+            self.tiles[key] = (zarr.open(tifffile.imread(path, aszarr=True), mode='r'), tie[3], tie[4], scale[0])
+        return self.tiles[key]
+
+    def heights(self, lat, lon):
+        """Heights at arrays of latitude and longitude (nearest pixel)."""
+        mx = R_EARTH * np.radians(lon)
+        my = R_EARTH * np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+        world = 2 * math.pi * R_EARTH
+        tx = np.floor((mx + world / 2) / world * 512).astype(np.int64)
+        ty = np.floor((world / 2 - my) / world * 512).astype(np.int64)
+        out = np.zeros(lat.shape, np.uint8)
+        for key_xy in set(zip(tx.ravel().tolist(), ty.ravel().tolist())):
+            sel = (tx == key_xy[0]) & (ty == key_xy[1])
+            z, ox, oy, px = self.tile(self.quadkey(*key_xy))
+            col = np.floor((mx[sel] - ox) / px).astype(np.int64)
+            row = np.floor((oy - my[sel]) / px).astype(np.int64)
+            r0, r1, c0, c1 = row.min(), row.max() + 1, col.min(), col.max() + 1
+            window = np.asarray(z[max(r0, 0):r1, max(c0, 0):c1])
+            rr, cc = np.clip(row - max(r0, 0), 0, window.shape[0] - 1), np.clip(col - max(c0, 0), 0, window.shape[1] - 1)
+            out[sel] = window[rr, cc]
+        return out
+
+
+def analyse(rgbn, chm):
+    """One block (rows north to south): the canopy, its trees (block pixel coordinates), and each pixel's ground class."""
+    r, g, b, n = (rgbn[..., k].astype(np.float32) for k in range(4))
+    ndvi = (n - r) / np.maximum(n + r, 1)
+    bright = (r + g + b) / 3
+    # (unevenness of the near infrared over 5 m: crowns and their shadows; a lawn or a field is even)
+    nmean = ndimage.uniform_filter(n, 5)
+    nvar = ndimage.uniform_filter(n * n, 5) - nmean * nmean
+    uneven = np.sqrt(np.maximum(nvar, 0))
+    water = (ndvi < 0.02) & (bright < 60) & (n < 55)
+    # (the pictures decide where trees stand - crowns and their shadows make the near infrared uneven, 17-26 over 5 m in
+    # woods, about 5 on a field; the canopy heights are years older: a field cleared since still had 15 m trees there -
+    # and only give their heights; leafless winter crowns: uneven, a little green or tall)
+    canopy = (uneven > 12) & ((ndvi > 0.08) | (chm >= 3)) | ((ndvi > 0.35) & (uneven > 8))
+    canopy &= ~water
+    canopy = ndimage.binary_opening(canopy, iterations=1)
+    canopy = ndimage.binary_closing(canopy, iterations=2)
+    # trees: peaks of the smoothed near infrared (sunlit crowns) in the canopy, at least a reach apart
+    signal = ndimage.gaussian_filter(n + 0.6 * np.maximum(chm.astype(np.float32) - 3, 0) * 6, 1.6)
+    signal[~canopy] = 0
+    peaks = (signal == ndimage.maximum_filter(signal, size=7)) & canopy & (signal > 0)
+    ys, xs = np.nonzero(peaks)
+    order = np.argsort(-signal[ys, xs])
+    ys, xs = ys[order], xs[order]
+    # canopy heights round each peak: the highest within 3 m (the crown's top); none (young or new growth) -> from the
+    # canopy round it
+    chm_max = ndimage.maximum_filter(chm, size=7).astype(np.float32)
+    chm_wide = ndimage.uniform_filter(np.where(chm >= 3, chm, 0).astype(np.float32), 31)
+    chm_cnt = ndimage.uniform_filter((chm >= 3).astype(np.float32), 31)
+    taken = np.zeros(canopy.shape, bool)
+    trees = []
+    dist_out = ndimage.distance_transform_edt(canopy)
+    for y, x in zip(ys.tolist(), xs.tolist()):
+        if taken[y, x]:
+            continue
+        h = float(chm_max[y, x])
+        if h < 3:
+            h = float(chm_wide[y, x] / chm_cnt[y, x]) if chm_cnt[y, x] > 0.05 else 0.0
+            if h < 3:
+                h = 9.0 + 4.0 * min(1.0, float(dist_out[y, x]) / 15)
+        reach = int(round(min(6.0, max(2.5, 1.2 + 0.16 * h))))
+        y0, y1, x0, x1 = max(0, y - reach), min(canopy.shape[0], y + reach + 1), max(0, x - reach), min(canopy.shape[1], x + reach + 1)
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        disc = (yy - y) ** 2 + (xx - x) ** 2 <= reach * reach
+        taken[y0:y1, x0:x1] |= disc
+        crown = float(min(9.0, max(1.5, 0.5 * reach + 0.6 * min(float(dist_out[y, x]), 2 * reach))))
+        evergreen = ndvi[y, x] > 0.18
+        kind = 0 if evergreen else 1
+        trees.append((x, y, h, crown, kind))
+    # the ground under no canopy: water, green grass, dry grass, bare earth or sand, paving or roofs
+    sat = (np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) / np.maximum(np.maximum(np.maximum(r, g), b), 1)
+    cls = np.full(canopy.shape, 4, np.uint8)
+    cls[(ndvi > 0.28)] = 3
+    cls[(ndvi <= 0.12) & (bright > 150) & (sat < 0.35)] = 5
+    cls[(ndvi <= 0.08) & (sat < 0.12) & (bright <= 150)] = 6
+    cls[water] = 1
+    cls[canopy] = 2
+    return canopy, trees, cls
+
+
+def main():
+    o = options(sys.argv[1:])
+    with open(o['world'], encoding='utf-8') as f:
+        w = json.load(f)
+    pr = Projection(w['projection'])
+    if 'area' in o:
+        ax0, ay0, ax1, ay1 = (float(v) for v in o['area'].split(','))
+    else:
+        ax0, ay0, ax1, ay1 = w['min'][0], w['min'][1], w['max'][0], w['max'][1]
+    out = o['out']
+    os.makedirs(out, exist_ok=True)
+    chm = Canopy(o['chm'])
+    # the ground grid: the land's 4 m cells (worldgen's: from the world's corner)
+    gx0, gy0 = w['min'][0], w['min'][1]
+    gnx, gny = int(math.ceil((w['max'][0] - gx0) / GROUND)), int(math.ceil((w['max'][1] - gy0) / GROUND))
+    gsum = np.zeros((gny, gnx, 3), np.float64)
+    gcount = np.zeros((gny, gnx), np.float64)
+    gclass = np.zeros((gny, gnx, 7), np.float32)
+    trees = []
+    started = time.time()
+    blocks = [(bx, by) for by in np.arange(ay0, ay1, BLOCK) for bx in np.arange(ax0, ax1, BLOCK)]
+    for k, (bx, by) in enumerate(blocks):
+        # the block and its overlap (its trees kept only in the block itself)
+        x0, y0 = bx - OVERLAP, by - OVERLAP
+        nx = int(min(BLOCK, ax1 - bx) + 2 * OVERLAP)
+        ny = int(min(BLOCK, ay1 - by) + 2 * OVERLAP)
+        cached = os.path.join(o['keep'], f'naip_{int(bx)}_{int(by)}.npz') if 'keep' in o else None
+        if cached and os.path.exists(cached):
+            rgbn = np.load(cached)['rgbn']
+        else:
+            rgbn = naip_block(pr, x0, y0, nx, ny)
+            if cached:
+                os.makedirs(o['keep'], exist_ok=True)
+                np.savez_compressed(cached, rgbn=rgbn)
+        # pixel centres (rows north to south)
+        xs = x0 + (np.arange(nx) + 0.5) * CELL
+        ys = y0 + ny * CELL - (np.arange(ny) + 0.5) * CELL
+        lat, lon = pr.latlon(xs[None, :], ys[:, None])
+        lat, lon = np.broadcast_to(lat, (ny, nx)), np.broadcast_to(lon, (ny, nx))
+        heights = chm.heights(np.ascontiguousarray(lat), np.ascontiguousarray(lon))
+        if not rgbn.any():
+            continue
+        canopy, block_trees, cls = analyse(rgbn, heights)
+        for px, py, h, crown, kind in block_trees:
+            x, y = float(xs[px]), float(ys[py])
+            if bx <= x < bx + BLOCK and by <= y < by + BLOCK and x < ax1 and y < ay1:
+                trees.append((x, y, h, crown, kind))
+        # the ground's colour and classes into the 4 m cells (the block's own pixels)
+        inner = (xs[None, :] >= bx) & (xs[None, :] < bx + BLOCK) & (ys[:, None] >= by) & (ys[:, None] < by + BLOCK)
+        gi = np.floor((xs - gx0) / GROUND).astype(np.int64)
+        gj = np.floor((ys - gy0) / GROUND).astype(np.int64)
+        GI, GJ = np.broadcast_to(gi[None, :], (ny, nx)), np.broadcast_to(gj[:, None], (ny, nx))
+        ok = inner & (GI >= 0) & (GJ >= 0) & (GI < gnx) & (GJ < gny)
+        seen = ok & (cls != 2) & (cls != 1)
+        for c in range(3):
+            np.add.at(gsum[..., c], (GJ[seen], GI[seen]), rgbn[..., c][seen])
+        np.add.at(gcount, (GJ[seen], GI[seen]), 1)
+        for c in range(1, 7):
+            m = ok & (cls == c)
+            np.add.at(gclass[..., c], (GJ[m], GI[m]), 1)
+        print(f'block {k + 1}/{len(blocks)} at {bx:.0f},{by:.0f}: {len(block_trees)} trees, canopy {canopy.mean():.0%} '
+              f'({time.time() - started:.0f} s)', flush=True)
+    # trees.bin
+    with open(os.path.join(out, 'trees.bin'), 'wb') as f:
+        f.write(b'WBTR' + struct.pack('<II', 1, len(trees)))
+        for x, y, h, crown, kind in trees:
+            f.write(struct.pack('<4fB3x', x, y, h, crown, kind))
+    # cover.bin: each cell's commonest class, its ground's mean colour (where it shows)
+    cover = np.argmax(gclass, axis=-1).astype(np.uint8)
+    cover[gclass.sum(axis=-1) == 0] = 0
+    colour = np.zeros((gny, gnx, 3), np.uint8)
+    seen = gcount > 0
+    colour[seen] = np.clip(gsum[seen] / gcount[seen][:, None], 0, 255).astype(np.uint8)
+    with open(os.path.join(out, 'cover.bin'), 'wb') as f:
+        f.write(b'WBPC' + struct.pack('<I3f2I', 1, gx0, gy0, GROUND, gnx, gny))
+        f.write(np.concatenate([cover[..., None], colour], axis=-1).tobytes())
+    print(f'{len(trees)} trees ({sum(1 for t in trees if t[4] == 0)} evergreen, {sum(1 for t in trees if t[4] == 1)} bare); '
+          f'cover: ' + ', '.join(f'{name} {np.mean(cover == c):.1%}' for c, name in enumerate(('unseen', 'water', 'canopy', 'grass', 'dry', 'bare', 'paved'))))
+
+
+if __name__ == '__main__':
+    main()
