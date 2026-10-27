@@ -9,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <map>
+#include <set>
 #include <unordered_map>
 
 #include <nlohmann/json.hpp>
@@ -139,7 +140,7 @@ namespace loader::game::sectors
 		// the place), those past 180 m taken away again; one the player gets into or moves is the game's from then on.
 		constexpr float kParkNear = 120, kParkFar = 180;
 		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
-		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF;
+		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E;
 		struct ParkedCar
 		{
 			float x = 0, y = 0, z = 0, heading = 0;
@@ -157,6 +158,15 @@ namespace loader::game::sectors
 		std::map<std::string, ParkedLand> g_parked;
 		std::vector<std::pair<std::string, uint32_t>> g_parkedLive; // (the cars made: their land, their place in its list)
 		ULONGLONG g_lastPark = 0;
+
+		// (the world cleared - a land put away, a save loaded -: the cars made are gone, and their numbers will be other
+		// entities' - nothing done with them again)
+		void ForgetParked()
+		{
+			for (auto& [land, k] : g_parkedLive)
+				g_parked[land].cars[k].vehicle = 0;
+			g_parkedLive.clear();
+		}
 
 		int64_t ParkCell(float x, float y)
 		{
@@ -217,7 +227,9 @@ namespace loader::game::sectors
 			for (size_t k = 0; k < g_parkedLive.size();)
 			{
 				ParkedCar& car = g_parked[g_parkedLive[k].first].cars[g_parkedLive[k].second];
-				bool gone = !natives::Invoke<int32_t>(kDoesEntityExist, car.vehicle);
+				// (still the car made there: a vehicle of its model - else its number is someone else's now)
+				bool gone = !natives::Invoke<int32_t>(kDoesEntityExist, car.vehicle) || !natives::Invoke<int32_t>(kIsEntityAVehicle, car.vehicle) ||
+				            natives::Invoke<uint32_t>(kGetEntityModel, car.vehicle) != car.model;
 				if (gone)
 					car.vehicle = 0;
 				else
@@ -282,6 +294,44 @@ namespace loader::game::sectors
 						++made;
 					}
 				}
+		}
+
+		// The map types store (fwMapTypesStore: the streaming modules' tenth, research/phase0.md §63.4): its slot entries
+		// (32 bytes) at +0x40, as many used as +0x58 says; an entry's +0xC its name's hash, +0x10 its flags. Our lands'
+		// archetype files carry 0x10 (as the game's DLC ones do: 0xfa), and with it the store's Remove (vtable +0x48, 0x937770)
+		// leaves the archetype factories' blocks of the slot in place (0xfe9e40 not called): the land's next coming loaded
+		// the file again, the factories' Reserve found the old block full, and the archetypes ran past its end - garbage
+		// for a model info, the crash at 0x92beab on going back to a land. A land's archetype files lose the bit before the
+		// land is put away, so that their Remove cleans up as for any other file.
+		constexpr uintptr_t kMapTypesStore = 0x3ED6620, kMapTypesStoreVtable = 0x2612380;
+		void LetArchetypeFilesGo(const std::string& land)
+		{
+			const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+			auto* store = reinterpret_cast<uint8_t*>(base + kMapTypesStore);
+			if (*reinterpret_cast<uintptr_t*>(store) != base + kMapTypesStoreVtable)
+			{
+				log::Warn("sectors: the map types store is not where this build has it; {}'s archetype files left as they are", land);
+				return;
+			}
+			uint8_t* entries = *reinterpret_cast<uint8_t**>(store + 0x40);
+			const uint32_t stride = *reinterpret_cast<uint32_t*>(store + 0x54), used = *reinterpret_cast<uint32_t*>(store + 0x58);
+			if (!entries || stride < 0x14 || used > 100000)
+				return;
+			std::set<uint32_t> names{convert::Joaat(land)};
+			for (int k = 1; k < 256; ++k)
+				names.insert(convert::Joaat(std::format("{}_{}", land, k)));
+			int changed = 0;
+			for (uint32_t slot = 0; slot < used; ++slot)
+			{
+				uint8_t* e = entries + static_cast<size_t>(slot) * stride;
+				if (names.contains(*reinterpret_cast<uint32_t*>(e + 0xC)))
+				{
+					auto& flags = *reinterpret_cast<uint16_t*>(e + 0x10);
+					if (flags & 0x14)
+						flags = static_cast<uint16_t>(flags & ~0x14), ++changed;
+				}
+			}
+			log::Info("sectors: {}: {} archetype files to be let go in full", land, changed);
 		}
 
 		void WatchFar()
@@ -576,6 +626,7 @@ namespace loader::game::sectors
 			g_switch.speed = natives::Invoke<float>(kGetEntitySpeed, v);
 		}
 		natives::Invoke<void>(kDoScreenFadeOut, 800);
+		ForgetParked();
 		log::Info("sectors: switching to {}", to);
 		return "";
 	}
@@ -688,6 +739,7 @@ namespace loader::game::sectors
 			for (Land& l : g_lands)
 				if (&l != to && !l.dormant && Overlap(l, *to))
 				{
+					LetArchetypeFilesGo(l.name);
 					content::Revert(l.hash, kGroupMapSp);
 					l.dormant = true;
 					g_switch.leaving.push_back(l.name);
@@ -851,6 +903,7 @@ namespace loader::game::sectors
 
 	void Loaded(int32_t save)
 	{
+		ForgetParked();
 		if (!save || g_lands.empty())
 			return;
 		const auto j = ReadSaves();

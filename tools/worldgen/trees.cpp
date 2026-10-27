@@ -414,9 +414,12 @@ namespace worldgen::trees
 				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
 			else if (own)
 			{
-				// (ours: an evergreen wide for its height a live oak, else a pine; a leafless one a laurel or water oak, a small
-				// one in town a crape myrtle)
-				const int kind = t.kind == 0 ? (width >= 0.6f * h && h >= 8 ? 0 : 1) : (town && h <= 9 && seed % 5 < 3 ? 3 : 2);
+				// (ours: an evergreen a live oak unless it is a pine's height - over 21 m, or over 14 m and narrow -, a leafless
+				// one a laurel or water oak, a small one in town a crape myrtle. The pictures' tree finder cuts a live oak's
+				// crown into several peaks, each narrow for its height: by width alone they had all been pines - the reviewers'
+				// rows of "lollipop" trees where the street pictures have a canopy of live oaks)
+				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
+				const int kind = t.kind == 0 ? (pine ? 1 : 0) : (town && h <= 9 && seed % 5 < 3 ? 3 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
 					props::Prop p;

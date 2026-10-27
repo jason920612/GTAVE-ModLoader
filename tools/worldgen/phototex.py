@@ -35,8 +35,10 @@ inside it and none 1.5 m out along three fifths of it; three fifths of it the pi
 a picture): the decal's heights every 0.8 m (the highest surface within 0.45 m, 6 cm over it - the next build lays the
 pictures on those, so that from where a picture was taken its ground is drawn as it shows it, whatever the build's
 ground is), each 0.1 m texel from the nearest pictures that see it (within 16 m, outside the car, nothing on the scan's
-surface in the way; per 0.8 m cell the nearest's unless two others agree on something else - a car, a person, a shadow),
-alpha fading out over a metre to where none sees it: <dir>/ground.json, <dir>/ground.bin.
+surface in the way; per 0.8 m cell the nearest's unless two others agree on something else - a car, a person, a shadow);
+of that only the paint is kept (white and yellow marks over the asphalt round them, thin: lines, bars, letters) in clean
+paint colours, alpha 1 where the pictures see the ground and nothing is painted (the build leaves out its own markings
+there), 0 where none sees it: <dir>/ground.json, <dir>/ground.bin.
 
 Out: <dir>/phototex.json - the pictures (place, heading, fit, creator) and the walls (building, edge, its ends, z0, z1,
 the texture's size and its offset in walls.bin, the pictures used) -; <dir>/walls.bin - the textures, RGB, rows from the
@@ -674,6 +676,7 @@ def texture_chunk(job):
 
 GROUND_GRID = 33     # the ground decal's heights: every 0.8 m (8 texels of 0.1 m) of a 25.6 m block
 GROUND_REACH = 12.0  # how far from a picture its ground is used (m: farther, few texels and long smears of what stands on it)
+GROUND_CAR = -19.0   # the ground under this elevation is the car's roof and hood (a pickup's reached -20 degrees: degrees)
 
 
 def read_surface(path):
@@ -731,7 +734,7 @@ def ground_block(job):
         if not valid.any():
             continue
         az_rel, el = direction(p, X, Y, Z)
-        valid &= (el > VEHICLE) & ~standing
+        valid &= (el > GROUND_CAR) & ~standing
         # (nothing on the scan's surface 0.4 m over the ray, up to 1.5 m short of the ground it meets)
         steps = np.arange(1.0, GROUND_REACH - 1.4, 0.5, dtype=np.float32)
         idx = np.nonzero(valid)
@@ -801,9 +804,33 @@ def ground_block(job):
     if seen.sum() < 0.02 * seen.size:
         return None
     rgb = np.where(seen[..., None], acc / np.maximum(wsum, 1e-6)[..., None], 0)
-    alpha = np.clip(ndimage.distance_transform_edt(seen) / 10.0, 0, 1)
-    rgba = np.concatenate([np.clip(rgb, 0, 255), alpha[..., None] * 255], -1).astype(np.uint8)
-    return {'i': i, 'j': j, 'grid': G.astype('<f4').tobytes(), 'pixels': rgba[::-1].tobytes(), 'seen': float(seen.mean()), 'panos': used}
+    # the paint alone: the whole picture laid on the ground had read as a smeared decal - cars, the camera's hood, a
+    # hydrant flat on the road, its colours off the road's round it, a seam at its edge. White and yellow marks well over
+    # the asphalt round them (its median over 1.5 m), thin - lines, bars, letters; a white car's roof, a wall, a sign's face
+    # over 0.9 m across is no mark -, in clean paint colours; elsewhere the picture is seen (alpha 1: the build hides its
+    # own markings there - the picture's are the street's) or not (0)
+    lum = rgb.mean(-1)
+    bg = ndimage.median_filter(np.where(seen, lum, lum[seen].mean()), size=15)
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    sat = (mx - mn) / np.maximum(mx, 1)
+    r_, g_, b_ = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    white = (lum > bg + 40) & (sat < 0.22) & (lum > 120)
+    yellow = (r_ > 130) & (g_ > 105) & (b_ < 0.72 * g_) & (r_ - b_ > 50) & (lum > bg + 18)
+    paint = ndimage.binary_opening((white | yellow) & seen)
+    lab, n = ndimage.label(paint)
+    if n:
+        idx = np.arange(1, n + 1)
+        widest = ndimage.maximum(ndimage.distance_transform_edt(paint), lab, idx)
+        size = ndimage.sum(paint, lab, idx)
+        keep = np.zeros(n + 1, bool)
+        keep[1:] = (np.asarray(widest) <= 4.5) & (np.asarray(size) >= 6)
+        paint = keep[lab]
+    soft = np.clip(ndimage.gaussian_filter(paint.astype(np.float32), 0.7) * 1.6, 0, 1)
+    colour = np.where(yellow[..., None], np.array([212, 172, 46], np.float32), np.array([228, 228, 222], np.float32))
+    alpha = np.where(soft > 0.03, np.maximum(soft * 255, 9), np.where(seen, 1, 0))
+    rgba = np.concatenate([colour, alpha[..., None]], -1).astype(np.uint8)
+    return {'i': i, 'j': j, 'grid': G.astype('<f4').tobytes(), 'pixels': rgba[::-1].tobytes(), 'seen': float(seen.mean()), 'panos': used,
+            'paint': float(paint.mean())}
 
 
 def ground_step(out, fitted, workers, cache):
