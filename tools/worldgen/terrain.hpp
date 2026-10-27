@@ -18,7 +18,9 @@ namespace worldgen::terrain
 		int nx = 0, ny = 0;                       // cells; vertices are (nx + 1) x (ny + 1)
 		std::vector<float> height;                // per vertex, row by row from the south
 		std::vector<std::array<uint8_t, 4>> layers; // per vertex: the second colour (r darkens, g pair, b layer, a 255)
-		std::vector<uint8_t> material;            // per cell: a row of materials.dat
+		std::vector<uint16_t> material;           // per cell: a row of materials.dat; its high byte a procedural tag
+		                                          // (procedural.meta's procTagTable: plants the game grows round the player)
+		std::vector<std::array<uint8_t, 3>> colour; // per cell (empty: none): the ground's colour, the plants' tint
 		// lawns (TileMeshes; empty: none): per cell, drawn with the lawn material; per vertex, how far into the lawn (0
 		// where it meets the other material: there both draw the same grass, the ground material's layer 0 and the lawn's
 		// layer 3; 1 inside, where the lawn's blend map mixes its four grasses)
@@ -28,6 +30,10 @@ namespace worldgen::terrain
 		// leaf litter): per cell, per vertex how far in
 		std::vector<uint8_t> forestCell;
 		std::vector<float> forest;
+		// the ground as the aerial pictures show it (research/phase0.md §63; empty: not): per vertex the tint palette's
+		// column (the first colour's blue), and the second texture coordinates across the tile, 0..1 from its north-west
+		// corner (its picture of the four layers' weights)
+		std::vector<uint8_t> tint;
 
 		float H(int i, int j) const { return height[static_cast<size_t>(j) * (nx + 1) + i]; }
 		size_t V(int i, int j) const { return static_cast<size_t>(j) * (nx + 1) + i; }
@@ -48,6 +54,9 @@ namespace worldgen::terrain
 		ydr::Mesh ground, lawn, forest;
 	};
 	Meshes TileMeshes(const Field& f, int i0, int j0, int cells, float cx, float cy, float uvMetres, float blendMetres);
-	// Its collision: parts of at most 20 x 20 cells.
-	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells);
+	// Its collision: parts of at most 20 x 20 cells. `procedural`: instead the game's material bounds (ma@ files, research/
+	// phase0.md §63: the only collision its procedural plants are looked for in) - each cell its material's procedural tag
+	// (Field::material's high byte) and its ground colour (Field::colour), every vertex its colour and how dense the plants
+	// grow; the parts without a tagged cell left out.
+	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural = false);
 }

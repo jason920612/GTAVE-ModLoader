@@ -4082,3 +4082,58 @@ DRAW_TV_CHANNEL、SET_TEXT_RENDER_ID(1)（remote 的 `every` 依序呼叫）。�
     與 NLCD（開發度）分類、取最近的 OSM 地名（城市 7 km、鎮 4 km…，排除拖車公園）寫進 land.json "zones"；loader 換到某分區時
     SET_ZONE_ENABLED（處理函式 0xD91290：區域旗標陣列 [0x4353A18]，20 位元組一個，+4 位元 0；位置查詢 0xD8D7B0 跳過關掉的）只開
     該分區每塊的那一種，text_override 把 WB<i>_<j> 設成地名。舊的 wbmia_zones 移到 world\miami\wbmia_zones_old。
+
+### 63 和真實照片比對：以空照驅動的樹與地面（2026-10-27）
+
+使用者要求「和現實每個當地地方的照片做比對」「需要幾乎和真實照片完全一樣」，並提供邁阿密市區的 Mapillary 街景（CC BY-SA 4.0，
+D:\mapillary → D:\GTAV-UE5\mapillary，metadata.csv：lat、lon、heading）。
+
+- **比對工具** `tools/worldgen/compare.py`：`aerial`（NAIP 空照：The National Map 的 USGSNAIPPlus ImageServer exportImage，公有領域，
+  4 波段、原始 0.3 m、每次最多 4000×4000，bboxSR/imageSR 4326 → 像素在經緯度上等距，正好對上 land.json 的線性投影；遊戲端腳本
+  相機正上方、垂直視角 60°，高度依框的大小）、`photos`（Wikimedia Commons geosearch，排除空照圖塊與太空站照片）、`mapillary`
+  （照片的位置與方向，相機 2 m 高）。land.json 的 "projection" = [lat0, lon0, x0, y0, kx, ky]。輸出 D:\GTAV-UE5\compare\<land>_<版本>。
+- **鄉村格的落差**（池塘 11790,5790）：真實是 ~70% 密林（松＋闊葉，冬季照片裡落葉樹是灰色）、枯黃空地、鐵皮屋；遊戲是 22 m 格點的
+  稀疏「義大利柏樹」（prop_tree_cypress_01）＋亮綠草地、沒有房子。**邁阿密市區街景的落差**：Metromover/Metrorail 高架軌道、
+  I-95/I-395 高架橋、人行天橋都沒有（OSM 的 layer 沒用到，鐵路根本沒匯入；陸上的橋只拱起長度的 8%、最多 6 m）；沒有電線桿與電線、
+  路邊停車；立面單調。
+- **冠層高度**：Meta 與 WRI 的 1 m 冠層高度（CC BY 4.0，AWS dataforgood-fb-data，zoom 9 的 Web Mercator 圖塊約 1 GB、65536²
+  uint8 公尺、1.194 m 像素、deflate 條帶，tiles.geojson 是索引；全佛州約 50 塊），存 D:\GTAV-UE5\chm。**它比 NAIP 舊好幾年**：
+  池塘南邊 2023 年已是空地的地方還有 15 m 的樹。所以「哪裡有樹」看空照，冠層圖只給高度。
+- **空照判斷**（`tools/worldgen/photo.py`，venv）：每 2 km 一塊、1 m；NDVI；近紅外在 5 m 內的不均勻度（標準差）——林地 17–26、
+  田地約 5：樹冠 = 不均勻 > 12 且（NDVI > 0.08 或冠層 ≥ 3 m），或 NDVI > 0.35 且不均勻 > 8；樹 = 近紅外（加冠層高度）平滑後的
+  峰值，彼此至少相距 1.2 + 0.16·高（2.5–6 m）；高度取冠層圖 7 m 內最高，沒有（新長的林）就用周圍 31 m 的平均或 9–13 m；
+  NDVI > 0.18 為常綠（冬季照片），否則落葉。地面分類：水、樹冠、綠草、枯草、裸土/沙、鋪面/屋頂（4 m 格附平均顏色，另存 1 m 分類）。
+  鄉村格：42 塊約 21 分鐘，約 90 萬棵樹（以前 23 萬）。
+- **高爾夫球場的地形 shader**（terrain_cb_w_4lyr_cm_tnt，bh1_43_golf_1a.ydr 第 6 個）：頂點只有 位置、法線、切線、第一組顏色、
+  uv0、uv1；權重全在 lookupTexture（uv1，球場的 512² 混合圖：G = 第二對的比例、B = 對內第二層、R ≈ 0）；調色盤 TintPaletteTex
+  是**嵌在 ydr 裡**的 256×4 B8G8R8A8（列 = tintPaletteSelector、欄 = 頂點顏色的藍），球場的值 81–151 → 層色 = D × T（UE 端重建
+  一致，不乘 2），只能變暗：要上色的層先壓平再把每個通道的平均調成 200（中性），T = 空照顏色 × 0.65 / 200。參數名雜湊：
+  0x2c8d7182 TintPaletteTex、0xc075f9b6 lookupTexture、0xfdd796cf tintPaletteSelector、tintBlendLayer0..3（0x20c649a5、0xd7abb761、
+  0xc501120c、0xfbde7fc6，材質沒覆寫）。水的 shader 參數：RippleBumpiness、RippleSpeed、RippleScale、SpecularIntensity、
+  SpecularFalloff、ParallaxIntensity；水色只看 FogTexture（ch3_12_fog 13,10,5 是褐色溪水）。
+- `worldgen build --photo <dir>`：樹 = trees.bin 每一棵（trees::Photo：常綠→松 prop_tree_pine_01/02，幼樹→小針葉 cedar_s_*，
+  冠寬 ≥ 0.8 高→活橡樹，27.5 N 以南部分→菜棕；落葉→楓、樺、橡；高與冠分開縮放，範圍內保持樹幹像樹幹）；地面 = 每塊 200 m
+  地磚一張 128² 的權重圖（1.56 m，3×3 m 內的分類比例；鄉間四層 綠草、枯草（cs_rsn_sl_wetlandsdrygrass1b）、沙、落葉，鋪面多於
+  1/12 的地磚第二層換成水泥）放在地磚自己的貼圖字典（父 = 共用字典，gtxd.meta），調色盤 256 色 = 每 16 m 取樣的草色（8 級量化的
+  直方圖加權 k-means），頂點取最近的欄。
+- **第一輪結果與修正**（池塘 11790,5790、人工松林 13500,8500、田地 9000,2000 的空照對照）：
+  - 樹：冠層高度圖比空照舊，空地上還有 15 m 的樹 → 「哪裡有樹」只看空照（近紅外 5 m 不均勻度：林地 17–26、田地約 5），
+    冠層圖只給高度；亮而 NDVI 低的像素（沙土林道、翻耕田）永不算樹冠（5 m 濾波會把冠層擴到 4 m 寬的林道上）；每棵樹的冠 =
+    它「擁有」的冠層面積（每個冠層像素歸最近的樹，距離轉換）等面積圓 × 1.15；樹冠蓋到道路就縮到路邊、太近就不種。
+    樹種：常綠 → 松（幼樹的小針葉像雲杉、樺樹白皮不是佛州的，都不用），冠寬 ≥ 0.8 高 → 活橡樹，落葉 → 楓、橡。
+  - 地面：四層全部只當紋理（去掉大塊明暗、去飽和到 35%、亮度調到 200），顏色全部來自空照：每個頂點 = 6 m 內（沒有就 10 m）
+    看得到的地面（不算樹冠、水）的平均色 × 0.65；完全被樹冠蓋住的林床用固定的落葉色。調色盤 256 色 k-means。翻耕的白沙田、
+    黃褐的牧草地、林床的褐色因此跟照片一致。權重圖 128² 的第一、最後一個像素中心放在地磚邊上（原本取樣到邊時貼圖環繞：
+    每塊 200 m 地磚邊上一條線）。枯草層用 cs_tf_rsn_redgrass1（褐色乾草夾綠叢，大塊明暗少）。積水係數 × 0.1（下雨後林床整片
+    鏡面）。
+  - **程序植物（使用者要「用小草的模型蓋住地面」）**：遊戲的程序植物（procedural.meta：procTagTable 的 tag → plantInfos 的草、花、
+    灌木；procObjInfos 的石頭、雜物）只在 **材質碰撞檔 ma@<名>.ybn** 上長：反組譯植物管理器 0x2b9e60 → 0x2baad0（對每個 bound 的
+    每個材質呼叫 0x1127630/0x1127610 查 tag 有沒有物件/植物）；0x2b2fd0 建立植物三角形清單時讀 bound +0x82（每頂點屬性的步距
+    位元組）/+0xB8（每頂點 4 B：地面色 BGR + alpha 的生長密度位元，鄉間常見 56 = 第 3–5 位元 7）、+0xF8 材質色（材質第 6 位元組
+    從 1 起算）、+0x121 色數。快取 BoundsStore 的旗標：0 地圖碰撞、1 hi@、2 ma@（遊戲 8711 筆：4773/3259/679）。ma@ 的子 bound
+    型別/包含旗標全 0（不參與物理），材質 type 0、tag 在第 2 位元組。一般碰撞上的 tag 沒用（試過）。worldgen：照片模式每塊地磚
+    多寫 ma@<碰撞名>.ybn（樹冠 → Forest_Overgrown 157，綠草 → MED_AM_Grass_Lush_SHORT 148，枯草 → Meadow_brown_mix 161），
+    地面色 = 空照色 × 0.45（遊戲鄉間 (71,60,46) 對照片 (165,151,121)）；pack 依檔名寫旗標。結果：林下有灌木、野花，池邊有蘆葦、
+    草叢，田裡有草團，60 fps 不變。
+  - 林道：OSM 的 highway=track 原本沒匯入（佛州林地、農地滿是沙土林道，空照很明顯）→ 匯入成雙向 2×1.75 m、無人行道，表面依
+    surface 或 tracktype（grade1 夯實、grade2 碎石、其他泥土），路徑節點密度 0（AI 可走、不生成車流）。

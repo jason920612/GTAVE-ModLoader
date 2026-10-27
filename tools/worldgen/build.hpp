@@ -31,6 +31,8 @@ namespace worldgen::build
 		std::filesystem::path aerial;   // aerial pictures (tools/worldgen/aerial.py): the roofs' textures
 		std::filesystem::path landcover; // the land cover (tools/worldgen/nlcd.py): woods, wetlands, fields - trees and ground
 		std::filesystem::path ground;    // the measured ground (tools/worldgen/dem.py): the land's heights, the water bodies' levels
+		std::filesystem::path photo;     // what the aerial pictures show (tools/worldgen/photo.py): every tree, the ground's cover
+		                                 // and colour (trees.bin, classes.bin, cover.bin)
 		std::string climate;             // land.json's climate (the loader's weather), over the world's (edits.json)
 		float datum = 0.2f;             // added to the scan's heights (NAVD88, about the mean sea level in Miami; the game's sea is at 0)
 		float waves = 0.2f;             // the swell of the sea round the land (land.json: the loader's game/sea.cpp), the open ocean's 1

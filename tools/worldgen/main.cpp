@@ -739,7 +739,8 @@ namespace
 		    device, name, startupGroup, mapSetNames);
 		// The cache (version 46): a header, <fileDates> (each archive: hash of its path, a file time), then per module its
 		// entries after their byte count. fwMapDataStore, 64 bytes a map: name, parent, content flags, streaming box, entities
-		// box, flags (1: streamed like the game's own maps). BoundsStore, 32 bytes a collision file: name, box, flags (0).
+		// box, flags (1: streamed like the game's own maps). BoundsStore, 32 bytes a collision file: name, box, flags (0 a map's
+		// collision, 1 its high detail one - hi@ -, 2 a material bound - ma@: only these the procedural plants are looked for in).
 		// (one a map change set: its archives' maps and collision files)
 		std::map<std::string, int> setOfArchive;
 		for (size_t g = 0; g < archiveNames.size(); ++g)
@@ -781,7 +782,7 @@ namespace
 				for (const uint64_t at : {ue5export::drawable::View::kRoot + 0x30, ue5export::drawable::View::kRoot + 0x20})
 					for (int a = 0; a < 3; ++a)
 						putf(bounds, view.Get<float>(at + 4 * a));
-				put32(bounds, 0);
+				put32(bounds, base.starts_with("ma@") ? 2 : base.starts_with("hi@") ? 1 : 0);
 			}
 		}
 		std::vector<Bytes> caches;
@@ -2217,6 +2218,8 @@ int main(int argc, char** argv)
 			o.landcover = g_options["landcover"];
 		if (g_options.contains("ground"))
 			o.ground = g_options["ground"];
+		if (g_options.contains("photo"))
+			o.photo = g_options["photo"];
 		if (g_options.contains("climate"))
 			o.climate = g_options["climate"];
 		if (g_options.contains("datum"))
@@ -2567,6 +2570,70 @@ int main(int argc, char** argv)
 			    e.Get<float>(Hash("childLodDist")), e.Get<uint32_t>(Hash("lodLevel")), e.Get<uint32_t>(Hash("numChildren")),
 			    e.Get<uint32_t>(Hash("priorityLevel")), e.Get<uint32_t>(Hash("ambientOcclusionMultiplier")),
 			    e.Get<uint32_t>(Hash("artificialAmbientOcclusion")), e.Get<uint32_t>(Hash("tintValue")));
+		}
+		return 0;
+	}
+	if (command == "cargen-dump")
+	{
+		// a map file's car generators (parked cars): --name <file.ymap>: CCarGen's layout, each one's fields
+		Bytes data;
+		ue5export::meta::Meta m;
+		if (const auto* f = files.Find(g_options["name"]); !f || !files.Read(*f, data, error) || !m.Read(data, error))
+			return Fail("cannot read " + g_options["name"] + " " + error);
+		using ue5export::meta::Hash;
+		if (const auto* st = m.Find(Hash("CCarGen")))
+		{
+			std::printf("CCarGen: size %u\n", st->size);
+			for (const auto& fl : st->fields)
+				std::printf("  field %08x at %d type %u\n", fl.name, fl.offset, fl.type);
+		}
+		for (const auto& g : m.Root().Array(Hash("carGenerators")))
+		{
+			const auto p = g.Get<std::array<float, 4>>(Hash("position"));
+			std::printf("cargen at %.1f %.1f %.1f orient %.2f %.2f perp %.2f model %08x flags %08x colours %d %d %d %d pop %08x livery %d\n", p[0], p[1], p[2],
+			    g.Get<float>(Hash("orientX")), g.Get<float>(Hash("orientY")), g.Get<float>(Hash("perpendicularLength")), g.Get<uint32_t>(Hash("carModel")),
+			    g.Get<uint32_t>(Hash("flags")), g.Get<int32_t>(Hash("bodyColorRemap1")), g.Get<int32_t>(Hash("bodyColorRemap2")),
+			    g.Get<int32_t>(Hash("bodyColorRemap3")), g.Get<int32_t>(Hash("bodyColorRemap4")), g.Get<uint32_t>(Hash("popGroup")),
+			    static_cast<int>(g.Get<int8_t>(Hash("livery"))));
+		}
+		return 0;
+	}
+	if (command == "grass-dump")
+	{
+		// a map file's grass batches (instancedData.GrassInstanceList): --name <file.ymap>: the structures' layouts, each
+		// batch's archetype, distances, box, count and first instances
+		Bytes data;
+		ue5export::meta::Meta m;
+		if (const auto* f = files.Find(g_options["name"]); !f || !files.Read(*f, data, error) || !m.Read(data, error))
+			return Fail("cannot read " + g_options["name"] + " " + error);
+		using ue5export::meta::Hash;
+		for (const char* s : {"CMapData", "rage__fwInstancedMapData", "rage__fwGrassInstanceListDef", "rage__fwGrassInstanceListDef__InstanceData", "rage__spdAABB"})
+			if (const auto* st = m.Find(Hash(s)))
+			{
+				std::printf("%s: size %u\n", s, st->size);
+				for (const auto& fl : st->fields)
+					std::printf("  field %08x at %d type %u\n", fl.name, fl.offset, fl.type);
+			}
+		const auto inst = m.Root().Struct(Hash("instancedData"), Hash("rage__fwInstancedMapData"));
+		if (!inst)
+			return Fail("no instancedData");
+		for (const auto& g : inst.Array(Hash("GrassInstanceList")))
+		{
+			const auto box = g.Struct(Hash("BatchAABB"), Hash("rage__spdAABB"));
+			const auto lo = box.Get<std::array<float, 4>>(Hash("min")), hi = box.Get<std::array<float, 4>>(Hash("max"));
+			const auto scale = g.Get<std::array<float, 3>>(Hash("ScaleRange"));
+			const auto list = g.Array(Hash("InstanceList"));
+			std::printf("batch %08x lod %u fade start %.1f inst fade %.2f orient %.2f scale %.2f..%.2f (%.2f) box %.1f %.1f %.1f .. %.1f %.1f %.1f: %zu\n",
+			    g.Get<uint32_t>(Hash("archetypeName")), g.Get<uint32_t>(Hash("lodDist")), g.Get<float>(Hash("LodFadeStartDist")),
+			    g.Get<float>(Hash("LodInstFadeRange")), g.Get<float>(Hash("OrientToTerrain")), scale[0], scale[1], scale[2], lo[0], lo[1], lo[2], hi[0], hi[1],
+			    hi[2], list.size());
+			for (size_t k = 0; k < std::min<size_t>(list.size(), 3); ++k)
+			{
+				std::printf("   ");
+				for (int b = 0; b < 16; ++b)
+					std::printf(" %02x", m.At(list[k].at)[b]);
+				std::printf("\n");
+			}
 		}
 		return 0;
 	}

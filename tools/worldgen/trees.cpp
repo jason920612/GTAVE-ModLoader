@@ -279,3 +279,59 @@ namespace worldgen::trees
 			}
 	}
 }
+
+namespace worldgen::trees
+{
+	namespace
+	{
+		// (the game's models of each kind, height and crown width as their boxes give them)
+		// (pines of every age - the small conifers looked like spruces, the birches' white bark is not Florida's -, live
+		// oaks, and the broadleaf trees that lose their leaves: maples and oaks)
+		constexpr Model kPines[] = {{"prop_tree_pine_02", 29.5f, 16.5f}, {"prop_tree_pine_01", 31.4f, 15.0f}};
+		constexpr Model kLiveOaks[] = {{"prop_tree_eng_oak_01", 17.5f, 17.2f}, {"prop_tree_oak_01", 23.4f, 29.7f}, {"prop_tree_olive_01", 17.2f, 18.9f}};
+		constexpr Model kDeciduous[] = {{"prop_tree_maple_03", 9.1f, 5.9f}, {"prop_tree_maple_02", 8.2f, 10.0f}, {"prop_tree_eng_oak_01", 17.5f, 17.2f},
+		    {"prop_tree_oak_01", 23.4f, 29.7f}};
+		constexpr Model kCabbagePalms[] = {{"prop_palm_fan_03_a", 11.0f, 4.7f}, {"prop_palm_fan_03_b", 13.8f, 4.8f}, {"prop_palm_fan_03_c", 21.5f, 6.7f},
+		    {"prop_palm_fan_04_b", 12.2f, 5.9f}};
+	}
+
+	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
+	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
+	    std::vector<props::Prop>& out, Stats& stats)
+	{
+		constexpr float kPi = 3.14159265f;
+		const bool south = latitude < 27.5;
+		for (const Seen& t : seen)
+		{
+			if (t.x < box[0] || t.y < box[1] || t.x >= box[2] || t.y >= box[3] || !open(t.x, t.y))
+				continue;
+			const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(t.x * 4)) * 73856093u ^ static_cast<uint32_t>(std::lround(t.y * 4)) * 19349663u);
+			// (the crown the canopy it covers in the pictures, a little wider: the game's models' leaves fill less than their
+			// boxes, and the woods' canopy closes overhead as in the pictures)
+			const float h = std::clamp(t.height, 3.0f, 40.0f), width = 2.3f * std::max(t.crown, 1.0f);
+			const uint8_t nlcd = cover ? cover(t.x, t.y) : 0;
+			const Model* m = nullptr;
+			bool palm = false;
+			if (t.kind == 2 || (t.kind == 0 && south && width < 0.45f * h && (seed & 3) == 0))
+				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
+			else if (t.kind == 0 && width >= 0.8f * h && h >= 8)
+				m = &Choose(kLiveOaks, h, width, 0.7f, seed);
+			else if (t.kind == 0)
+				m = &Choose(kPines, h, width, 0.3f, seed);
+			else
+				m = &Choose(kDeciduous, h, width, nlcd == 90 ? 0.3f : 0.6f, seed);
+			// (height and crown scaled apart, but not so far apart that a trunk turns into a pole or a barrel)
+			const float sz = std::clamp(h / m->height, 0.25f, 1.4f);
+			const float sxy = std::clamp(std::clamp(width / m->width, 0.3f, 1.5f), sz * 0.7f, sz * 1.8f);
+			props::Prop p;
+			p.archetype = loader::convert::Joaat(m->name);
+			p.position = {t.x, t.y, ground(t.x, t.y) - 0.2f};
+			p.heading = static_cast<float>((seed >> 8) % 360) * kPi / 180;
+			p.lodDist = h < 11 ? 250.0f : 380.0f;
+			p.scale = sxy;
+			p.scaleZ = sz;
+			out.push_back(p);
+			++(palm ? stats.palms : stats.broadleaf);
+		}
+	}
+}

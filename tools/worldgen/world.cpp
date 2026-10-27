@@ -186,8 +186,10 @@ namespace worldgen::world
 		out.min = p.To(d.south, d.west);
 		out.max = p.To(d.north, d.east);
 		out.attribution = "Map data (c) OpenStreetMap contributors, ODbL";
+		// (and the tracks: the countryside's dirt roads - Florida's woods and farms are crossed by them, plain in the aerial
+		// pictures)
 		static const std::set<std::string> kRoads{"motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "living_street",
-		    "service", "road", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"};
+		    "service", "road", "track", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"};
 		for (const auto& [id, w] : d.ways)
 		{
 			if (w.nodes.size() < 2)
@@ -249,14 +251,21 @@ namespace worldgen::world
 				}
 				r.laneWidth = base == "motorway" || base == "trunk" ? 3.7f : base == "primary" || base == "secondary" ? 3.5f : base == "tertiary" ? 3.3f
 				              : highway == "service"                                                                     ? 2.8f
+				              : highway == "track"                                                                       ? 1.75f
 				                                                                                                         : 3.0f;
 				const std::string& sidewalk = Tag(t, "sidewalk");
-				r.sidewalks = !link && base != "motorway" && base != "trunk" && highway != "service" && sidewalk != "no" && sidewalk != "none";
+				r.sidewalks = !link && base != "motorway" && base != "trunk" && highway != "service" && highway != "track" && sidewalk != "no" && sidewalk != "none";
 				r.bridge = !Tag(t, "bridge").empty() && Tag(t, "bridge") != "no";
 				r.tunnel = !Tag(t, "tunnel").empty() && Tag(t, "tunnel") != "no";
 				r.layer = static_cast<int>(Number(Tag(t, "layer")));
 				r.speed = Speed(Tag(t, "maxspeed"));
 				r.surface = Tag(t, "surface");
+				// (a track's surface, where not tagged, by its grade: grade1 solid, grade2 gravel, softer ones earth)
+				if (highway == "track" && r.surface.empty())
+				{
+					const std::string& grade = Tag(t, "tracktype");
+					r.surface = grade == "grade1" ? "compacted" : grade == "grade2" ? "gravel" : "dirt";
+				}
 				r.smoothness = Tag(t, "smoothness");
 				if (r.points.size() >= 2)
 					out.roads.push_back(std::move(r));

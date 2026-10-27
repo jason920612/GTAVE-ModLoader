@@ -22,6 +22,7 @@ namespace worldgen::props
 		float heading = 0; // radians: the model's x axis from east, anticlockwise
 		float lodDist = 200;
 		float scale = 1;
+		float scaleZ = 0; // (0: as scale; a tree the aerial pictures measured: its height's, scale its crown's)
 	};
 
 	// `open(x, y)`: not on a road's asphalt or in a building; `ground(x, y)`: the terrain's height. Only what lies in

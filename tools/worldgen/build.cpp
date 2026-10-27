@@ -49,7 +49,9 @@ namespace worldgen::build
 		// ground classes (the land grid)
 		enum : uint8_t { kWater, kLand, kBeach, kUrban, kPark, kPaved };
 		// materials.dat rows
-		constexpr uint8_t kGrass = 47, kSand = 19, kConcrete = 1, kDirt = 43;
+		constexpr uint8_t kGrass = 47, kSand = 19, kConcrete = 1, kDirt = 43, kGrassShort = 48, kLeaves = 52;
+		// procedural.meta's procTagTable: what the game grows round the player on a material (research/phase0.md §63)
+		constexpr uint16_t kForestOvergrown = 157 << 8, kMeadowBrown = 161 << 8, kLushShort = 148 << 8;
 
 		float Smooth(float t)
 		{
@@ -276,6 +278,130 @@ namespace worldgen::build
 					image.pixels[k][c] = static_cast<uint8_t>(std::clamp(std::lround(image.pixels[k][c] * f), 0L, 255L));
 				}
 		}
+
+		// A ground texture made neutral (a tinted layer: its colour mostly the tint palette's, the texture its pattern): a
+		// third of its own colour kept, the rest its grey, all brightened so that the mean is `mean` (each channel scaled
+		// apart had a green grass texture's bits of earth pink).
+		void Neutral(texture::Image& image, float mean)
+		{
+			double sum = 0;
+			for (auto& p : image.pixels)
+			{
+				const float grey = 0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2];
+				for (int c = 0; c < 3; ++c)
+					p[c] = static_cast<uint8_t>(std::clamp(std::lround(grey + 0.35f * (p[c] - grey)), 0L, 255L));
+				sum += grey;
+			}
+			const double m = std::max(1.0, sum / std::max<size_t>(1, image.pixels.size()));
+			for (auto& p : image.pixels)
+				for (int c = 0; c < 3; ++c)
+					p[c] = static_cast<uint8_t>(std::clamp(std::lround(p[c] * mean / m), 0L, 255L));
+		}
+
+		// 256 colours for a tint palette (bytes): k-means over the wanted colours (weighted by how often each 8-step colour
+		// is wanted), and each 8-step colour's nearest of them in `nearest` ((r >> 3) << 10 | (g >> 3) << 5 | b >> 3)
+		std::array<std::array<uint8_t, 3>, 256> Palette(const std::vector<std::array<float, 3>>& wanted, std::vector<uint8_t>& nearest)
+		{
+			std::vector<std::array<double, 4>> bins(32768, {0, 0, 0, 0}); // (sum of r, g, b; count)
+			for (const auto& c : wanted)
+			{
+				auto& b = bins[(static_cast<int>(c[0]) >> 3) << 10 | (static_cast<int>(c[1]) >> 3) << 5 | (static_cast<int>(c[2]) >> 3)];
+				b[0] += c[0], b[1] += c[1], b[2] += c[2], b[3] += 1;
+			}
+			std::vector<std::array<float, 4>> points; // (mean colour of a bin, its weight)
+			for (const auto& b : bins)
+				if (b[3] > 0)
+					points.push_back({static_cast<float>(b[0] / b[3]), static_cast<float>(b[1] / b[3]), static_cast<float>(b[2] / b[3]), static_cast<float>(b[3])});
+			std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) { return a[3] > b[3]; });
+			std::array<std::array<float, 3>, 256> centre{};
+			for (int k = 0; k < 256; ++k)
+				centre[k] = points.empty() ? std::array<float, 3>{40, 55, 30} : std::array<float, 3>{points[k % points.size()][0], points[k % points.size()][1], points[k % points.size()][2]};
+			const auto distance = [](const auto& a, const auto& b) { return (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]); };
+			for (int pass = 0; pass < 16 && !points.empty(); ++pass)
+			{
+				std::array<std::array<double, 4>, 256> sum{};
+				for (const auto& q : points)
+				{
+					int best = 0;
+					for (int k = 1; k < 256; ++k)
+						if (distance(q, centre[k]) < distance(q, centre[best]))
+							best = k;
+					sum[best][0] += q[0] * q[3], sum[best][1] += q[1] * q[3], sum[best][2] += q[2] * q[3], sum[best][3] += q[3];
+				}
+				for (int k = 0; k < 256; ++k)
+					if (sum[k][3] > 0)
+						centre[k] = {static_cast<float>(sum[k][0] / sum[k][3]), static_cast<float>(sum[k][1] / sum[k][3]), static_cast<float>(sum[k][2] / sum[k][3])};
+			}
+			nearest.assign(32768, 0);
+			for (int i = 0; i < 32768; ++i)
+			{
+				const std::array<float, 3> c{((i >> 10) << 3) + 4.0f, (((i >> 5) & 31) << 3) + 4.0f, ((i & 31) << 3) + 4.0f};
+				int best = 0;
+				for (int k = 1; k < 256; ++k)
+					if (distance(c, centre[k]) < distance(c, centre[best]))
+						best = k;
+				nearest[i] = static_cast<uint8_t>(best);
+			}
+			std::array<std::array<uint8_t, 3>, 256> out{};
+			for (int k = 0; k < 256; ++k)
+				for (int c = 0; c < 3; ++c)
+					out[k][c] = static_cast<uint8_t>(std::clamp(std::lround(centre[k][c]), 0L, 255L));
+			return out;
+		}
+
+		// What the aerial pictures show (tools/worldgen/photo.py): trees.bin (every tree), classes.bin (each metre's cover),
+		// cover.bin (each 4 m cell's class and its ground's colour).
+		bool ReadPhoto(const std::filesystem::path& folder, std::vector<trees::Seen>& seen, raster::Grid<uint8_t>& classes,
+		    raster::Grid<std::array<uint8_t, 4>>& cover, std::string& error)
+		{
+			{
+				std::ifstream in(folder / "trees.bin", std::ios::binary);
+				char magic[4]{};
+				uint32_t version = 0, count = 0;
+				in.read(magic, 4);
+				in.read(reinterpret_cast<char*>(&version), 4);
+				in.read(reinterpret_cast<char*>(&count), 4);
+				if (!in || std::memcmp(magic, "WBTR", 4) != 0 || version != 1)
+					return error = "not a trees file: " + (folder / "trees.bin").string(), false;
+				seen.resize(count);
+				for (auto& t : seen)
+				{
+					float v[4]{};
+					uint8_t kind[4]{};
+					in.read(reinterpret_cast<char*>(v), sizeof(v));
+					in.read(reinterpret_cast<char*>(kind), sizeof(kind));
+					t = {v[0], v[1], v[2], v[3], kind[0]};
+				}
+				if (!in)
+					return error = "a trees file cut short: " + (folder / "trees.bin").string(), false;
+			}
+			const auto grid = [&](const char* file, const char* tag, auto& g) {
+				std::ifstream in(folder / file, std::ios::binary);
+				char magic[4]{};
+				uint32_t version = 0, nx = 0, ny = 0;
+				in.read(magic, 4);
+				in.read(reinterpret_cast<char*>(&version), 4);
+				in.read(reinterpret_cast<char*>(&g.x0), 4);
+				in.read(reinterpret_cast<char*>(&g.y0), 4);
+				in.read(reinterpret_cast<char*>(&g.cell), 4);
+				in.read(reinterpret_cast<char*>(&nx), 4);
+				in.read(reinterpret_cast<char*>(&ny), 4);
+				if (!in || std::memcmp(magic, tag, 4) != 0 || version != 1 || g.cell <= 0 || !nx || !ny || nx > 65536 || ny > 65536)
+					return error = std::string("not a photo.py ") + file + ": " + (folder / file).string(), false;
+				g.nx = static_cast<int>(nx), g.ny = static_cast<int>(ny);
+				g.v.resize(static_cast<size_t>(nx) * ny);
+				if (!in.read(reinterpret_cast<char*>(g.v.data()), static_cast<std::streamsize>(g.v.size() * sizeof(g.v[0]))))
+					return error = std::string("cut short: ") + (folder / file).string(), false;
+				return true;
+			};
+			return grid("classes.bin", "WBCL", classes) && grid("cover.bin", "WBPC", cover);
+		}
+
+		// (a tinted ground layer's mean in each channel; the aerial pictures' colour of the ground times kPhotoGain is the
+		// colour the game draws it with: NAIP's lawn of about 100 the game's grass of about 65)
+		constexpr float kNeutralMean = 200, kPhotoGain = 0.65f;
+		// (the woods' floor where the pictures see none, as a palette colour: NAIP's leaf litter in the shade about (95, 80, 60))
+		constexpr std::array<float, 3> kForestFloor{95 * kPhotoGain / kNeutralMean * 255, 80 * kPhotoGain / kNeutralMean * 255, 60 * kPhotoGain / kNeutralMean * 255};
 
 		// The name of the game's texture dictionary with this hash (its file's).
 		std::string DictionaryName(const ue5export::GameFiles& files, uint32_t hash)
@@ -576,6 +702,50 @@ namespace worldgen::build
 			const float wx = x + 12.0f * Lattice(x, y, 50, 101) + 4.0f * Lattice(x, y, 17, 103), wy = y + 12.0f * Lattice(x, y, 50, 107) + 4.0f * Lattice(x, y, 17, 109);
 			const auto c = landCover.Cell({wx, wy});
 			return landCover.In(c[0], c[1]) ? landCover.At(c[0], c[1]) : uint8_t{0};
+		};
+		// what the aerial pictures show (tools/worldgen/photo.py, research/phase0.md §63): every tree, each metre's cover,
+		// each 4 m cell's ground colour - the trees and the ground then as they are there
+		std::vector<trees::Seen> photoTrees;
+		raster::Grid<uint8_t> photoClass;
+		raster::Grid<std::array<uint8_t, 4>> photoCover;
+		if (!o.photo.empty())
+		{
+			if (!ReadPhoto(o.photo, photoTrees, photoClass, photoCover, error))
+				return false;
+			std::printf("photo: %zu trees, cover over %d x %d m\n", photoTrees.size(), photoClass.nx, photoClass.ny);
+		}
+		const bool photographed = !photoClass.v.empty();
+		// (the colour the ground is tinted with round a point, as a palette colour: the pictures' colour of the ground they see
+		// - grass, bare earth, paving: not the trees', not the water's - within 6 m, 10 m if none, times kPhotoGain over the
+		// neutral layers' mean; nothing seen there - the woods' floor under their canopy: false)
+		const auto groundColour = [&](float x, float y, std::array<float, 3>& out) {
+			if (photoCover.v.empty())
+				return false;
+			const auto c = photoCover.Cell({x, y});
+			for (int reach = 1; reach <= 2; ++reach)
+			{
+				float sum[3]{}, n = 0;
+				for (int dj = -reach; dj <= reach; ++dj)
+					for (int di = -reach; di <= reach; ++di)
+					{
+						if (!photoCover.In(c[0] + di, c[1] + dj))
+							continue;
+						const auto& p = photoCover.At(c[0] + di, c[1] + dj);
+						if (p[0] < 3 || !(p[1] | p[2] | p[3]))
+							continue;
+						const float weight = 1.0f / (1 + di * di + dj * dj);
+						for (int k = 0; k < 3; ++k)
+							sum[k] += p[k + 1] * weight;
+						n += weight;
+					}
+				if (n > 0)
+				{
+					for (int k = 0; k < 3; ++k)
+						out[k] = std::clamp(sum[k] / n * kPhotoGain / kNeutralMean * 255.0f, 0.0f, 255.0f);
+					return true;
+				}
+			}
+			return false;
 		};
 		took("land and water");
 		// 2. heights: land rises gently from the shore (a beach lower), the sea floor deepens away from it
@@ -1418,9 +1588,33 @@ namespace worldgen::build
 				return blocked.In(c[0], c[1]) && !blocked.At(c[0], c[1]) && land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) != kWater;
 			};
 			// (with a scan the trees stand where it saw them; the map's tree points and the avenues' palms then not)
-			props::Place(near, network, surfaces.signals, open, ground, {bx0, by0, bx1, by1}, furniture, !scanned);
+			props::Place(near, network, surfaces.signals, open, ground, {bx0, by0, bx1, by1}, furniture, !scanned && photoTrees.empty());
 			std::printf("props: %zu (palms, street lights, signals)\n", furniture.size());
-			if (scanned)
+			if (!photoTrees.empty())
+			{
+				// (every tree the aerial pictures show, at its height and crown - a crown over a road shrunk to the room there,
+				// the tree left out where there is too little: the woods' roads are open in the pictures)
+				raster::Grid<uint8_t> offRoad;
+				offRoad.Init(gx0, gy0, gx1, gy1, 2.0f, 1);
+				for (const auto& e : network.edges)
+					raster::DrawLine(offRoad, e.points, e.HalfWidth(), uint8_t{0});
+				const auto toRoad = raster::DistanceTo(offRoad, 1);
+				std::vector<trees::Seen> kept;
+				kept.reserve(photoTrees.size());
+				for (trees::Seen t : photoTrees)
+				{
+					const auto c = toRoad.Cell({t.x, t.y});
+					const float room = toRoad.In(c[0], c[1]) ? toRoad.At(c[0], c[1]) : 1e9f;
+					if (room < 1.5f)
+						continue;
+					t.crown = std::min(t.crown, room / 1.15f);
+					kept.push_back(t);
+				}
+				trees::Stats ts;
+				trees::Photo(kept, landCoverAt, w.projection.lat0, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
+				std::printf("trees from the aerial pictures: %zu palms, %zu others\n", ts.palms, ts.broadleaf);
+			}
+			else if (scanned)
 			{
 				trees::Stats ts;
 				trees::Place(scan, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
@@ -1531,7 +1725,10 @@ namespace worldgen::build
 		// blending terrain shader the game has is this one with the rain's puddles - after rain they mirrored the sky over
 		// half a lawn: grass holds little standing water, so its layers' materialWetnessMultiplier (the game's 0.2-0.35)
 		// down to a tenth of that)
-		ydr::Material lawnMaterial, groundForest, riverMaterial, forestMaterial;
+		ydr::Material lawnMaterial, groundForest, riverMaterial, forestMaterial, photoRural, photoUrban;
+		std::array<std::array<uint8_t, 3>, 256> photoPalette{};
+		std::vector<uint8_t> photoNearest; // (a wanted colour's palette column: Palette)
+		uint8_t photoUsual = 0;            // (the column of the commonest grass: where the pictures show none near)
 		if (!GameMaterial(files, "bh1_21_grnd02_1.ydr", 2, lawnMaterial, error))
 			return false;
 		for (auto& [parameter, bytes] : lawnMaterial.constants)
@@ -1585,21 +1782,24 @@ namespace worldgen::build
 		ydr::Material patchDecal, potholeDecal, breakupDecal;
 		{
 			std::map<std::pair<std::string, std::string>, std::string> copied; // (dictionary, texture) -> our name
-			// (flat: a ground's texture, Flatten'ed - in the format it had)
-			const auto use = [&](const char* dictionary, const char* texture, std::string& name, bool flat = false) {
-				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + (flat ? "#flat" : ""));
+			// (treat: 1 a ground's texture, Flatten'ed - in the format it had; 2 also made Neutral, a tinted layer's)
+			const auto use = [&](const char* dictionary, const char* texture, std::string& name, int treat = 0) {
+				const char* suffix = treat == 2 ? "_neutral" : treat ? "_flat" : "";
+				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + suffix);
 				if (const auto it = copied.find(key); it != copied.end())
 					return name = it->second, true;
 				loader::convert::DictionaryTexture t;
-				name = std::format("{}_{}{}", o.name, texture, flat ? "_flat" : "");
+				name = std::format("{}_{}{}", o.name, texture, suffix);
 				if (!CopyTexture(files, dictionary, texture, name, t, error))
 					return false;
-				if (flat)
+				if (treat)
 				{
 					texture::Image image;
 					if (!GameImage(files, dictionary, texture, image, error))
 						return false;
 					Flatten(image);
+					if (treat == 2)
+						Neutral(image, kNeutralMean);
 					t = texture::Make(name, image, t.format.dxgi == 77 ? texture::Format::Bc3 : texture::Format::Bc1);
 				}
 				shared.push_back(std::move(t));
@@ -1619,11 +1819,11 @@ namespace worldgen::build
 				std::string d, n;
 				for (int k = 0; k < 4; ++k)
 				{
-					if (!use(groundLayers[k][0], groundLayers[k][1], d, true) || !use(groundLayers[k][2], groundLayers[k][3], n))
+					if (!use(groundLayers[k][0], groundLayers[k][1], d, 1) || !use(groundLayers[k][2], groundLayers[k][3], n))
 						return false;
 					ground3.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
 					ground3.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
-					if (!use(lawns[k][0], lawns[k][1], d, true) || !use("ch1_09_arc007+hidr.ytd", "im_grass07_n", n))
+					if (!use(lawns[k][0], lawns[k][1], d, 1) || !use("ch1_09_arc007+hidr.ytd", "im_grass07_n", n))
 						return false;
 					lawnMaterial.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
 					lawnMaterial.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
@@ -1664,7 +1864,7 @@ namespace worldgen::build
 					    {"bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", "bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n"}}};
 					for (int k = 0; k < 4; ++k)
 					{
-						if (!use(litter[k][0], litter[k][1], d, true) || !use(litter[k][2], litter[k][3], n))
+						if (!use(litter[k][0], litter[k][1], d, 1) || !use(litter[k][2], litter[k][3], n))
 							return false;
 						forestMaterial.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
 						forestMaterial.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
@@ -1672,13 +1872,13 @@ namespace worldgen::build
 				}
 				// the forest floor (inland tiles: leaf litter in place of the beach's sand, mud in place of the wet sand)
 				groundForest = ground3;
-				if (!use("bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", d, true) || !use("bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n", n))
+				if (!use("bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", d, 1) || !use("bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n", n))
 					return false;
 				groundForest.Texture(loader::convert::Joaat("DiffuseTexture_layer2"), d);
 				groundForest.Texture(loader::convert::Joaat("BumpTexture_layer2"), n);
 				// (and under the lakes and rivers a mud bank's mud, not the beach's wet sand: through the water it had shown as a
 				// bright sandy floor)
-				if (!use("ch1_09_terrain+hi.ytd", "rn_tf_mudbank_003", d, true) || !use("ch1_09_terrain+hi.ytd", "rn_tf_mudbank_002_n", n))
+				if (!use("ch1_09_terrain+hi.ytd", "rn_tf_mudbank_003", d, 1) || !use("ch1_09_terrain+hi.ytd", "rn_tf_mudbank_002_n", n))
 					return false;
 				groundForest.Texture(loader::convert::Joaat("DiffuseTexture_layer3"), d);
 				groundForest.Texture(loader::convert::Joaat("BumpTexture_layer3"), n);
@@ -1691,6 +1891,73 @@ namespace worldgen::build
 					return false;
 				riverMaterial.Texture(0x8FC59620, d); // (its flow map)
 				riverMaterial.Texture(0x85261019, n); // (its fog)
+				// The ground as the aerial pictures show it (research/phase0.md §63): the golf course's shader
+				// (terrain_cb_w_4lyr_cm_tnt, bh1_43_golf_1a #6) - four layers mixed by a picture of their weights (each tile its
+				// own, from the pictures' cover every 1.5 m), tinted by a palette each vertex picks its colour from. The grasses
+				// (green, dry) neutral and tinted in full with the pictures' colour of the grass round the vertex; sand a little,
+				// leaf litter and paving not. In town tiles paving takes the dry grass's place.
+				if (photographed)
+				{
+					if (!GameMaterial(files, "bh1_43_golf_1a.ydr", 6, photoRural, error))
+						return false;
+					// (little standing water after rain, as on the lawns: the golf course's 0.2-0.3 mirrored the sky in pools
+					// across the woods' floor)
+					for (auto& [parameter, bytes] : photoRural.constants)
+						if (parameter == loader::convert::Joaat("materialWetnessMultiplier"))
+							for (size_t k = 0; k + 4 <= bytes.size(); k += 4)
+							{
+								float v;
+								std::memcpy(&v, bytes.data() + k, 4);
+								v *= 0.1f;
+								std::memcpy(bytes.data() + k, &v, 4);
+							}
+					struct PhotoLayer
+					{
+						const char *dictionary, *diffuse, *normalDictionary, *normal;
+						int treat;
+						float tint;
+					};
+					// (every layer only a pattern - neutral, its colour the pictures' through the palette: a ploughed field white,
+					// a pasture tan, a lawn green, the woods' floor brown)
+					const PhotoLayer rural[4] = {{"ch1_06e_land+hi.ytd", "im_grass10b", "ch1_09_arc007+hidr.ytd", "im_grass07_n", 2, 1.0f},
+					    {"ch1_05_terrain+hi.ytd", "cs_tf_rsn_redgrass1", "ch1_05_terrain+hi.ytd", "cs_tf_rsn_redgrass1_n", 2, 1.0f},
+					    {"venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints", "venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints_n", 2, 1.0f},
+					    {"bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", "bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n", 2, 1.0f}};
+					const PhotoLayer paving{"sp1_03_ground+hidr.ytd", "im_concrete25", "paletoroadtemp+hi.ytd", "im_concrete25_n", 2, 1.0f};
+					photoUrban = photoRural;
+					for (int k = 0; k < 4; ++k)
+						for (ydr::Material* m : {&photoRural, &photoUrban})
+						{
+							const PhotoLayer& l = m == &photoUrban && k == 1 ? paving : rural[k];
+							if (!use(l.dictionary, l.diffuse, d, l.treat) || !use(l.normalDictionary, l.normal, n))
+								return false;
+							m->Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
+							m->Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
+							std::vector<uint8_t> bytes(4);
+							std::memcpy(bytes.data(), &l.tint, 4);
+							m->constants.emplace_back(loader::convert::Joaat(std::format("tintBlendLayer{}", k)), bytes);
+						}
+					for (ydr::Material* m : {&photoRural, &photoUrban})
+						m->Texture(loader::convert::Joaat("TintPaletteTex"), o.name + "_pal");
+					// The palette: 256 colours for the ground, k-means over the colours the vertices want (every 16 m) and the
+					// woods' floor, and each wanted colour's nearest in a 32 x 32 x 32 table
+					std::vector<std::array<float, 3>> wanted;
+					for (float y = by0; y < by1; y += 16)
+						for (float x = bx0; x < bx1; x += 16)
+							if (std::array<float, 3> c; groundColour(x, y, c))
+								wanted.push_back(c);
+					for (int k = 0; k < 64; ++k)
+						wanted.push_back(kForestFloor);
+					photoPalette = Palette(wanted, photoNearest);
+					photoUsual = photoNearest[(static_cast<int>(kForestFloor[0]) >> 3) << 10 | (static_cast<int>(kForestFloor[1]) >> 3) << 5 |
+					                          (static_cast<int>(kForestFloor[2]) >> 3)];
+					texture::Image pal(256, 4);
+					for (int row = 0; row < 4; ++row)
+						for (int k = 0; k < 256; ++k)
+							pal.At(k, row) = {photoPalette[k][0], photoPalette[k][1], photoPalette[k][2], 255};
+					shared.push_back(texture::Make(o.name + "_pal", pal, texture::Format::Bgra));
+					std::printf("photo ground: %zu ground colours sampled for the tint palette\n", wanted.size());
+				}
 			}
 			struct Look
 			{
@@ -1894,7 +2161,38 @@ namespace worldgen::build
 			for (int j = 0; j < per; ++j)
 				for (int i = 0; i < per; ++i)
 				{
-					const uint8_t what = coverAt(x0 + (i + 0.5f) * o.cell, y0 + (j + 0.5f) * o.cell);
+					const float cx0 = x0 + i * o.cell, cy0 = y0 + j * o.cell;
+					if (photographed)
+					{
+						// (as the aerial pictures show the cell - its commonest class at 2 m - with the plants the game grows
+						// on it: under the trees the forest's undergrowth, on dry grass a brown meadow, on lawns short grass)
+						int count[7]{};
+						for (float y = cy0 + 1; y < cy0 + o.cell; y += 2)
+							for (float x = cx0 + 1; x < cx0 + o.cell; x += 2)
+								if (const auto c = photoClass.Cell({x, y}); photoClass.In(c[0], c[1]) && photoClass.At(c[0], c[1]) < 7)
+									++count[photoClass.At(c[0], c[1])];
+						const int top = static_cast<int>(std::max_element(count + 1, count + 7) - count);
+						f.material.push_back(top == 2 ? kLeaves | kForestOvergrown : top == 3 ? kGrassShort | kLushShort : top == 4 ? kGrass | kMeadowBrown
+						                     : top == 5 || top == 1 ? kSand : top == 6 ? kConcrete : kGrass);
+						// (and the colour the pictures see the ground there, the plants' tint: under the trees a leaf litter's)
+						std::array<uint8_t, 3> colour{88, 74, 56};
+						float sum[3]{}, seen = 0;
+						for (float y = cy0 + 2; y < cy0 + o.cell; y += 4)
+							for (float x = cx0 + 2; x < cx0 + o.cell; x += 4)
+								if (const auto c = photoCover.Cell({x, y}); photoCover.In(c[0], c[1]))
+									if (const auto& p = photoCover.At(c[0], c[1]); p[0] >= 3 && (p[1] || p[2] || p[3]))
+										sum[0] += p[1], sum[1] += p[2], sum[2] += p[3], seen += 1;
+						if (seen > 0)
+							for (int k = 0; k < 3; ++k)
+								colour[k] = static_cast<uint8_t>(std::clamp(sum[k] / seen, 0.0f, 255.0f));
+						// (as the game's material bounds have it: about 0.45 of the pictures' - a dry field (165, 151, 121) there,
+						// (71, 60, 46) in the game's countryside)
+						for (uint8_t& k : colour)
+							k = static_cast<uint8_t>(k * 0.45f);
+						f.colour.push_back(colour);
+						continue;
+					}
+					const uint8_t what = coverAt(cx0 + 0.5f * o.cell, cy0 + 0.5f * o.cell);
 					f.material.push_back(what == kUnder || what == kSandy ? kSand : what == kPaving ? kConcrete : what == kBare ? kDirt : kGrass);
 				}
 			// the forest floors: as the lawns (below), from 4 m in, easing over the next 10 m
@@ -1946,7 +2244,72 @@ namespace worldgen::build
 					sandy = land.In(lc[0], lc[1]) && (land.At(lc[0], lc[1]) == kBeach || (land.At(lc[0], lc[1]) == kWater && seaBody[static_cast<size_t>(lc[1]) * land.nx + lc[0]]) ||
 					                                  coverAt(x, y) == kSandy);
 				}
-			td.materials = {sandy ? ground3 : groundForest, lawnMaterial, forestMaterial};
+			std::string terrainDictionary = facadeDictionary;
+			if (photographed)
+			{
+				// the ground as the aerial pictures show it: each vertex the palette's colour of the ground round it (the woods'
+				// floor where they see none); the four layers' weights a picture of the tile, every 1.6 m from the pictures'
+				// cover in 3 m round it (green grass, dry grass - in town paving -, sand or bare earth, leaf litter under the trees
+				// and in the water), its first and last texels' centres on the tile's edges (sampled between them the texture
+				// wraps: a line along every tile's edge)
+				f.tint.resize(f.height.size());
+				for (int j = 0; j <= per; ++j)
+					for (int i = 0; i <= per; ++i)
+					{
+						std::array<float, 3> c;
+						f.tint[f.V(i, j)] = groundColour(x0 + i * o.cell, y0 + j * o.cell, c)
+						                        ? photoNearest[(static_cast<int>(c[0]) >> 3) << 10 | (static_cast<int>(c[1]) >> 3) << 5 | (static_cast<int>(c[2]) >> 3)]
+						                        : photoUsual;
+					}
+				size_t paved = 0, seen = 0;
+				for (float y = y0 + 2; y < y1; y += 4)
+					for (float x = x0 + 2; x < x1; x += 4)
+						if (const auto c = photoClass.Cell({x, y}); photoClass.In(c[0], c[1]) && photoClass.At(c[0], c[1]))
+							++seen, paved += photoClass.At(c[0], c[1]) == 6;
+				const bool town = seen && paved > seen / 12;
+				constexpr int kLook = 128;
+				texture::Image look(kLook, kLook);
+				const float texel = o.tile / (kLook - 1);
+				for (int v = 0; v < kLook; ++v)
+					for (int u = 0; u < kLook; ++u)
+					{
+						const float x = x0 + u * texel, y = y1 - v * texel;
+						float l[4]{};
+						for (int dy = -1; dy <= 1; ++dy)
+							for (int dx = -1; dx <= 1; ++dx)
+							{
+								const auto c = photoClass.Cell({x + dx, y + dy});
+								switch (photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : 0)
+								{
+								case 1:
+								case 2: l[3] += 1; break;
+								case 4: l[town ? 0 : 1] += 1; break;
+								case 5: l[2] += 1; break;
+								case 6: l[town ? 1 : 2] += 1; break;
+								default: l[0] += 1; break;
+								}
+							}
+						const float g = (l[2] + l[3]) / 9;
+						const float b = g < 0.5f ? (l[0] + l[1] > 0 ? l[1] / (l[0] + l[1]) : 0.0f) : (l[2] + l[3] > 0 ? l[3] / (l[2] + l[3]) : 0.0f);
+						look.At(u, v) = {0, static_cast<uint8_t>(std::lround(g * 255)), static_cast<uint8_t>(std::lround(b * 255)), 255};
+					}
+				terrainDictionary = std::format("{}_tl_{}_{}", o.name, ti, tj);
+				const std::string lookName = std::format("{}_lk_{}_{}", o.name, ti, tj);
+				Bytes ytd;
+				if (!loader::convert::WriteTextureDictionary({texture::Make(lookName, look, texture::Format::Bc1)}, ytd, error))
+					return error = terrainDictionary + ": " + error, false;
+				WriteFile(o.out / (terrainDictionary + ".ytd"), ytd);
+				r.parents.push_back({terrainDictionary, facadeDictionary});
+				ydr::Material m = town ? photoUrban : photoRural;
+				m.Texture(loader::convert::Joaat("lookupTexture"), lookName);
+				td.materials = {m};
+				ydr::Mesh mesh = terrain::TileMesh(f, 0, 0, per, cx, cy, 3.0f);
+				r.terrainTriangles += mesh.indices.size() / 3;
+				td.lods[0].push_back(std::move(mesh));
+			}
+			else
+				td.materials = {sandy ? ground3 : groundForest, lawnMaterial, forestMaterial};
+			if (!photographed)
 			{
 				// (the textures every 3.5 m as the game's lawns have them, our blend map every 128 m)
 				auto [rest, lawn, forest] = terrain::TileMeshes(f, 0, 0, per, cx, cy, 3.5f, 128.0f);
@@ -2037,7 +2400,7 @@ namespace worldgen::build
 			}
 			mapfiles::Archetype ta;
 			ta.name = tname;
-			ta.textureDictionary = loader::convert::Joaat(facadeDictionary);
+			ta.textureDictionary = loader::convert::Joaat(terrainDictionary);
 			ta.lodDist = 2500;
 			ydr::Box(td, ta.min, ta.max);
 			r.archetypes.push_back(ta);
@@ -2354,8 +2717,9 @@ namespace worldgen::build
 				pe.position = prop.position;
 				pe.rotation = {0, 0, std::sin(prop.heading / 2), std::cos(prop.heading / 2)};
 				pe.lodDist = prop.lodDist;
-				pe.scaleXY = pe.scaleZ = prop.scale;
-				pe.radius = 6 * prop.scale;
+				pe.scaleXY = prop.scale;
+				pe.scaleZ = prop.scaleZ > 0 ? prop.scaleZ : prop.scale;
+				pe.radius = 6 * std::max(pe.scaleXY, pe.scaleZ);
 				r.entities.push_back(pe);
 			}
 			// (a tile's collision: at most 256 parts)
@@ -2368,6 +2732,19 @@ namespace worldgen::build
 			if (!ybn::Write(parts, collision, error))
 				return error = cname + ": " + error, false;
 			WriteFile(o.out / (cname + ".ybn"), collision);
+			// (and its material bound, ma@: where the game grows its procedural plants - the undergrowth, the meadows' and
+			// fields' grasses - tinted with the ground's colour)
+			if (!f.colour.empty())
+			{
+				const auto plants = terrain::TileCollision(f, 0, 0, per, true);
+				Bytes material;
+				if (!plants.empty())
+				{
+					if (!ybn::Write(plants, material, error, true))
+						return error = "ma@" + cname + ": " + error, false;
+					WriteFile(o.out / ("ma@" + cname + ".ybn"), material);
+				}
+			}
 			// for the navmesh: the same triangles (the buildings' boxes in the way, never walked on)
 			{
 				const uint32_t base = static_cast<uint32_t>(r.nav.vertices.size());

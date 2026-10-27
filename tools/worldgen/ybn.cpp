@@ -244,9 +244,9 @@ namespace worldgen::ybn
 		}
 	}
 
-	std::array<uint8_t, 8> Material(uint8_t type)
+	std::array<uint8_t, 8> Material(uint8_t type, uint8_t procedural, uint8_t colour)
 	{
-		return {type, 0, 0, 0, 0, 0, 0, 0};
+		return {type, procedural, 0, 0, 0, colour, 0, 0};
 	}
 
 	void Box(const std::vector<Part>& parts, Vec& min, Vec& max)
@@ -265,7 +265,7 @@ namespace worldgen::ybn
 		}
 	}
 
-	bool Write(const std::vector<Part>& parts, Bytes& out, std::string& error)
+	bool Write(const std::vector<Part>& parts, Bytes& out, std::string& error, bool material)
 	{
 		// (every array within a page of 16 KB: at most 256 parts, a part at most 1000 triangles and 2730 vertices)
 		if (parts.empty() || parts.size() > 256)
@@ -279,7 +279,7 @@ namespace worldgen::ybn
 			std::vector<std::array<int16_t, 3>> neighbours;
 			Tree tree;
 			Vec min, max;
-			uint32_t object = 0, polys = 0, verts = 0, mats = 0, polyMats = 0, bvh = 0, nodes = 0, subtrees = 0;
+			uint32_t object = 0, polys = 0, verts = 0, mats = 0, colours = 0, vertexColours = 0, polyMats = 0, bvh = 0, nodes = 0, subtrees = 0;
 		};
 		std::vector<Built> built(parts.size());
 		for (size_t k = 0; k < parts.size(); ++k)
@@ -287,7 +287,8 @@ namespace worldgen::ybn
 			const Part& p = parts[k];
 			Built& b = built[k];
 			if (p.triangles.empty() || p.triangles.size() > 1000 || p.vertices.size() > 2730 || p.triangleMaterials.size() != p.triangles.size() ||
-			    p.materials.empty() || p.materials.size() > 255)
+			    p.materials.empty() || p.materials.size() > 255 || p.colours.size() > 255 ||
+			    (!p.vertexColours.empty() && p.vertexColours.size() != p.vertices.size()))
 				return error = std::format("part {}: no triangles, more than 1000 or 2730 vertices, or materials that do not match", k), false;
 			Padded(p, b.min, b.max);
 			b.q = Space(b.min, b.max);
@@ -367,6 +368,10 @@ namespace worldgen::ybn
 			b.polys = layout.Alloc(16 * static_cast<uint32_t>(b.triangles.size()));
 			b.verts = layout.Alloc(6 * static_cast<uint32_t>(b.vertices.size()));
 			b.mats = layout.Alloc(8 * static_cast<uint32_t>(parts[&b - built.data()].materials.size()));
+			if (const size_t c = parts[&b - built.data()].colours.size())
+				b.colours = layout.Alloc(4 * static_cast<uint32_t>(c));
+			if (const size_t c = parts[&b - built.data()].vertexColours.size())
+				b.vertexColours = layout.Alloc(4 * static_cast<uint32_t>(c));
 			b.polyMats = layout.Alloc(static_cast<uint32_t>(b.triangles.size()));
 			b.bvh = layout.Alloc(kBvh);
 			b.nodes = layout.Alloc(16 * static_cast<uint32_t>(b.tree.nodes.size()));
@@ -419,8 +424,11 @@ namespace worldgen::ybn
 				Put<float>(v, matrices + 64 * k + 16 * row + 4 * row, 1.0f);
 			PutVec(v, boxes + 32 * k, b.min, 0);
 			PutVec(v, boxes + 32 * k + 16, b.max, 0);
-			std::memcpy(v.data() + typeFlags + 8 * k, kFlags, 8);
-			std::memcpy(v.data() + includeFlags + 8 * k, kFlags, 8);
+			if (!material)
+			{
+				std::memcpy(v.data() + typeFlags + 8 * k, kFlags, 8);
+				std::memcpy(v.data() + includeFlags + 8 * k, kFlags, 8);
+			}
 
 			std::vector<Vec> points;
 			for (const auto& t : b.triangles)
@@ -432,11 +440,19 @@ namespace worldgen::ybn
 			PutVecF(v, b.object + 0x90, b.q.quantum, 0);
 			PutVecF(v, b.object + 0xA0, b.q.centre, 0.0025f);
 			Put<uint64_t>(v, b.object + 0xB0, Ptr(b.verts));
+			if (!p.vertexColours.empty())
+			{
+				v[b.object + 0x82] = 1;
+				Put<uint64_t>(v, b.object + 0xB8, Ptr(b.vertexColours));
+			}
 			Put<uint32_t>(v, b.object + 0xD0, static_cast<uint32_t>(b.vertices.size()));
 			Put<uint32_t>(v, b.object + 0xD4, static_cast<uint32_t>(b.triangles.size()));
 			Put<uint64_t>(v, b.object + 0xF0, Ptr(b.mats));
+			if (!p.colours.empty())
+				Put<uint64_t>(v, b.object + 0xF8, Ptr(b.colours));
 			Put<uint64_t>(v, b.object + 0x118, Ptr(b.polyMats));
 			v[b.object + 0x120] = static_cast<uint8_t>(p.materials.size());
+			v[b.object + 0x121] = static_cast<uint8_t>(p.colours.size());
 			Put<uint64_t>(v, b.object + 0x130, Ptr(b.bvh));
 			Put<uint16_t>(v, b.object + 0x140, 0xFFFF);
 			for (size_t t = 0; t < b.triangles.size(); ++t)
@@ -463,6 +479,10 @@ namespace worldgen::ybn
 				std::memcpy(v.data() + b.verts + 6 * i, b.vertices[i].data(), 6);
 			for (size_t m = 0; m < p.materials.size(); ++m)
 				std::memcpy(v.data() + b.mats + 8 * m, p.materials[m].data(), 8);
+			for (size_t c = 0; c < p.colours.size(); ++c)
+				std::memcpy(v.data() + b.colours + 4 * c, p.colours[c].data(), 4);
+			for (size_t c = 0; c < p.vertexColours.size(); ++c)
+				std::memcpy(v.data() + b.vertexColours + 4 * c, p.vertexColours[c].data(), 4);
 			WriteTree(v, b.bvh, b.tree, b.q, b.nodes, b.subtrees);
 		}
 		v[pageMap + 8] = static_cast<uint8_t>(pages);

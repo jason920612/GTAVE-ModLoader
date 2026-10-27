@@ -1680,8 +1680,11 @@ namespace worldgen::roads
 				return 15.0f;
 			return 11.0f;
 		};
+		// (no traffic made on tracks: the countryside's dirt roads are driven, not busy)
 		const auto densityOf = [](const Edge& e) {
-			return e.kind.starts_with("motorway") || e.kind.starts_with("primary") || e.kind.starts_with("trunk") ? 5 : e.kind == "service" ? 1 : 3;
+			return e.kind.starts_with("motorway") || e.kind.starts_with("primary") || e.kind.starts_with("trunk") ? 5 : e.kind == "service" ? 1
+			       : e.kind == "track"                                                                                                ? 0
+			                                                                                                                           : 3;
 		};
 		// (junctions joined by a road too short to show between them are one, as Geometry draws them - the carriageways of
 		// a divided road: signalled if any of their vertices has signals, and no traffic light on the roads inside it; a

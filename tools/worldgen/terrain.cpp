@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 
 namespace worldgen::terrain
 {
@@ -65,7 +66,14 @@ namespace worldgen::terrain
 				const std::array<float, 3> tangent = Normalised({1, 0, dx});
 				v.tangent = {tangent[0], tangent[1], tangent[2], 1};
 				v.colour0 = {255, 0, 255, 255}; // (no darkening; as the game's own terrain has it)
-				v.colour1 = f.layers[f.V(gi, gj)];
+				if (!f.layers.empty())
+					v.colour1 = f.layers[f.V(gi, gj)];
+				if (!f.tint.empty())
+				{
+					// (the weight map's first and last texels' centres on the tile's edges: 128 texels)
+					v.colour0[2] = f.tint[f.V(gi, gj)];
+					v.uv[1] = {(0.5f + 127.0f * i / n) / 128.0f, (0.5f + 127.0f * (n - j) / n) / 128.0f};
+				}
 				// (from a whole number of repeats near the tile's middle: the same texture at the tiles' seams, and small
 				// coordinates - in the thousands they lose their precision on the way to the texture, which then shows
 				// as a grid of blocks)
@@ -132,7 +140,7 @@ namespace worldgen::terrain
 		return out;
 	}
 
-	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells)
+	std::vector<ybn::Part> TileCollision(const Field& f, int i0, int j0, int cells, bool procedural)
 	{
 		std::vector<ybn::Part> parts;
 		const int n = std::min({cells, f.nx - i0, f.ny - j0});
@@ -140,24 +148,60 @@ namespace worldgen::terrain
 			for (int pi = 0; pi < n; pi += 20)
 			{
 				ybn::Part part;
-				std::vector<int> materialOf(256, -1);
+				// (materials by type - procedural: by tag and colour, the colours a part's own, 16 levels a channel)
+				std::map<uint32_t, int> materialOf;
+				std::map<uint32_t, uint8_t> colourOf;
+				bool tagged = false;
 				const int w = std::min(20, n - pi), h = std::min(20, n - pj);
 				for (int j = 0; j <= h; ++j)
 					for (int i = 0; i <= w; ++i)
 					{
 						const int gi = i0 + pi + i, gj = j0 + pj + j;
 						part.vertices.push_back({f.x0 + gi * f.cell, f.y0 + gj * f.cell, f.H(gi, gj)});
+						if (procedural)
+						{
+							// (the vertex's cell's colour, blue green red as the game stores it, and in the alpha how the plants
+							// grow there: 56, density 7 of 7 in bits 3-5, as most of the game's countryside has it)
+							const size_t cell = static_cast<size_t>(std::min(gj, f.ny - 1)) * f.nx + std::min(gi, f.nx - 1);
+							const auto& c = f.colour[cell];
+							part.vertexColours.push_back({c[2], c[1], c[0], static_cast<uint8_t>((f.material[cell] >> 8) ? 56 : 0)});
+						}
 					}
 				for (int j = 0; j < h; ++j)
 					for (int i = 0; i < w; ++i)
 					{
 						const int gi = i0 + pi + i, gj = j0 + pj + j;
-						const uint8_t type = f.material[static_cast<size_t>(gj) * f.nx + gi];
-						if (materialOf[type] < 0)
+						const size_t cell = static_cast<size_t>(gj) * f.nx + gi;
+						const uint16_t type = f.material[cell];
+						uint32_t key = type & 0xFF;
+						std::array<uint8_t, 8> material = ybn::Material(static_cast<uint8_t>(type & 0xFF));
+						if (procedural)
 						{
-							materialOf[type] = static_cast<int>(part.materials.size());
-							part.materials.push_back(ybn::Material(type));
+							// (a material bound's: type 0, the procedural tag and the ground's colour)
+							uint8_t colour = 0;
+							if (const uint8_t tag = static_cast<uint8_t>(type >> 8))
+							{
+								tagged = true;
+								const auto& c = f.colour[cell];
+								const uint32_t ck = static_cast<uint32_t>(c[0] >> 4) << 8 | static_cast<uint32_t>(c[1] >> 4) << 4 | static_cast<uint32_t>(c[2] >> 4);
+								auto it = colourOf.find(ck);
+								if (it == colourOf.end() && part.colours.size() < 64)
+								{
+									part.colours.push_back({static_cast<uint8_t>((c[2] & 0xF0) | 8), static_cast<uint8_t>((c[1] & 0xF0) | 8),
+									    static_cast<uint8_t>((c[0] & 0xF0) | 8), 0xCF});
+									it = colourOf.emplace(ck, static_cast<uint8_t>(part.colours.size())).first;
+								}
+								colour = it != colourOf.end() ? it->second : 1;
+							}
+							key = (type >> 8) | static_cast<uint32_t>(colour) << 8;
+							material = ybn::Material(0, static_cast<uint8_t>(type >> 8), colour);
 						}
+						if (!materialOf.contains(key))
+						{
+							materialOf[key] = static_cast<int>(part.materials.size());
+							part.materials.push_back(material);
+						}
+						const uint8_t materialIndex = static_cast<uint8_t>(materialOf[key]);
 						const uint32_t a = j * (w + 1) + i, b = a + 1, c = a + w + 1, d = c + 1;
 						const float ad = std::fabs(f.H(gi, gj) - f.H(gi + 1, gj + 1)), bc = std::fabs(f.H(gi + 1, gj) - f.H(gi, gj + 1));
 						if (ad <= bc)
@@ -170,10 +214,11 @@ namespace worldgen::terrain
 							part.triangles.push_back({a, b, c});
 							part.triangles.push_back({b, d, c});
 						}
-						part.triangleMaterials.push_back(static_cast<uint8_t>(materialOf[type]));
-						part.triangleMaterials.push_back(static_cast<uint8_t>(materialOf[type]));
+						part.triangleMaterials.push_back(materialIndex);
+						part.triangleMaterials.push_back(materialIndex);
 					}
-				parts.push_back(std::move(part));
+				if (!procedural || tagged)
+					parts.push_back(std::move(part));
 			}
 		return parts;
 	}

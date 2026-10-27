@@ -31,4 +31,21 @@ namespace worldgen::trees
 	void Fill(const std::vector<world::Area>& areas, const std::function<uint8_t(float, float)>& cover, double latitude,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
 	    std::vector<props::Prop>& out, Stats& stats);
+
+	// A tree the aerial pictures show (tools/worldgen/photo.py, research/phase0.md §63): where it stands, how tall it is
+	// (the canopy heights), its crown's radius, and its kind - 0 green in the pictures' winter (pines, live oaks), 1
+	// leafless then (the broadleaf trees that drop their leaves), 2 a palm's small round crown.
+	struct Seen
+	{
+		float x = 0, y = 0, height = 0, crown = 0;
+		uint8_t kind = 0;
+	};
+
+	// Every tree the pictures show as one of the game's models of its kind nearest in height and crown, scaled to them
+	// (height and crown apart, within what keeps a trunk a trunk; crowns a third wider: the canopy closes as in the
+	// pictures): the evergreens as pines of every age or, with a crown wide for their height, live oaks; south of 27.5 N
+	// some of them cabbage palms; the leafless as maples and oaks by their size. `cover`: the NLCD class.
+	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
+	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
+	    std::vector<props::Prop>& out, Stats& stats);
 }

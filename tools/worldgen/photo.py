@@ -11,6 +11,8 @@ usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
   <dir>/cover.bin  'WBPC' version 1, x0, y0, cell (f32), nx, ny (u32); each 4 m cell (rows south to north): its class (u8:
                    0 not seen, 1 water, 2 tree canopy, 3 green grass, 4 dry grass, 5 bare earth or sand, 6 paving or roof),
                    red, green, blue (u8: the mean colour of the cell's ground the pictures see, not the trees')
+  <dir>/classes.bin 'WBCL' version 1, x0, y0, cell (f32: 1 m), nx, ny (u32); each metre's class as above (rows south to
+                   north; over --area, else the world's box)
   --keep: the 1 m pictures (naip_<i>_<j>.npz) kept there, read from there again
 The pictures are asked for in blocks of 2 km (4 bands, JPEG); a tree is a peak of the canopy's brightness in the near
 infrared (its sunlit crown) - the canopy where the canopy heights say 3 m and more or the near infrared is high and
@@ -150,8 +152,11 @@ def analyse(rgbn, chm):
     # (the pictures decide where trees stand - crowns and their shadows make the near infrared uneven, 17-26 over 5 m in
     # woods, about 5 on a field; the canopy heights are years older: a field cleared since still had 15 m trees there -
     # and only give their heights; leafless winter crowns: uneven, a little green or tall)
-    canopy = (uneven > 12) & ((ndvi > 0.08) | (chm >= 3)) | ((ndvi > 0.35) & (uneven > 8))
+    # (little green - a winter's leafless crowns, or a field's shrubs and tracks: only more uneven, or tall)
+    canopy = (uneven > 12) & ((ndvi > 0.15) | (chm >= 3) | ((ndvi > 0.08) & (uneven > 17))) | ((ndvi > 0.35) & (uneven > 8))
     canopy &= ~water
+    # (never bright bare ground - a sand track, a ploughed field - between crowns: the 5 m unevenness spreads onto it)
+    canopy &= ~((bright > 110) & (ndvi < 0.1))
     canopy = ndimage.binary_opening(canopy, iterations=1)
     canopy = ndimage.binary_closing(canopy, iterations=2)
     # trees: peaks of the smoothed near infrared (sunlit crowns) in the canopy, at least a reach apart
@@ -168,7 +173,7 @@ def analyse(rgbn, chm):
     chm_cnt = ndimage.uniform_filter((chm >= 3).astype(np.float32), 31)
     taken = np.zeros(canopy.shape, bool)
     trees = []
-    dist_out = ndimage.distance_transform_edt(canopy)
+    dist_out = ndimage.distance_transform_edt(canopy)  # (how deep in the canopy: a new wood's trees' height)
     for y, x in zip(ys.tolist(), xs.tolist()):
         if taken[y, x]:
             continue
@@ -182,10 +187,23 @@ def analyse(rgbn, chm):
         yy, xx = np.ogrid[y0:y1, x0:x1]
         disc = (yy - y) ** 2 + (xx - x) ** 2 <= reach * reach
         taken[y0:y1, x0:x1] |= disc
-        crown = float(min(9.0, max(1.5, 0.5 * reach + 0.6 * min(float(dist_out[y, x]), 2 * reach))))
         evergreen = ndvi[y, x] > 0.18
         kind = 0 if evergreen else 1
-        trees.append((x, y, h, crown, kind))
+        trees.append([x, y, h, 0.0, kind])
+    # each tree's crown: the canopy it covers - every canopy pixel to its nearest tree, the crown a circle of that area
+    # (the game's trees are fewer than a plantation's: their crowns fill the canopy the pictures show, not more)
+    if trees:
+        seeds = np.zeros(canopy.shape, bool)
+        index = np.zeros(canopy.shape, np.int32)
+        for k, t in enumerate(trees):
+            seeds[t[1], t[0]] = True
+            index[t[1], t[0]] = k
+        _, (iy, ix) = ndimage.distance_transform_edt(~seeds, return_indices=True)
+        owner = index[iy, ix]
+        area = np.bincount(owner[canopy], minlength=len(trees))
+        for k, t in enumerate(trees):
+            t[3] = float(min(9.0, max(1.5, math.sqrt(area[k] / math.pi))))
+    trees = [tuple(t) for t in trees]
     # the ground under no canopy: water, green grass, dry grass, bare earth or sand, paving or roofs
     sat = (np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) / np.maximum(np.maximum(np.maximum(r, g), b), 1)
     cls = np.full(canopy.shape, 4, np.uint8)
@@ -215,6 +233,9 @@ def main():
     gsum = np.zeros((gny, gnx, 3), np.float64)
     gcount = np.zeros((gny, gnx), np.float64)
     gclass = np.zeros((gny, gnx, 7), np.float32)
+    # the 1 m classes (rows south to north)
+    fnx, fny = int(math.ceil((ax1 - ax0) / CELL)), int(math.ceil((ay1 - ay0) / CELL))
+    fine = np.zeros((fny, fnx), np.uint8)
     trees = []
     started = time.time()
     blocks = [(bx, by) for by in np.arange(ay0, ay1, BLOCK) for bx in np.arange(ax0, ax1, BLOCK)]
@@ -257,6 +278,11 @@ def main():
         for c in range(1, 7):
             m = ok & (cls == c)
             np.add.at(gclass[..., c], (GJ[m], GI[m]), 1)
+        fi = np.floor((xs - ax0) / CELL).astype(np.int64)
+        fj = np.floor((ys - ay0) / CELL).astype(np.int64)
+        FI, FJ = np.broadcast_to(fi[None, :], (ny, nx)), np.broadcast_to(fj[:, None], (ny, nx))
+        put = inner & (FI >= 0) & (FJ >= 0) & (FI < fnx) & (FJ < fny)
+        fine[FJ[put], FI[put]] = cls[put]
         print(f'block {k + 1}/{len(blocks)} at {bx:.0f},{by:.0f}: {len(block_trees)} trees, canopy {canopy.mean():.0%} '
               f'({time.time() - started:.0f} s)', flush=True)
     # trees.bin
@@ -273,6 +299,9 @@ def main():
     with open(os.path.join(out, 'cover.bin'), 'wb') as f:
         f.write(b'WBPC' + struct.pack('<I3f2I', 1, gx0, gy0, GROUND, gnx, gny))
         f.write(np.concatenate([cover[..., None], colour], axis=-1).tobytes())
+    with open(os.path.join(out, 'classes.bin'), 'wb') as f:
+        f.write(b'WBCL' + struct.pack('<I3f2I', 1, ax0, ay0, CELL, fnx, fny))
+        f.write(fine.tobytes())
     print(f'{len(trees)} trees ({sum(1 for t in trees if t[4] == 0)} evergreen, {sum(1 for t in trees if t[4] == 1)} bare); '
           f'cover: ' + ', '.join(f'{name} {np.mean(cover == c):.1%}' for c, name in enumerate(('unseen', 'water', 'canopy', 'grass', 'dry', 'bare', 'paved'))))
 
