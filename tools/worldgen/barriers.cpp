@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "convert/resource.hpp"
+#include "seeds.hpp"
 
 namespace worldgen::barriers
 {
@@ -406,7 +407,7 @@ namespace worldgen::barriers
 					props::Prop p;
 					p.archetype = hedgeBush;
 					p.position = {m[0], m[1], ground(m[0], m[1]) - 0.1f};
-					p.heading = std::atan2(-d[0], d[1]) + ((Mix(static_cast<uint32_t>(bi * 977 + k)) & 1) ? 3.14159265f : 0.0f);
+					p.heading = std::atan2(-d[0], d[1]) + ((seeds::Place(m[0], m[1], 2, 22) & 1) ? 3.14159265f : 0.0f);
 					p.lodDist = 150;
 					p.scale = 0.6f;
 					p.scaleZ = h / 1.5f;

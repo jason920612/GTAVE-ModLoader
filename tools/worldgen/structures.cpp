@@ -12,6 +12,7 @@
 
 #include "polygon.hpp"
 #include "raster.hpp"
+#include "seeds.hpp"
 
 namespace worldgen::structures
 {
@@ -587,7 +588,8 @@ namespace worldgen::structures
 		// the height then rises only from the walls along the long side, the short sides' walls - their edges across the
 		// ridge - becoming the gables)
 		std::vector<bool> eaveEdge(ring.size(), true);
-		if ((hip || measuredHouse) && o.gableShare > 0)
+		const float gableShare = o.gableShareAt ? o.gableShareAt(ring[0][0], ring[0][1]) : o.gableShare;
+		if ((hip || measuredHouse) && gableShare > 0)
 		{
 			float bestArea = 1e30f, axis = 0;
 			for (size_t e = 0; e < ring.size(); ++e)
@@ -607,9 +609,8 @@ namespace worldgen::structures
 				if ((u1 - u0) * (v1 - v0) < bestArea)
 					bestArea = (u1 - u0) * (v1 - v0), axis = u1 - u0 >= v1 - v0 ? std::atan2(uy, ux) : std::atan2(ux, -uy);
 			}
-			uint32_t seed = static_cast<uint32_t>(std::lround(ring[0][0] * 7)) * 73856093u ^ static_cast<uint32_t>(std::lround(ring[0][1] * 7)) * 19349663u;
-			seed ^= seed >> 15, seed *= 0x2c1b3c6du, seed ^= seed >> 12;
-			if (area >= 0.85 * bestArea && static_cast<float>(seed % 1000) < o.gableShare * 1000)
+			const uint32_t seed = seeds::Place(ring[0][0], ring[0][1], 7, 15);
+			if (area >= 0.85 * bestArea && static_cast<float>(seed % 1000) < gableShare * 1000)
 			{
 				const float ax = std::cos(axis), ay = std::sin(axis);
 				for (size_t e = 0; e < ring.size(); ++e)

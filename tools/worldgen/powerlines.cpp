@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "convert/resource.hpp"
+#include "seeds.hpp"
 
 namespace worldgen::powerlines
 {
@@ -194,7 +195,7 @@ namespace worldgen::powerlines
 				};
 				for (size_t k = 0; k < kept.size(); ++k)
 				{
-					const uint32_t seed = Mix(static_cast<uint32_t>(ei) * 2654435761u ^ static_cast<uint32_t>(k) * 40503u);
+					const uint32_t seed = seeds::Place(kept[k].second[0], kept[k].second[1], 2, 17);
 					if (k > 0)
 					{
 						const float gap = kept[k].first - kept[k - 1].first;
@@ -217,7 +218,8 @@ namespace worldgen::powerlines
 			}
 			for (size_t k = 0; k < at.size(); ++k)
 			{
-				const uint32_t seed = Mix(static_cast<uint32_t>(ei) * 2654435761u ^ static_cast<uint32_t>(k) * 40503u);
+				P2 here, along;
+				const uint32_t seed = At(e, std::clamp(at[k], 0.0f, total), here, along) ? seeds::Place(here[0], here[1], 2, 18) : seeds::Mix(static_cast<uint32_t>(k));
 				float s = at[k];
 				if (k > 0 && k + 1 < at.size())
 					s += static_cast<float>(static_cast<int>(seed % 51) - 25) / 10; // (not quite even)
@@ -338,7 +340,7 @@ namespace worldgen::powerlines
 					const float length = std::sqrt(span[0] * span[0] + span[1] * span[1] + span[2] * span[2]);
 					const float sag = w.sag * length;
 					const int segments = std::clamp(static_cast<int>(std::lround(length / 7)), 4, 8);
-					const uint32_t phase = Mix(static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(j) * 19349663u ^ static_cast<uint32_t>(k) * 83492791u);
+					const uint32_t phase = seeds::Place(a.p[0], a.p[1], 2, static_cast<uint32_t>(k)) ^ seeds::Place(b.p[0], b.p[1], 2, 19);
 					const uint32_t base = static_cast<uint32_t>(wires.vertices.size());
 					for (int s = 0; s <= segments; ++s)
 					{

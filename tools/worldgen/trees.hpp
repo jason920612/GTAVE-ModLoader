@@ -29,7 +29,7 @@ namespace worldgen::trees
 	// then): forests every point (evergreen: pines - south of 27 N slash pines with palms; deciduous: oaks - south of it
 	// with figs and palms), woody wetlands 70 % (cypresses, palms, shrubs), scrub 35 % (shrubs, palmettos), built-up
 	// land 20 % down to 2 % by how built up (yard trees), pastures a lone oak now and then.
-	void Fill(const std::vector<world::Area>& areas, const std::function<uint8_t(float, float)>& cover, double latitude,
+	void Fill(const std::vector<world::Area>& areas, const std::function<uint8_t(float, float)>& cover, const std::function<double(float)>& latitudeAt,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
 	    std::vector<props::Prop>& out, Stats& stats);
 
@@ -56,7 +56,7 @@ namespace worldgen::trees
 	using OwnTrees = std::array<std::vector<Own>, 6>;
 
 	// (`own`: north Florida's trees of our own in place of the game's California pines and English oaks, where given)
-	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
+	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, const std::function<double(float)>& latitudeAt,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
 	    std::vector<props::Prop>& out, Stats& stats, const OwnTrees* own = nullptr);
 

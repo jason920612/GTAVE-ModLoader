@@ -7,6 +7,7 @@
 
 #include "convert/resource.hpp"
 #include "polygon.hpp"
+#include "seeds.hpp"
 
 namespace worldgen::roads
 {
@@ -1485,8 +1486,7 @@ namespace worldgen::roads
 					lines.push_back(c0 + t0 + j * w);
 				if (major || e.bike > 0)
 					lines.insert(lines.end(), {-half + 0.45f + e.Side(), half - 0.45f - e.Side()});
-				const uint32_t seed = static_cast<uint32_t>(e.id) * 2654435761u ^ static_cast<uint32_t>(std::lround(p.front()[0] * 10)) * 40503u ^
-				                      static_cast<uint32_t>(std::lround(p.front()[1] * 10));
+				const uint32_t seed = seeds::Place(p.front()[0], p.front()[1], 10, static_cast<uint32_t>(e.id));
 				const float f0 = sStart + std::max({clearA + 1.0f, tapA, 1.5f}), f1 = sEnd - std::max({clearB + 1.0f, tapB, 1.5f});
 				const float wear = paving::Wear(e.kind, e.smoothness, e.id);
 				const auto features = f1 - f0 > 3 ? paving::Features(pv, wear, seed, f0, f1, half, lines, major) : std::vector<paving::Feature>{};

@@ -7,6 +7,7 @@
 
 #include "convert/resource.hpp"
 #include "raster.hpp"
+#include "seeds.hpp"
 
 namespace worldgen::trees
 {
@@ -65,7 +66,8 @@ namespace worldgen::trees
 		{
 		constexpr float kPi = 3.14159265f;
 		const float cell = scan.Cell();
-		const float block = 256, margin = 16;
+		// (blocks of 250 m: their seams at the same real-world places in every land - 250 m divides the lands' spacing)
+		const float block = 250, margin = 16;
 		for (float by = box[1]; by < box[3]; by += block)
 			for (float bx = box[0]; bx < box[2]; bx += block)
 			{
@@ -135,11 +137,13 @@ namespace worldgen::trees
 						const float x = x0 + (i + 0.5f) * cell, y = y0 + (j + 0.5f) * cell;
 						if (x >= box[2] || y >= box[3])
 							continue;
-						const uint32_t seed = Mix(static_cast<uint32_t>(i + static_cast<int>(bx)) * 73856093u ^ static_cast<uint32_t>(j + static_cast<int>(by)) * 19349663u);
+						const uint32_t seed = seeds::Place(x, y, 1 / cell, 11);
 						if (h < 3.5f)
 						{
-							// low growth: a bush on a lattice, half of them (every entity counts against the game's pools)
-							if (((i - inner0) % step) || ((j - inner0) % step) || (halve && (seed & 1)) || !open(x, y))
+							// low growth: a bush on a lattice of the real world's, half of them (every entity counts against the game's
+							// pools)
+							const auto gi = static_cast<int64_t>(std::floor(seeds::GX(x) / cell)), gj = static_cast<int64_t>(std::floor(seeds::GY(y) / cell));
+							if ((gi % step + step) % step || (gj % step + step) % step || (halve && (seed & 1)) || !open(x, y))
 								continue;
 							bush(x, y, h, seed);
 							continue;
@@ -246,10 +250,13 @@ namespace worldgen::trees
 		// (the big ones - lrg_01, 01b, 03: 2.6-3.6 m tall, 6 m across - and a smaller one between)
 		constexpr Model kUnder[] = {{"prop_bush_lrg_01", 2.6f, 6.1f}, {"prop_bush_lrg_01b", 3.2f, 5.7f}, {"prop_bush_lrg_03", 3.6f, 5.7f},
 		    {"prop_bush_med_03", 2.5f, 3.1f}};
-		for (float y = std::floor(box[1] / kStep) * kStep; y < box[3]; y += kStep)
-			for (float x = std::floor(box[0] / kStep) * kStep; x < box[2]; x += kStep)
+		// (on a lattice of the real world's: the same bushes in every land that shows them)
+		const double ox = box[0] - seeds::GX(box[0]), oy = box[1] - seeds::GY(box[1]);
+		for (double gy = std::floor(seeds::GY(box[1]) / kStep) * kStep; gy + oy < box[3]; gy += kStep)
+			for (double gx = std::floor(seeds::GX(box[0]) / kStep) * kStep; gx + ox < box[2]; gx += kStep)
 			{
-				const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(x)) * 73856093u ^ static_cast<uint32_t>(std::lround(y)) * 19349663u ^ 0x5bd1e995u);
+				const float x = static_cast<float>(gx + ox), y = static_cast<float>(gy + oy);
+				const uint32_t seed = seeds::Place(x, y, 1, 12);
 				if (seed % 10 >= 7)
 					continue;
 				const float px = x + ((seed >> 4) % 1000 / 1000.0f - 0.5f) * 4, py = y + ((seed >> 14) % 1000 / 1000.0f - 0.5f) * 4;
@@ -367,11 +374,12 @@ namespace worldgen::trees
 		}
 	}
 
-	void Fill(const std::vector<world::Area>& areas, const std::function<uint8_t(float, float)>& cover, double latitude,
+	void Fill(const std::vector<world::Area>& areas, const std::function<uint8_t(float, float)>& cover, const std::function<double(float)>& latitudeAt,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
 	    std::vector<props::Prop>& out, Stats& stats)
 	{
-		constexpr float kPi = 3.14159265f, kSpacing = 22;
+		// (20 m: a lattice at the same real-world places in every land - it divides the lands' spacing)
+		constexpr float kPi = 3.14159265f, kSpacing = 20;
 		// (the map's woods and wetlands, where the land cover is not known)
 		raster::Grid<uint8_t> mapped;
 		mapped.Init(box[0], box[1], box[2], box[3], kSpacing, 0);
@@ -383,12 +391,11 @@ namespace worldgen::trees
 				const uint8_t value = a.kind == "wood" ? 1 : 2;
 				raster::ForPolygon(mapped, rings, [&](int i, int j) { mapped.At(i, j) = std::max(mapped.At(i, j), value); });
 			}
-		const bool south = latitude < 27;
 		for (int j = 0; j < mapped.ny; ++j)
 			for (int i = 0; i < mapped.nx; ++i)
 			{
 				const auto c = mapped.Centre(i, j);
-				const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(c[0])) * 73856093u ^ static_cast<uint32_t>(std::lround(c[1])) * 19349663u);
+				const uint32_t seed = seeds::Place(c[0], c[1], 1, 13);
 				const float x = c[0] + ((seed >> 8 & 255) / 255.0f - 0.5f) * 0.8f * kSpacing, y = c[1] + ((seed >> 16 & 255) / 255.0f - 0.5f) * 0.8f * kSpacing;
 				if (x < box[0] || y < box[1] || x >= box[2] || y >= box[3])
 					continue;
@@ -397,7 +404,7 @@ namespace worldgen::trees
 				if (!kind.pick || static_cast<int>(seed % 100) >= kind.chance || !open(x, y))
 					continue;
 				const uint32_t roll = Mix(seed);
-				const char* name = kind.pick(south, roll);
+				const char* name = kind.pick(latitudeAt(y) < 27, roll);
 				const bool palm = std::string_view(name).starts_with("prop_palm"), bush = std::string_view(name).starts_with("prop_bush");
 				out.push_back({loader::convert::Joaat(name), {x, y, ground(x, y) - 0.2f}, static_cast<float>((roll >> 8) % 360) * kPi / 180,
 				    bush ? 150.0f : 350.0f, 0.8f + static_cast<float>((roll >> 20) % 36) / 100});
@@ -423,12 +430,11 @@ namespace worldgen::trees
 		    {"prop_palm_fan_04_b", 12.2f, 5.9f}};
 	}
 
-	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, double latitude,
+	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, const std::function<double(float)>& latitudeAt,
 	    const std::function<bool(float, float)>& open, const std::function<float(float, float)>& ground, const std::array<float, 4>& box,
 	    std::vector<props::Prop>& out, Stats& stats, const OwnTrees* own)
 	{
 		constexpr float kPi = 3.14159265f;
-		const bool south = latitude < 27.5;
 		// (one of our own of a kind: the nearest in height of the three nearest, by the tree's own number)
 		const auto ownOf = [&](int kind, float h, uint32_t seed) -> const Own* {
 			if (!own || (*own)[kind].empty())
@@ -465,7 +471,7 @@ namespace worldgen::trees
 			if (under)
 				continue;
 			kept[cellOf(t.x, t.y)].push_back({t.x, t.y, t.crown});
-			const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(t.x * 4)) * 73856093u ^ static_cast<uint32_t>(std::lround(t.y * 4)) * 19349663u);
+			const uint32_t seed = seeds::Place(t.x, t.y, 4, 14);
 			// (the crown the canopy it covers in the pictures, a quarter wider: the game's models' leaves fill less than their
 			// boxes, and the woods' canopy closes overhead as in the pictures)
 			const float h = std::clamp(t.height, 3.0f, 40.0f), width = 2.5f * std::max(t.crown, 1.0f);
@@ -475,7 +481,7 @@ namespace worldgen::trees
 			// (cabbage palms: what the pictures take for one; in the south a quarter of the narrow evergreen crowns, in the
 			// north's towns - Tallahassee's yards and medians - one in ten of them)
 			const bool town = nlcd >= 21 && nlcd <= 24;
-			if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (south ? (seed & 3) == 0 : town && seed % 10 == 0)))
+			if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (latitudeAt(t.y) < 27.5 ? (seed & 3) == 0 : town && seed % 10 == 0)))
 				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
 			else if (own)
 			{

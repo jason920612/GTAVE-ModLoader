@@ -49,9 +49,9 @@ namespace worldgen::facades
 	};
 
 	// The styles and their textures, names starting with `prefix`; `size` the diffuse textures' side (pixels) for the walls
-	// of fine detail - siding, brick -, half that for the others; only the region's (`latitude`): Art Deco in Miami, siding
-	// and brick elsewhere (a pack's resource is at most 16 MB: all of them did not fit one texture dictionary).
-	Set Make(const std::string& prefix, int size, double latitude = 25.8);
+	// of fine detail - siding, brick -, half that for the others. Every land has them all - Miami's Art Deco, the north's
+	// siding and brick (Pick chooses by the building's own latitude): two lands' shared band shows its buildings the same.
+	Set Make(const std::string& prefix, int size);
 
 	// What the street pictures saw of a building's walls (tools/worldgen/photofacade.py): their lit colour, the share that
 	// looks like brick.

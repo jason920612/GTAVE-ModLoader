@@ -223,10 +223,9 @@ namespace worldgen::facades
 		}
 	}
 
-	Set Make(const std::string& prefix, int size, double latitude)
+	Set Make(const std::string& prefix, int size)
 	{
 		Set set;
-		const bool miami = latitude < 26.3;
 		const auto add = [&](Kind kind, const std::string& family, const std::string& name, float w, float h, const std::function<void(Canvas&)>& draw,
 		                     bool first, float bump) {
 			Style s;
@@ -268,7 +267,7 @@ namespace worldgen::facades
 		// Art Deco walk-ups: floors of 3.2 m, bays of 3 m, an "eyebrow" ledge over each window, a band at each floor
 		const std::pair<const char*, Rgb> deco[] = {{"mint", {178, 224, 204}}, {"pink", {240, 188, 198}}, {"lemon", {245, 230, 160}},
 		    {"aqua", {160, 214, 220}}, {"white", {238, 236, 228}}, {"lilac", {205, 195, 230}}};
-		for (size_t k = 0; k < (miami ? std::size(deco) : 0); ++k)
+		for (size_t k = 0; k < std::size(deco); ++k)
 			add(Kind::Deco, "deco", std::string("deco_") + deco[k].first, 12, 12.8f, [&](Canvas& c) {
 				Wall(c, deco[k].second, ++seed, 0.05f, 0.08f);
 				const Rgb trim = Mix(deco[k].second, {250, 250, 245}, 0.6f);
@@ -446,7 +445,7 @@ namespace worldgen::facades
 		const std::pair<const char*, Rgb> sidings[] = {{"white", {236, 236, 230}}, {"grey", {190, 196, 198}}, {"beige", {212, 198, 168}},
 		    {"yellow", {232, 218, 164}}, {"blue", {176, 196, 212}}, {"sage", {172, 186, 158}}, {"tan", {194, 174, 144}}, {"cream", {230, 222, 196}},
 		    {"darkgrey", {132, 138, 140}}, {"bluegrey", {150, 166, 178}}, {"green", {150, 170, 140}}, {"brown", {140, 112, 88}}, {"paleyellow", {240, 232, 196}}};
-		for (size_t k = 0; k < (miami ? 0 : std::size(sidings)); ++k)
+		for (size_t k = 0; k < std::size(sidings); ++k)
 			add(Kind::Siding, "siding", std::string("siding_") + sidings[k].first, 8, 6, [&](Canvas& c) {
 				Siding(c, sidings[k].second, ++seed);
 				const bool shutters = k % 3 == 0; // (a third of them: the street pictures' houses mostly have none)
@@ -475,7 +474,7 @@ namespace worldgen::facades
 			}, k == 0, 5);
 		// brick houses: the same floors, white-framed windows on a stone sill, a soldier course over them
 		const std::pair<const char*, Rgb> bricks[] = {{"red", {150, 72, 56}}, {"brown", {128, 84, 64}}, {"orange", {172, 98, 70}}, {"buff", {190, 156, 120}}};
-		for (size_t k = 0; k < (miami ? 0 : std::size(bricks)); ++k)
+		for (size_t k = 0; k < std::size(bricks); ++k)
 			add(Kind::Brick, "brick", std::string("brick_") + bricks[k].first, 8.1f, 6, [&](Canvas& c) {
 				Brick(c, bricks[k].second, {196, 192, 182}, ++seed);
 				for (int f = 0; f < 2; ++f)
@@ -489,7 +488,7 @@ namespace worldgen::facades
 			}, k == 0, 6);
 		// red brick walk-ups and offices: floors of 3.075 m, tall windows every 2.43 m on stone sills, a band at each floor
 		const std::pair<const char*, Rgb> brickCity[] = {{"red", {146, 66, 52}}, {"brown", {124, 80, 62}}, {"buff", {186, 152, 116}}};
-		for (size_t k = 0; k < (miami ? 0 : std::size(brickCity)); ++k)
+		for (size_t k = 0; k < std::size(brickCity); ++k)
 			add(Kind::BrickCity, "brickcity", std::string("brickcity_") + brickCity[k].first, 12.15f, 12.3f, [&](Canvas& c) {
 				Brick(c, brickCity[k].second, {190, 186, 176}, ++seed);
 				for (int f = 0; f < 4; ++f)

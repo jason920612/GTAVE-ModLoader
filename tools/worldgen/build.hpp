@@ -26,6 +26,9 @@ namespace worldgen::build
 		float cell = 8;                 // terrain mesh cell (m)
 		float classify = 4;             // land / water raster (m)
 		float border = 300;             // how far in from the box's edges the land ends (m)
+		// the land's own part (land.json "core": min x, min y, max x, max y): the box less the band each neighbour shows too -
+		// the loader's crossing moves the player from one land's band into the other's (none: the whole box)
+		std::array<float, 4> core{};
 		std::string open;               // the box's edges ("n", "s", "e", "w") the land goes on past: a neighbouring sector's
 		                                // (no sea there, the roads not cut; the loader switches to it at that edge)
 		std::array<float, 4> area{};    // only this part (x0, y0, x1, y1), for tests; all zero: everything

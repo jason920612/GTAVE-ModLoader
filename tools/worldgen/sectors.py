@@ -1,9 +1,13 @@
-"""World builder sectors (research/phase0.md §62): Florida cut into boxes the size of the new land's place in the game's
-world (x 4300..16033, y -3000..10405), each built as a pack of its own; the loader (game/sectors) keeps one of them there
-and switches to the next one where the player crosses their shared edge.
+"""World builder sectors (research/phase0.md §62, §65): Florida cut into lands the size of the new land's place in the game's
+world (x 4300..16032, y -3000..10404), each built as a pack of its own; the loader (game/sectors, game/seamless) keeps one
+of them there and crosses into the next without a cut where the player goes over the edge of its own part.
 
-The grid is anchored at Miami's box (its south-west corner 25.745 N, -80.232 E): a sector is 0.121 degrees of latitude
-by 0.117 of longitude, cell (column, row) = (0, 0) Miami, (0, 1) the one north of it, (-1, 0) west. For each cell:
+One projection for the whole state (equirectangular from 24 N, 88 W, metres per degree at 27.5 N): a land is a translation
+of it - its projection's x0, y0 -, so its neighbour's content is its own moved by a whole number of lands. A land's own
+part (its core) is 8000 m by 10000 m of that plane, cell (column, row) = [column * 8000, (column + 1) * 8000) x [row * 10000,
+(row + 1) * 10000) m from the origin - in the game at x 6166..14166, y -1298..8702; its box takes in a band of 1866 m (x)
+and 1702 m (y) round it, the same real-world content as the neighbour's own part there (every random choice of the build
+keyed to the real world's place: worldgen seeds.hpp). Named fl_<column>_<row>. For each cell:
 its OpenStreetMap extract (worldgen osm) with the building footprints it lacks from Microsoft's US Building Footprints
 (msbuildings.py; ODbL), its land cover (nlcd.py: NLCD's woods, wetlands, fields), its ground
 (dem.py: 3DEP's measured heights, the lakes' and rivers' levels), its property rolls (parcels.py: the Department of
@@ -18,16 +22,18 @@ at the next start). The build's own files and the pictures' are removed once pac
 
 usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.tsv> [--jobs n] [--skip-built] [--dry-run]
        [--keep] [--mapillary <metadata.csv>[,<metadata.csv>...]]
+       python -I tools/worldgen/sectors.py --survey <cells.tsv>: the cells with land in them (worldgen survey on the state's
+       extract, then the sea flood-filled away from the grid's edge: what is left - land, marshes, lakes - is built)
   --mapillary: street picture downloads (Mapillary, CC BY-SA 4.0): a sector with pictures in it gets its walls' colours
           from them
   --first c,r;c,r...: these cells before the others (the street pictures' places: compared first)
-  --list: the survey's land cells (worldgen survey, then the sea flood-filled away: a tsv with column and row), built
-          nearest Miami first
-  --names col,row=name;...  existing packs for some cells (not built again; by default Miami's full build)
+  --list: the survey's land cells (--survey: a tsv with column and row), built nearest --home first (column,row; by default
+          Miami's cell)
+  --names col,row=name;...  existing packs for some cells (not built again)
   --free <GB>: no cell started with less than this left on the game's drive (120)
 Paths: --game, --worldgen, --keys, --pbf, --worlds (the world folders), --log as below by default.
 """
-import concurrent.futures, os, shutil, subprocess, sys, threading, time
+import collections, concurrent.futures, math, os, shutil, subprocess, sys, threading, time
 
 O = {
     'game': r'D:\SteamLibrary\steamapps\common\Grand Theft Auto V Enhanced',
@@ -45,12 +51,30 @@ O = {
     'keys': r'D:\GTAV-UE5\keys\ng.bin',
     'pbf': r'D:\GTAV-UE5\osm\pbf\florida.osm.pbf',
     'worlds': r'D:\GTAV-UE5\world',
-    'names': '0,0=wbmia',
+    'names': '',
     'jobs': '1',
     'log': r'D:\GTAV-UE5\world\florida\sectors.log',
 }
-LAT0, LON0, DLAT, DLON = 25.745, -80.232, 0.121, 0.117
+# the state's projection (worldgen world::Projection: x = x0 + (lon - lon0) kx, y = y0 + (lat - lat0) ky - metres per degree
+# at 27.5 N, WGS84), a land's core and its box in the game
+LAT0, LON0, PHI = 24.0, -88.0, math.radians(27.5)
+KY = 111132.92 - 559.82 * math.cos(2 * PHI) + 1.175 * math.cos(4 * PHI)
+KX = 111412.84 * math.cos(PHI) - 93.5 * math.cos(3 * PHI) + 0.118 * math.cos(5 * PHI)
+CORE_W, CORE_H = 8000, 10000
+BOX = (4300.0, -3000.0, 16032.0, 10404.0)
+BAND_X, BAND_Y = (BOX[2] - BOX[0] - CORE_W) / 2, (BOX[3] - BOX[1] - CORE_H) / 2
+CORE = (BOX[0] + BAND_X, BOX[1] + BAND_Y, BOX[2] - BAND_X, BOX[3] - BAND_Y)
+DLAT, DLON = CORE_H / KY, CORE_W / KX  # (the cells are a lattice of latitude and longitude: the survey counts on it)
+HOME = (96, 19)  # (Miami's cell: built first)
 FLAGS = ('skip-built', 'dry-run', 'keep')
+
+
+def land(c, r):
+    """Cell (c, r): its name, its projection (lat0, lon0, x0, y0, kx, ky), its box in degrees (south, west, north, east)."""
+    x0, y0 = CORE[0] - c * CORE_W, CORE[1] - r * CORE_H  # (where the projection's origin is in the land's game coordinates)
+    gx0, gy0, gx1, gy1 = BOX[0] - x0, BOX[1] - y0, BOX[2] - x0, BOX[3] - y0
+    box = (LAT0 + gy0 / KY, LON0 + gx0 / KX, LAT0 + gy1 / KY, LON0 + gx1 / KX)
+    return f'fl_{c:03d}_{r:03d}', (LAT0, LON0, x0, y0, KX, KY), box
 g_print = threading.Lock()
 
 
@@ -91,7 +115,7 @@ g_full = threading.Event()
 
 def build(c, r, flags):
     """One cell: its name, and "" when it was built, else what went wrong."""
-    name = f'wbfl_{100 + c:03d}_{100 + r:03d}'
+    name, projection, (s, w, n, e) = land(c, r)
     # (none started with less than --free GB, 120 by default, left on the game's drive: the rest of the list waits for the
     # next run, --skip-built)
     # (nor once the game is not where it was - moved to another drive: the packs would go into a folder of their own)
@@ -101,8 +125,6 @@ def build(c, r, flags):
     if shutil.disk_usage(O['game']).free < float(O.get('free', 120)) * 1e9:
         g_full.set()
         return name, 'not started: the disk is nearly full'
-    s, w = LAT0 + r * DLAT, LON0 + c * DLON
-    n, e = s + DLAT, w + DLON
     folder = os.path.join(O['worlds'], name)
     pack = os.path.join(O['game'], 'ModLoader', 'mods', name, 'dlc.rpf')
     os.makedirs(folder, exist_ok=True)
@@ -110,7 +132,8 @@ def build(c, r, flags):
     common = ['--game', O['game'], '--keys', O['keys']]
     world = os.path.join(folder, 'world.json')
     if not os.path.exists(world):
-        if run([O['worldgen'], 'osm', *common, '--pbf', O['pbf'], '--box', f'{s},{w},{n},{e}', '--out', folder, '--name', name], log):
+        if run([O['worldgen'], 'osm', *common, '--pbf', O['pbf'], '--box', f'{s:.9f},{w:.9f},{n:.9f},{e:.9f}', '--projection',
+                ','.join(f'{v:.9f}' for v in projection), '--out', folder, '--name', name], log):
             return name, f'osm failed (see {log})'
         if run([sys.executable, '-I', O['msbuildings'], 'merge', '--world', world, '--cells', O['mscells']], log):
             os.remove(world)  # (made again, both steps, next time)
@@ -146,7 +169,8 @@ def build(c, r, flags):
         rolls = ['--parcels', parcels]
     gen = os.path.join(folder, 'full_gen')
     shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
-    if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--landcover', cover,
+    if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--core', ','.join(f'{v:.1f}' for v in CORE),
+            '--landcover', cover,
             '--ground', ground, '--photo', photo, *walls, *rolls, '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     if not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
@@ -173,7 +197,44 @@ def build(c, r, flags):
     return name, ''
 
 
+def survey(out):
+    """The cells with land: worldgen survey of the state's extract on the lattice (what each cell has: coast, roads,
+    buildings, water), then the sea taken away - the cells reachable from the lattice's edge through cells with no road,
+    building or coastline -, the rest (land, marshes, lakes) kept."""
+    grid = out + '.grid.tsv'
+    if subprocess.run([O['worldgen'], 'survey', '--game', O['game'], '--keys', O['keys'], '--pbf', O['pbf'], '--box', '24.3,-87.7,31.1,-79.8', '--grid',
+                       f'{LAT0},{LON0},{DLAT:.9f},{DLON:.9f}', '--out', grid]).returncode:
+        sys.exit('survey failed')
+    counts = {}
+    with open(grid, encoding='utf-8') as f:
+        header = f.readline().rstrip('\n').split('\t')
+        for line in f:
+            v = dict(zip(header, line.rstrip('\n').split('\t')))
+            counts[(int(v['column']), int(v['row']))] = (int(v['coast']), int(v['roads']), int(v['buildings']))
+    c0, c1 = min(c for c, r in counts) - 1, max(c for c, r in counts) + 1
+    r0, r1 = min(r for c, r in counts) - 1, max(r for c, r in counts) + 1
+    empty = lambda c, r: not any(counts.get((c, r), (0, 0, 0)))
+    sea = set()
+    queue = collections.deque([(c, r) for c in range(c0, c1 + 1) for r in (r0, r1)] + [(c, r) for r in range(r0, r1 + 1) for c in (c0, c1)])
+    while queue:
+        c, r = queue.popleft()
+        if (c, r) in sea or not (c0 <= c <= c1 and r0 <= r <= r1) or not empty(c, r):
+            continue
+        sea.add((c, r))
+        queue.extend(((c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)))
+    kept = [(c, r) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1) if (c, r) not in sea]
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write('column\trow\tkind\troads\tbuildings\n')
+        for c, r in kept:
+            k = counts.get((c, r), (0, 0, 0))
+            f.write(f'{c}\t{r}\tland\t{k[1]}\t{k[2]}\n')
+    print(f'{len(kept)} land cells of {len(counts)} with something in them ({len(sea)} of the sea taken away)')
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--survey':
+        survey(sys.argv[2])
+        return
     flags = options(sys.argv[1:])
     named = {}
     for item in filter(None, O['names'].split(';')):
@@ -189,7 +250,8 @@ def main():
                 p = line.rstrip('\n').split('\t')
                 if len(p) > max(ci, ri):
                     cells.append((int(p[ci]), int(p[ri])))
-        cells.sort(key=lambda t: (t[0] ** 2 + t[1] ** 2, t))
+        home = tuple(int(v) for v in O['home'].split(',')) if 'home' in O else HOME
+        cells.sort(key=lambda t: ((t[0] - home[0]) ** 2 + (t[1] - home[1]) ** 2, t))
         first = [tuple(int(v) for v in item.split(',')) for item in filter(None, O.get('first', '').split(';'))]
         cells.sort(key=lambda t: first.index(t) if t in first else len(first))
     elif 'cells' in O:
@@ -199,7 +261,7 @@ def main():
         sys.exit(__doc__)
     todo = []
     for c, r in cells:
-        name = named.get((c, r), f'wbfl_{100 + c:03d}_{100 + r:03d}')
+        name = named.get((c, r), land(c, r)[0])
         if (c, r) in named:
             continue
         if 'skip-built' in flags and os.path.exists(os.path.join(O['game'], 'ModLoader', 'mods', name, 'dlc.rpf')):

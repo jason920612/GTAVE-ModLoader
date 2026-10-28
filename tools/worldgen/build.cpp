@@ -37,6 +37,7 @@
 #include "props.hpp"
 #include "raster.hpp"
 #include "roads.hpp"
+#include "seeds.hpp"
 #include "structures.hpp"
 #include "terrain.hpp"
 #include "texture.hpp"
@@ -85,11 +86,30 @@ namespace worldgen::build
 			return (at(i, j) * (1 - tx) + at(i + 1, j) * tx) * (1 - ty) + (at(i, j + 1) * (1 - tx) + at(i + 1, j + 1) * tx) * ty;
 		}
 
-		// Gentle rolling ground (a few metres' worth of waves at several scales), deterministic.
-		float Noise(float x, float y)
+		// The same at a point of the land, by its real-world place (seeds.hpp: the same in every land that shows it).
+		float PlaceLattice(float x, float y, float cell, uint32_t seed)
 		{
-			return 0.5f * std::sin(x * 0.0071f + 1.3f) * std::cos(y * 0.0063f + 0.4f) + 0.3f * std::sin(x * 0.019f - y * 0.013f + 2.1f) +
-			       0.2f * std::cos(x * 0.041f + y * 0.037f);
+			const double fx = seeds::GX(x) / cell, fy = seeds::GY(y) / cell;
+			const auto i = static_cast<int64_t>(std::floor(fx)), j = static_cast<int64_t>(std::floor(fy));
+			const auto at = [&](int64_t a, int64_t b) { return static_cast<float>(seeds::Cell(a, b, seed) >> 8) / 8388608.0f - 1.0f; };
+			float tx = static_cast<float>(fx - static_cast<double>(i)), ty = static_cast<float>(fy - static_cast<double>(j));
+			tx = tx * tx * (3 - 2 * tx), ty = ty * ty * (3 - 2 * ty);
+			return (at(i, j) * (1 - tx) + at(i + 1, j) * tx) * (1 - ty) + (at(i, j + 1) * (1 - tx) + at(i + 1, j + 1) * tx) * ty;
+		}
+
+		// a building's own number, by where its first roof point is in the real world (the same building in two lands' shared
+		// band gets the same walls)
+		uint32_t ShapeSeed(const structures::Shape& s)
+		{
+			return s.vertices.empty() ? 0 : seeds::Place(s.vertices[0][0], s.vertices[0][1], 2);
+		}
+
+		// Gentle rolling ground (a few metres' worth of waves at several scales), deterministic - by the real-world place.
+		float Noise(float px, float py)
+		{
+			const double x = seeds::GX(px), y = seeds::GY(py);
+			return static_cast<float>(0.5 * std::sin(x * 0.0071 + 1.3) * std::cos(y * 0.0063 + 0.4) + 0.3 * std::sin(x * 0.019 - y * 0.013 + 2.1) +
+			                          0.2 * std::cos(x * 0.041 + y * 0.037));
 		}
 
 		bool WriteFile(const std::filesystem::path& p, const Bytes& b)
@@ -1321,6 +1341,10 @@ namespace worldgen::build
 	bool Run(const ue5export::GameFiles& files, const world::World& w, const std::vector<catalog::Item>& catalog, const Options& o, Stats& stats,
 	    std::string& error)
 	{
+		// (every choice by the real world's place - seeds.hpp -, and the regions' by a thing's own latitude: two lands that show
+		// the same place make the same things there)
+		seeds::SetOrigin(w.projection.x0, w.projection.y0);
+		const auto latAt = [&](float y) { return w.projection.lat0 + (static_cast<double>(y) - w.projection.y0) / w.projection.ky; };
 		// (how long each step took, for the log)
 		auto lap = std::chrono::steady_clock::now();
 		const auto took = [&](const char* step) {
@@ -1469,7 +1493,8 @@ namespace worldgen::build
 		// (looked up through noise that bends its edges - 12 m over 50 m, 4 m over 17 m: NLCD's 30 m squares had every
 		// edge between covers - lawns, fields, woods, the trees - in stair steps; they now wander as a field's or a wood's)
 		const std::function<uint8_t(float, float)> landCoverAt = landCover.v.empty() ? std::function<uint8_t(float, float)>() : [&](float x, float y) {
-			const float wx = x + 12.0f * Lattice(x, y, 50, 101) + 4.0f * Lattice(x, y, 17, 103), wy = y + 12.0f * Lattice(x, y, 50, 107) + 4.0f * Lattice(x, y, 17, 109);
+			const float wx = x + 12.0f * PlaceLattice(x, y, 50, 101) + 4.0f * PlaceLattice(x, y, 17, 103),
+			            wy = y + 12.0f * PlaceLattice(x, y, 50, 107) + 4.0f * PlaceLattice(x, y, 17, 109);
 			const auto c = landCover.Cell({wx, wy});
 			return landCover.In(c[0], c[1]) ? landCover.At(c[0], c[1]) : uint8_t{0};
 		};
@@ -2740,7 +2765,7 @@ namespace worldgen::build
 		std::unordered_map<uint32_t, std::pair<float, float>> floraTrunk; // (by archetype: the trunk's radius, its collision's height)
 		std::vector<trees::Own> ownShrubs;
 		// (as far south as 27 N - central Florida's live oaks and pines; the south's palms, figs and mahoganies stay the game's)
-		if (photographed && w.projection.lat0 >= 27.0)
+		if (photographed && latAt(w.max[1]) >= 27.0)
 			for (int s = 0; s < flora::kSpecies; ++s)
 				for (int k = 0; k < 8; ++k)
 				{
@@ -2943,9 +2968,12 @@ namespace worldgen::build
 					list << std::format("{:.1f} {:.1f} {:.0f} {:.1f}\n", c[0], c[1], std::fabs(polygon::Area(b.footprint)), b.height);
 				}
 			}
-			facadeSet = facades::Make(o.name + "_f_", 1024, w.projection.lat0);
+			facadeSet = facades::Make(o.name + "_f_", 1024);
 			structures::Options so;
-			so.gableShare = w.projection.lat0 >= 28.8 ? 0.5f : w.projection.lat0 >= 27.0 ? 0.3f : 0.1f;
+			so.gableShareAt = [&](float, float y) {
+				const double lat = latAt(y);
+				return lat >= 28.8 ? 0.5f : lat >= 27.0 ? 0.3f : 0.1f;
+			};
 			structures::Stats ss;
 			std::vector<const world::Building*> all;
 			if (scanned)
@@ -3065,11 +3093,11 @@ namespace worldgen::build
 				const P2 c = made[i].c;
 				mapped.push_back(b.footprint);
 				const float area = static_cast<float>(std::fabs(polygon::Area(b.footprint)));
-				const uint32_t seed = static_cast<uint32_t>(std::lround(c[0] * 3)) * 73856093u ^ static_cast<uint32_t>(std::lround(c[1] * 3)) * 19349663u;
+				const uint32_t seed = seeds::Place(c[0], c[1], 3);
 				const bool listed = all[i] >= w.buildings.data() && all[i] < w.buildings.data() + w.buildings.size();
 				const auto seenIt = listed ? seenWalls.find(static_cast<size_t>(all[i] - w.buildings.data())) : seenWalls.end();
 				const auto yearIt = listed ? builtYear.find(static_cast<size_t>(all[i] - w.buildings.data())) : builtYear.end();
-				shapeStyle.push_back(facades::Pick(facadeSet, b.kind, made[i].s.height, area, seed, w.projection.lat0,
+				shapeStyle.push_back(facades::Pick(facadeSet, b.kind, made[i].s.height, area, seed, latAt(c[1]),
 				    seenIt != seenWalls.end() ? &seenIt->second : nullptr, yearIt != builtYear.end() ? yearIt->second : 0));
 				// (a pitched roof's covering by the aerial pictures' colour over the footprint: tiles, light or dark shingles)
 				int roof = -1;
@@ -3083,7 +3111,7 @@ namespace worldgen::build
 							const float r = px[1], g = px[2], bl = px[3], lum = (r + g + bl) / 3;
 							// (green - seen as a roof or as grass, which a roof is not: not the leaves over it - green metal; red:
 							// north Florida's red metal, the south's clay tiles)
-							const bool north = w.projection.lat0 >= 28.8;
+							const bool north = latAt(c[1]) >= 28.8;
 							roof = (px[0] == 6 || px[0] == 3 || px[0] == 4) && g > r + 6 && g > bl + 10 ? 5
 							     : r > g + 18 && r > bl + 35          ? (north ? 6 : 0)
 							     : lum > 165                          ? 2
@@ -3097,9 +3125,9 @@ namespace worldgen::build
 				// the nearest street within 40 m, its middle 85 %, the edge 7 m long or more)
 				Porch porch;
 				{
-					uint32_t ps = static_cast<uint32_t>(std::lround(c[0] * 5)) * 2654435761u ^ static_cast<uint32_t>(std::lround(c[1] * 5)) * 40503u;
-					ps ^= ps >> 13, ps *= 0x5bd1e995u, ps ^= ps >> 15;
-					const float share = w.projection.lat0 >= 28.8 ? 0.35f : w.projection.lat0 >= 27.0 ? 0.2f : 0.08f;
+					const uint32_t ps = seeds::Place(c[0], c[1], 5, 1);
+					const double lat = latAt(c[1]);
+					const float share = lat >= 28.8 ? 0.35f : lat >= 27.0 ? 0.2f : 0.08f;
 					if (made[i].s.pitched && static_cast<float>(ps % 1000) < share * 1000)
 					{
 						P2 street{};
@@ -3199,7 +3227,7 @@ namespace worldgen::build
 					const float x = p.position[0], y = p.position[1];
 					if ((p.kind != "fire_hydrant" && p.kind != "street_lamp") || x < bx0 || x >= bx1 || y < by0 || y >= by1 || !open(x, y))
 						continue;
-					const uint32_t seed = static_cast<uint32_t>(std::lround(x * 7)) * 73856093u ^ static_cast<uint32_t>(std::lround(y * 7)) * 19349663u;
+					const uint32_t seed = seeds::Place(x, y, 7, 5);
 					if (p.kind == "fire_hydrant")
 					{
 						furniture.push_back({hydrant, {x, y, ground(x, y)}, static_cast<float>(seed % 360) * 3.14159265f / 180, 120});
@@ -3351,7 +3379,7 @@ namespace worldgen::build
 				}
 				std::printf("trees from the aerial pictures: %zu moved off roads and roofs, %zu kept off big buildings' walls\n", moved, trimmed);
 				trees::Stats ts;
-				trees::Photo(kept, landCoverAt, w.projection.lat0, open, ground, {bx0, by0, bx1, by1}, furniture, ts, ownTrees.front().empty() ? nullptr : &ownTrees);
+				trees::Photo(kept, landCoverAt, latAt, open, ground, {bx0, by0, bx1, by1}, furniture, ts, ownTrees.front().empty() ? nullptr : &ownTrees);
 				std::printf("trees from the aerial pictures: %zu palms, %zu others\n", ts.palms, ts.broadleaf);
 				// (the woods' undergrowth where the streets see it: within 25 m of one, a metre and a half clear of its edge)
 				trees::Stats us;
@@ -3386,7 +3414,7 @@ namespace worldgen::build
 			{
 				// (no scan: trees by the land cover, else the map's woods and wetlands)
 				trees::Stats ts;
-				trees::Fill(w.areas, landCoverAt, w.projection.lat0, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
+				trees::Fill(w.areas, landCoverAt, latAt, open, ground, {bx0, by0, bx1, by1}, furniture, ts);
 				std::printf("trees in woods and wetlands: %zu palms, %zu broadleaf and pines, %zu shrubs\n", ts.palms, ts.broadleaf, ts.bushes);
 			}
 			{
@@ -3651,8 +3679,7 @@ namespace worldgen::build
 					                   b.kind == "static_caravan" || ((b.kind == "yes" || b.kind == "residential") && area > 60 && area < 350);
 					if (!house || area < 40 || area > 600 || c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1)
 						continue;
-					uint32_t seed = static_cast<uint32_t>(bi) * 2654435761u;
-					seed ^= seed >> 15, seed *= 0x2c1b3c6du, seed ^= seed >> 12;
+					const uint32_t seed = seeds::Place(c[0], c[1], 7, 2);
 					// (a car in three driveways in four, a second beside it in a quarter of those)
 					const bool car = seed % 100 < 75, second = car && (seed >> 4) % 100 < 25;
 					// (the nearest such street within 45 m)
@@ -3744,7 +3771,7 @@ namespace worldgen::build
 								v.normal = {0, 0, 1};
 								v.tangent = {1, 0, 0, 1};
 								v.colour0 = {255, 12, 255, 255};
-								v.uv[0] = {px / 6, -py / 6};
+								v.uv[0] = {static_cast<float>(std::fmod(seeds::GX(px), 6000.0) / 6), static_cast<float>(-std::fmod(seeds::GY(py), 6000.0) / 6)};
 								m.vertices.push_back(v);
 							}
 						}
@@ -3907,7 +3934,7 @@ namespace worldgen::build
 								in = !in;
 						return in;
 					};
-					uint32_t seed = static_cast<uint32_t>(ai) * 0x9E3779B1u;
+					uint32_t seed = seeds::Place(ring[0][0], ring[0][1], 10, 3) | 1;
 					for (float t = t0 + 3.5f; t + 2.75f < t1; t += 18.0f) // (a pair of rows: 5.5 + 5.5 deep, 7 m aisle)
 						for (const float row : {t + 2.75f, t + 8.25f})
 							for (float s = s0 + 1.35f; s + 1.35f < s1; s += 2.7f)
@@ -3947,7 +3974,7 @@ namespace worldgen::build
 					const float from = clearOf(e.a), to = along.back() - clearOf(e.b), off = lane ? e.HalfWidth() - e.parking / 2 : e.HalfWidth() - 1.05f;
 					const float step = lane ? 6.6f : 8.0f;
 					const uint32_t share = lane ? 60 : 5;
-					uint32_t seed = static_cast<uint32_t>(e.id) * 0x9E3779B1u ^ static_cast<uint32_t>(ei) * 0x85EBCA6Bu;
+					uint32_t seed = seeds::Place(e.points.front()[0], e.points.front()[1], 10, static_cast<uint32_t>(e.id)) | 1;
 					for (const float side : {-1.0f, 1.0f}) // (right of a -> b, then left)
 					{
 						size_t k = 0;
@@ -4005,7 +4032,7 @@ namespace worldgen::build
 					const auto it = sizeOf.find(p.archetype);
 					if (it == sizeOf.end())
 						continue;
-					const uint32_t pick = static_cast<uint32_t>(std::lround(p.position[0] * 3)) * 73856093u ^ static_cast<uint32_t>(std::lround(p.position[1] * 3)) * 19349663u;
+					const uint32_t pick = seeds::Place(p.position[0], p.position[1], 3, 4);
 					const trees::Own& s = ownShrubs[pick % ownShrubs.size()];
 					const float sz = p.scaleZ > 0 ? p.scaleZ : p.scale;
 					p.archetype = loader::convert::Joaat(s.name);
@@ -4128,9 +4155,10 @@ namespace worldgen::build
 			std::ofstream(o.out / "land.json") << std::format(
 			    "{{\"box\": [{:.0f}, {:.0f}, {:.0f}, {:.0f}], \"waves\": {:.2f}, \"water\": \"water.bin\", \"climate\": \"{}\", \"map\": {{\"name\": \"{}\", "
 			    "\"radar\": [{}], \"pictures\": [{}]}}, \"projection\": [{:.9f}, {:.9f}, {:.3f}, {:.3f}, {:.6f}, {:.6f}], \"world\": [{:.1f}, {:.1f}, "
-			    "{:.1f}, {:.1f}], \"open\": \"{}\"}}\n",
+			    "{:.1f}, {:.1f}], \"open\": \"{}\"{}}}\n",
 			    built[0], built[1], built[2], built[3], o.waves, o.climate.empty() ? w.climate : o.climate, o.name, radar, pictures, pr.lat0, pr.lon0, pr.x0, pr.y0, pr.kx, pr.ky,
-			    w.min[0], w.min[1], w.max[0], w.max[1], o.open);
+			    w.min[0], w.min[1], w.max[0], w.max[1], o.open,
+			    o.core[2] > o.core[0] ? std::format(", \"core\": [{:.1f}, {:.1f}, {:.1f}, {:.1f}]", o.core[0], o.core[1], o.core[2], o.core[3]) : std::string());
 		}
 
 		took("map");
@@ -4888,8 +4916,9 @@ namespace worldgen::build
 					const float lw = h < 0.2f ? 1.0f : 0.0f;
 					for (int sample = 0; sample < 5; ++sample)
 					{
-						const float a = sample * 1.2566f + Lattice(x, y, 23, 5) * 3.0f, rr = sample ? o.cell * (0.45f + 0.35f * Lattice(x, y, 17, 9 + sample)) : 0;
-						const float sx = x + rr * std::cos(a) + 3.0f * Lattice(x, y, 11, 13), sy = y + rr * std::sin(a) + 3.0f * Lattice(x, y, 13, 17);
+						const float a = sample * 1.2566f + PlaceLattice(x, y, 23, 5) * 3.0f,
+						            rr = sample ? o.cell * (0.45f + 0.35f * PlaceLattice(x, y, 17, 9 + sample)) : 0;
+						const float sx = x + rr * std::cos(a) + 3.0f * PlaceLattice(x, y, 11, 13), sy = y + rr * std::sin(a) + 3.0f * PlaceLattice(x, y, 13, 17);
 						const uint8_t what = lw > 0 ? uint8_t{kUnder} : coverAt(sx, sy);
 						if (what == kUnder)
 							wetSand += 0.2f;
@@ -4908,7 +4937,8 @@ namespace worldgen::build
 					// (and a little darkening, noise over 29 and 71 m: the textures' repeats under larger patches - none finer than
 					// a few vertices: 9 m noise at 8 m vertices was each vertex's own, every cell's shade a checkerboard square)
 					auto layers = terrain::Layers(grass, paving, soft, wetSand);
-					layers[0] = static_cast<uint8_t>(std::lround(std::clamp(0.1f + 0.08f * Lattice(x, y, 29, 71) + 0.05f * Lattice(x, y, 71, 73), 0.0f, 0.25f) * 255));
+					layers[0] = static_cast<uint8_t>(
+					    std::lround(std::clamp(0.1f + 0.08f * PlaceLattice(x, y, 29, 71) + 0.05f * PlaceLattice(x, y, 71, 73), 0.0f, 0.25f) * 255));
 					f.layers.push_back(layers);
 				}
 			for (int j = 0; j < per; ++j)
@@ -5410,7 +5440,7 @@ namespace worldgen::build
 					// the world editor's new ones are not in it yet)
 					const bool fromPicture = pictured && s.top < 25 && s.measured;
 					AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1, gravelKey,
-					    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), meshes, cv, ct,
+					    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, ShapeSeed(s), meshes, cv, ct,
 					    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f,
 					    photoPlaces.empty() ? nullptr : &photoSet, 0.0f, facades::Find(facadeSet, facades::Kind::House));
 					if (shapePorch[k].has && !onPhoto(shapePorch[k].a, shapePorch[k].b))
@@ -5478,7 +5508,10 @@ namespace worldgen::build
 							const uint32_t base = static_cast<uint32_t>(to.vertices.size());
 							for (auto v : from.vertices)
 							{
-								v.uv[0] = {v.position[0] / facadeSet.styles[gravelStyle].width, -v.position[1] / facadeSet.styles[gravelStyle].height};
+								// (over the real world's lattice of the texture, kept small)
+								const double gw = facadeSet.styles[gravelStyle].width, gh = facadeSet.styles[gravelStyle].height;
+								v.uv[0] = {static_cast<float>(std::fmod(seeds::GX(v.position[0]), gw * 1000) / gw),
+								    static_cast<float>(-std::fmod(seeds::GY(v.position[1]), gh * 1000) / gh)};
 								to.vertices.push_back(v);
 							}
 							for (const uint32_t i : from.indices)
@@ -5560,7 +5593,7 @@ namespace worldgen::build
 								continue;
 							const bool fromPicture = lodRoof.width > 0 && s.top < 25;
 							AddBuilding(CoarserRoof(s, 4.0), facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1,
-							    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), lodMeshes, unusedV, unusedT,
+							    gravelKey, facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, ShapeSeed(s), lodMeshes, unusedV, unusedT,
 							    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f, nullptr, 0.1f);
 						}
 						const std::string lname = std::format("{}_bl_{}_{}", o.name, ti, tj);

@@ -9,6 +9,7 @@
 
 #include "convert/resource.hpp"
 #include "polygon.hpp"
+#include "seeds.hpp"
 
 namespace worldgen::props
 {
@@ -24,7 +25,7 @@ namespace worldgen::props
 			h *= 0x846ca68b;
 			return h ^ (h >> 16);
 		}
-		uint32_t Seed(float x, float y) { return Mix(static_cast<uint32_t>(std::lround(x * 10)) * 73856093u ^ static_cast<uint32_t>(std::lround(y * 10)) * 19349663u); }
+		uint32_t Seed(float x, float y) { return seeds::Place(x, y, 10, 21); }
 
 		bool In(const std::array<float, 4>& b, float x, float y) { return x >= b[0] && x < b[2] && y >= b[1] && y < b[3]; }
 
@@ -398,7 +399,8 @@ namespace worldgen::props
 						continue;
 					// (taken: in patches - a smooth noise of 35 m)
 					const uint32_t h = Mix(static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(j) * 19349663u ^ 0x9e3779b9u);
-					const float patch = 0.5f + 0.25f * std::sin(c0[0] * 0.18f + std::sin(c0[1] * 0.11f) * 1.9f) + 0.25f * std::sin(c0[1] * 0.16f + std::sin(c0[0] * 0.09f) * 2.3f);
+					const double gx = seeds::GX(c0[0]), gy = seeds::GY(c0[1]);
+					const float patch = static_cast<float>(0.5 + 0.25 * std::sin(gx * 0.18 + std::sin(gy * 0.11) * 1.9) + 0.25 * std::sin(gy * 0.16 + std::sin(gx * 0.09) * 2.3));
 					const float share = 0.7f * (0.45f + 0.55f * patch);
 					if (static_cast<float>(h % 1000) >= share * 1000)
 						continue;

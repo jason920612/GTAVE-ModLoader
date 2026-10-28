@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include "seeds.hpp"
 
 namespace worldgen::terrain
 {
@@ -170,7 +171,9 @@ namespace worldgen::terrain
 				// (from a whole number of repeats near the tile's middle: the same texture at the tiles' seams, and small
 				// coordinates - in the thousands they lose their precision on the way to the texture, which then shows
 				// as a grid of blocks)
-				v.uv[0] = {x / uvMetres - std::floor(cx / uvMetres), -y / uvMetres - std::floor(-cy / uvMetres)};
+				// (over the real world's lattice of the texture: the same ground pattern in every land that shows the place)
+				v.uv[0] = {static_cast<float>(seeds::GX(x) / uvMetres - std::floor(seeds::GX(cx) / uvMetres)),
+				    static_cast<float>(-seeds::GY(y) / uvMetres - std::floor(-seeds::GY(cy) / uvMetres))};
 				m.vertices.push_back(v);
 			}
 		for (int j = 0; j < n; ++j)
@@ -326,9 +329,11 @@ namespace worldgen::terrain
 					const int vi = static_cast<int>(v) % (n + 1), vj = static_cast<int>(v) / (n + 1);
 					const float x = vertex.position[0] + cx, y = vertex.position[1] + cy;
 					const float l = kind == 2 ? f.forest[f.V(i0 + vi, j0 + vj)] : f.lawn[f.V(i0 + vi, j0 + vj)];
-					const float gIn = std::clamp(0.12f + 0.12f * Noise(x, y, 53.0f, 7), 0.0f, 1.0f), bIn = std::clamp(0.5f + 0.4f * Noise(x, y, 37.0f, 3), 0.0f, 1.0f);
+					const float gx = static_cast<float>(seeds::GX(x)), gy = static_cast<float>(seeds::GY(y));
+					const float gIn = std::clamp(0.12f + 0.12f * Noise(gx, gy, 53.0f, 7), 0.0f, 1.0f), bIn = std::clamp(0.5f + 0.4f * Noise(gx, gy, 37.0f, 3), 0.0f, 1.0f);
 					vertex.colour1 = {vertex.colour1[0], Byte(1 + (gIn - 1) * l), Byte(1 + (bIn - 1) * l), Byte(1 + (0.25f - 1) * l)}; // (red: the ground's darkening, the same where the two meet)
-					vertex.uv[1] = {x / blendMetres - std::floor(cx / blendMetres), -y / blendMetres - std::floor(-cy / blendMetres)};
+					vertex.uv[1] = {static_cast<float>(seeds::GX(x) / blendMetres - std::floor(seeds::GX(cx) / blendMetres)),
+					    static_cast<float>(-seeds::GY(y) / blendMetres - std::floor(-seeds::GY(cy) / blendMetres))};
 				}
 				index[v] = static_cast<int>(m.vertices.size());
 				m.vertices.push_back(vertex);

@@ -2440,6 +2440,11 @@ int main(int argc, char** argv)
 			o.waves = std::stof(g_options["waves"]);
 		if (g_options.contains("open"))
 			o.open = g_options["open"]; // (the box's edges a neighbouring sector goes on from: n, s, e, w)
+		if (g_options.contains("core"))
+		{
+			char c = 0;
+			std::istringstream(g_options["core"]) >> o.core[0] >> c >> o.core[1] >> c >> o.core[2] >> c >> o.core[3];
+		}
 		if (g_options.contains("roads-obj"))
 			o.roadsObj = g_options["roads-obj"];
 		o.lods = !g_options.contains("lods") || g_options["lods"] != "0";
@@ -2489,7 +2494,17 @@ int main(int argc, char** argv)
 			char comma = 0;
 			std::istringstream(g_options["at"]) >> ax >> comma >> ay;
 		}
-		const auto projection = worldgen::world::Projection::Around(data.south, data.west, data.north, data.east, ax, ay);
+		auto projection = worldgen::world::Projection::Around(data.south, data.west, data.north, data.east, ax, ay);
+		// (--projection lat0,lon0,x0,y0,kx,ky: one given - tools/worldgen/sectors.py's, the same for every land of Florida, each
+		// land a translation of it (x0, y0): a land's band of its neighbour's is then the neighbour's own, only moved)
+		if (g_options.contains("projection"))
+		{
+			char c = 0;
+			auto& p = projection;
+			std::istringstream(g_options["projection"]) >> p.lat0 >> c >> p.lon0 >> c >> p.x0 >> c >> p.y0 >> c >> p.kx >> c >> p.ky;
+			if (p.kx <= 0 || p.ky <= 0)
+				return Fail("--projection lat0,lon0,x0,y0,kx,ky");
+		}
 		worldgen::world::World w;
 		w.name = g_options.contains("name") ? g_options["name"] : "world";
 		if (!worldgen::world::FromOsm(data, projection, w, error))
@@ -2783,6 +2798,71 @@ int main(int argc, char** argv)
 			    e.Get<uint32_t>(Hash("priorityLevel")), e.Get<uint32_t>(Hash("ambientOcclusionMultiplier")),
 			    e.Get<uint32_t>(Hash("artificialAmbientOcclusion")), e.Get<uint32_t>(Hash("tintValue")));
 		}
+		return 0;
+	}
+	if (command == "entities")
+	{
+		// every map entity a build made (--in <its output folder>, its .ymap files) in the real world's place (--origin x0,y0:
+		// the projection's, world.json - taken off): --out <file.tsv> (map, archetype, x, y, z, rotation, scale, lodDist), for
+		// comparing two lands' shared band (tools/worldgen/banddiff.py)
+		if (!g_options.contains("in") || !g_options.contains("out"))
+			return Fail("--in <build folder> --out <file.tsv> [--origin x0,y0] are needed");
+		double ox = 0, oy = 0;
+		if (g_options.contains("origin"))
+		{
+			char c = 0;
+			std::istringstream(g_options["origin"]) >> ox >> c >> oy;
+		}
+		std::ofstream out(g_options["out"]);
+		out << "map\tarchetype\tx\ty\tz\tqx\tqy\tqz\tqw\tscaleXY\tscaleZ\tlodDist\tbox\n";
+		using ue5export::meta::Hash;
+		size_t maps = 0, entities = 0;
+		std::error_code ec;
+		// (the build's own archetypes: their boxes - "-" for the game's -, what an entity's model is like when its name is
+		// the land's)
+		std::map<uint32_t, std::string> boxes;
+		for (const auto& entry : fs::directory_iterator(g_options["in"], ec))
+		{
+			if (entry.path().extension() != ".ytyp")
+				continue;
+			std::ifstream in(entry.path(), std::ios::binary);
+			Bytes data(std::istreambuf_iterator<char>(in), {});
+			ue5export::meta::Meta m;
+			if (data.empty() || !m.Read(data, error))
+				continue;
+			for (const ue5export::meta::Ref& a : m.Root().Array(Hash("archetypes")))
+				if (a)
+				{
+					const auto lo = a.Get<std::array<float, 4>>(Hash("bbMin")), hi = a.Get<std::array<float, 4>>(Hash("bbMax"));
+					boxes[a.Get<uint32_t>(Hash("name"))] = std::format("{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f}", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+				}
+		}
+		for (const auto& entry : fs::directory_iterator(g_options["in"], ec))
+		{
+			if (entry.path().extension() != ".ymap")
+				continue;
+			std::ifstream in(entry.path(), std::ios::binary);
+			Bytes data(std::istreambuf_iterator<char>(in), {});
+			ue5export::meta::Meta m;
+			if (data.empty() || !m.Read(data, error))
+				continue;
+			++maps;
+			const std::string name = entry.path().stem().string();
+			for (const ue5export::meta::Ref& e : m.Root().Array(Hash("entities")))
+			{
+				if (!e)
+					continue;
+				const auto p = e.Get<std::array<float, 4>>(Hash("position"));
+				const auto q = e.Get<std::array<float, 4>>(Hash("rotation"));
+				const uint32_t archetype = e.Get<uint32_t>(Hash("archetypeName"));
+				const auto box = boxes.find(archetype);
+				out << std::format("{}\t{:08x}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.3f}\t{:.3f}\t{:.0f}\t{}\n", name, archetype, p[0] - ox,
+				    p[1] - oy, p[2], q[0], q[1], q[2], q[3], e.Get<float>(Hash("scaleXY")), e.Get<float>(Hash("scaleZ")), e.Get<float>(Hash("lodDist")),
+				    box != boxes.end() ? box->second : "-");
+				++entities;
+			}
+		}
+		std::printf("%zu maps, %zu entities\n", maps, entities);
 		return 0;
 	}
 	if (command == "cargen-dump")

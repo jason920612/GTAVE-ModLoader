@@ -49,8 +49,9 @@ namespace worldgen::structures
 		float minPlane = 6;          // the smallest roof plane kept (m²); smaller ones join a neighbour
 		// the share of the unmeasured houses with a near-rectangular footprint that get a gable roof - the ridge along the
 		// long side, the short sides' walls up to it - the rest hip roofs (north Florida's street pictures: half and half;
-		// the south's hurricane country mostly hip)
+		// the south's hurricane country mostly hip) - by the house's place (x, y), where given
 		float gableShare = 0;
+		std::function<float(float, float)> gableShareAt;
 		// buildings joined to a big one (its wings, the map's "yes" parts of it): no house roof of their own
 		const std::unordered_set<const world::Building*>* attached = nullptr;
 	};
