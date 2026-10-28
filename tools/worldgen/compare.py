@@ -93,6 +93,9 @@ def hud_off():
         if len(loading) > 1 and len(faded) > 1 and loading[-6:][1] == '0' and faded[-6:][1] == '0':
             break
         time.sleep(5)
+    # (clear weather, the roads dry by the first place: a game started in the rain had mirror-like puddles in every street,
+    # each one a difference to the reviewers)
+    gtactl('raw:weather CLEAR')
     gtactl('wait:10')
     gtactl('raw:native 0xA0EBB943C300E693 0', 'raw:native 0xA6294919E56FF02A 0')
 

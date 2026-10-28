@@ -15,10 +15,12 @@
 #include <nlohmann/json.hpp>
 
 #include "../config.hpp"
+#include "../convert/archive.hpp"
 #include "../convert/resource.hpp"
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../pattern.hpp"
+#include "../ui/notify.hpp"
 #include "content.hpp"
 #include "dlcpacks.hpp"
 #include "minimap.hpp"
@@ -35,6 +37,8 @@ namespace loader::game::sectors
 			uint32_t hash = 0; // the name's hash, as the content manager has it
 			float box[4]{};    // min x, min y, max x, max y
 			bool dormant = false;
+			bool registered = false; // (its files in the game's stores: it was there this session - they stay when it goes)
+			std::map<std::string, uint32_t> files; // (its pack's files by extension, once counted)
 			// where its game coordinates are in the real world (land.json "projection": lat0, lon0, x0, y0, kx, ky - x = x0 +
 			// (lon - lon0) kx, y = y0 + (lat - lat0) ky), its own box ("world") and the edges a neighbouring sector goes on
 			// from ("open": n, s, e, w)
@@ -93,6 +97,10 @@ namespace loader::game::sectors
 		                   kGetClosestVehicleNodeWithHeading = 0xFF071FB798B803B0, kCreateVehicle = 0xAF35D0D2583051B0,
 		                   kSetVehicleColours = 0x4F1D4BE3A7F24601, kSetPedIntoVehicle = 0xF75B0D629E1C063D, kSetVehicleOnGroundProperly = 0x49733E92263139D1,
 		                   kSetVehicleForwardSpeed = 0xAB54A438726D25D5, kSetModelAsNoLongerNeeded = 0xE532F5D78798DAAB, kSetVehicleEngineOn = 0x2497C4717C8B881E;
+		constexpr uint64_t kClearAreaOfVehicles = 0x01C7B9B38428AEB6, kClearAreaOfPeds = 0xBE31FD6CE464AC59, kGetRandomVehicleInSphere = 0x386F6CE5BAF6091C,
+		                   kIsEntityAMissionEntity = 0x0A7B270912999B3C, kGetPedInVehicleSeat = 0xBB40DD2270B65366, kSetWaypointOff = 0xA7E4E2D361C2627F,
+		                   kClearGpsPlayerWaypoint = 0xFF4FB7C8CDFA3DA7, kClearGpsMultiRoute = 0x67EEDEA1B9BAFD94, kClearGpsCustomRoute = 0xE6DE0561D9232A64;
+		constexpr float kOldPlace = 3000; // (the old land's place cleared: this far round where the player was)
 		// the edges: the switch when the player comes this near an open edge, and how far into the next land they arrive
 		constexpr float kEdge = 60, kArrive = 150;
 		// where the player waits while a land is put away: Los Santos, away from any new land
@@ -113,6 +121,7 @@ namespace loader::game::sectors
 			float at[2]{};
 			ULONGLONG since = 0;
 			std::vector<std::string> leaving; // (the lands put away)
+			float from[3]{};                  // (where the player was)
 			// the vehicle the player was in: made again where they arrive (its model, colours, heading, speed)
 			bool vehicle = false, modelAsked = false;
 			uint32_t model = 0;
@@ -121,6 +130,22 @@ namespace loader::game::sectors
 		} g_switch;
 		ULONGLONG g_lastWatch = 0, g_ended = 0;
 		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
+
+		// A land the stores had no room for (NoRoomFor): ModLoader\data\sector_next.json, {"land": ..., "at": [x, y]} - the
+		// game starts in that land next time (loader.json "worldSector"), and the player is put where they were going once
+		// story mode runs (the save it loads made elsewhere).
+		struct Next
+		{
+			std::string land;
+			float at[2]{};
+			ULONGLONG since = 0; // (story mode first seen running)
+		} g_next;
+		std::map<std::string, ULONGLONG> g_noRoomTold; // (when the player was last told, by land)
+
+		std::filesystem::path NextFile()
+		{
+			return paths::Get().root / L"data" / L"sector_next.json";
+		}
 
 		// Los Santos's far views (research/phase0.md §63): the long-range and LOD maps of its areas - their names in
 		// ModLoader\data\ls_far_maps.txt (worldgen ls-far: the game's own) - away while the player is on a new land (its
@@ -171,6 +196,30 @@ namespace loader::game::sectors
 			for (auto& [land, k] : g_parkedLive)
 				g_parked[land].cars[k].vehicle = 0;
 			g_parkedLive.clear();
+		}
+
+		// (a land put away: the cars made taken away first - the loader's script made them, so the map group's revert left
+		// them, and their road nodes were the old land's: the game read a node of the new land's road network in their place
+		// and stopped, 0xF4A932, on the second switch)
+		void DeleteParked()
+		{
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			for (auto& [land, k] : g_parkedLive)
+			{
+				ParkedCar& car = g_parked[land].cars[k];
+				if (car.vehicle <= 0 || !natives::Invoke<int32_t>(kDoesEntityExist, car.vehicle) || !natives::Invoke<int32_t>(kIsEntityAVehicle, car.vehicle) ||
+				    natives::Invoke<uint32_t>(kGetEntityModel, car.vehicle) != car.model)
+					continue;
+				// (the one the player is in: the game's - the switch makes it again where they arrive)
+				if (natives::Invoke<int32_t>(kIsPedInVehicle, player, car.vehicle, 0))
+					natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle);
+				else
+				{
+					natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
+					natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
+				}
+			}
+			ForgetParked();
 		}
 
 		int64_t ParkCell(float x, float y)
@@ -477,6 +526,54 @@ namespace loader::game::sectors
 							order[k]->dormant = true;
 		}
 
+		// The road junctions the traffic keeps (128 of 0x890 bytes at +0x43E18E0: +0x7D4 how many road nodes one is made of,
+		// their addresses at +0x7D8 - the region in the low 16 bits, the node in the high): made round the player and kept a
+		// while, their nodes those of the land they were on. With the old land's road network let go and the new one's read
+		// (the same regions, other nodes), the game took a junction's old node from the new region - another node, or none -
+		// and stopped (0xF4A932) a few seconds after the switch. Each is cleared with the game's own reset (+0xF443C0: the
+		// nodes, its vehicles' references, its lights) before the networks change.
+		constexpr uintptr_t kJunctions = 0x43E18E0, kClearJunction = 0xF443C0;
+		constexpr int kJunctionCount = 128, kJunctionSize = 0x890;
+		constexpr uint8_t kClearJunctionStart[] = {0x56, 0x57, 0x48, 0x83, 0xEC, 0x28, 0x48, 0x89, 0xCE, 0xC7, 0x81, 0xD4, 0x07, 0x00, 0x00};
+
+		void ClearJunctions()
+		{
+			const auto base = pattern::Module::Main().base;
+			if (std::memcmp(reinterpret_cast<const void*>(base + kClearJunction), kClearJunctionStart, sizeof(kClearJunctionStart)) != 0)
+			{
+				log::Warn("sectors: the junctions' reset is not where it was; the traffic's junctions are left as they are");
+				return;
+			}
+			const auto clear = reinterpret_cast<void (*)(uint8_t*)>(base + kClearJunction);
+			int cleared = 0;
+			for (int k = 0; k < kJunctionCount; ++k)
+			{
+				auto* junction = reinterpret_cast<uint8_t*>(base + kJunctions + static_cast<uintptr_t>(k) * kJunctionSize);
+				if (*reinterpret_cast<const int32_t*>(junction + 0x7D4) > 0)
+					clear(junction), ++cleared;
+			}
+			if (cleared)
+				log::Info("sectors: {} road junction(s) cleared", cleared);
+		}
+
+		// The old land's place emptied before the road networks change: the traffic the population makes there once the world
+		// is cleared (a car with a driver came within 3 s of a land's map group put away, the player still there) holds the
+		// old land's road nodes, and junctions are made from them again. What is left after is logged.
+		void ClearOldPlace()
+		{
+			const float x = g_switch.from[0], y = g_switch.from[1], z = g_switch.from[2];
+			natives::Invoke<void>(kClearAreaOfVehicles, x, y, z, kOldPlace, 0, 0, 0, 0, 0, 0, 0);
+			natives::Invoke<void>(kClearAreaOfPeds, x, y, z, kOldPlace, 1);
+			for (const int32_t flags : {0, 70})
+				if (const int32_t v = natives::Invoke<int32_t>(kGetRandomVehicleInSphere, x, y, z, kOldPlace, 0, flags))
+				{
+					const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, v, 1);
+					log::Info("sectors: a vehicle still on the old land's place, at {:.0f}, {:.0f} (a mission's: {}, driven: {})", p.x, p.y,
+					    natives::Invoke<int32_t>(kIsEntityAMissionEntity, v) != 0, natives::Invoke<int32_t>(kGetPedInVehicleSeat, v, -1, 0) != 0);
+					break;
+				}
+		}
+
 		// How many navmeshes in the box are loaded, asked for or loading (-1: the module not found).
 		int NavMeshesIn(const float* box)
 		{
@@ -510,6 +607,91 @@ namespace loader::game::sectors
 		{
 			const auto it = std::find_if(g_lands.begin(), g_lands.end(), [&](const Land& l) { return l.name == name; });
 			return it == g_lands.end() ? nullptr : &*it;
+		}
+
+		// The stores a land's files take slots in, by extension (the store is its streaming module: found by its vtable;
+		// its slot pool at +0x38 - +0x18 the size, +0x28 the slots used in the low 30 bits). A map group's revert leaves its
+		// archives' files registered (research/phase0.md §63.12): each land gone to in a session keeps its slots - the
+		// stores filled up on the second big land (fwBasePool::New, +0x15A7C0, breaks into int3 with no slot free).
+		struct Store
+		{
+			const char* extension;
+			uintptr_t vtable;
+			const char* name;
+		};
+		constexpr Store kStores[] = {{"ydr", 0x2611D80, "DrawableStore"}, {"ytd", 0x2612BC0, "TxdStore"}, {"ybn", 0x2612820, "StaticBounds"},
+		    {"ymap", 0x2612200, "MapDataStore"}, {"ydd", 0x2611F00, "DwdStore"}, {"ytyp", 0x2612380, "MapTypesStore"}, {"yft", 0x2612080, "FragmentStore"}};
+		// (slots kept free for the game's own: script-made dictionaries and the like)
+		constexpr uint32_t kStoreSpare = 500;
+
+		bool StoreRoom(uintptr_t vtable, uint32_t& size, uint32_t& used)
+		{
+			const auto base = pattern::Module::Main().base;
+			const auto* streaming = reinterpret_cast<const uint8_t*>(base + kStreaming);
+			const auto* ranges = *reinterpret_cast<const uint8_t* const*>(streaming + 0x1A0);
+			const uint16_t modules = *reinterpret_cast<const uint16_t*>(streaming + 0x1A8);
+			for (uint16_t m = 0; ranges && m < modules; ++m)
+			{
+				const auto* module = *reinterpret_cast<const uint8_t* const*>(ranges + m * 16);
+				if (module && *reinterpret_cast<const uintptr_t*>(module) == base + vtable)
+				{
+					size = *reinterpret_cast<const uint32_t*>(module + 0x38 + 0x18);
+					used = *reinterpret_cast<const uint32_t*>(module + 0x38 + 0x28) & 0x3FFFFFFF;
+					return true;
+				}
+			}
+			return false;
+		}
+
+		void CountFiles(const convert::Archive& archive, std::map<std::string, uint32_t>& out)
+		{
+			const auto& nodes = archive.Nodes();
+			for (uint32_t i = 0; i < nodes.size(); ++i)
+			{
+				const auto& n = nodes[i];
+				if (n.directory)
+					continue;
+				if (!n.resource && !n.stored && n.name.ends_with(".rpf"))
+				{
+					convert::Archive inner;
+					std::string error;
+					if (archive.OpenNested(i, inner, error))
+						CountFiles(inner, out);
+					continue;
+				}
+				if (const size_t dot = n.name.rfind('.'); dot != std::string::npos)
+					++out[n.name.substr(dot + 1)];
+			}
+		}
+
+		// The stores that have no room for the land's files ("" when all have), its files counted once.
+		std::string NoRoomFor(Land& land)
+		{
+			if (land.files.empty())
+			{
+				const auto path = paths::Get().mods / land.name / L"dlc.rpf";
+				std::error_code ec;
+				auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
+				convert::Archive archive;
+				std::string error;
+				if (!*in || !archive.Open(in, 0, std::filesystem::file_size(path, ec), "dlc.rpf", dlcpacks::Decryptor(), error))
+				{
+					log::Warn("sectors: {}'s pack not read ({}); its files not counted", land.name, error);
+					return "";
+				}
+				CountFiles(archive, land.files);
+			}
+			std::string full;
+			for (const Store& s : kStores)
+			{
+				const auto it = land.files.find(s.extension);
+				uint32_t size = 0, used = 0;
+				if (it == land.files.end() || !StoreRoom(s.vtable, size, used))
+					continue;
+				if (used + it->second + kStoreSpare > size)
+					full += std::format("{}{} ({} used of {}, {} more wanted)", full.empty() ? "" : ", ", s.name, used, size, it->second);
+			}
+			return full;
 		}
 
 		void Hold(int32_t player)
@@ -594,9 +776,24 @@ namespace loader::game::sectors
 			if (g_farMaps.empty())
 				log::Warn("sectors: no ModLoader\\data\\ls_far_maps.txt (worldgen ls-far): Los Santos's mountains stay on the lands' horizon");
 		}
-		for (const Land& l : g_lands)
+		for (Land& l : g_lands)
+		{
+			l.registered = !l.dormant;
 			if (l.dormant)
 				log::Info("sectors: {} waits (it shares its place with the land there)", l.name);
+		}
+		// (a switch the stores had no room for: the game started again in the land the player was going to, and they are
+		// put where they were going once story mode runs)
+		std::ifstream next(NextFile());
+		const auto j = next ? nlohmann::json::parse(next, nullptr, false) : nlohmann::json();
+		if (j.is_object() && j.contains("land") && j.contains("at") && j["at"].is_array() && j["at"].size() == 2)
+			if (const Land* l = Find(j["land"].get<std::string>()); l && !l->dormant)
+			{
+				g_next = {l->name, {j["at"][0].get<float>(), j["at"][1].get<float>()}};
+				log::Info("sectors: the player to be put at {:.0f}, {:.0f} in {} (where they were going)", g_next.at[0], g_next.at[1], l->name);
+			}
+		next.close();
+		std::filesystem::remove(NextFile(), ec);
 	}
 
 	bool Dormant(const std::string& pack)
@@ -628,7 +825,7 @@ namespace loader::game::sectors
 
 	std::string Switch(const std::string& to, const float* at)
 	{
-		const Land* land = Find(to);
+		Land* land = Find(to);
 		if (!land)
 			return "no land " + to;
 		if (!land->dormant)
@@ -638,7 +835,32 @@ namespace loader::game::sectors
 		const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
 		// (no place given: where the player is now - a save loaded in the other land's place)
 		const auto here = natives::Invoke<natives::ScrVector>(kGetEntityCoords, player, 1);
-		g_switch = {Step::Fade, to, true, {at ? at[0] : here.x, at ? at[1] : here.y}, GetTickCount64()};
+		const float where[2] = {at ? at[0] : here.x, at ? at[1] : here.y};
+		// (a land not there before this session only when the stores have room for its files: else it is there at the
+		// game's next start)
+		if (!land->registered)
+			if (const std::string full = NoRoomFor(*land); !full.empty())
+			{
+				const ULONGLONG now = GetTickCount64();
+				ULONGLONG& told = g_noRoomTold[to];
+				if (!told || now - told > 30000)
+				{
+					told = now;
+					log::Warn("sectors: no room for {}'s files: {}; it is there at the game's next start", to, full);
+					std::error_code ec;
+					std::filesystem::create_directories(NextFile().parent_path(), ec);
+					nlohmann::json next = nlohmann::json::object();
+					next["land"] = to;
+					next["at"] = nlohmann::json::array({where[0], where[1]});
+					std::ofstream(NextFile(), std::ios::trunc) << next.dump() << "\n";
+					config::Get().worldSector = to;
+					config::Save();
+					ui::Notify("地圖", std::format("這次遊戲去過的地區太多，遊戲的資源表放不下 {} 了。請重新啟動遊戲，會直接從那裡繼續。", to));
+				}
+				return "no room for " + to + "'s files (" + full + ")";
+			}
+		g_switch = {Step::Fade, to, true, {where[0], where[1]}, GetTickCount64()};
+		g_switch.from[0] = here.x, g_switch.from[1] = here.y, g_switch.from[2] = here.z;
 		if (natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0))
 		{
 			const int32_t v = natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0);
@@ -649,7 +871,7 @@ namespace loader::game::sectors
 			g_switch.speed = natives::Invoke<float>(kGetEntitySpeed, v);
 		}
 		natives::Invoke<void>(kDoScreenFadeOut, 800);
-		ForgetParked();
+		DeleteParked();
 		log::Info("sectors: switching to {}", to);
 		return "";
 	}
@@ -709,6 +931,27 @@ namespace loader::game::sectors
 				}
 			}
 		}
+
+		// The player put where they were going when the stores had no room (g_next): 5 s after story mode runs (the place
+		// of the save it loaded set by then), on the ground there once its collision is in (or after 25 s as it is).
+		void PlaceNext()
+		{
+			const ULONGLONG now = GetTickCount64();
+			if (!g_next.since)
+				g_next.since = now;
+			if (now - g_next.since < 5000)
+				return;
+			natives::Invoke<void>(kSetFocusPosAndVel, g_next.at[0], g_next.at[1], 30.0f, 0.0f, 0.0f, 0.0f);
+			float z = 0;
+			const bool ground = natives::Invoke<int32_t>(kGetGroundZFor3dCoord, g_next.at[0], g_next.at[1], 500.0f, &z, 0, 0) != 0;
+			if (!ground && now - g_next.since < 30000)
+				return;
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			natives::Invoke<void>(kSetEntityCoords, player, g_next.at[0], g_next.at[1], ground ? z + 1.0f : 60.0f, 0, 0, 0, 0);
+			natives::Invoke<void>(kClearFocus);
+			log::Info("sectors: the player at {:.0f}, {:.0f} in {} (where they were going)", g_next.at[0], g_next.at[1], g_next.land);
+			g_next = {};
+		}
 	}
 
 	void Tick()
@@ -723,6 +966,11 @@ namespace loader::game::sectors
 						ApplyZones(l);
 						break;
 					}
+			if (!g_next.land.empty() && text_override::Ready())
+			{
+				PlaceNext();
+				return;
+			}
 			WatchFar();
 			WatchEdges();
 			WatchParked();
@@ -759,11 +1007,18 @@ namespace loader::game::sectors
 			// old land's dictionaries first)
 			natives::Invoke<void>(kLoadAllObjectsNow);
 			minimap::Suspend();
+			// (the map's waypoint and the GPS routes: their road nodes the old land's, their places another land's in the new
+			// one)
+			natives::Invoke<void>(kSetWaypointOff);
+			natives::Invoke<void>(kClearGpsPlayerWaypoint);
+			natives::Invoke<void>(kClearGpsMultiRoute);
+			natives::Invoke<void>(kClearGpsCustomRoute);
 			for (Land& l : g_lands)
 				if (&l != to && !l.dormant && Overlap(l, *to))
 				{
 					LetArchetypeFilesGo(l.name);
 					content::Revert(l.hash, kGroupMapSp);
+					ClearOldPlace();
 					l.dormant = true;
 					g_switch.leaving.push_back(l.name);
 					log::Info("sectors: {}'s maps put away", l.name);
@@ -809,10 +1064,13 @@ namespace loader::game::sectors
 			// the old land's overlay (road network, navmeshes) out, the new one's in, the road network's regions dropped (they
 			// load again from the new files), then its maps
 			natives::Invoke<void>(kLoadAllObjectsNow);
+			ClearOldPlace();
+			ClearJunctions();
 			for (const std::string& name : g_switch.leaving)
 				if (const Land* l = Find(name))
 					content::Revert(l->hash, kGroupStartup);
 			to->dormant = false;
+			to->registered = true;
 			content::Execute(to->hash, kGroupStartup);
 			{
 				auto* paths = reinterpret_cast<uint8_t*>(pattern::Module::Main().base + kThePaths);
@@ -933,6 +1191,12 @@ namespace loader::game::sectors
 		const auto it = j.find(std::format("{:08x}", static_cast<uint32_t>(save)));
 		if (it == j.end() || !it->is_string())
 			return;
+		// (the game started again for a land the stores had no room for: that land stays)
+		if (!g_next.land.empty())
+		{
+			log::Info("sectors: the save loaded was made in {}; {} stays (the player was going there)", it->get<std::string>(), g_next.land);
+			return;
+		}
 		// (the first land of the save's that waits now: switched to, the player kept where the save put them)
 		const std::string lands = it->get<std::string>();
 		for (size_t a = 0; a < lands.size();)

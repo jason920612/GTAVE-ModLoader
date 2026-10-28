@@ -1,6 +1,7 @@
 #include "pools.hpp"
 
 #include <Windows.h>
+#include <malloc.h>
 
 #include <cstdint>
 #include <cstring>
@@ -83,11 +84,35 @@ namespace loader::game::pools
 		// the camera came to a palm-lined street (research/phase0.md §61.20). Raising "Dummy Object" or "Building" much
 		// further (40000 / 100000) made the game fail at start: their memory comes from a fixed budget. Parked cars: a
 		// town's driveways and car parks round the player (research/phase0.md §63), the game's 800 car generators not enough.
-		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"StaticBounds", 26700}, {"MapDataStore", 16020}, {"MapTypesStore", 2700},
-		    {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}, {"CCargen", 4000}};
+		// The files of every land gone to in a session stay registered (a map group's revert leaves its archives' store
+		// slots: research/phase0.md §63.12) - eleven Florida sectors took 10400 drawables, 6500 collision files, 3500
+		// dictionaries and 2500 maps each on average -, so the stores they fill hold about sixteen lands over the game's
+		// own (with these sizes the streaming objects of all modules come to about 980000, under 2^20); sectors.cpp will
+		// not go to a new land the stores cannot take.
+		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"DrawableStore", 241250}, {"TxdStore", 140250}, {"StaticBounds", 116700},
+		    {"MapDataStore", 46020}, {"MapTypesStore", 2700}, {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}, {"CCargen", 4000}};
 
 		// Stores that need a size of their own (SetMinimum), by name.
 		std::vector<std::pair<std::string, uint32_t>> g_minimum;
+
+		// A store's slot pool (fwBasePool at +0x38) takes its memory from the allocator at the pool's +0 - for every store
+		// the game's pool allocator (GTA5_Enhanced.exe +0x286A310: the master allocator's fifth heap, of a fixed size). The
+		// stores grown for the lands do not fit in it: with the drawables' store at 261250 slots a pool made as story mode
+		// started got no memory (its storage left null, 0x15A514). Those stores' pools come from the process heap instead
+		// (the pool calls only +8, to allocate; +0x10 frees).
+		struct HeapAllocator
+		{
+			virtual ~HeapAllocator() = default;
+			virtual void* Allocate(size_t size)
+			{
+				return _aligned_malloc(size, 16);
+			}
+			virtual void Free(void* p)
+			{
+				_aligned_free(p);
+			}
+		};
+		HeapAllocator g_heap;
 
 		// The pool size lookup (GTA5_Enhanced.exe +0x149060: table, name hash, default -> the configured size, or the
 		// default): every store and pool asks it. A store with a minimum gets at least that.
@@ -113,18 +138,28 @@ namespace loader::game::pools
 			const char* name = named ? *reinterpret_cast<const char**>(store + 0x18) : nullptr;
 			if (!store[0x98] && name && std::find(std::begin(kGrown), std::end(kGrown), std::string_view(name)) != std::end(kGrown))
 			{
-				// The configured size wins over the default, so raise both.
+				// The configured size wins over the default, so raise both - to a minimum set for the store too (these
+				// stores take the table's size as it is: the pool size lookup is not asked).
+				uint32_t minimum = 0;
+				for (const auto& [storeName, size] : g_minimum)
+					if (storeName == name)
+						minimum = std::max(minimum, size);
+				const auto grown = [&](uint32_t size) { return std::max(Grow(size), minimum); };
 				auto* fallback = reinterpret_cast<uint32_t*>(store + 0x10);
 				const uint32_t before = *fallback;
-				*fallback = Grow(*fallback);
+				*fallback = grown(*fallback);
 				if (Node* entry = Find(Joaat(name)))
 				{
-					log::Info("pools: {} {} -> {}", name, entry->size, Grow(entry->size));
-					entry->size = Grow(entry->size);
+					log::Info("pools: {} {} -> {}", name, entry->size, grown(entry->size));
+					entry->size = grown(entry->size);
 				}
 				else
 					log::Info("pools: {} {} -> {}", name, before, *fallback);
 			}
+			if (!store[0x98] && name &&
+			    (std::find(std::begin(kGrown), std::end(kGrown), std::string_view(name)) != std::end(kGrown) ||
+			        std::any_of(std::begin(kWorldPools), std::end(kWorldPools), [&](const auto& p) { return p.first == name; })))
+				*reinterpret_cast<void**>(store + 0x38) = &g_heap;
 			g_original(store);
 		}
 
