@@ -486,10 +486,20 @@ namespace worldgen::facades
 	int Pick(const Set& set, const std::string& kind, float height, float area, uint32_t seed, double latitude, const Seen* seen, int year)
 	{
 		const auto among = [&](Kind k) {
+			// (siding weighted as the street pictures show the colours: white most, cream and light grey next - picked evenly
+			// the reviewers had seen tan siding where most houses are white or pale)
+			const auto weight = [&](const Style& st) {
+				if (k != Kind::Siding)
+					return 1;
+				return st.diffuse.ends_with("siding_white") ? 6 : st.diffuse.ends_with("siding_cream") || st.diffuse.ends_with("siding_grey") ? 3
+				       : st.diffuse.ends_with("siding_paleyellow") || st.diffuse.ends_with("siding_bluegrey") || st.diffuse.ends_with("siding_sage") ? 2
+				                                                                                                                             : 1;
+			};
 			std::vector<int> v;
 			for (size_t i = 0; i < set.styles.size(); ++i)
 				if (set.styles[i].kind == k)
-					v.push_back(static_cast<int>(i));
+					for (int w = weight(set.styles[i]); w > 0; --w)
+						v.push_back(static_cast<int>(i));
 			return v.empty() ? 0 : v[Hash(seed) % v.size()];
 		};
 		const float r = Rand(seed, 99);
