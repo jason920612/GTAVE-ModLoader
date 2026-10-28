@@ -6,6 +6,7 @@
 #include <mmdeviceapi.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -68,6 +69,98 @@ namespace loader::debug::remote
 			ULONGLONG until = 0;
 		};
 		std::mutex g_mutex;
+
+		// Research: where the game thread's time goes in a call. A thread of ours stops it about every millisecond and
+		// unwinds its stack: each sample is put down by the innermost game function it is in, and by the return address in
+		// the first frame inside [from, to) (which of that function's calls it was under). Nothing is allocated while the
+		// game thread is stopped (it may hold the heap's lock).
+		struct Profile
+		{
+			static constexpr int kMax = 20000;
+			uintptr_t from = 0, to = 0;
+			std::atomic<bool> running = false;
+			int taken = 0;
+			std::array<uint32_t, kMax> leaf{}, site{};
+		};
+
+		void SampleThread(Profile* p, HANDLE thread)
+		{
+			const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+			while (p->running && p->taken < Profile::kMax)
+			{
+				if (SuspendThread(thread) != static_cast<DWORD>(-1))
+				{
+					CONTEXT c{};
+					c.ContextFlags = CONTEXT_FULL;
+					if (GetThreadContext(thread, &c))
+					{
+						uint32_t leaf = 0, site = 0;
+						for (int i = 0; i < 64 && c.Rip; ++i)
+						{
+							DWORD64 image = 0;
+							RUNTIME_FUNCTION* f = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+							if (image == base)
+							{
+								if (!leaf)
+									leaf = f ? f->BeginAddress : static_cast<uint32_t>(c.Rip - base);
+								if (i && c.Rip >= base + p->from && c.Rip < base + p->to)
+								{
+									site = static_cast<uint32_t>(c.Rip - base);
+									break;
+								}
+							}
+							if (f)
+							{
+								void* data = nullptr;
+								DWORD64 frame = 0;
+								RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, nullptr);
+							}
+							else
+							{
+								c.Rip = *reinterpret_cast<const DWORD64*>(c.Rsp);
+								c.Rsp += 8;
+							}
+						}
+						p->leaf[p->taken] = leaf;
+						p->site[p->taken] = site;
+						++p->taken;
+					}
+					ResumeThread(thread);
+				}
+				const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(1000);
+				while (std::chrono::steady_clock::now() < until)
+					std::this_thread::yield();
+			}
+		}
+
+		// `run` on this (the game's) thread, sampled; the samples by call site of [from, to) and by function, most first
+		template <class Run>
+		std::string Profiled(uintptr_t from, uintptr_t to, Run run)
+		{
+			auto p = std::make_unique<Profile>();
+			p->from = from, p->to = to;
+			HANDLE self = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, GetCurrentThreadId());
+			p->running = true;
+			std::thread sampler(SampleThread, p.get(), self);
+			run();
+			p->running = false;
+			sampler.join();
+			CloseHandle(self);
+			std::map<uint32_t, int> sites, leaves;
+			for (int i = 0; i < p->taken; ++i)
+				++sites[p->site[i]], ++leaves[p->leaf[i]];
+			const auto top = [](const std::map<uint32_t, int>& m, size_t n) {
+				std::vector<std::pair<int, uint32_t>> v;
+				for (const auto& [k, c] : m)
+					v.push_back({c, k});
+				std::sort(v.rbegin(), v.rend());
+				std::string out;
+				for (size_t i = 0; i < std::min(n, v.size()); ++i)
+					out += std::format(" {:#x}:{}", v[i].second, v[i].first);
+				return out;
+			};
+			return std::format("{} samples; sites{}; functions{}", p->taken, top(sites, 14), top(leaves, 14));
+		}
 		std::map<int, Held> g_held; // control -> how long
 		// "call": a mod's web function called as a page would (game.call), its answer back to the tester
 		struct ModCall
@@ -869,19 +962,78 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "mapsoft")
+			{
+				// mapsoft <hex mask>: research - calls of the content manager's map path (0xC27740) made to do nothing, a bit
+				// each (0 puts them all back): which of them clear the world
+				static constexpr std::pair<uintptr_t, uintptr_t> kSites[] = {{0xC27B8F, 0x3A6370}, {0xC27B94, 0x127A3A0}, {0xC27BA0, 0xCEECD0},
+				    {0xC27BB4, 0x926EE0}, {0xC27BBB, 0x112D1F0}, {0xC27BC5, 0x1D94BB0}, {0xC27C45, 0xC527D0}, {0xC27C63, 0x926EE0},
+				    {0xC27C73, 0x935490}, {0xC27C7B, 0x4B9EE0}, {0xC27B81, 0xC2DB90}};
+				static std::map<uintptr_t, std::array<uint8_t, 5>> saved;
+				std::string word;
+				in >> word;
+				const uint32_t mask = static_cast<uint32_t>(std::stoul(word.empty() ? "0" : word, nullptr, 16));
+				const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+				std::string out = "ok";
+				for (size_t i = 0; i < std::size(kSites); ++i)
+				{
+					auto* at = reinterpret_cast<uint8_t*>(base + kSites[i].first);
+					DWORD old = 0;
+					if (mask & (1u << i))
+					{
+						if (saved.contains(kSites[i].first))
+							continue;
+						int32_t rel = 0;
+						std::memcpy(&rel, at + 1, 4);
+						if (at[0] != 0xE8 || kSites[i].first + 5 + rel != kSites[i].second)
+						{
+							out += std::format(" (site {:#x} differs)", kSites[i].first);
+							continue;
+						}
+						std::array<uint8_t, 5> was{};
+						std::memcpy(was.data(), at, 5);
+						saved[kSites[i].first] = was;
+						static constexpr uint8_t kNop5[] = {0x0F, 0x1F, 0x44, 0x00, 0x00};
+						VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old);
+						std::memcpy(at, kNop5, 5);
+						VirtualProtect(at, 5, old, &old);
+						out += std::format(" off {:#x}", kSites[i].second);
+					}
+					else if (const auto it = saved.find(kSites[i].first); it != saved.end())
+					{
+						VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old);
+						std::memcpy(at, it->second.data(), 5);
+						VirtualProtect(at, 5, old, &old);
+						saved.erase(it);
+						out += std::format(" on {:#x}", kSites[i].second);
+					}
+					FlushInstructionCache(GetCurrentProcess(), at, 5);
+				}
+				return out;
+			}
 			if (cmd == "execas" || cmd == "revertas")
 			{
 				// execas|revertas <pack folder> <group hex> <as hex>: research - a pack's change sets run through another
 				// group's path (game/content.hpp); the pack mounted first if it waits
-				std::string pack, group, as;
-				in >> pack >> group >> as;
+				std::string pack, group, as, profile;
+				in >> pack >> group >> as >> profile;
 				auto job = std::make_shared<Job>();
-				job->run = [cmd, pack, group, as] {
+				job->run = [cmd, pack, group, as, profile] {
 					const std::string mounted = cmd == "execas" ? game::dlcpacks::MountLater(pack) : std::string();
-					const ULONGLONG t = GetTickCount64();
+					const auto t = std::chrono::steady_clock::now();
 					const uint32_t g = static_cast<uint32_t>(std::stoul(group, nullptr, 16)), a = static_cast<uint32_t>(std::stoul(as, nullptr, 16));
-					const int n = cmd == "execas" ? game::content::ExecuteAs(convert::Joaat(pack), g, a) : game::content::RevertAs(convert::Joaat(pack), g, a);
-					return std::format("{} change set(s) in {} ms{}", n, GetTickCount64() - t, mounted.empty() ? "" : " (mount: " + mounted + ")");
+					int n = 0;
+					const auto run = [&] {
+						n = cmd == "execas" ? game::content::ExecuteAs(convert::Joaat(pack), g, a) : game::content::RevertAs(convert::Joaat(pack), g, a);
+					};
+					// (profile: sampled, by the calls of the change set's own execution or revert, 0xC27740 / 0xC27E80)
+					std::string samples;
+					if (profile == "profile")
+						samples = "; " + (cmd == "execas" ? Profiled(0xC27740, 0xC27E80, run) : Profiled(0xC27E80, 0xC28800, run));
+					else
+						run();
+					const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+					return std::format("{} change set(s) in {:.1f} ms{}{}", n, ms, mounted.empty() ? "" : " (mount: " + mounted + ")", samples);
 				};
 				std::unique_lock lock(g_mutex);
 				g_jobs.push_back(job);
