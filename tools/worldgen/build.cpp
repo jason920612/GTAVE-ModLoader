@@ -922,7 +922,7 @@ namespace worldgen::build
 		void AddBuilding(const structures::Shape& s, const facades::Style& wall, uint32_t wallKey, int aerialRoof, uint32_t genericRoof,
 		    const facades::Style& gravel, float cx, float cy, float tx0, float ty1, float tile, uint32_t seed, std::map<uint32_t, roads::Mesh>& meshes,
 		    std::vector<P3>& colVertices, std::vector<std::array<uint32_t, 3>>& colTriangles, int coveringKey = -1, float coveringMetres = 3,
-		    const PhotoSet* photo = nullptr, float inset = 0)
+		    const PhotoSet* photo = nullptr, float inset = 0, int trimKey = -1)
 		{
 			const auto at = [&](uint32_t i) { return P3{static_cast<float>(s.vertices[i][0]), static_cast<float>(s.vertices[i][1]), static_cast<float>(s.vertices[i][2])}; };
 			// (ambient light: a little less at the foot of the walls)
@@ -1103,6 +1103,84 @@ namespace worldgen::build
 					const auto gv = [&](const P3& p) { return -(p[1] - cy) / gravel.height; };
 					const uint32_t i0 = add(rm, a, n, t, gu(a), gv(a)), i1 = add(rm, b, n, t, gu(b), gv(b)), i2 = add(rm, c, n, t, gu(c), gv(c));
 					rm.indices.insert(rm.indices.end(), {i0, i1, i2});
+				}
+			}
+			// a pitched roof's eaves (the HD model's): its covering on 0.45 m past the walls - a level edge's (an eave's) down as
+			// the hip roof's slope, 0.19 m, a sloping one's (a gable's rake) level -, the outline offset with mitred corners; a
+			// white fascia 0.18 m high round it and a soffit under it back to the wall (the reviewers: "the walls rise above
+			// the eaves like a parapet, no overhang")
+			if (coveringKey >= 0 && trimKey >= 0 && inset == 0)
+			{
+				constexpr float kOver = 0.45f, kFascia = 0.18f;
+				roads::Mesh& rm = meshes[static_cast<uint32_t>(coveringKey)];
+				roads::Mesh& tm = meshes[static_cast<uint32_t>(trimKey)];
+				const auto plain = [](int k) { return std::array<float, 2>{k == 1 || k == 2 ? 0.14f : 0.03f, k >= 2 ? -0.6f : -0.45f}; };
+				std::set<uint32_t> seen;
+				for (const auto& [first, unused] : next)
+				{
+					if (seen.contains(first))
+						continue;
+					std::vector<uint32_t> loop;
+					for (uint32_t a = first; !seen.contains(a) && next.contains(a); a = next[a])
+						seen.insert(a), loop.push_back(a);
+					const size_t m = loop.size();
+					if (m < 3)
+						continue;
+					// each edge's outward normal, whether it is level; each corner's offset point and height
+					std::vector<P3> normal(m);
+					std::vector<bool> level(m);
+					for (size_t k = 0; k < m; ++k)
+					{
+						const P3 pa = at(loop[k]), pb = at(loop[(k + 1) % m]);
+						const float dx = pb[0] - pa[0], dy = pb[1] - pa[1], len = std::max(1e-4f, std::hypot(dx, dy));
+						normal[k] = {dy / len, -dx / len, 0};
+						level[k] = std::fabs(pb[2] - pa[2]) < 0.05f;
+					}
+					std::vector<P3> outer(m), top(m);
+					for (size_t k = 0; k < m; ++k)
+					{
+						const P3 &n1 = normal[(k + m - 1) % m], &n2 = normal[k];
+						const float d = std::max(0.25f, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
+						const P3 p = at(loop[k]);
+						const float drop = level[(k + m - 1) % m] && level[k] ? kOver * 0.42f : 0.03f;
+						top[k] = p;
+						outer[k] = {p[0] + (n1[0] + n2[0]) / d * kOver, p[1] + (n1[1] + n2[1]) / d * kOver, p[2] - drop};
+					}
+					for (size_t k = 0; k < m; ++k)
+					{
+						const size_t q = (k + 1) % m;
+						const P3 &pa = top[k], &pb = top[q], &oa = outer[k], &ob = outer[q];
+						// (the covering: anticlockwise from above - oa, ob, pb, pa -, its rows along the eaves as the roof's)
+						const float ux = ob[0] - oa[0], uy = ob[1] - oa[1], uz = ob[2] - oa[2], vx = pb[0] - oa[0], vy = pb[1] - oa[1], vz = pb[2] - oa[2];
+						P3 n{uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx};
+						const float l = std::hypot(n[0], n[1], n[2]);
+						if (l < 1e-6f)
+							continue;
+						n = {n[0] / l, n[1] / l, n[2] / l};
+						const float hl = std::max(1e-4f, std::hypot(n[0], n[1]));
+						const P3 lv{-n[1] / hl, n[0] / hl, 0}, dn{n[0] / hl * n[2], n[1] / hl * n[2], -hl};
+						const auto cu = [&](const P3& p) { return ((p[0] - cx) * lv[0] + (p[1] - cy) * lv[1]) / coveringMetres; };
+						const auto cv = [&](const P3& p) { return ((p[0] - cx) * dn[0] + (p[1] - cy) * dn[1] + p[2] * dn[2]) / coveringMetres; };
+						const uint32_t i0 = add(rm, oa, n, lv, cu(oa), cv(oa)), i1 = add(rm, ob, n, lv, cu(ob), cv(ob)), i2 = add(rm, pb, n, lv, cu(pb), cv(pb)),
+						               i3 = add(rm, pa, n, lv, cu(pa), cv(pa));
+						rm.indices.insert(rm.indices.end(), {i0, i1, i2, i0, i2, i3});
+						// (the fascia: facing out, below the edge)
+						const P3 out = normal[k], along{-out[1], out[0], 0};
+						const P3 oaLow{oa[0], oa[1], oa[2] - kFascia}, obLow{ob[0], ob[1], ob[2] - kFascia};
+						{
+							const uint32_t j0 = add(tm, oaLow, out, along, plain(0)[0], plain(0)[1]), j1 = add(tm, obLow, out, along, plain(1)[0], plain(1)[1]),
+							               j2 = add(tm, ob, out, along, plain(2)[0], plain(2)[1]), j3 = add(tm, oa, out, along, plain(3)[0], plain(3)[1]);
+							tm.indices.insert(tm.indices.end(), {j0, j1, j2, j0, j2, j3});
+						}
+						// (the soffit: level from the fascia's foot back to the wall, facing down)
+						const P3 down{0, 0, -1};
+						const P3 paS{pa[0], pa[1], oaLow[2]}, pbS{pb[0], pb[1], obLow[2]};
+						{
+							const uint32_t j0 = add(tm, paS, down, along, plain(0)[0], plain(0)[1]), j1 = add(tm, pbS, down, along, plain(1)[0], plain(1)[1]),
+							               j2 = add(tm, obLow, down, along, plain(2)[0], plain(2)[1]), j3 = add(tm, oaLow, down, along, plain(3)[0], plain(3)[1]);
+							tm.indices.insert(tm.indices.end(), {j0, j1, j2, j0, j2, j3});
+						}
+					}
 				}
 			}
 		}
@@ -3938,7 +4016,7 @@ namespace worldgen::build
 			// (treat: 1 a ground's texture, Flatten'ed - in the format it had; 2 also made Neutral, a tinted layer's)
 			const auto use = [&](const char* dictionary, const char* texture, std::string& name, int treat = 0) {
 				// (3: a roof covering 0.45 as bright - lit from above at noon the game's shingles came out near white; at 0.6 still
-				// white beside the street pictures; 4: weathered concrete - 0.7 as bright, a little greyer)
+				// white beside the street pictures; 4: weathered concrete - 0.58 as bright, greyer, a little warm)
 				const char* suffix = treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
 				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + suffix);
 				if (const auto it = copied.find(key); it != copied.end())
@@ -3962,9 +4040,12 @@ namespace worldgen::build
 					{
 						for (auto& p : image.pixels)
 						{
+							// (0.58 as bright, greyer, a little warm: at 0.7 the sunlit kerbs still read as "bright white" beside
+							// the street pictures' dirty grey-beige ones)
 							const float l = (p[0] + p[1] + p[2]) / 3.0f;
+							const float warm[3] = {1.04f, 1.01f, 0.95f};
 							for (int c = 0; c < 3; ++c)
-								p[c] = static_cast<uint8_t>(std::clamp(0.7f * (0.8f * p[c] + 0.2f * l), 0.0f, 255.0f));
+								p[c] = static_cast<uint8_t>(std::clamp(0.58f * warm[c] * (0.75f * p[c] + 0.25f * l), 0.0f, 255.0f));
 						}
 					}
 					else
@@ -5064,7 +5145,7 @@ namespace worldgen::build
 					AddBuilding(s, facadeSet.styles[shapeStyle[k]], static_cast<uint32_t>(shapeStyle[k]), fromPicture ? static_cast<int>(aerialKey) : -1, gravelKey,
 					    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, static_cast<uint32_t>(k), meshes, cv, ct,
 					    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f,
-					    photoPlaces.empty() ? nullptr : &photoSet);
+					    photoPlaces.empty() ? nullptr : &photoSet, 0.0f, facades::Find(facadeSet, facades::Kind::House));
 					if (shapePorch[k].has && !onPhoto(shapePorch[k].a, shapePorch[k].b))
 					{
 						const int whiteStyle = facades::Find(facadeSet, facades::Kind::House);

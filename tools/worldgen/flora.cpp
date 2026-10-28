@@ -249,10 +249,12 @@ namespace worldgen::flora
 						q[2] = std::max(q[2], fork + 1.8f);
 				}
 				limbs.push_back({limb, kBarkOak});
+				// (its leaves in many small cards - 0.6-0.9 m, twice as many as before: a few big ones had read as "one generic
+				// big-leaf tree", each card's outline a giant leaf)
 				for (float t = 0.3f; t < 1.0f; t += 0.07f)
 				{
 					const P3 at = At(limb, t);
-					Cluster(leaves, at, middle, 9, 1.5f, rnd.Range(0.9f, 1.25f), kOakLeaves, rnd, 0.5f);
+					Cluster(leaves, at, middle, 16, 1.5f, rnd.Range(0.62f, 0.88f), kOakLeaves, rnd, 0.5f);
 					// (moss under the limb)
 					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.55f)
 					{
@@ -280,7 +282,7 @@ namespace worldgen::flora
 					for (float s = 0.25f; s < 1.0f; s += 0.12f)
 					{
 						const P3 at = At(br, s);
-						Cluster(leaves, at, middle, 7, 1.2f, rnd.Range(0.85f, 1.2f), kOakLeaves, rnd, 0.4f);
+						Cluster(leaves, at, middle, 12, 1.2f, rnd.Range(0.6f, 0.85f), kOakLeaves, rnd, 0.4f);
 						if (s < 0.85f && rnd.Unit() < 0.4f)
 						{
 							const P3 drop{at[0], at[1], at[2] - 0.05f};
@@ -298,7 +300,7 @@ namespace worldgen::flora
 			for (int k = 0; k < 10; ++k)
 			{
 				const float a = rnd.Range(0, 2 * kPi), d = rnd.Range(0, W * 0.25f);
-				Cluster(leaves, {top[0] + std::cos(a) * d, top[1] + std::sin(a) * d, H * rnd.Range(0.7f, 0.85f)}, middle, 6, 1.5f, 1.25f, kOakLeaves, rnd, 0.3f);
+				Cluster(leaves, {top[0] + std::cos(a) * d, top[1] + std::sin(a) * d, H * rnd.Range(0.7f, 0.85f)}, middle, 10, 1.5f, 0.88f, kOakLeaves, rnd, 0.3f);
 			}
 			// (the shell lumpy: its reach and its height waving round the tree - three to five big lobes, a dip or two in its
 			// top -, its underside only out past the limbs' middles: the street pictures' oaks are no domes, the reviewers saw
@@ -314,7 +316,7 @@ namespace worldgen::flora
 				if (up < 0.1f && rnd.Unit() < 0.5f)
 					continue; // (the underside thinner: the limbs seen between)
 				const P3 c{top[0] + std::cos(a) * rx, top[1] + std::sin(a) * rx, std::min(H - 0.6f, fork + (H - fork) * 0.45f + rz + rise * std::sin(up))};
-				Cluster(leaves, c, middle, 1, 0.3f, rnd.Range(0.95f, 1.3f), kOakLeaves, rnd, 0.0f);
+				Cluster(leaves, c, middle, 2, 0.3f, rnd.Range(0.66f, 0.92f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
 			out.height = H, out.width = W, out.trunk = trunk.r[0];
@@ -397,10 +399,10 @@ namespace worldgen::flora
 					Limb br = Grow(At(limb, t), d2, {d2[0], d2[1], 0}, 0.15f, len * rnd.Range(0.35f, 0.55f), 4, RadiusAt(limb, t) * 0.55f, 0.03f, rnd);
 					limbs.push_back({br, kBarkOak});
 					for (float s = 0.3f; s <= 1.0f; s += 0.14f)
-						Cluster(leaves, At(br, s), middle, 5, 1.1f, rnd.Range(1.0f, 1.4f), kOakLeaves, rnd, 0.3f);
+						Cluster(leaves, At(br, s), middle, 9, 1.1f, rnd.Range(0.7f, 1.0f), kOakLeaves, rnd, 0.3f);
 				}
 				for (float t = 0.45f; t <= 1.0f; t += 0.1f)
-					Cluster(leaves, At(limb, t), middle, 5, 1.3f, rnd.Range(1.0f, 1.4f), kOakLeaves, rnd, 0.3f);
+					Cluster(leaves, At(limb, t), middle, 9, 1.3f, rnd.Range(0.7f, 1.0f), kOakLeaves, rnd, 0.3f);
 			}
 			// (the round crown closed: a shell of leaves over it and some through it - the reviewers' "lollipops", a bare trunk
 			// under a few clumps, were the limbs' leaves alone)
@@ -409,7 +411,7 @@ namespace worldgen::flora
 			{
 				const float a = rnd.Range(0, 2 * kPi), up = std::asin(rnd.Range(-0.55f, 1.0f)), depth = k % 4 ? 1.0f : rnd.Range(0.4f, 0.85f);
 				const P3 c{top[0] + std::cos(a) * rh * std::cos(up) * depth, top[1] + std::sin(a) * rh * std::cos(up) * depth, cz + rv * std::sin(up) * depth};
-				Cluster(leaves, c, middle, 1, 0.3f, rnd.Range(1.0f, 1.35f), kOakLeaves, rnd, 0.0f);
+				Cluster(leaves, c, middle, 2, 0.3f, rnd.Range(0.7f, 0.95f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
 			out.height = H, out.width = W, out.trunk = trunk.r[0];
@@ -435,11 +437,12 @@ namespace worldgen::flora
 				const float az = 2 * kPi * i / n + rnd.Range(-0.4f, 0.4f);
 				const P3 dir{std::cos(az) * 0.22f, std::sin(az) * 0.22f, 1};
 				Limb stem = Grow({std::cos(az) * 0.12f, std::sin(az) * 0.12f, -0.2f}, dir, {std::cos(az), std::sin(az), 0.4f}, 0.07f, H * rnd.Range(0.8f, 0.95f), 5,
-				    rnd.Range(0.07f, 0.11f), 0.03f, rnd, 0.08f);
+				    rnd.Range(0.09f, 0.13f), 0.035f, rnd, 0.08f);
 				limbs.push_back({stem, kBarkMyrtle});
 				for (float t = 0.5f; t <= 1.0f; t += 0.1f)
 				{
-					Cluster(leaves, At(stem, t), middle, flowering ? 2 : 3, 0.8f, rnd.Range(1.1f, 1.5f), kOakLeaves, rnd, 0.2f);
+					// (many small cards, not a few big ones: the reviewers' "giant leaf cards on sticks")
+					Cluster(leaves, At(stem, t), middle, flowering ? 4 : 6, 0.9f, rnd.Range(0.6f, 0.85f), kOakLeaves, rnd, 0.2f);
 					// (the flowers: their panicles on top)
 					if (!flowering)
 						continue;
