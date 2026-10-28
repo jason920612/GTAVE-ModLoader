@@ -548,11 +548,21 @@ def pano(o):
         gtactl(f'raw:native 0xA56F01F3765B93A0 {x:.1f} {y:.1f} {gz:.1f} 3.0 1 0 1 0')  # (CLEAR_AREA round the camera, objects kept)
         picture = np.asarray(Image.open(r['path']).convert('RGB'), np.float32)
         small = np.asarray(Image.fromarray(picture.astype(np.uint8)).resize((1024, 512)), np.float32)
+        last = None
         for view in views:
             yaw = (compass + view) % 360
             shot = os.path.join(out, f'game_{r["id"]}_{view:+.0f}.png')
-            gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + cam_up:.2f} {(360 - yaw) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
-            game = Image.open(shot).convert('RGB').resize((960, 540))
+            # (taken again - twice at most, 6 s later - when it is black or the same as the last view's: the camera had not
+            # turned yet or the screen was still fading in, the game lagging under the batch's load)
+            for attempt in range(3):
+                gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + cam_up:.2f} {(360 - yaw) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
+                game = Image.open(shot).convert('RGB').resize((960, 540))
+                grey = np.asarray(game.resize((96, 54)).convert('L'), np.float32)
+                if attempt == 2 or (grey.mean() > 12 and (last is None or np.abs(grey - last).mean() > 4)):
+                    break
+                print(f'{k}: {r["id"]} view {view:+.0f}: a stale or black frame, taken again', flush=True)
+                gtactl('wait:6')
+            last = grey
             if fit:
                 # (the fit's tilt at this view: the picture's elevations are off by it - the view's pitch)
                 rel = math.radians(view)
