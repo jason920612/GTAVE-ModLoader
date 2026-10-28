@@ -2069,10 +2069,13 @@ namespace worldgen::roads
 			// a "grass" path is the lawn)
 			if (wk.kind == "crossing" || wk.bridge || wk.tunnel || wk.layer != 0 || wk.points.size() < 2 || wk.surface == "grass")
 				continue;
+			// (untagged or just "paved": a sidewalk's, a footway's, a driveway's concrete - Tallahassee's map has 6700 sidewalks
+			// "paved", drawn as asphalt they were the reviewers' "dark asphalt sidewalks" -, a cycleway's or a path's asphalt)
 			const bool unpavedPath = (wk.kind == "path" || wk.kind == "bridleway") && wk.surface.empty();
+			const bool plain = wk.surface.empty() || wk.surface == "paved";
 			const paving::Paving pv = unpavedPath ? paving::Paving::Dirt
-			                        : wk.surface.empty() ? (wk.kind == "cycleway" ? paving::Paving::Asphalt : paving::Paving::Concrete)
-			                                             : paving::Of(wk.surface);
+			                        : plain       ? (wk.kind == "cycleway" || wk.kind == "path" ? paving::Paving::Asphalt : paving::Paving::Concrete)
+			                                      : paving::Of(wk.surface);
 			const bool unpaved = pv == paving::Paving::Gravel || pv == paving::Paving::Dirt || pv == paving::Paving::Sand;
 			const float width = wk.width > 0 ? std::clamp(wk.width, 0.8f, 6.0f)
 			                    : wk.kind == "driveway"                       ? 3.0f

@@ -254,10 +254,10 @@ namespace worldgen::flora
 					const P3 at = At(limb, t);
 					Cluster(leaves, at, middle, 9, 1.5f, rnd.Range(0.9f, 1.25f), kOakLeaves, rnd, 0.5f);
 					// (moss under the limb)
-					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.3f)
+					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.55f)
 					{
 						const P3 drop{at[0] + rnd.Range(-0.4f, 0.4f), at[1] + rnd.Range(-0.4f, 0.4f), at[2] - RadiusAt(limb, t)};
-						const float len2 = rnd.Range(0.6f, 1.3f), wd = rnd.Range(0.35f, 0.6f);
+						const float len2 = rnd.Range(0.9f, 2.0f), wd = rnd.Range(0.45f, 0.8f);
 						const float spin = rnd.Range(0, kPi);
 						const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 						for (int c = 0; c < 2; ++c)
@@ -281,14 +281,14 @@ namespace worldgen::flora
 					{
 						const P3 at = At(br, s);
 						Cluster(leaves, at, middle, 7, 1.2f, rnd.Range(0.85f, 1.2f), kOakLeaves, rnd, 0.4f);
-						if (s < 0.85f && rnd.Unit() < 0.2f)
+						if (s < 0.85f && rnd.Unit() < 0.4f)
 						{
 							const P3 drop{at[0], at[1], at[2] - 0.05f};
 							const float spin = rnd.Range(0, kPi);
 							const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 							for (int c = 0; c < 2; ++c)
-								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.3f, 0.5f),
-								    rnd.Range(0.5f, 1.1f), static_cast<int>(rnd.Next() % 4), kMoss, true});
+								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.4f, 0.7f),
+								    rnd.Range(0.7f, 1.6f), static_cast<int>(rnd.Next() % 4), kMoss, true});
 						}
 					}
 				}
@@ -749,18 +749,19 @@ namespace worldgen::flora
 			}
 			else
 			{
-				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards
-				for (int k = 0; k < 55; ++k)
+				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards (thick and pale enough
+				// to read as the grey beards they are from the street: 55 thin dark ones had all but vanished at 10 m)
+				for (int k = 0; k < 140; ++k)
 				{
 					// (a beard: the strands bunched in the middle and longest there, the sides short)
 					const float g = (rnd.Unit() + rnd.Unit() + rnd.Unit()) / 3 - 0.5f;
 					float x = im.width / 2.0f + g * (im.width - 30.0f);
 					const float len = (0.25f + 0.75f * (1 - std::fabs(g) * 2)) * rnd.Range(0.6f, 1.0f) * im.height, phase = rnd.Range(0, 2 * kPi),
 					            sway = rnd.Range(3, 12);
-					const std::array<float, 3> c{rnd.Range(96, 118), rnd.Range(104, 124), rnd.Range(88, 104)};
+					const std::array<float, 3> c{rnd.Range(128, 150), rnd.Range(134, 154), rnd.Range(116, 134)};
 					for (float y = rnd.Range(0, 20); y < len; y += 1.0f)
 					{
-						const float w = 2.6f * (1 - y / len) + 0.9f;
+						const float w = 4.0f * (1 - y / len) + 1.6f;
 						const float px = x + std::sin(y / 40 + phase) * sway;
 						Ellipse(im, px, y, w / 2 + 0.2f, 0.8f, 0, Shade(c, rnd.Range(0.85f, 1.05f)), x0, y0, x1, y1);
 						if (rnd.Unit() < 0.02f)

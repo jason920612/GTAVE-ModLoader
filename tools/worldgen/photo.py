@@ -180,10 +180,31 @@ def analyse(rgbn, chm):
     canopy &= ~((bright > 110) & (ndvi < 0.1))
     canopy = ndimage.binary_opening(canopy, iterations=1)
     canopy = ndimage.binary_closing(canopy, iterations=2)
+    # (a crown on its own - a canopy patch about as round as one crown, no wider than a live oak's for its height - one
+    # tree at its middle: the peaks had cut a lawn's live oak into a grove of small trees, the reviewers' "three trunks
+    # where the photo has one oak")
+    single = np.zeros(canopy.shape, bool)
+    alone = []
+    labels, count = ndimage.label(canopy)
+    for k, sl in enumerate(ndimage.find_objects(labels)):
+        if sl is None:
+            continue
+        part = labels[sl] == k + 1
+        area = float(part.sum())
+        if area < 12 or area > 1200:
+            continue
+        yy, xx = np.nonzero(part)
+        cy, cx = float(yy.mean()), float(xx.mean())
+        rmax = float(np.sqrt(((yy - cy) ** 2 + (xx - cx) ** 2).max())) + 0.5
+        h = float(chm[sl][part].max())
+        if area / (math.pi * rmax * rmax) < 0.55 or (h >= 3 and math.sqrt(area / math.pi) > max(4.0, h)):
+            continue
+        single[sl] |= part
+        alone.append((int(round(cy)) + sl[0].start, int(round(cx)) + sl[1].start, h))
     # trees: peaks of the smoothed near infrared (sunlit crowns) in the canopy, at least a reach apart
     signal = ndimage.gaussian_filter(n + 0.6 * np.maximum(chm.astype(np.float32) - 3, 0) * 6, 1.6)
     signal[~canopy] = 0
-    peaks = (signal == ndimage.maximum_filter(signal, size=7)) & canopy & (signal > 0)
+    peaks = (signal == ndimage.maximum_filter(signal, size=7)) & canopy & (signal > 0) & ~single
     ys, xs = np.nonzero(peaks)
     order = np.argsort(-signal[ys, xs])
     ys, xs = ys[order], xs[order]
@@ -211,6 +232,12 @@ def analyse(rgbn, chm):
         evergreen = ndvi[y, x] > 0.18
         kind = 0 if evergreen else 1
         trees.append([x, y, h, 0.0, kind])
+    for y, x, h in alone:
+        if h < 3:
+            h = float(chm_wide[y, x] / chm_cnt[y, x]) if chm_cnt[y, x] > 0.05 else 0.0
+            if h < 3:
+                h = 9.0 + 4.0 * min(1.0, float(dist_out[y, x]) / 15)
+        trees.append([x, y, h, 0.0, 0 if ndvi[y, x] > 0.18 else 1])
     # each tree's crown: the canopy it covers - every canopy pixel to its nearest tree, the crown a circle of that area
     # (the game's trees are fewer than a plantation's: their crowns fill the canopy the pictures show, not more)
     if trees:
@@ -223,7 +250,7 @@ def analyse(rgbn, chm):
         owner = index[iy, ix]
         area = np.bincount(owner[canopy], minlength=len(trees))
         for k, t in enumerate(trees):
-            t[3] = float(min(12.0, max(1.5, math.sqrt(area[k] / math.pi))))  # (a live oak's: up to 12 m)
+            t[3] = float(min(15.0, max(1.5, math.sqrt(area[k] / math.pi))))  # (a live oak's: up to 15 m)
     trees = [tuple(t) for t in trees]
     # the ground under no canopy: water, green grass, dry grass, bare earth or sand, paving or roofs
     sat = (np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) / np.maximum(np.maximum(np.maximum(r, g), b), 1)
