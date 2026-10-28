@@ -112,6 +112,10 @@ namespace loader::debug::profile
 			{
 				std::chrono::steady_clock::time_point at;
 				uintptr_t leaf = 0, leafBase = 0; // (the innermost function's start and its module)
+				// (the first functions on the way out that are neither the game's nor the system's - a DLL of ours or someone's
+				// -, with their modules: what called the system when the game's code is not on the stack; three, the C
+				// runtime's own often first)
+				std::array<uintptr_t, 3> callers{}, callerBases{};
 				std::array<uint32_t, 6> through{};
 				uint8_t thread = 0; // (which of the threads: 0 the game's)
 			};
@@ -167,6 +171,13 @@ namespace loader::debug::profile
 			return got;
 		}
 
+		// (the system's modules: a caller is the first function past them; filled when a trace starts)
+		std::array<uintptr_t, 8> g_system{};
+		bool SystemModule(uintptr_t image)
+		{
+			return std::find(g_system.begin(), g_system.end(), image) != g_system.end();
+		}
+
 		// the stack walked on the copy (the stack pointer, and the frame pointer when it points into the copied part, moved
 		// over to it; a frame that reads past it ends the walk)
 		void Walk(Trace::Sample& s, CONTEXT& c, const uint8_t* copy, uintptr_t top, size_t size, uintptr_t base)
@@ -178,7 +189,7 @@ namespace loader::debug::profile
 			const auto inCopy = [&](DWORD64 r) { return r >= reinterpret_cast<uintptr_t>(copy) && r + 8 <= reinterpret_cast<uintptr_t>(copy) + size; };
 			c.Rsp = reinterpret_cast<uintptr_t>(copy);
 			relocate(c.Rbp);
-			size_t n = 0;
+			size_t n = 0, callers = 0;
 			__try
 			{
 				for (int i = 0; i < 64 && c.Rip && n < s.through.size() && inCopy(c.Rsp); ++i)
@@ -189,6 +200,8 @@ namespace loader::debug::profile
 						s.leaf = f ? image + f->BeginAddress : c.Rip, s.leafBase = image;
 					else if (image == base && f)
 						s.through[n++] = f->BeginAddress;
+					if (i > 0 && callers < s.callers.size() && image && image != base && !SystemModule(image))
+						s.callers[callers] = f ? image + f->BeginAddress : c.Rip, s.callerBases[callers++] = image;
 					if (f)
 					{
 						void* data = nullptr;
@@ -247,6 +260,9 @@ namespace loader::debug::profile
 	void Start(const std::vector<unsigned long>& others)
 	{
 		Stop();
+		size_t k = 0;
+		for (const wchar_t* name : {L"ntdll.dll", L"kernelbase.dll", L"kernel32.dll", L"win32u.dll", L"user32.dll", L"gdi32.dll", L"msvcp140.dll", L"ucrtbase.dll"})
+			g_system[k++] = reinterpret_cast<uintptr_t>(GetModuleHandleW(name));
 		g_trace = std::make_unique<Trace>();
 		g_trace->ids.push_back(GetCurrentThreadId());
 		for (const unsigned long id : others)
@@ -275,8 +291,22 @@ namespace loader::debug::profile
 		std::string Summary(size_t thread, std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to)
 		{
 			const auto game = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-			std::map<std::string, int> leaves, chains;
+			std::map<std::string, int> leaves, chains, callers;
 			int n = 0;
+			const auto named = [&](uintptr_t at, uintptr_t base) {
+				if (base == game)
+					return std::format("{:#x}", at - game);
+				wchar_t path[MAX_PATH] = L"?";
+				if (base)
+					GetModuleFileNameW(reinterpret_cast<HMODULE>(base), path, MAX_PATH);
+				std::wstring_view wide(path);
+				if (const size_t slash = wide.find_last_of(L"\\/"); slash != std::wstring_view::npos)
+					wide.remove_prefix(slash + 1);
+				std::string name;
+				for (const wchar_t ch : wide)
+					name += static_cast<char>(ch);
+				return std::format("{}+{:#x}", name, at - base);
+			};
 			const size_t taken = g_trace->taken, first = taken > Trace::kMax ? taken - Trace::kMax : 0;
 			for (size_t i = first; i < taken; ++i)
 			{
@@ -284,23 +314,12 @@ namespace loader::debug::profile
 				if (s.thread != thread || s.at < from || s.at > to)
 					continue;
 				++n;
-				std::string where;
-				if (s.leafBase == game)
-					where = std::format("{:#x}", s.leaf - game);
-				else
-				{
-					wchar_t path[MAX_PATH] = L"?";
-					if (s.leafBase)
-						GetModuleFileNameW(reinterpret_cast<HMODULE>(s.leafBase), path, MAX_PATH);
-					std::wstring_view wide(path);
-					if (const size_t slash = wide.find_last_of(L"\\/"); slash != std::wstring_view::npos)
-						wide.remove_prefix(slash + 1);
-					std::string name;
-					for (const wchar_t ch : wide)
-						name += static_cast<char>(ch);
-					where = std::format("{}+{:#x}", name, s.leaf - s.leafBase);
-				}
-				++leaves[where];
+				++leaves[named(s.leaf, s.leafBase)];
+				std::string via;
+				for (size_t k = 0; k < s.callers.size() && s.callers[k]; ++k)
+					via += (via.empty() ? "" : "<") + named(s.callers[k], s.callerBases[k]);
+				if (!via.empty())
+					++callers[via];
 				std::string chain;
 				for (const uint32_t f : s.through)
 					if (f)
@@ -317,7 +336,8 @@ namespace loader::debug::profile
 					out += std::format(" {}:{}", v[i].second, v[i].first);
 				return out;
 			};
-			return std::format("{} samples; functions{}; through{}", n, top(leaves, 8), top(chains, 5));
+			return std::format("{} samples; functions{}; through{}{}", n, top(leaves, 8), top(chains, 5),
+			    callers.empty() ? std::string() : "; called from" + top(callers, 4));
 		}
 	}
 

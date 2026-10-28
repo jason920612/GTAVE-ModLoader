@@ -4,21 +4,34 @@
 //   stop                              clears the player's tasks
 #include <Windows.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 #include <modloader/body.hpp>
 #include <modloader/game.hpp>
 
 ML_MOD_INFO("Animation Lab", "0.1.0", "ModLoader", "Research: play animations on the player")
 
+namespace
+{
+	// (the file looked for by a thread of its own: asked for on the game's thread, it cost frames while the disk was busy)
+	std::atomic_bool g_commands = false;
+}
+
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
 {
 	ml::Init(api, ctx);
+	std::thread([] {
+		for (;; Sleep(500))
+			if (GetFileAttributesW(L"ModLoader\\animlab.txt") != INVALID_FILE_ATTRIBUTES)
+				g_commands = true;
+	}).detach();
 	return 1;
 }
 
@@ -27,6 +40,8 @@ extern "C" __declspec(dllexport) void MLMain()
 	for (;;)
 	{
 		ml::Wait(500);
+		if (!g_commands.exchange(false))
+			continue;
 		std::ifstream in("ModLoader/animlab.txt");
 		if (!in)
 			continue;

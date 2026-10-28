@@ -2,11 +2,14 @@
 // Development commands, ModLoader\bball.txt (read every half second, removed):
 //   dribble <seconds> [close] [slow]   the player dribbles in place with the right hand; logs ModLoader\bball_log.csv
 //                                      (close: camera at the hand; slow: time at 0.2, real seconds)
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 #include <modloader/body.hpp>
 #include <modloader/game.hpp>
@@ -272,9 +275,21 @@ namespace bball
 	}
 }
 
+namespace
+{
+	// (the command file looked for by a thread of its own: asked for on the game's thread, it cost frames while the disk
+	// was busy)
+	std::atomic_bool g_command = false;
+}
+
 extern "C" __declspec(dllexport) int MLOnLoad(const MLApi* api, const MLContext* ctx)
 {
 	ml::Init(api, ctx);
+	std::thread([] {
+		for (;; std::this_thread::sleep_for(std::chrono::milliseconds(500)))
+			if (std::error_code ec; std::filesystem::exists("ModLoader/bball.txt", ec))
+				g_command = true;
+	}).detach();
 	if (!ml::body::Available())
 	{
 		ml::LogError("this loader has no pose API; basketball needs it");
@@ -291,6 +306,8 @@ extern "C" __declspec(dllexport) void MLMain()
 	for (;;)
 	{
 		ml::Wait(500);
+		if (!g_command.exchange(false))
+			continue;
 		std::ifstream in("ModLoader/bball.txt");
 		if (!in)
 			continue;

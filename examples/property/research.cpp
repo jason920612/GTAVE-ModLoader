@@ -2,17 +2,38 @@
 #define NOMINMAX
 #include <Windows.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "property.hpp"
 
 namespace property::research
 {
+	namespace
+	{
+		// The files that start them, looked for by a thread of their own once a second: asked for on the game's thread, 16
+		// of them each frame, they cost it up to 80 ms a frame while the disk was busy.
+		constexpr const wchar_t* kTriggers[] = {L"water_sample.txt", L"global_dump.txt", L"model_names.txt", L"mp_map.txt", L"spawn_vehicle.txt",
+		    L"start_script.txt", L"metadata_test.txt", L"global_set.txt", L"autosave.txt", L"closest_vehicle.txt", L"walkto.txt", L"threads.txt",
+		    L"blips.txt", L"teleport.txt"};
+		std::atomic_bool g_triggered = false;
+	}
+
 	void OnLoad()
 	{
+		std::thread([] {
+			for (;;)
+			{
+				for (const wchar_t* name : kTriggers)
+					if (GetFileAttributesW((std::wstring(L"ModLoader\\") + name).c_str()) != INVALID_FILE_ATTRIBUTES)
+						g_triggered = true;
+				Sleep(1000);
+			}
+		}).detach();
 		// Research: with ModLoader\scaleform_log.txt present at start, the game browser's scaleform calls (method names
 		// and parameters) are written to data\scaleform.log, to read the original websites' catalogues.
 		if (std::filesystem::exists("ModLoader/scaleform_log.txt"))
@@ -50,6 +71,8 @@ namespace property::research
 
 	void Tick()
 	{
+		if (!g_triggered.exchange(false))
+			return;
 		// Research: ModLoader\water_sample.txt samples water on a world grid into data\water.txt ("x y water" lines), to
 		// calibrate the website's map against the game world.
 		if (std::error_code ec; std::filesystem::remove("ModLoader/water_sample.txt", ec))
