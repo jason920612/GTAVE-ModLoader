@@ -28,6 +28,7 @@
 #include "../config.hpp"
 #include "../convert/resource.hpp"
 #include "../game/content.hpp"
+#include "../game/landfiles.hpp"
 #include "../game/natives.hpp"
 #include "../game/sectors.hpp"
 #include "../graphics/bridge.hpp"
@@ -38,6 +39,7 @@
 #include "../state.hpp"
 #include "../ui/overlay.hpp"
 #include "../ui/recorder.hpp"
+#include "watchdog.hpp"
 
 namespace loader::debug::remote
 {
@@ -838,6 +840,35 @@ namespace loader::debug::remote
 				std::string how;
 				in >> how;
 				return Window(how);
+			}
+			if (cmd == "landboxes")
+			{
+				// landboxes <land>: its collision and map files' boxes in their stores (game/landfiles.hpp)
+				std::string land;
+				in >> land;
+				auto job = std::make_shared<Job>();
+				job->run = [land] { return game::landfiles::Boxes(land, paths::Get().mods / land / L"dlc.rpf"); };
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
+			if (cmd == "crash")
+			{
+				// crash [status] | dump [full] | resume | skip | test: the watchdog's held fault (debug/watchdog.hpp) - answered
+				// here, on the pipe's thread, while the game's waits
+				std::string rest;
+				std::getline(in, rest);
+				if (rest.find("test") != std::string::npos)
+				{
+					auto job = std::make_shared<Job>();
+					job->run = [] { return watchdog::Test(); };
+					std::lock_guard lock(g_mutex);
+					g_jobs.push_back(job);
+					return "ok the game thread runs into an int3 of the game's code next frame";
+				}
+				return watchdog::Command(rest);
 			}
 			if (cmd == "sector")
 			{

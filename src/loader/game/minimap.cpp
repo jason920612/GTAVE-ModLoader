@@ -60,6 +60,14 @@ namespace loader::game::minimap
 		// moved by the controls: the cursor is held to it) twice and from 0x129E470.
 		constexpr uintptr_t kReach = 0x129C7F0, kReachCalls[] = {0x129AB19, 0x129AB3C, 0x129E7DF};
 		constexpr float kReachMargin = 300;
+		// The pause map's squares (research/phase0.md §63.15; the radar draws their pictures too, zoomed out): +0x3DEB760 their
+		// array (16 bytes a square: +0 its dictionary's slot in the texture store, -1 none; +4 its state - 0 none, 1 asked
+		// for, 2-3 in use, 4-5 being let go: the render thread's last use waited for -; +8 the slot each of the render
+		// thread's two buffers draws), +8 how many. 0x55E990 takes one a step on (the square, wanted, drawn, its name - looked
+		// up in state 0 only), for each from 0x55E460: a square in use keeps its dictionary while wanted, whatever its name
+		// has become.
+		constexpr uintptr_t kSquares = 0x3DEB760, kSquareStep = 0x55E990;
+		constexpr uint8_t kSquareStepStart[] = {0x41, 0x57, 0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x44, 0x89, 0xC3, 0x48, 0x89, 0xCE, 0x8B, 0x49, 0x04};
 
 		using SelectFn = bool (*)(uint8_t*, const float*, const float*, uint64_t, uint8_t);
 		using EntryFn = void (*)(uint8_t*);
@@ -69,6 +77,7 @@ namespace loader::game::minimap
 		using ReleaseFn = void (*)(void*);
 		using InitFn = void (*)(int);
 		using ReachFn = void (*)(void*, float*, float*, uint64_t);
+		using SquareStepFn = void (*)(uint8_t* square, uint8_t wanted, uint8_t drawn, const char* name);
 
 		uintptr_t g_base = 0;
 		SelectFn g_select = nullptr;
@@ -79,6 +88,8 @@ namespace loader::game::minimap
 		ReleaseFn g_release = nullptr;
 		InitFn g_pictureInit = nullptr;
 		ReachFn g_reach = nullptr;
+		SquareStepFn g_squareStep = nullptr;
+		std::vector<std::string> g_going; // (lands being put away: their pictures named no more)
 		// each land: its pack's folder, its box (min x, min y, max x, max y)
 		struct Land
 		{
@@ -242,14 +253,20 @@ namespace loader::game::minimap
 			}
 		}
 
-		// The pictures' name of the land there (not a sector that waits) with a picture of that square, or null.
+		// Whether a land is there (not a sector that waits, nor one being put away).
+		bool Present(const std::string& folder)
+		{
+			return !sectors::Dormant(folder) && std::find(g_going.begin(), g_going.end(), folder) == g_going.end();
+		}
+
+		// The pictures' name of the land there with a picture of that square, or null.
 		const std::string* There(const std::map<std::pair<int, int>, std::vector<std::pair<std::string, std::string>>>& pictures, std::pair<int, int> at)
 		{
 			const auto it = pictures.find(at);
 			if (it == pictures.end())
 				return nullptr;
 			for (const auto& [folder, name] : it->second)
-				if (!sectors::Dormant(folder))
+				if (Present(folder))
 					return &name;
 			return nullptr;
 		}
@@ -268,8 +285,9 @@ namespace loader::game::minimap
 				name = std::format("{}_{}_{}", layer, r, c);
 			else
 			{
-				const auto sea = std::find_if(g_seas.begin(), g_seas.end(), [](const auto& s) { return !sectors::Dormant(s.first); });
-				name = std::format("{}_{}_sea", layer, sea != g_seas.end() ? sea->second : g_seas.empty() ? std::string() : g_seas.front().second);
+				// (no land there - a switch under way -: no picture, rather than one of a land that is going)
+				const auto sea = std::find_if(g_seas.begin(), g_seas.end(), [](const auto& s) { return Present(s.first); });
+				name = sea != g_seas.end() ? std::format("{}_{}_sea", layer, sea->second) : std::format("{}_none", layer);
 			}
 			const size_t n = std::min<size_t>(name.size(), 49); // (the game's buffer: 50)
 			std::memcpy(buffer, name.data(), n);
@@ -436,6 +454,10 @@ namespace loader::game::minimap
 			redirect(kPictureInit, 0xE9, reinterpret_cast<const void*>(&PictureInit));
 			redirect(kFormatCall, 0xE8, reinterpret_cast<const void*>(&PictureName));
 		}
+		if (std::memcmp(reinterpret_cast<const void*>(g_base + kSquareStep), kSquareStepStart, sizeof(kSquareStepStart)) == 0)
+			g_squareStep = reinterpret_cast<SquareStepFn>(g_base + kSquareStep);
+		else
+			log::Warn("minimap: the pause map's squares are not where this build has them; a sector switch may leave a picture behind");
 		if (!g_lands.empty())
 		{
 			g_reach = reinterpret_cast<ReachFn>(g_base + kReach);
@@ -464,5 +486,33 @@ namespace loader::game::minimap
 	void Resume()
 	{
 		g_suspended = false;
+		g_going.clear();
+	}
+
+	void Going(const std::vector<std::string>& lands)
+	{
+		g_going = lands;
+	}
+
+	bool LetGo(const std::vector<int32_t>& slots)
+	{
+		if (!g_squareStep || slots.empty())
+			return true;
+		const auto* header = reinterpret_cast<const uint8_t*>(g_base + kSquares);
+		auto* squares = *reinterpret_cast<uint8_t* const*>(header);
+		const uint32_t count = *reinterpret_cast<const uint32_t*>(header + 8);
+		if (!squares || count > 4096)
+			return true;
+		bool none = true;
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			uint8_t* square = squares + static_cast<size_t>(i) * 16;
+			if (*reinterpret_cast<const int32_t*>(square + 4) == 0 ||
+			    std::find(slots.begin(), slots.end(), *reinterpret_cast<const int32_t*>(square)) == slots.end())
+				continue;
+			none = false;
+			g_squareStep(square, 0, 0, "");
+		}
+		return none;
 	}
 }

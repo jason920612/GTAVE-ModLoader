@@ -1,4 +1,7 @@
 #pragma once
+#include <cstdint>
+#include <string>
+#include <vector>
 
 // The game's map of the world builder's new land (research/phase0.md §61.26). A land's pack brings it in the game's own
 // style (worldgen's minimap.cpp) and says what it has in land.json ("map": "name"; "radar": [column, row] of each supertile
@@ -21,4 +24,13 @@ namespace loader::game::minimap
 	// "loaded" with no dictionary there, 0x56FB80).
 	void Suspend();
 	void Resume();
+
+	// The game thread, from a sector switch's start until Resume: the lands being put away named no more on the pause
+	// map's squares (a square looking a picture up finds the next land's, or none).
+	void Going(const std::vector<std::string>& lands);
+
+	// The game thread, once a frame: the pause map's squares holding any of these texture dictionaries (their slots in the
+	// texture store) taken a step on toward letting them go, as the game's own let them go when not wanted (the render
+	// thread's last use waited for); true once none holds one.
+	bool LetGo(const std::vector<int32_t>& slots);
 }

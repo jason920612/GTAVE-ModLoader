@@ -23,6 +23,7 @@
 #include "../ui/notify.hpp"
 #include "content.hpp"
 #include "dlcpacks.hpp"
+#include "landfiles.hpp"
 #include "minimap.hpp"
 #include "natives.hpp"
 #include "text_override.hpp"
@@ -37,7 +38,7 @@ namespace loader::game::sectors
 			uint32_t hash = 0; // the name's hash, as the content manager has it
 			float box[4]{};    // min x, min y, max x, max y
 			bool dormant = false;
-			bool registered = false; // (its files in the game's stores: it was there this session - they stay when it goes)
+			bool registered = false; // (its files in the game's stores: there now, or put away and not given back yet)
 			std::map<std::string, uint32_t> files; // (its pack's files by extension, once counted)
 			// where its game coordinates are in the real world (land.json "projection": lat0, lon0, x0, y0, kx, ky - x = x0 +
 			// (lon - lon0) kx, y = y0 + (lat - lat0) ky), its own box ("world") and the edges a neighbouring sector goes on
@@ -72,6 +73,23 @@ namespace loader::game::sectors
 				ToWorld(world[2], world[3], n, e);
 				return projected && lat >= s && lat < n && lon >= w && lon < e;
 			}
+			void KeepFromEdges(float& x, float& y, float margin) const // (moved at least margin inside each of its open edges)
+			{
+				if (open.find('w') != std::string::npos)
+					x = std::max(x, world[0] + margin);
+				if (open.find('e') != std::string::npos)
+					x = std::min(x, world[2] - margin);
+				if (open.find('s') != std::string::npos)
+					y = std::max(y, world[1] + margin);
+				if (open.find('n') != std::string::npos)
+					y = std::min(y, world[3] - margin);
+			}
+			bool AwayFromEdges(float x, float y, float margin) const // (at least margin inside each of its open edges)
+			{
+				const auto isOpen = [&](char side) { return open.find(side) != std::string::npos; };
+				return (!isOpen('n') || y < world[3] - margin) && (!isOpen('s') || y > world[1] + margin) && (!isOpen('e') || x < world[2] - margin) &&
+				       (!isOpen('w') || x > world[0] + margin);
+			}
 		};
 		std::vector<Land> g_lands;
 		constexpr uint32_t kGroupStartup = 0x5BF6578F, kGroupMapSp = 0x578F99E2; // GROUP_STARTUP, GROUP_MAP_SP
@@ -100,9 +118,14 @@ namespace loader::game::sectors
 		constexpr uint64_t kClearAreaOfVehicles = 0x01C7B9B38428AEB6, kClearAreaOfPeds = 0xBE31FD6CE464AC59, kGetRandomVehicleInSphere = 0x386F6CE5BAF6091C,
 		                   kIsEntityAMissionEntity = 0x0A7B270912999B3C, kGetPedInVehicleSeat = 0xBB40DD2270B65366, kSetWaypointOff = 0xA7E4E2D361C2627F,
 		                   kClearGpsPlayerWaypoint = 0xFF4FB7C8CDFA3DA7, kClearGpsMultiRoute = 0x67EEDEA1B9BAFD94, kClearGpsCustomRoute = 0xE6DE0561D9232A64;
+		constexpr uint64_t kSetEntityHeading = 0x8E2530AA8ADA980E, kSetVehicleAsNoLongerNeeded = 0x629BFA74418D6239,
+		                   kHasCollisionLoadedAroundEntity = 0xE9676F61BC0B3321, kRequestCollisionAtCoord = 0x07503F7948F491A7,
+		                   kGetWaterHeight = 0xF6829842C06AE524;
 		constexpr float kOldPlace = 3000; // (the old land's place cleared: this far round where the player was)
-		// the edges: the switch when the player comes this near an open edge, and how far into the next land they arrive
-		constexpr float kEdge = 60, kArrive = 150;
+		// the edges: the switch when the player comes this near an open edge, and how far into the next land they arrive - no
+		// further than needs be (a road found at least kEdge + 15 in): each crossing skips that much of the way, and one back
+		// put them that much behind where they had turned
+		constexpr float kEdge = 60, kArrive = 80;
 		// where the player waits while a land is put away: Los Santos, away from any new land
 		constexpr float kHold[3] = {200, -900, 31};
 
@@ -112,7 +135,7 @@ namespace loader::game::sectors
 		// let the old land's navmeshes go (they are in its overlay, the start-up change set's: an archive's navmesh still
 		// loaded when the archive is taken away stopped the game, 0xCE4CD0's int3), then the old land's overlay out, the
 		// new one's in and its maps, the player put where they were going.
-		enum class Step { None, Fade, PutAway, SettleOld, Drain, Bring, SettleNew, Arrive };
+		enum class Step { None, Fade, Pictures, PutAway, SettleOld, Drain, Bring, SettleNew, Arrive };
 		struct Switching
 		{
 			Step step = Step::None;
@@ -121,31 +144,28 @@ namespace loader::game::sectors
 			float at[2]{};
 			ULONGLONG since = 0;
 			std::vector<std::string> leaving; // (the lands put away)
+			std::vector<bool> released;       // (their files given back to the stores)
 			float from[3]{};                  // (where the player was)
-			// the vehicle the player was in: made again where they arrive (its model, colours, heading, speed)
-			bool vehicle = false, modelAsked = false;
+			// the vehicle the player was in: the same one where they arrive - held in Los Santos meanwhile, a mission entity
+			// of ours till then if it was not one (`own`) -, or one like it if it is gone (its model, colours, heading, speed)
+			bool vehicle = false, modelAsked = false, own = false;
+			int32_t handle = 0;
 			uint32_t model = 0;
 			int32_t colours[2]{};
 			float heading = 0, speed = 0;
+			// put down where they arrive: the player or their vehicle, held there until the ground round it is in
+			int32_t landing = 0;
+			ULONGLONG landingSince = 0;
+			float landingZ = NAN; // (the ground's height there when it was chosen - a road's, or the ground found -, if known)
+			// how long each step took (by Step), the one being timed and since when
+			ULONGLONG took[9]{};
+			Step timed = Step::None;
+			ULONGLONG timedSince = 0;
+			bool toldPictures = false;
 		} g_switch;
 		ULONGLONG g_lastWatch = 0, g_ended = 0;
+		ULONGLONG g_lastAudit = 0; // (the stores looked over for objects loaded with none in them: landfiles::Audit)
 		std::vector<std::string> g_noNeighbour; // (open edges with no land beyond, told once)
-
-		// A land the stores had no room for (NoRoomFor): ModLoader\data\sector_next.json, {"land": ..., "at": [x, y]} - the
-		// game starts in that land next time (loader.json "worldSector"), and the player is put where they were going once
-		// story mode runs (the save it loads made elsewhere).
-		struct Next
-		{
-			std::string land;
-			float at[2]{};
-			ULONGLONG since = 0; // (story mode first seen running)
-		} g_next;
-		std::map<std::string, ULONGLONG> g_noRoomTold; // (when the player was last told, by land)
-
-		std::filesystem::path NextFile()
-		{
-			return paths::Get().root / L"data" / L"sector_next.json";
-		}
 
 		// Los Santos's far views (research/phase0.md §63): the long-range and LOD maps of its areas - their names in
 		// ModLoader\data\ls_far_maps.txt (worldgen ls-far: the game's own) - away while the player is on a new land (its
@@ -574,6 +594,30 @@ namespace loader::game::sectors
 				}
 		}
 
+		// The player's road node (the player info - the local player's ped, +0x434A958's +8, its +0x10A8 -: +0x290 the node,
+		// +0x1050 the link from it, 0xFFFF none): not looked for again while they wait in Los Santos, then read with the new
+		// land's road network - another region's node or none, and the game stopped (0xF02D58) a second after the switch.
+		// Set to none (a region past 0x3FF) before the networks change, as the code reading it (0xF02CE3) checks.
+		constexpr uintptr_t kWorldPlayer = 0x434A958, kReadsPlayerNode = 0xF02CE3;
+		constexpr uint8_t kReadsPlayerNodeCode[] = {0x48, 0x8B, 0x87, 0xA8, 0x10, 0x00, 0x00, 0x44, 0x8B, 0xA0, 0x90, 0x02, 0x00, 0x00};
+
+		void ForgetPlayerRoadNode()
+		{
+			const auto base = pattern::Module::Main().base;
+			if (std::memcmp(reinterpret_cast<const void*>(base + kReadsPlayerNode), kReadsPlayerNodeCode, sizeof(kReadsPlayerNodeCode)) != 0)
+			{
+				log::Warn("sectors: the player's road node is not where it was; it is left as it is");
+				return;
+			}
+			const auto* world = *reinterpret_cast<const uint8_t* const*>(base + kWorldPlayer);
+			const auto* ped = world ? *reinterpret_cast<const uint8_t* const*>(world + 8) : nullptr;
+			auto* info = ped ? *reinterpret_cast<uint8_t* const*>(ped + 0x10A8) : nullptr;
+			if (!info)
+				return;
+			*reinterpret_cast<uint32_t*>(info + 0x290) = 0xFFFFFFFF;
+			*reinterpret_cast<uint16_t*>(info + 0x1050) = 0xFFFF;
+		}
+
 		// How many navmeshes in the box are loaded, asked for or loading (-1: the module not found).
 		int NavMeshesIn(const float* box)
 		{
@@ -611,8 +655,9 @@ namespace loader::game::sectors
 
 		// The stores a land's files take slots in, by extension (the store is its streaming module: found by its vtable;
 		// its slot pool at +0x38 - +0x18 the size, +0x28 the slots used in the low 30 bits). A map group's revert leaves its
-		// archives' files registered (research/phase0.md §63.12): each land gone to in a session keeps its slots - the
-		// stores filled up on the second big land (fwBasePool::New, +0x15A7C0, breaks into int3 with no slot free).
+		// archives' files registered (research/phase0.md §63.12): a land put away gives them back (landfiles.cpp) - before
+		// that the stores had filled up on the second big land (fwBasePool::New, +0x15A7C0, breaks into int3 with no slot
+		// free).
 		struct Store
 		{
 			const char* extension;
@@ -711,6 +756,38 @@ namespace loader::game::sectors
 		}
 
 
+		void Finish();
+
+		// A switch given up once the old land's maps went: they come back (its files registered anew), and the player is put
+		// where they were - kept from its open edges, or the edge would start the switch again - by the arrival's own steps.
+		void BackToOldLand()
+		{
+			std::string back;
+			for (const std::string& name : g_switch.leaving)
+				if (Land* l = Find(name))
+				{
+					l->dormant = false;
+					l->registered = true;
+					content::Execute(l->hash, kGroupMapSp);
+					landfiles::PutBoxesBack(l->name);
+					back = l->name;
+				}
+			const Land* l = Find(back);
+			if (!l)
+			{
+				Finish();
+				return;
+			}
+			g_switch.to = back;
+			g_switch.at[0] = g_switch.from[0], g_switch.at[1] = g_switch.from[1];
+			l->KeepFromEdges(g_switch.at[0], g_switch.at[1], kEdge + kArrive);
+			g_switch.place = true;
+			g_switch.leaving.clear();
+			g_switch.released.clear();
+			g_switch.step = Step::SettleNew;
+			g_switch.since = GetTickCount64();
+		}
+
 		void Finish()
 		{
 			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
@@ -718,6 +795,19 @@ namespace loader::game::sectors
 			natives::Invoke<void>(kClearFocus);
 			natives::Invoke<void>(kDoScreenFadeIn, 1000);
 			minimap::Resume();
+			landfiles::Audit("the switch over");
+			if (g_switch.timed != Step::None)
+			{
+				auto& took = g_switch.took;
+				took[static_cast<size_t>(g_switch.timed)] += GetTickCount64() - g_switch.timedSince;
+				ULONGLONG total = 0;
+				for (const ULONGLONG t : took)
+					total += t;
+				log::Info("sectors: the switch took {:.1f} s (fade {:.1f}, pictures {:.1f}, maps away {:.1f}, settling {:.1f}, files back {:.1f}, the new "
+				          "land in {:.1f}, settling {:.1f}, arriving {:.1f})",
+				    total / 1000.0, took[1] / 1000.0, took[2] / 1000.0, took[3] / 1000.0, took[4] / 1000.0, took[5] / 1000.0, took[6] / 1000.0,
+				    took[7] / 1000.0, took[8] / 1000.0);
+			}
 			g_switch = {};
 			g_ended = GetTickCount64();
 		}
@@ -782,18 +872,8 @@ namespace loader::game::sectors
 			if (l.dormant)
 				log::Info("sectors: {} waits (it shares its place with the land there)", l.name);
 		}
-		// (a switch the stores had no room for: the game started again in the land the player was going to, and they are
-		// put where they were going once story mode runs)
-		std::ifstream next(NextFile());
-		const auto j = next ? nlohmann::json::parse(next, nullptr, false) : nlohmann::json();
-		if (j.is_object() && j.contains("land") && j.contains("at") && j["at"].is_array() && j["at"].size() == 2)
-			if (const Land* l = Find(j["land"].get<std::string>()); l && !l->dormant)
-			{
-				g_next = {l->name, {j["at"][0].get<float>(), j["at"][1].get<float>()}};
-				log::Info("sectors: the player to be put at {:.0f}, {:.0f} in {} (where they were going)", g_next.at[0], g_next.at[1], l->name);
-			}
-		next.close();
-		std::filesystem::remove(NextFile(), ec);
+		// (a restart file of an earlier loader: gone)
+		std::filesystem::remove(paths::Get().root / L"data" / L"sector_next.json", ec);
 	}
 
 	bool Dormant(const std::string& pack)
@@ -836,35 +916,13 @@ namespace loader::game::sectors
 		// (no place given: where the player is now - a save loaded in the other land's place)
 		const auto here = natives::Invoke<natives::ScrVector>(kGetEntityCoords, player, 1);
 		const float where[2] = {at ? at[0] : here.x, at ? at[1] : here.y};
-		// (a land not there before this session only when the stores have room for its files: else it is there at the
-		// game's next start)
-		if (!land->registered)
-			if (const std::string full = NoRoomFor(*land); !full.empty())
-			{
-				const ULONGLONG now = GetTickCount64();
-				ULONGLONG& told = g_noRoomTold[to];
-				if (!told || now - told > 30000)
-				{
-					told = now;
-					log::Warn("sectors: no room for {}'s files: {}; it is there at the game's next start", to, full);
-					std::error_code ec;
-					std::filesystem::create_directories(NextFile().parent_path(), ec);
-					nlohmann::json next = nlohmann::json::object();
-					next["land"] = to;
-					next["at"] = nlohmann::json::array({where[0], where[1]});
-					std::ofstream(NextFile(), std::ios::trunc) << next.dump() << "\n";
-					config::Get().worldSector = to;
-					config::Save();
-					ui::Notify("地圖", std::format("這次遊戲去過的地區太多，遊戲的資源表放不下 {} 了。請重新啟動遊戲，會直接從那裡繼續。", to));
-				}
-				return "no room for " + to + "'s files (" + full + ")";
-			}
 		g_switch = {Step::Fade, to, true, {where[0], where[1]}, GetTickCount64()};
 		g_switch.from[0] = here.x, g_switch.from[1] = here.y, g_switch.from[2] = here.z;
 		if (natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0))
 		{
 			const int32_t v = natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0);
 			g_switch.vehicle = true;
+			g_switch.handle = v;
 			g_switch.model = natives::Invoke<uint32_t>(kGetEntityModel, v);
 			natives::Invoke<void>(kGetVehicleColours, v, &g_switch.colours[0], &g_switch.colours[1]);
 			g_switch.heading = natives::Invoke<float>(kGetEntityHeading, v);
@@ -873,6 +931,7 @@ namespace loader::game::sectors
 		natives::Invoke<void>(kDoScreenFadeOut, 800);
 		DeleteParked();
 		log::Info("sectors: switching to {}", to);
+		landfiles::Audit("before the switch to " + to);
 		return "";
 	}
 
@@ -932,26 +991,6 @@ namespace loader::game::sectors
 			}
 		}
 
-		// The player put where they were going when the stores had no room (g_next): 5 s after story mode runs (the place
-		// of the save it loaded set by then), on the ground there once its collision is in (or after 25 s as it is).
-		void PlaceNext()
-		{
-			const ULONGLONG now = GetTickCount64();
-			if (!g_next.since)
-				g_next.since = now;
-			if (now - g_next.since < 5000)
-				return;
-			natives::Invoke<void>(kSetFocusPosAndVel, g_next.at[0], g_next.at[1], 30.0f, 0.0f, 0.0f, 0.0f);
-			float z = 0;
-			const bool ground = natives::Invoke<int32_t>(kGetGroundZFor3dCoord, g_next.at[0], g_next.at[1], 500.0f, &z, 0, 0) != 0;
-			if (!ground && now - g_next.since < 30000)
-				return;
-			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
-			natives::Invoke<void>(kSetEntityCoords, player, g_next.at[0], g_next.at[1], ground ? z + 1.0f : 60.0f, 0, 0, 0, 0);
-			natives::Invoke<void>(kClearFocus);
-			log::Info("sectors: the player at {:.0f}, {:.0f} in {} (where they were going)", g_next.at[0], g_next.at[1], g_next.land);
-			g_next = {};
-		}
 	}
 
 	void Tick()
@@ -966,17 +1005,24 @@ namespace loader::game::sectors
 						ApplyZones(l);
 						break;
 					}
-			if (!g_next.land.empty() && text_override::Ready())
-			{
-				PlaceNext();
-				return;
-			}
 			WatchFar();
 			WatchEdges();
 			WatchParked();
+			if (const ULONGLONG now = GetTickCount64(); now - g_lastAudit > 5000)
+			{
+				g_lastAudit = now;
+				landfiles::Audit("now");
+			}
 			return;
 		}
 		const ULONGLONG now = GetTickCount64(), spent = now - g_switch.since;
+		if (g_switch.step != g_switch.timed)
+		{
+			if (g_switch.timed != Step::None)
+				g_switch.took[static_cast<size_t>(g_switch.timed)] += now - g_switch.timedSince;
+			g_switch.timed = g_switch.step;
+			g_switch.timedSince = now;
+		}
 		const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
 		Land* to = Find(g_switch.to);
 		if (!to)
@@ -998,10 +1044,49 @@ namespace loader::game::sectors
 					break;
 				}
 				Hold(player);
+				// (their vehicle held beside them, out of the way of the old place's clearing - and not left where nothing is
+				// under it once the old land's maps go)
+				if (g_switch.handle && natives::Invoke<int32_t>(kDoesEntityExist, g_switch.handle))
+				{
+					if (!natives::Invoke<int32_t>(kIsEntityAMissionEntity, g_switch.handle))
+					{
+						natives::Invoke<void>(kSetEntityAsMissionEntity, g_switch.handle, 1, 1);
+						g_switch.own = true;
+					}
+					natives::Invoke<void>(kSetEntityCoords, g_switch.handle, kHold[0] + 25.0f, kHold[1], kHold[2], 0, 0, 0, 0);
+					natives::Invoke<void>(kFreezeEntityPosition, g_switch.handle, 1);
+				}
+				// the lands put away: those there in the new one's place - their pause map pictures let go first, while their
+				// archives are still there
+				for (const Land& l : g_lands)
+					if (&l != to && !l.dormant && Overlap(l, *to))
+						g_switch.leaving.push_back(l.name), g_switch.released.push_back(false);
+				minimap::Going(g_switch.leaving);
+				g_switch.step = Step::Pictures;
+				g_switch.since = now;
+			}
+			break;
+		case Step::Pictures:
+		{
+			bool done = true;
+			std::string held;
+			const bool tell = spent > 2000 && !g_switch.toldPictures;
+			for (const std::string& name : g_switch.leaving)
+				done = landfiles::LetPicturesGo(name, paths::Get().mods / name / L"dlc.rpf", tell ? &held : nullptr) && done;
+			if (tell && !done)
+			{
+				g_switch.toldPictures = true;
+				log::Info("sectors: the pause map's pictures still held after 2 s: {}", held);
+			}
+			if (done || spent > 10000)
+			{
+				if (!done)
+					log::Warn("sectors: the pause map's pictures of the land put away still held after 10 s; its maps go all the same");
 				g_switch.step = Step::PutAway;
 				g_switch.since = now;
 			}
 			break;
+		}
 		case Step::PutAway:
 			// the old land's maps away (the sea and the map's pictures off it at once; the radar's supertiles let go of the
 			// old land's dictionaries first)
@@ -1013,16 +1098,16 @@ namespace loader::game::sectors
 			natives::Invoke<void>(kClearGpsPlayerWaypoint);
 			natives::Invoke<void>(kClearGpsMultiRoute);
 			natives::Invoke<void>(kClearGpsCustomRoute);
-			for (Land& l : g_lands)
-				if (&l != to && !l.dormant && Overlap(l, *to))
+			for (const std::string& name : g_switch.leaving)
+				if (Land* l = Find(name))
 				{
-					LetArchetypeFilesGo(l.name);
-					content::Revert(l.hash, kGroupMapSp);
+					LetArchetypeFilesGo(l->name);
+					content::Revert(l->hash, kGroupMapSp);
 					ClearOldPlace();
-					l.dormant = true;
-					g_switch.leaving.push_back(l.name);
-					log::Info("sectors: {}'s maps put away", l.name);
+					l->dormant = true;
+					log::Info("sectors: {}'s maps put away", l->name);
 				}
+			landfiles::Audit("the old land's maps put away");
 			g_switch.step = Step::SettleOld;
 			g_switch.since = GetTickCount64();
 			break;
@@ -1030,6 +1115,7 @@ namespace loader::game::sectors
 			if (Settled(spent))
 			{
 				Hold(player); // (as the world was cleared)
+				landfiles::Audit("the old land's maps settled");
 				g_switch.step = Step::Drain;
 				g_switch.since = now;
 			}
@@ -1040,32 +1126,50 @@ namespace loader::game::sectors
 			for (const std::string& name : g_switch.leaving)
 				if (const Land* l = Find(name))
 					busy = std::max(busy, NavMeshesIn(l->box));
-			if (busy <= 0)
+			// (and the old land's files given back to the stores, once the streaming engine has unloaded them all - after
+			// 30 s what is still loaded keeps its slot: the files of every land gone to had stayed registered, the stores full
+			// on the second big land)
+			bool released = true;
+			for (size_t i = 0; i < g_switch.leaving.size(); ++i)
+				if (!g_switch.released[i])
+					if (Land* l = Find(g_switch.leaving[i]))
+					{
+						if (landfiles::Release(l->name, paths::Get().mods / l->name / L"dlc.rpf", spent > 30000).done)
+							g_switch.released[i] = true, l->registered = false;
+						else
+							released = false;
+					}
+			if (busy <= 0 && released)
 			{
 				if (busy < 0)
 					log::Warn("sectors: the navmeshes' streaming module was not found; switching without waiting for them");
+				landfiles::Audit("the old land's files given back");
 				g_switch.step = Step::Bring;
 			}
 			else if (spent > 60000)
 			{
-				// (given up: the old land's maps back)
 				log::Warn("sectors: {} navmeshes of the old land still in use after 60 s; the switch to {} is given up", busy, to->name);
-				for (const std::string& name : g_switch.leaving)
-					if (Land* l = Find(name))
-					{
-						l->dormant = false;
-						content::Execute(l->hash, kGroupMapSp);
-					}
-				Finish();
+				BackToOldLand();
 			}
 			break;
 		}
 		case Step::Bring:
+			// (room in the stores for the new land's files - with the old land's given back there always is: else, rather than
+			// a full pool's int3, the switch given up and the old land's maps back)
+			if (!to->registered)
+				if (const std::string full = NoRoomFor(*to); !full.empty())
+				{
+					log::Error("sectors: no room for {}'s files after the old land's went back ({}); the switch is given up", to->name, full);
+					ui::Notify("地圖", std::format("切換到 {} 失敗：遊戲的資源表沒有空位。", to->name));
+					BackToOldLand();
+					break;
+				}
 			// the old land's overlay (road network, navmeshes) out, the new one's in, the road network's regions dropped (they
 			// load again from the new files), then its maps
 			natives::Invoke<void>(kLoadAllObjectsNow);
 			ClearOldPlace();
 			ClearJunctions();
+			ForgetPlayerRoadNode();
 			for (const std::string& name : g_switch.leaving)
 				if (const Land* l = Find(name))
 					content::Revert(l->hash, kGroupStartup);
@@ -1077,9 +1181,11 @@ namespace loader::game::sectors
 				paths[0x4BE7] = paths[0x4BE6] ^ 1;
 			}
 			content::Execute(to->hash, kGroupMapSp);
+			landfiles::PutBoxesBack(to->name);
 			config::Get().worldSector = to->name;
 			config::Save();
 			log::Info("sectors: {} is there now", to->name);
+			landfiles::Audit("the new land's maps in");
 			if (!g_zonesOf.empty())
 				ApplyZones(*to);
 			g_switch.step = Step::SettleNew;
@@ -1088,6 +1194,7 @@ namespace loader::game::sectors
 		case Step::SettleNew:
 			if (Settled(spent))
 			{
+				landfiles::PutBoxesBack(to->name);
 				g_switch.step = Step::Arrive;
 				g_switch.since = now;
 				if (g_switch.place)
@@ -1106,42 +1213,98 @@ namespace loader::game::sectors
 				Finish();
 				break;
 			}
-			// on the ground there, once its collision is in (or after 20 s, as it is); in the vehicle they came in, on the
-			// nearest road, going their way
-			if (g_switch.vehicle && !g_switch.modelAsked)
+			// (put down: held until the ground round them is in - a car put on a road 200 m from where the collision had come
+			// in fell through the world on four of ten edge crossings -, then on the ground and on their way)
+			if (g_switch.landing)
+			{
+				// (the collision round them in, and the ground under them where it was when the place was chosen: a road just
+				// given its collision back had only the sea floor under it for a moment, and the car went down there)
+				const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, g_switch.landing, 1);
+				float gz = 0;
+				const bool below = natives::Invoke<int32_t>(kGetGroundZFor3dCoord, p.x, p.y, p.z + 5.0f, &gz, 0, 0) != 0;
+				const bool there = std::isnan(g_switch.landingZ) || (below && std::fabs(gz - g_switch.landingZ) < 10);
+				const bool ground = natives::Invoke<int32_t>(kHasCollisionLoadedAroundEntity, g_switch.landing) != 0 && there;
+				if (!ground && now - g_switch.landingSince < 15000)
+					break;
+				if (!ground)
+					log::Warn("sectors: the ground round the player not in after 15 s; let go as they are");
+				const bool inVehicle = g_switch.landing != player;
+				if (ground && below)
+					natives::Invoke<void>(kSetEntityCoords, g_switch.landing, p.x, p.y, gz + (inVehicle ? 0.5f : 1.0f), 0, 0, 0, 0);
+				if (inVehicle)
+				{
+					natives::Invoke<void>(kSetVehicleOnGroundProperly, g_switch.landing, 5.0f);
+					natives::Invoke<void>(kFreezeEntityPosition, g_switch.landing, 0);
+					natives::Invoke<void>(kSetVehicleEngineOn, g_switch.landing, 1, 1, 0);
+					natives::Invoke<void>(kSetVehicleForwardSpeed, g_switch.landing, g_switch.speed);
+					if (g_switch.own)
+					{
+						int32_t v = g_switch.landing;
+						natives::Invoke<void>(kSetVehicleAsNoLongerNeeded, &v);
+					}
+				}
+				Finish();
+				break;
+			}
+			// on the ground there once its collision is in (or after 20 s, as it is); in the vehicle they came in - the same
+			// one, or one like it if it is gone -, on the nearest road, going their way
+			const bool carried = g_switch.handle && natives::Invoke<int32_t>(kDoesEntityExist, g_switch.handle);
+			if (g_switch.vehicle && !carried && !g_switch.modelAsked)
 			{
 				natives::Invoke<void>(kRequestModel, g_switch.model);
 				g_switch.modelAsked = true;
 			}
-			float z = 0;
+			float z = 0, water = 0;
 			const bool ground = natives::Invoke<int32_t>(kGetGroundZFor3dCoord, g_switch.at[0], g_switch.at[1], 500.0f, &z, 0, 0) != 0;
-			const bool model = !g_switch.vehicle || natives::Invoke<int32_t>(kHasModelLoaded, g_switch.model) != 0;
-			if ((ground && model) || spent > 20000)
+			// (open water there - the sea, a bay, a swamp -: nothing to wait for, they come up on its surface)
+			const bool wet = !ground && natives::Invoke<int32_t>(kGetWaterHeight, g_switch.at[0], g_switch.at[1], 30.0f, &water) != 0;
+			const bool model = !g_switch.vehicle || carried || natives::Invoke<int32_t>(kHasModelLoaded, g_switch.model) != 0;
+			if (!((ground || wet) && model) && spent < 20000)
+				break;
+			if (wet)
+				z = water;
+			float x = g_switch.at[0], y = g_switch.at[1];
+			g_switch.landingZ = ground ? z : NAN;
+			if (g_switch.vehicle && model)
 			{
-				if (g_switch.vehicle && model)
+				float h = g_switch.heading, nodeHeading = 0;
+				natives::ScrVector node{};
+				// (not a road along the edge they came over: the edge watch would send them back at once, and on again)
+				if (natives::Invoke<int32_t>(kGetClosestVehicleNodeWithHeading, x, y, z, &node, &nodeHeading, 1, 3.0f, 0) &&
+				    std::hypot(node.x - x, node.y - y) < 200 && to->AwayFromEdges(node.x, node.y, kEdge + 15))
 				{
-					float x = g_switch.at[0], y = g_switch.at[1], h = g_switch.heading, nodeHeading = 0;
-					natives::ScrVector node{};
-					if (natives::Invoke<int32_t>(kGetClosestVehicleNodeWithHeading, x, y, z, &node, &nodeHeading, 1, 3.0f, 0) &&
-					    std::hypot(node.x - x, node.y - y) < 200)
-					{
-						x = node.x, y = node.y, z = node.z;
-						h = std::fabs(std::remainder(nodeHeading - g_switch.heading, 360.0f)) <= 90 ? nodeHeading : nodeHeading + 180;
-					}
-					const int32_t v = natives::Invoke<int32_t>(kCreateVehicle, g_switch.model, x, y, z + 0.5f, h, 0, 0, 0);
-					natives::Invoke<void>(kSetVehicleColours, v, g_switch.colours[0], g_switch.colours[1]);
-					natives::Invoke<void>(kSetVehicleOnGroundProperly, v, 5.0f);
-					natives::Invoke<void>(kFreezeEntityPosition, player, 0);
-					natives::Invoke<void>(kSetPedIntoVehicle, player, v, -1);
-					natives::Invoke<void>(kSetVehicleEngineOn, v, 1, 1, 0);
-					natives::Invoke<void>(kSetVehicleForwardSpeed, v, g_switch.speed);
-					natives::Invoke<void>(kSetModelAsNoLongerNeeded, g_switch.model);
+					x = node.x, y = node.y, z = node.z;
+					h = std::fabs(std::remainder(nodeHeading - g_switch.heading, 360.0f)) <= 90 ? nodeHeading : nodeHeading + 180;
+					g_switch.landingZ = node.z;
+				}
+				int32_t v = g_switch.handle;
+				if (carried)
+				{
+					natives::Invoke<void>(kSetEntityCoords, v, x, y, z + 0.5f, 0, 0, 0, 0);
+					natives::Invoke<void>(kSetEntityHeading, v, h);
 				}
 				else
-					natives::Invoke<void>(kSetEntityCoords, player, g_switch.at[0], g_switch.at[1], z + 1.0f, 0, 0, 0, 0);
-				log::Info("sectors: the player at {:.0f}, {:.0f} in {}{}", g_switch.at[0], g_switch.at[1], to->name, g_switch.vehicle ? ", in their vehicle" : "");
-				Finish();
+				{
+					v = natives::Invoke<int32_t>(kCreateVehicle, g_switch.model, x, y, z + 0.5f, h, 0, 0, 0);
+					natives::Invoke<void>(kSetVehicleColours, v, g_switch.colours[0], g_switch.colours[1]);
+					natives::Invoke<void>(kSetModelAsNoLongerNeeded, g_switch.model);
+					g_switch.own = true;
+				}
+				natives::Invoke<void>(kFreezeEntityPosition, v, 1);
+				natives::Invoke<void>(kFreezeEntityPosition, player, 0);
+				natives::Invoke<void>(kSetPedIntoVehicle, player, v, -1);
+				g_switch.landing = v;
 			}
+			else
+			{
+				natives::Invoke<void>(kSetEntityCoords, player, x, y, z + 1.0f, 0, 0, 0, 0);
+				g_switch.landing = player; // (still held from the switch's start)
+			}
+			natives::Invoke<void>(kSetFocusPosAndVel, x, y, z, 0.0f, 0.0f, 0.0f);
+			natives::Invoke<void>(kRequestCollisionAtCoord, x, y, z);
+			g_switch.landingSince = now;
+			log::Info("sectors: the player at {:.0f}, {:.0f} in {}{}", x, y, to->name,
+			    !g_switch.vehicle ? "" : carried ? ", in their vehicle" : ", in a vehicle like theirs");
 			break;
 		}
 		case Step::None:
@@ -1191,12 +1354,6 @@ namespace loader::game::sectors
 		const auto it = j.find(std::format("{:08x}", static_cast<uint32_t>(save)));
 		if (it == j.end() || !it->is_string())
 			return;
-		// (the game started again for a land the stores had no room for: that land stays)
-		if (!g_next.land.empty())
-		{
-			log::Info("sectors: the save loaded was made in {}; {} stays (the player was going there)", it->get<std::string>(), g_next.land);
-			return;
-		}
 		// (the first land of the save's that waits now: switched to, the player kept where the save put them)
 		const std::string lands = it->get<std::string>();
 		for (size_t a = 0; a < lands.size();)

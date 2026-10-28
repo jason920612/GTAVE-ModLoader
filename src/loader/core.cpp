@@ -23,6 +23,7 @@
 #include "debug/animprobe.hpp"
 #include "debug/skelhook.hpp"
 #include "debug/hangdump.hpp"
+#include "debug/watchdog.hpp"
 #include "debug/scripttrace.hpp"
 #include "debug/bootscript.hpp"
 #include "game/char4.hpp"
@@ -339,6 +340,7 @@ namespace loader::core
 		game::pose::Install();
 		game::scripts::Install();
 		game::arrayfault::Install();
+		debug::watchdog::Install();
 		debug::hangdump::Start();
 		debug::remote::Start();
 		debug::animprobe::StartIfRequested();

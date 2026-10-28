@@ -84,13 +84,12 @@ namespace loader::game::pools
 		// the camera came to a palm-lined street (research/phase0.md §61.20). Raising "Dummy Object" or "Building" much
 		// further (40000 / 100000) made the game fail at start: their memory comes from a fixed budget. Parked cars: a
 		// town's driveways and car parks round the player (research/phase0.md §63), the game's 800 car generators not enough.
-		// The files of every land gone to in a session stay registered (a map group's revert leaves its archives' store
-		// slots: research/phase0.md §63.12) - eleven Florida sectors took 10400 drawables, 6500 collision files, 3500
-		// dictionaries and 2500 maps each on average -, so the stores they fill hold about sixteen lands over the game's
-		// own (with these sizes the streaming objects of all modules come to about 980000, under 2^20); sectors.cpp will
-		// not go to a new land the stores cannot take.
-		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"DrawableStore", 241250}, {"TxdStore", 140250}, {"StaticBounds", 116700},
-		    {"MapDataStore", 46020}, {"MapTypesStore", 2700}, {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}, {"CCargen", 4000}};
+		// A land's files take a slot each in the stores while it is there (a big Florida sector 20000 drawables, 7600
+		// collision files, 4000 dictionaries, 3000 maps); one put away gives them back (landfiles.cpp, research/phase0.md
+		// §63.12-63.14), so the stores hold the game's own and two such lands, with room to spare for files the streaming
+		// engine could not unload in time (the streaming objects of all modules about 800000 with these sizes).
+		constexpr std::pair<std::string_view, uint32_t> kWorldPools[] = {{"DrawableStore", 161250}, {"TxdStore", 120250}, {"StaticBounds", 56700},
+		    {"MapDataStore", 26020}, {"MapTypesStore", 2700}, {"Dummy Object", 24000}, {"Building", 70000}, {"phInstGta", 32000}, {"CCargen", 4000}};
 
 		// Stores that need a size of their own (SetMinimum), by name.
 		std::vector<std::pair<std::string, uint32_t>> g_minimum;

@@ -19,6 +19,7 @@
 #include "../log.hpp"
 #include "../paths.hpp"
 #include "../pattern.hpp"
+#include "landfiles.hpp"
 #include "pointers.hpp"
 #include "script.hpp"
 #include "scripts.hpp"
@@ -88,6 +89,39 @@ namespace loader::game::arrayfault
 		// stack overflows) are logged with the running script, to tell a crash in rewritten script code from one
 		// elsewhere, and the game's return addresses found on the stack.
 		uintptr_t g_moduleBase = 0, g_moduleEnd = 0;
+		constexpr uintptr_t kRemoveObjectNoObject = 0xCE4FB2; // (its int3: a resource loaded, its store's object null)
+
+		// The call chain, unwound frame by frame with the modules' own unwind data (the stack's words alone also turn up
+		// return addresses long dead in big frames): "<module>+<offset>" each.
+		std::string Frames(const CONTEXT& context)
+		{
+			CONTEXT c = context;
+			std::string out;
+			for (int i = 0; i < 24 && c.Rip; ++i)
+			{
+				HMODULE module = nullptr;
+				wchar_t path[MAX_PATH] = L"?";
+				if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				        reinterpret_cast<LPCWSTR>(c.Rip), &module))
+					GetModuleFileNameW(module, path, MAX_PATH);
+				out += std::format(" {}+{:#x}", std::filesystem::path(path).stem().string(), c.Rip - reinterpret_cast<uintptr_t>(module));
+				DWORD64 imageBase = 0;
+				if (RUNTIME_FUNCTION* f = RtlLookupFunctionEntry(c.Rip, &imageBase, nullptr))
+				{
+					void* data = nullptr;
+					DWORD64 frame = 0;
+					RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, f, &c, &data, &frame, nullptr);
+				}
+				else
+				{
+					// (a leaf: its return address at the top of the stack)
+					c.Rip = *reinterpret_cast<const DWORD64*>(c.Rsp);
+					c.Rsp += 8;
+				}
+			}
+			return out;
+		}
+
 		LONG CALLBACK OnException(EXCEPTION_POINTERS* e)
 		{
 			const DWORD code = e->ExceptionRecord->ExceptionCode;
@@ -129,6 +163,12 @@ namespace loader::game::arrayfault
 			log::Warn("  rax {:#x} rbx {:#x} rcx {:#x} rdx {:#x} rsi {:#x} rdi {:#x} rbp {:#x} rsp {:#x} r8 {:#x} r9 {:#x} r10 {:#x} r11 {:#x} r12 {:#x} r13 {:#x} "
 			          "r14 {:#x} r15 {:#x}; [rsp]{}",
 			    c.Rax, c.Rbx, c.Rcx, c.Rdx, c.Rsi, c.Rdi, c.Rbp, c.Rsp, c.R8, c.R9, c.R10, c.R11, c.R12, c.R13, c.R14, c.R15, words);
+			if (code != EXCEPTION_STACK_OVERFLOW)
+				log::Warn("  calls:{}", Frames(c));
+			// (the streaming engine's RemoveObject on an object loaded with no object in its store: which - the store at
+			// [rsp + 0x30], the slot at [rsp + 0x2C])
+			if (c.Rip - g_moduleBase == kRemoveObjectNoObject)
+				log::Warn("  the object: {}", landfiles::Describe(*reinterpret_cast<void* const*>(c.Rsp + 0x30), *reinterpret_cast<const int32_t*>(c.Rsp + 0x2C)));
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
 

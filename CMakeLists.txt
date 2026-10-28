@@ -59,6 +59,7 @@ add_library(loader SHARED
     src/loader/game/playarea.cpp
     src/loader/game/content.cpp
     src/loader/game/sectors.cpp
+    src/loader/game/landfiles.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp
@@ -90,6 +91,7 @@ add_library(loader SHARED
     src/loader/debug/skelhook.cpp
     src/loader/debug/dred.cpp
     src/loader/debug/remote.cpp
+    src/loader/debug/watchdog.cpp
     src/loader/game/dlcpacks.cpp
     src/loader/game/pools.cpp
     src/loader/convert/resource.cpp
@@ -116,7 +118,7 @@ target_compile_options(loader PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /utf-8 /perm
 target_include_directories(loader PRIVATE sdk/include ue5/Source/GTAVRenderer) # (GTAVBridgeProtocol.h)
 target_link_libraries(loader PRIVATE minhook nlohmann_json::nlohmann_json imgui winhttp d3d12 dxgi d3dcompiler shell32 ole32 windowscodecs bcrypt ws2_32 version shlwapi wintrust crypt32 delayimp)
 # Only needed after startup (crossmap download, overlay); keep them out of DllMain.
-target_link_options(loader PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:d3d12.dll /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll /DELAYLOAD:shell32.dll /DELAYLOAD:ole32.dll /DELAYLOAD:bcrypt.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:shlwapi.dll /DELAYLOAD:wintrust.dll /DELAYLOAD:crypt32.dll /DEBUG /OPT:REF /OPT:ICF)
+target_link_options(loader PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:d3d12.dll /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll /DELAYLOAD:shell32.dll /DELAYLOAD:ole32.dll /DELAYLOAD:bcrypt.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:shlwapi.dll /DELAYLOAD:wintrust.dll /DELAYLOAD:crypt32.dll /DEBUG /MAP /OPT:REF /OPT:ICF)
 
 # Research tool: runs the fourth-character rewrite (src/loader/char4) on extracted scripts. Not default.
 add_executable(char4gen EXCLUDE_FROM_ALL tools/char4gen/main.cpp src/loader/char4/program.cpp src/loader/char4/rewrite.cpp
