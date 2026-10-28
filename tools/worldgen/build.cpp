@@ -4188,7 +4188,7 @@ namespace worldgen::build
 		ydr::Material railTrackMaterial = asphalt, railBedMaterial = asphalt, railSteelMaterial = asphalt, cableMaterial;
 		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial; // (the barriers')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
-		ydr::Material patchDecal, potholeDecal, breakupDecal;
+		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal;
 		{
 			std::map<std::pair<std::string, std::string>, std::string> copied; // (dictionary, texture) -> our name
 			// (treat: 1 a ground's texture, Flatten'ed - in the format it had; 2 also made Neutral, a tinted layer's)
@@ -4500,7 +4500,8 @@ namespace worldgen::build
 				pavedMaterials[k].Texture(kBumpTex, normal);
 				pavedMaterials[k].Texture(kSpecularTex, specular);
 			}
-			if (!surfaces.patches.indices.empty() || !surfaces.potholes.indices.empty() || !surfaces.breakups.indices.empty())
+			if (!surfaces.patches.indices.empty() || !surfaces.potholes.indices.empty() || !surfaces.breakups.indices.empty() ||
+			    !surfaces.legends.indices.empty())
 			{
 				ydr::Material decal;
 				if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, decal, error))
@@ -4543,6 +4544,15 @@ namespace worldgen::build
 					patchDecal.Texture(kDiffuseTex, o.name + "_patch");
 					patchDecal.Texture(kBumpTex, o.name + "_flat_n");
 					patchDecal.Texture(kSpecularTex, o.name + "_patch_s");
+				}
+				// (STOP before a stop sign's stop line: our picture of the letters)
+				if (!surfaces.legends.indices.empty())
+				{
+					shared.push_back(texture::Make(o.name + "_stop", roads::StopPicture(), texture::Format::Bc3, true));
+					legendDecal = decal;
+					legendDecal.Texture(kDiffuseTex, o.name + "_stop");
+					legendDecal.Texture(kBumpTex, o.name + "_flat_n");
+					legendDecal.Texture(kSpecularTex, o.name + "_patch_s");
 				}
 			}
 		}
@@ -4748,7 +4758,7 @@ namespace worldgen::build
 			toWays = raster::DistanceTo(off, 1);
 		}
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
-		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.markings,
+		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.legends, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
 		         &fences.boards, &fences.block, &fences.concrete, &fences.iron})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -5682,6 +5692,7 @@ namespace worldgen::build
 			add(patchDecal, surfaces.patches);
 			add(potholeDecal, surfaces.potholes);
 			add(breakupDecal, surfaces.breakups);
+			add(legendDecal, surfaces.legends);
 			// (where the street panoramas see the ground - their blocks' alpha over 0 -: their paint, not ours - our markings'
 			// triangles there left out)
 			std::map<std::pair<int, int>, std::vector<uint8_t>> seenGround; // (each block's alpha, rows from the north)

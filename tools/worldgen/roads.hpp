@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "paving.hpp"
+#include "texture.hpp"
 #include "world.hpp"
 #include "ydr.hpp"
 
@@ -132,6 +133,7 @@ namespace worldgen::roads
 		Mesh structure;                           // bridges' decks, parapets and piers (concrete)
 		Mesh railTrack, railBed, railSteel;       // railways: the track (sleepers on ballast), the bed's shoulders, the rails
 		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
+		Mesh legends;                             // STOP painted before a stop sign's stop line (StopPicture, a decal)
 		std::vector<std::pair<paving::Feature::Kind, P3>> wear; // where each feature is (for checking)
 		Collision collision;
 		// the ground under the roads: footprints (asphalt and sidewalks) for lowering the terrain below them
@@ -140,6 +142,11 @@ namespace worldgen::roads
 	};
 
 	constexpr float kSidewalk = 2.6f, kKerb = 0.15f, kCurbTop = 0.2f;
+
+	// The STOP legend's picture: the four letters side by side, 2.5 times as tall as wide (as they are painted, to be read
+	// at a driver's low angle), white; alpha their shapes. u across the lane from the driver's left, v from the letters'
+	// tops (away from the driver).
+	texture::Image StopPicture();
 
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).

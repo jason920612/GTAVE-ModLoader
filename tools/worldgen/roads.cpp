@@ -508,6 +508,34 @@ namespace worldgen::roads
 			}
 		}
 
+		// a letter's strokes in a cell of the STOP picture (x0..x1, y0..y1 pixels; strokes 22 % of the cell's width thick
+		// across, 9 % of its height along - the same paint width once stretched 2.5 times)
+		void Letter(texture::Image& im, char letter, int x0, int x1, int y0, int y1)
+		{
+			const int tx = std::max(2, (x1 - x0) * 22 / 100), ty = std::max(2, (y1 - y0) * 9 / 100), ym = (y0 + y1) / 2;
+			const auto box = [&](int a0, int a1, int b0, int b1) {
+				for (int y = std::max(0, b0); y < std::min(im.height, b1); ++y)
+					for (int x = std::max(0, a0); x < std::min(im.width, a1); ++x)
+						im.At(x, y) = {245, 245, 240, 255};
+			};
+			switch (letter)
+			{
+			case 'S':
+				box(x0, x1, y0, y0 + ty), box(x0, x1, ym - ty / 2, ym + ty / 2 + 1), box(x0, x1, y1 - ty, y1);
+				box(x0, x0 + tx, y0, ym), box(x1 - tx, x1, ym, y1);
+				break;
+			case 'T':
+				box(x0, x1, y0, y0 + ty), box((x0 + x1) / 2 - tx / 2, (x0 + x1) / 2 + tx / 2 + 1, y0, y1);
+				break;
+			case 'O':
+				box(x0, x1, y0, y0 + ty), box(x0, x1, y1 - ty, y1), box(x0, x0 + tx, y0, y1), box(x1 - tx, x1, y0, y1);
+				break;
+			case 'P':
+				box(x0, x0 + tx, y0, y1), box(x0, x1, y0, y0 + ty), box(x0, x1, ym - ty / 2, ym + ty / 2 + 1), box(x1 - tx, x1, y0, ym);
+				break;
+			}
+		}
+
 		// Divided roads' medians (research/phase0.md §61.27). OpenStreetMap draws a road with a painted median or a centre
 		// turn lane as two one-way carriageways a few metres apart, often with short links across between them (its turn
 		// lanes and U-turns). The space between two such carriageways (one-way streets going opposite ways, nothing else
@@ -1058,6 +1086,18 @@ namespace worldgen::roads
 			e.z.front() = n.vertices[e.a].z;
 			e.z.back() = n.vertices[e.b].z;
 		}
+	}
+
+	texture::Image StopPicture()
+	{
+		// (512 across, 512 along: four cells across with gaps, the letters filling their height; white everywhere, so that
+		// the cut-out's edges stay white as it shrinks)
+		texture::Image im(512, 512, {245, 245, 240, 0});
+		const int cell = 512 / 4, gap = 14;
+		const char letters[] = {'S', 'T', 'O', 'P'};
+		for (int k = 0; k < 4; ++k)
+			Letter(im, letters[k], k * cell + gap / 2, (k + 1) * cell - gap / 2, 10, 502);
+		return im;
 	}
 
 	void Geometry(const Network& source, Surfaces& out, const std::function<bool(float, float)>& planted, const std::function<float(float, float)>& ground)
@@ -1680,6 +1720,52 @@ namespace worldgen::roads
 				if (painted)
 					b.Marking(stopLine, lz, ls, std::vector<float>(2, 0.0f), 0.5f, kStripeU0, kStripeU1, 2.0f);
 			};
+			// (a STOP legend in each lane coming in to a stop sign, 1.8 m before its stop line, 2.4 m long, 85 % of the lane
+			// wide - Tallahassee's stop-sign approaches have them painted; the reviewers missed them on four views)
+			const auto legend = [&](bool atB) {
+				const int lanes = atB ? e.forward : e.backward;
+				const float top = atB ? sEnd - 6.0f : sStart + 6.0f, bottom = atB ? sEnd - 8.4f : sStart + 8.4f;
+				if (!lanes || !painted || std::min(top, bottom) < sStart + 1 || std::max(top, bottom) > sEnd - 1)
+					return;
+				const auto pointAt = [&](float sv, P2& q, P2& d, float& qz) {
+					for (size_t k = 0; k + 1 < p.size(); ++k)
+						if (s[k + 1] >= sv || k + 2 == p.size())
+						{
+							const float t = std::clamp((sv - s[k]) / std::max(1e-3f, s[k + 1] - s[k]), 0.0f, 1.0f);
+							q = {p[k][0] + (p[k + 1][0] - p[k][0]) * t, p[k][1] + (p[k + 1][1] - p[k][1]) * t};
+							d = Dir(p[k], p[k + 1]);
+							qz = z[k] + (z[k + 1] - z[k]) * t;
+							return;
+						}
+				};
+				P2 qt{}, dt{}, qb{}, db{};
+				float zt = 0, zb = 0;
+				pointAt(top, qt, dt, zt);
+				pointAt(bottom, qb, db, zb);
+				const size_t i = atB ? p.size() - 1 : 0;
+				const float c = centreAt[i], turn = turnAt[i], hw = 0.425f * w;
+				for (int j = 0; j < lanes; ++j)
+				{
+					const float o = atB ? c - (j + 0.5f) * w : c + turn + (j + 0.5f) * w;
+					// (the driver's right: right of a -> b going to b, left of it coming to a)
+					const P2 lt = Left(dt), lb = Left(db);
+					const float side = atB ? -1.0f : 1.0f;
+					const auto at = [&](const P2& q, const P2& l, float zq, float across) {
+						return P3{q[0] + l[0] * (o + across * side), q[1] + l[1] * (o + across * side), zq + 0.014f};
+					};
+					auto colour = kDecalColour;
+					const uint32_t tl = b.Add(out.legends, at(qt, lt, zt, -hw), {0, 0, 1}, {0, 0}, colour);
+					const uint32_t tr = b.Add(out.legends, at(qt, lt, zt, hw), {0, 0, 1}, {1, 0}, colour);
+					const uint32_t br = b.Add(out.legends, at(qb, lb, zb, hw), {0, 0, 1}, {1, 1}, colour);
+					const uint32_t bl = b.Add(out.legends, at(qb, lb, zb, -hw), {0, 0, 1}, {0, 1}, colour);
+					// (anticlockwise from above whichever way the driver comes)
+					const P3 &a3 = out.legends.vertices[tl].position, &b3 = out.legends.vertices[bl].position, &c3 = out.legends.vertices[br].position;
+					if ((b3[0] - a3[0]) * (c3[1] - a3[1]) - (b3[1] - a3[1]) * (c3[0] - a3[0]) > 0)
+						b.Tri(out.legends, tl, bl, br), b.Tri(out.legends, tl, br, tr);
+					else
+						b.Tri(out.legends, tl, br, bl), b.Tri(out.legends, tl, tr, br);
+				}
+			};
 			const auto crossing = [&](bool atB) {
 				const size_t i = atB ? p.size() - 1 : 0;
 				const float h = halfAt[i];
@@ -1701,11 +1787,11 @@ namespace worldgen::roads
 			if (crossB && streets[e.b] >= 3 && (mapped ? e.crossingB : walked && n.vertices[static_cast<size_t>(e.b)].signals))
 				crossing(true);
 			else if (crossB && e.stopB && e.forward)
-				stopLine(true);
+				stopLine(true), legend(true);
 			if (crossA && streets[e.a] >= 3 && (mapped ? e.crossingA : walked && n.vertices[static_cast<size_t>(e.a)].signals))
 				crossing(false);
 			else if (crossA && e.stopA && e.backward)
-				stopLine(false);
+				stopLine(false), legend(false);
 			// this edge's ends at junctions
 			for (const bool atA : {true, false})
 			{
