@@ -1432,14 +1432,19 @@ namespace worldgen::build
 				if (edge < o.border + 60 * Noise(c[0] * 3, c[1] * 3))
 					land.At(i, j) = kWater;
 			}
-		// (a picture of the classes, for checking: water, land, beach, built-up, park, paved)
+		// (a picture of the classes, for checking and for zones.py: water, land, beach, built-up, park, paved - over the box,
+		// as zones.py reads it: the grid reaches `wide` past it; over the whole grid it had put every block's zone kilometres
+		// off, the two lands' zones in their band different)
 		{
 			const std::array<uint8_t, 3> colours[] = {{40, 90, 160}, {150, 190, 110}, {235, 220, 160}, {180, 170, 160}, {90, 150, 70}, {120, 120, 120}};
-			std::vector<std::array<uint8_t, 3>> rgb(land.v.size());
-			for (size_t k = 0; k < land.v.size(); ++k)
-				rgb[k] = colours[std::min<uint8_t>(land.v[k], 5)];
+			const int ci = static_cast<int>(std::lround(wide / land.cell));
+			const int pnx = land.nx - 2 * ci, pny = land.ny - 2 * ci;
+			std::vector<std::array<uint8_t, 3>> rgb(static_cast<size_t>(pnx) * pny);
+			for (int j = 0; j < pny; ++j)
+				for (int i = 0; i < pnx; ++i)
+					rgb[static_cast<size_t>(j) * pnx + i] = colours[std::min<uint8_t>(land.v[static_cast<size_t>(j + ci) * land.nx + i + ci], 5)];
 			std::filesystem::create_directories(o.out);
-			raster::WritePng(o.out.parent_path() / (o.name + "_land.png"), land.nx, land.ny, rgb, error);
+			raster::WritePng(o.out.parent_path() / (o.name + "_land.png"), pnx, pny, rgb, error);
 		}
 		// The land's water, for the loader (game/sea.cpp; next to the pack's dlc.rpf). Out past the game's water grid the sea
 		// is everywhere, under new land too: water.bin says where it really is over this build's terrain, a mask of the land

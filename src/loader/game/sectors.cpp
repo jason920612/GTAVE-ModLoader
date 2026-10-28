@@ -1049,6 +1049,21 @@ namespace loader::game::sectors
 		ULONGLONG g_arrivedAt = 0;
 		// (work for the frames after a shift: one a frame)
 		std::vector<std::function<void()>> g_afterShift;
+		// (till when the area's name is not shown: a shift into a place of the same name)
+		ULONGLONG g_quietAreaUntil = 0;
+		constexpr uint64_t kHideHudComponentThisFrame = 0x6806C51AD12B83B8;
+		constexpr int32_t kHudAreaName = 7;
+
+		// The name of the area (x, y) is in on land `l`, as the game shows it: its zone block's (the 1 km squares of the zone
+		// grid, ApplyZones), else the land's.
+		std::string AreaName(const Land& l, float x, float y)
+		{
+			const int i = static_cast<int>(std::floor(x / 1000)), j = static_cast<int>(std::floor(y / 1000));
+			for (const Land::Zone& z : l.zones)
+				if (z.i == i && z.j == j)
+					return z.name.empty() ? l.name : z.name;
+			return l.name;
+		}
 		// (when the save was loaded: nothing begun before the game has put the player where it puts them - a place set
 		// before that is undone)
 		ULONGLONG g_loadedAt = 0;
@@ -1163,6 +1178,8 @@ namespace loader::game::sectors
 					dz = there - here;
 			}
 			const auto t = GetTickCount64();
+			if (AreaName(from, p.x, p.y) == AreaName(to, p.x + g_cross.offset[0], p.y + g_cross.offset[1]))
+				g_quietAreaUntil = t + 6000;
 			const std::string moved = crossing::Shift(g_cross.offset[0], g_cross.offset[1], dz, kCarry);
 			ForgetPlayerRoadNode();
 			ClearJunctions();
@@ -1204,6 +1221,10 @@ namespace loader::game::sectors
 		// Each frame: the crossing under way, or the next one begun.
 		void WatchCrossing()
 		{
+			// (the area's name the radar's corner would show again after a shift into the same place: its zone is another
+			// block's - the game's zone grid is in the land's own place - with the same name)
+			if (GetTickCount64() < g_quietAreaUntil)
+				natives::Invoke<void>(kHideHudComponentThisFrame, kHudAreaName);
 			if (!g_afterShift.empty())
 			{
 				const auto work = std::move(g_afterShift.front());
