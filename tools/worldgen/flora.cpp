@@ -458,7 +458,7 @@ namespace worldgen::flora
 		{
 			Random rnd(seed);
 			Model out;
-			const float H = rnd.Range(9, 16), W = H * rnd.Range(0.55f, 0.7f), base = rnd.Range(1.6f, 2.6f);
+			const float H = rnd.Range(9, 16), W = H * rnd.Range(0.55f, 0.7f), base = rnd.Range(2.6f, 3.4f);
 			std::vector<std::pair<Limb, Texture>> limbs;
 			std::vector<Leaf> leaves;
 			const float tall = H * 0.78f + 0.3f;
@@ -616,9 +616,9 @@ namespace worldgen::flora
 					}
 					else if (t == kBarkSmooth)
 					{
-						// (a magnolia's: smooth grey-brown, faint blotches, small pale lenticels)
-						const float k = 0.88f + 0.18f * Noise(x, y * 0.6f, 30, 14) + (Hash01(x / 3, y / 2, 15) > 0.985f ? 0.25f : 0.0f);
-						p = Shade({118, 110, 100}, k);
+						// (a magnolia's: smooth dark grey-brown, faint blotches - a paler one had read as white-washed)
+						const float k = 0.85f + 0.2f * Noise(x, y * 0.6f, 30, 14);
+						p = Shade({86, 80, 72}, k);
 					}
 					else
 					{
@@ -681,8 +681,9 @@ namespace worldgen::flora
 			}
 			else if (t == kMagnoliaLeaves || t == kGumLeaves)
 			{
-				// twigs, then the leaves in a ragged cluster: a magnolia's big dark glossy ellipses (a tenth showing their
-				// rusty undersides; white flowers in the last cell), a sweetgum's five-pointed stars of a brighter green
+				// twigs, then the leaves in a ragged cluster: a magnolia's big dark glossy ellipses (a few showing their rusty
+				// undersides; no flowers - a crown dotted white had read as one generic flowering tree), a sweetgum's
+				// five-pointed stars of a brighter green
 				for (int k = 0; k < 6; ++k)
 				{
 					const float a = rnd.Range(0, 2 * kPi);
@@ -705,7 +706,7 @@ namespace worldgen::flora
 					const float lit = 0.6f + 0.45f * (1 - (y - y0) / 256.0f) * rnd.Range(0.6f, 1.0f);
 					if (magnolia)
 					{
-						const bool under = rnd.Unit() < 0.1f;
+						const bool under = rnd.Unit() < 0.03f;
 						const std::array<float, 3> base = under ? std::array<float, 3>{rnd.Range(96, 118), rnd.Range(64, 76), rnd.Range(34, 44)}
 						                                        : std::array<float, 3>{rnd.Range(18, 30), rnd.Range(38, 54), rnd.Range(16, 26)};
 						const float rx = rnd.Range(10.0f, 15.0f), ry = rnd.Range(4.5f, 6.5f), ang = rnd.Range(0, kPi);
@@ -724,19 +725,6 @@ namespace worldgen::flora
 						}
 					}
 				}
-				if (magnolia && cell == 3)
-					for (int k = 0; k < 3; ++k)
-					{
-						// (a flower: six broad white petals round a cone)
-						const float a = rnd.Range(0, 2 * kPi), d = rnd.Range(20, 60);
-						const float px = cx + std::cos(a) * d, py = cy + std::sin(a) * d * 0.8f - 10;
-						for (int petal = 0; petal < 6; ++petal)
-						{
-							const float b = petal * kPi / 3 + rnd.Range(-0.2f, 0.2f);
-							Ellipse(im, px + std::cos(b) * 9, py + std::sin(b) * 9, 10, 6, b, Shade({236, 232, 220}, rnd.Range(0.85f, 1.0f)), x0, y0, x1, y1);
-						}
-						Ellipse(im, px, py, 4, 4, 0, {170, 150, 90, 255}, x0, y0, x1, y1);
-					}
 			}
 			else if (t == kPineNeedles)
 			{

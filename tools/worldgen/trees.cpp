@@ -1,6 +1,7 @@
 #include "trees.hpp"
 
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 #include <string_view>
 
@@ -396,10 +397,32 @@ namespace worldgen::trees
 			std::sort(v.begin(), v.end(), [&](const Own* a, const Own* b) { return std::fabs(a->height - h) < std::fabs(b->height - h); });
 			return v[seed % std::min<size_t>(3, v.size())];
 		};
+		// (the tallest first; one whose crown would lie mostly under a taller one's - closer than half their crowns' radii
+		// together, at least 2.5 m - left out: a row of crape myrtles had come out a peak every 2-3 m, overlapping umbrellas)
+		std::vector<const Seen*> order;
 		for (const Seen& t : seen)
+			order.push_back(&t);
+		std::sort(order.begin(), order.end(), [](const Seen* a, const Seen* b) { return a->height > b->height; });
+		std::unordered_map<int64_t, std::vector<std::array<float, 3>>> kept; // (by 10 m cell: x, y, crown)
+		const auto cellOf = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 10)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 10))); };
+		for (const Seen* tp : order)
 		{
+			const Seen& t = *tp;
 			if (t.x < box[0] || t.y < box[1] || t.x >= box[2] || t.y >= box[3] || !open(t.x, t.y))
 				continue;
+			bool under = false;
+			for (int dj = -1; dj <= 1 && !under; ++dj)
+				for (int di = -1; di <= 1 && !under; ++di)
+					if (const auto it = kept.find(cellOf(t.x + di * 10.0f, t.y + dj * 10.0f)); it != kept.end())
+						for (const auto& k : it->second)
+							if (std::hypot(k[0] - t.x, k[1] - t.y) < std::max(2.5f, 0.5f * (k[2] + t.crown)))
+							{
+								under = true;
+								break;
+							}
+			if (under)
+				continue;
+			kept[cellOf(t.x, t.y)].push_back({t.x, t.y, t.crown});
 			const uint32_t seed = Mix(static_cast<uint32_t>(std::lround(t.x * 4)) * 73856093u ^ static_cast<uint32_t>(std::lround(t.y * 4)) * 19349663u);
 			// (the crown the canopy it covers in the pictures, a quarter wider: the game's models' leaves fill less than their
 			// boxes, and the woods' canopy closes overhead as in the pictures)
@@ -418,11 +441,15 @@ namespace worldgen::trees
 				// one a laurel or water oak, a small one in town a crape myrtle. The pictures' tree finder cuts a live oak's
 				// crown into several peaks, each narrow for its height: by width alone they had all been pines - the reviewers'
 				// rows of "lollipop" trees where the street pictures have a canopy of live oaks)
-				// (and in town three in ten of the evergreens with a crown no wider than their height magnolias; a third of the
-				// leafless sweetgums - the reviewers saw one tree everywhere)
+				// (and in town one in ten of the evergreens with a crown narrower than their height magnolias - three in ten had
+				// taken the place of the live oaks the street pictures show -; a third of the leafless sweetgums)
+				// (a town's small trees - under 8 m - its crape myrtles, whatever the pictures' winter says: shrunk live oaks had
+				// stood in rows of small umbrellas where the street pictures have crape myrtles)
 				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
-				const bool magnolia = town && h >= 6 && h <= 18 && width < h && seed % 10 < 3;
-				const int kind = t.kind == 0 ? (pine ? 1 : magnolia ? 4 : 0) : (town && h <= 9 && seed % 5 < 3 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
+				const bool magnolia = town && h >= 7 && h <= 16 && width < 0.8f * h && seed % 10 == 0;
+				const int kind = town && h < 8 ? 3
+				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : 0)
+				                               : (town && h <= 9 && seed % 5 < 3 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
 					props::Prop p;

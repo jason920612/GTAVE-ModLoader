@@ -867,9 +867,11 @@ namespace worldgen::build
 		const uint32_t kDiffuseTex = loader::convert::Joaat("DiffuseTex"), kBumpTex = loader::convert::Joaat("BumpTex"),
 		               kSpecularTex = loader::convert::Joaat("SpecularTex");
 
-		// A building's shape for its LOD model: the roof's inner vertices merged by cells of `cell` m (each cell's highest: the
-		// silhouette kept), the outline's kept - the walls stand under them -, triangles left with two corners in one place or
-		// turned over left out. A measured roof is up to 800 triangles: the LOD models had been as big as the HD ones.
+		// A building's shape for its LOD model: the roof's inner vertices merged by cells of `cell` m - each cell's lowest, sunk
+		// 25 cm: the game draws the LOD and the HD model together, and the LOD roof must stay under the HD one (each cell's
+		// highest had stuck out of it as shards) -, the outline's kept - the walls stand under them -, triangles left with two
+		// corners in one place or turned over left out. A measured roof is up to 800 triangles: the LOD models had been as big
+		// as the HD ones.
 		structures::Shape CoarserRoof(const structures::Shape& s, double cell)
 		{
 			if (s.roof.size() <= 12)
@@ -878,16 +880,18 @@ namespace worldgen::build
 			std::vector<uint8_t> fixed(s.vertices.size(), 0);
 			for (const auto& e : s.outline)
 				fixed[e[0]] = fixed[e[1]] = 1;
-			std::map<std::pair<int64_t, int64_t>, uint32_t> keep; // (by cell: its highest inner vertex)
+			std::map<std::pair<int64_t, int64_t>, uint32_t> keep; // (by cell: its lowest inner vertex)
 			for (uint32_t i = 0; i < s.vertices.size(); ++i)
 			{
 				if (fixed[i])
 					continue;
 				const std::pair<int64_t, int64_t> key{static_cast<int64_t>(std::floor(s.vertices[i][0] / cell)), static_cast<int64_t>(std::floor(s.vertices[i][1] / cell))};
 				const auto it = keep.find(key);
-				if (it == keep.end() || s.vertices[i][2] > s.vertices[it->second][2])
+				if (it == keep.end() || s.vertices[i][2] < s.vertices[it->second][2])
 					keep[key] = i;
 			}
+			for (const auto& [key, i] : keep)
+				out.vertices[i][2] -= 0.25;
 			std::vector<uint32_t> to(s.vertices.size());
 			for (uint32_t i = 0; i < s.vertices.size(); ++i)
 				to[i] = fixed[i] ? i
@@ -899,7 +903,7 @@ namespace worldgen::build
 				const std::array<uint32_t, 3> r{to[t[0]], to[t[1]], to[t[2]]};
 				if (r[0] == r[1] || r[1] == r[2] || r[0] == r[2])
 					continue;
-				const auto &a = s.vertices[r[0]], &b = s.vertices[r[1]], &c = s.vertices[r[2]];
+				const auto &a = out.vertices[r[0]], &b = out.vertices[r[1]], &c = out.vertices[r[2]];
 				if ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) <= 0)
 					continue; // (turned over, or on edge, seen from above)
 				std::array<uint32_t, 3> k = r;
@@ -1487,9 +1491,11 @@ namespace worldgen::build
 					if (landCoverAt && grassy > 0)
 						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24 && out[0] > out[2] + 10 && out[0] >= out[1] - 5)
 						{
-							// (the street pictures' summer lawns - St. Augustine grass - a deep green: the reviewers' "pale olive")
-							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.85f * grassy / n;
-							const std::array<float, 3> lawn{l * 0.72f, l * 1.18f, l * 0.48f};
+							// (the street pictures' summer lawns - St. Augustine grass - green, not quite all of it: patches keep the
+							// pictures' brown - the reviewers had seen "pale olive", then "uniform, oversaturated turf")
+							const float patch = 0.6f + 0.4f * std::sin(x * 0.11f + std::sin(y * 0.07f) * 2.3f) * std::sin(y * 0.13f + std::sin(x * 0.05f) * 1.7f);
+							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.8f * grassy / n * patch;
+							const std::array<float, 3> lawn{l * 0.76f, l * 1.13f, l * 0.55f};
 							for (int k = 0; k < 3; ++k)
 								out[k] = std::clamp(out[k] + (lawn[k] - out[k]) * share, 0.0f, 255.0f);
 						}
