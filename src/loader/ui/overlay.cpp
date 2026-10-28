@@ -72,6 +72,7 @@ namespace loader::ui
 		std::vector<bool> g_srvUsed;
 		bool g_imguiReady = false;
 		bool g_failed = false;
+		std::atomic_bool g_started = false; // (StartOverlay called: the hooks may be in from the loader's start)
 
 		HWND g_window = nullptr;
 		WNDPROC g_origWndProc = nullptr;
@@ -361,6 +362,8 @@ namespace loader::ui
 
 		void OnPresent(IDXGISwapChain3* swapChain, ID3D12CommandQueue* queue)
 		{
+			if (!g_started.load(std::memory_order_acquire))
+				return;
 			FrameStats();
 			if (g_failed)
 				return;
@@ -660,16 +663,31 @@ namespace loader::ui
 		}
 	}
 
+	namespace
+	{
+		bool InstallHooks()
+		{
+			static std::mutex mutex;
+			static std::optional<bool> installed;
+			std::lock_guard lock(mutex);
+			if (!installed)
+				installed = dx12::Install({&OnPresent, &OnReleaseBuffers});
+			return *installed;
+		}
+	}
+
+	void PrepareOverlay()
+	{
+		InstallHooks();
+	}
+
 	bool StartOverlay()
 	{
 		// Started early when legacy packs are converted (to show progress on the loading screen), and again
-		// on the first script tick: install once.
-		static std::mutex mutex;
-		static std::optional<bool> installed;
-		std::lock_guard lock(mutex);
-		if (!installed)
-			installed = dx12::Install({&OnPresent, &OnReleaseBuffers});
-		return *installed;
+		// on the first script tick (the hooks are in already, from PrepareOverlay, unless it failed).
+		const bool ok = InstallHooks();
+		g_started.store(true, std::memory_order_release);
+		return ok;
 	}
 
 	bool CapturesInput()

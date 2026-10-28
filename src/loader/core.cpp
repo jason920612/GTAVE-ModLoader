@@ -339,6 +339,9 @@ namespace loader::core
 		state::canContinueStory = game::g_pointers.SetRouterLink && game::g_pointers.ClearRouterLink;
 		if (!state::canContinueStory)
 			log::Warn("landing page story entry point not found; the home screen will offer the original landing page instead");
+		// (the DXGI hooks now - before Discord's and Social Club's overlays come, ui/overlay.hpp -; a thread of its own: this
+		// runs under the loader lock, the thread starts once it is released)
+		std::thread([] { ui::PrepareOverlay(); }).detach();
 		game::pools::InstallHooks();
 		game::dlcpacks::InstallHooks();
 		game::datafiles::InstallHooks();

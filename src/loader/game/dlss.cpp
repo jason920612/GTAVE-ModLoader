@@ -898,6 +898,9 @@ namespace loader::game::dlss
 
 			if (base == L"_nvngx.dll" && NeedNgxHooks())
 				NgxLoaded(module, path);
+			// (the overlays that attach to the game's swap chains: when each comes - research/phase0.md §66.4)
+			if (base.starts_with(L"socialclub") || base == L"discordhook64.dll" || base == L"gameoverlayrenderer64.dll")
+				log::Info("dll: {} loaded", std::string(base.begin(), base.end()));
 			if (base == L"sl.interposer.dll")
 				std::thread([module] {
 					Sleep(50); // let the loader finish

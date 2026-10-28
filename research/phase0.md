@@ -5028,5 +5028,14 @@ frames 錄影 + 每幀的「筆記」seamless::Note：預載、停放車、物�
 ### 66.4 其他
 
 - GPU：渲染執行緒在 win32u（D3DKMT）等 25–190 ms，主執行緒等它（0x926DF0）；RTX 4060 8 GB 用到 6.4–6.6 GB，跨區附近、停車時都有。
-- 啟動時偶發（9 次 1 次）：Social Club 的 D3D12 renderer（SocialClubD3D12Renderer.dll）的執行緒跳到 0x5，正好在 ui 裝 DXGI hook（MinHook
-  內聯 hook Present 等）的時候 → 看門狗卡住遊戲。兩方同時 hook 同一函式的競爭，待查。
+- 啟動時偶發（9 次 1 次）：Social Club 的 D3D12 renderer（SocialClubD3D12Renderer.dll）的執行緒跳到 0x5 → 看門狗卡住遊戲。時間點是
+  ui 在第一個腳本 tick（~48 s）做探測用的 D3D12 device、command queue、64×64 swap chain（為了找 swap chain 的 vtable 與 queue 的位置）
+  之時——還沒 MH_EnableHook（47.68 s 當掉，47.70 s 還在掃記憶體，49.3 s 才裝好）。載入順序（dll 載入通知）：Steam 的
+  gameoverlayrenderer64 3.0 s、DiscordHook64 14 s、socialclub + socialclubd3d12renderer 18 s。Social Club 會接上每個新建的 swap
+  chain，我們那個臨時的讓它出事。→ 探測與 hook 提前到 loader 起來時（OnGameUnpacked ~3 s 另開執行緒，Discord、Social Club 都還沒
+  來；ui::PrepareOverlay），UI 照舊到第一個 tick 才啟動（那之前 Present 的 hook 直接放行）。
+- 區名：之後在帶裡切換後的位置是另一個 1 km 區塊（區塊格在遊戲座標），遊戲因區塊不同又顯示一次區名（「Miami」）。兩邊同名時
+  6 秒內不顯示（HIDE_HUD_COMPONENT_THIS_FRAME 7）。但更大的問題：worldgen 寫的 <name>_land.png 從帶的修正（4957ba2e）起涵蓋盒外
+  3 km，zones.py 卻當它是盒子 → 每個區塊的區取自幾公里外，兩塊陸地帶內的區不同（fl_095 那裡沒有區、fl_096 是 Miami）→ 圖裁回盒子，
+  重算兩塊的 zones：帶內 i ↔ i−8 的名字全同。
+- 小地圖：交接時雷達讓出 supertile（3 幀）那幾幀小地圖是空的（約 50 ms）。
