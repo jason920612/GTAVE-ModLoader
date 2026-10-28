@@ -31,12 +31,45 @@ namespace worldgen::seeds
 		return h;
 	}
 
-	// a number from a point's real-world place, rounded to 1/perMetre m (and `salt`: another stream for another choice)
-	inline uint32_t Place(double x, double y, double perMetre, uint32_t salt = 0)
+	// a number from a place in the real world's plane (metres, as GX and GY give them), rounded to 1/perMetre m (and `salt`:
+	// another stream for another choice)
+	inline uint32_t PlaceAt(double gx, double gy, double perMetre, uint32_t salt = 0)
 	{
-		const auto i = static_cast<int64_t>(std::llround(GX(x) * perMetre)), j = static_cast<int64_t>(std::llround(GY(y) * perMetre));
+		const auto i = static_cast<int64_t>(std::llround(gx * perMetre)), j = static_cast<int64_t>(std::llround(gy * perMetre));
 		return Mix(static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(i >> 32) * 2246822519u ^ static_cast<uint32_t>(j) * 19349663u ^
 		           static_cast<uint32_t>(j >> 32) * 3266489917u ^ salt * 83492791u);
+	}
+
+	// the same from a point of the land (the world's points are the projection's lattice of 1/1024 m, floats exactly: the
+	// same place gives the same number in every land - a point worked out from them in floats of the land's coordinates does
+	// not quite: Middle, Between)
+	inline uint32_t Place(double x, double y, double perMetre, uint32_t salt = 0)
+	{
+		return PlaceAt(GX(x), GY(y), perMetre, salt);
+	}
+
+	// the middle of points of the land (their mean) in the real world's plane, in doubles: the same in every land
+	struct G
+	{
+		double x = 0, y = 0;
+	};
+	template <typename Points> inline G Middle(const Points& points)
+	{
+		G m;
+		for (const auto& p : points)
+			m.x += GX(p[0]), m.y += GY(p[1]);
+		if (!points.empty())
+			m.x /= static_cast<double>(points.size()), m.y /= static_cast<double>(points.size());
+		return m;
+	}
+	// the point a share `t` of the way from a to b in the real world's plane
+	template <typename P> inline G Between(const P& a, const P& b, double t = 0.5)
+	{
+		return {GX(a[0]) + (GX(b[0]) - GX(a[0])) * t, GY(a[1]) + (GY(b[1]) - GY(a[1])) * t};
+	}
+	inline uint32_t PlaceAt(const G& g, double perMetre, uint32_t salt = 0)
+	{
+		return PlaceAt(g.x, g.y, perMetre, salt);
 	}
 
 	// a lattice cell's number (cell [i, j] of `cell` m in the real world)

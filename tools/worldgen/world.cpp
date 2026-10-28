@@ -470,8 +470,10 @@ namespace worldgen::world
 		nlohmann::json Line(const std::vector<P2>& pts)
 		{
 			nlohmann::json a = nlohmann::json::array();
+			// (as they are: the projection's lattice of 1/1024 m - rounded to centimetres in floats they were not the same
+			// place in two lands)
 			for (const P2& q : pts)
-				a.push_back({std::round(q[0] * 100) / 100, std::round(q[1] * 100) / 100});
+				a.push_back({q[0], q[1]});
 			return a;
 		}
 		std::vector<P2> Line(const nlohmann::json& a)

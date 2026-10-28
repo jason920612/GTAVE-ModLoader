@@ -152,7 +152,7 @@ namespace worldgen::buildings
 		if (best.empty())
 			return false;
 		// among the closest dozen: the fit, how often it is used already, and a little chance (by the footprint's place)
-		const uint32_t seed = seeds::Place(centre[0], centre[1], 7, 20);
+		const uint32_t seed = seeds::PlaceAt(seeds::Middle(footprint), 7, 20);
 		const size_t keep = std::min<size_t>(best.size(), 12);
 		std::partial_sort(best.begin(), best.begin() + static_cast<ptrdiff_t>(keep), best.end(), [](const Scored& a, const Scored& b) { return a.cost < b.cost; });
 		size_t pick = 0;

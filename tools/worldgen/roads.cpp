@@ -115,6 +115,8 @@ namespace worldgen::roads
 			std::swap(e.a, e.b);
 			std::swap(e.forward, e.backward);
 			std::swap(e.walkLeft, e.walkRight);
+			std::swap(e.crossingA, e.crossingB);
+			std::swap(e.stopA, e.stopB);
 		}
 
 		float Length(const std::vector<P2>& p)
@@ -322,6 +324,44 @@ namespace worldgen::roads
 				}
 			}
 		};
+
+		// A bridge's heights along its line (`s` each point's distance along it), from its ends' heights `za` and `zb`
+		// through anchors where it crosses the real world's lattice of 500 m lines, each at a bridge's height there
+		// (`air`): its height at a place then depends only on what lies within 500 m of it. Between its ends alone, a long
+		// one - a causeway, an elevated line - had had them at different places in two lands (the map's extract round each
+		// land cuts a long line off at its own margin), and the band the lands share two heights of it.
+		std::vector<float> BridgeLine(const std::vector<P2>& p, const std::vector<float>& s, float za, float zb, const std::function<float(float, float)>& air)
+		{
+			constexpr double kLattice = 500;
+			std::vector<std::pair<float, float>> anchors{{0.0f, za}};
+			for (size_t i = 0; i + 1 < p.size(); ++i)
+			{
+				const double ax = seeds::GX(p[i][0]), ay = seeds::GY(p[i][1]), bx = seeds::GX(p[i + 1][0]), by = seeds::GY(p[i + 1][1]);
+				std::vector<double> ts;
+				for (const auto& [a, b] : {std::pair{ax, bx}, std::pair{ay, by}})
+					if (a != b)
+						for (auto k = static_cast<int64_t>(std::floor(std::min(a, b) / kLattice)) + 1; k * kLattice < std::max(a, b); ++k)
+							ts.push_back((k * kLattice - a) / (b - a));
+				std::sort(ts.begin(), ts.end());
+				for (const double t : ts)
+				{
+					const float x = p[i][0] + (p[i + 1][0] - p[i][0]) * static_cast<float>(t), y = p[i][1] + (p[i + 1][1] - p[i][1]) * static_cast<float>(t);
+					anchors.push_back({s[i] + (s[i + 1] - s[i]) * static_cast<float>(t), air(x, y)});
+				}
+			}
+			anchors.push_back({s.back(), zb});
+			std::vector<float> z(p.size());
+			size_t k = 0;
+			for (size_t i = 0; i < p.size(); ++i)
+			{
+				while (k + 2 < anchors.size() && anchors[k + 1].first <= s[i])
+					++k;
+				const auto& [s0, z0] = anchors[k];
+				const auto& [s1, z1] = anchors[k + 1];
+				z[i] = s1 > s0 ? z0 + (z1 - z0) * std::clamp((s[i] - s0) / (s1 - s0), 0.0f, 1.0f) : z0;
+			}
+			return z;
+		}
 	}
 
 	namespace
@@ -1023,6 +1063,19 @@ namespace worldgen::roads
 		return out;
 	}
 
+	void Orient(Network& n)
+	{
+		for (Edge& e : n.edges)
+		{
+			if (e.points.size() < 2 || e.a == e.b)
+				continue;
+			const std::pair<double, double> from{seeds::GX(e.points.front()[0]), seeds::GY(e.points.front()[1])},
+			    to{seeds::GX(e.points.back()[0]), seeds::GY(e.points.back()[1])};
+			if (to < from)
+				Reverse(e);
+		}
+	}
+
 	void Heights(Network& n, const std::function<float(float, float)>& ground, float clearance)
 	{
 		// the vertices: in the air where only bridges meet (at their highest layer, 1 at least, over the ground or the sea),
@@ -1053,20 +1106,26 @@ namespace worldgen::roads
 					wet += ground(p[0], p[1]) < 0;
 				arch = !air(e.a) && !air(e.b) && wet * 2 > e.points.size();
 			}
-			float s = 0;
+			std::vector<float> along(e.points.size(), 0.0f);
+			for (size_t i = 1; i < e.points.size(); ++i)
+				along[i] = along[i - 1] + Dist(e.points[i - 1], e.points[i]);
+			// (an arch only over a short one: a long one's ends may lie past the map's extract round the land)
+			arch = arch && total <= 2000;
+			const std::vector<float> line = e.bridge ? BridgeLine(e.points, along, za, zb, [&](float x, float y) {
+				return std::max(ground(x, y), 0.0f) + kLevel * std::max(1, e.layer);
+			})
+			                                         : std::vector<float>();
 			for (size_t i = 0; i < e.points.size(); ++i)
 			{
-				if (i)
-					s += Dist(e.points[i - 1], e.points[i]);
 				const float g = ground(e.points[i][0], e.points[i][1]);
 				if (!e.bridge)
 				{
 					e.z[i] = std::max(g + 0.05f, 0.6f);
 					continue;
 				}
-				const float t = total > 0 ? s / total : 0;
+				const float t = total > 0 ? along[i] / total : 0;
 				const float rise = arch ? std::min(clearance, total * 0.08f) * std::sin(kPi * t) : 0.0f;
-				e.z[i] = std::max(za + (zb - za) * t + rise, g + 1.0f);
+				e.z[i] = std::max(line[i] + rise, g + 1.0f);
 			}
 			e.z.front() = za;
 			e.z.back() = zb;
@@ -2124,8 +2183,11 @@ namespace worldgen::roads
 				return air && r.bridge ? std::max(ge, 0.0f) + kRailLevel * std::max(1, layer) : ge + kBed;
 			};
 			const float za = endZ(p.front(), g.front()), zb = endZ(p.back(), g.back());
+			const std::vector<float> line =
+			    r.bridge ? BridgeLine(p, s, za, zb, [&](float x, float y) { return std::max(ground(x, y), 0.0f) + kRailLevel * std::max(1, r.layer); })
+			             : std::vector<float>();
 			for (size_t i = 0; i < p.size(); ++i)
-				z[i] = r.bridge ? std::max(za + (zb - za) * s[i] / total, g[i] + 1.0f) : g[i] + kBed;
+				z[i] = r.bridge ? std::max(line[i], g[i] + 1.0f) : g[i] + kBed;
 			// (the track's sides: the normals at the points, mitred)
 			std::vector<float> scale;
 			const auto nrm = Normals(p, scale);

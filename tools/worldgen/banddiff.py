@@ -124,6 +124,41 @@ def main():
             used[hit] = True
             matched[kind(e['map'])] += 1
     missing_b = [o for i, o in enumerate(b) if not used[i]]
+    # why the rest did not match: what the other land has at the same place (within the tolerance) - or nothing there
+    unmatched_b = collections.defaultdict(list)
+    for i, o in enumerate(b):
+        if not used[i]:
+            unmatched_b[cell(o['p'])].append(o)
+    reasons = collections.Counter()
+    examples = collections.defaultdict(list)
+    for e in missing_a:
+        x, y = cell(e['p'])
+        there = [o for dx in (-1, 0, 1) for dy in (-1, 0, 1) for o in unmatched_b.get((x + dx, y + dy), ())
+                 if max(abs(u - v) for u, v in zip(e['p'][:2], o['p'][:2])) <= tol]
+        if not there:
+            why = 'nothing at its place'
+        else:
+            o = there[0]
+            if abs(e['p'][2] - o['p'][2]) > tol:
+                why = 'height'
+            elif not same_turn(e['q'], o['q']):
+                why = 'turn'
+            elif abs(e['s'][0] - o['s'][0]) > 0.01 or abs(e['s'][1] - o['s'][1]) > 0.01:
+                why = 'scale'
+            elif (e['box'] == '-') != (o['box'] == '-') or (e['box'] == '-' and e['archetype'] != o['archetype']):
+                why = 'model'
+            else:
+                d = [abs(float(u) - float(v)) for u, v in zip(e['box'].split(','), o['box'].split(','))]
+                why = 'box ' + ('top' if max(range(6), key=lambda k: d[k]) == 5 else 'side')
+        reasons[(kind(e['map']), why)] += 1
+        if len(examples[(kind(e['map']), why)]) < 3:
+            examples[(kind(e['map']), why)].append((e, there[0] if there else None))
+    print('unmatched by why (the first land\'s):')
+    for (k, why), n in sorted(reasons.items(), key=lambda t: -t[1]):
+        print(f'  {k:>4} {why}: {n}')
+        for e, o in examples[(k, why)]:
+            print(f'       {e["map"]} {e["archetype"]} ({e["p"][0]:.2f}, {e["p"][1]:.2f}, {e["p"][2]:.2f}) box {e["box"]}' +
+                  (f' | {o["map"]} {o["archetype"]} z {o["p"][2]:.2f} box {o["box"]}' if o else ''))
     print(f'{"kind":>6} {"in " + lands[0][0]:>16} {"in " + lands[1][0]:>16} {"matched":>9}')
     for k in sorted(set(total_a) | set(total_b)):
         print(f'{k:>6} {total_a[k]:>16} {total_b[k]:>16} {matched[k]:>9}')

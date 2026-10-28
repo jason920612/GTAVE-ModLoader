@@ -1373,7 +1373,9 @@ namespace loader::game::sectors
 			if (!seamlessOn || (g_cross.state == Cross::State::None && !seamless::Busy() && g_afterShift.empty()))
 				WatchEdges(seamlessOn);
 			WatchParked();
-			if (const ULONGLONG now = GetTickCount64(); now - g_lastAudit > 5000)
+			// (a look over the million slots now and then: the state it is for comes of land changes, each checked by
+			// its own steps)
+			if (const ULONGLONG now = GetTickCount64(); now - g_lastAudit > 60000)
 			{
 				g_lastAudit = now;
 				landfiles::Audit("now");

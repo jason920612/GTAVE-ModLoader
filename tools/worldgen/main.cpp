@@ -1921,11 +1921,18 @@ int main(int argc, char** argv)
 	if (command == "vertex-dump")
 	{
 		// a game model's vertices as they are (position, normal, colour, first texture coordinates) and triangles, for
-		// working out what a shader reads from them: --model <file.ydr> [--count 40]
+		// working out what a shader reads from them: --model <file.ydr> [--count 40]; or a build's own on the disk: --file
+		// <path.ydr>
 		Bytes data;
 		loader::convert::Resource res;
-		const auto* f = files.Find(g_options["model"]);
-		if (!f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
+		if (g_options.contains("file"))
+		{
+			std::ifstream in(g_options["file"], std::ios::binary);
+			data.assign(std::istreambuf_iterator<char>(in), {});
+			if (data.empty() || !loader::convert::Read(data, res, error))
+				return Fail("cannot read " + g_options["file"] + ": " + error);
+		}
+		else if (const auto* f = files.Find(g_options["model"]); !f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
 			return Fail("cannot read " + g_options["model"] + ": " + error);
 		ue5export::drawable::Model model;
 		if (!ue5export::drawable::Read(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, model, error))

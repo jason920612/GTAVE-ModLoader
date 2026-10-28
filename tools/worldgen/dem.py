@@ -8,8 +8,9 @@ usage: python -I tools/worldgen/dem.py --world <world.json> --out <ground.bin> [
   -32768: not known - out at sea, where the service has nothing), rows south to north.
   --step: the metres a pixel asked for (10: a third of an arc second, the 10 m DEM's; 2: the lidar's 1 m DEM where the
           service has it - Florida's towns -, the yards over the streets, the ditches, the rises the street pictures show)
-The service is asked for the sector box (exportImage, float32 GeoTIFF on a latitude / longitude grid; in tiles of at
-most 2000 pixels a side) and the answers kept in --cache.
+The service is asked for the tiles of the state's lattice that meet the sector box (exportImage, float32 GeoTIFF on a
+latitude / longitude grid; tiles of 2000 pixels a side from 24 N, 88 W - the same for every sector, so that neighbours
+share the ground of the band between them) and the answers kept in --cache.
 """
 import io, json, math, os, struct, sys, time, urllib.request
 
@@ -32,16 +33,23 @@ def options(argv):
     return o
 
 
+ORIGIN = (24.0, -88.0)  # (the state's projection's origin, sectors.py: the corner of the tiles' lattice)
+
+
 def fetch(south, west, north, east, cache, step=STEP):
-    """Heights over the box (metres, NaN where none), rows north to south, and the box as asked for (in tiles)."""
-    width, height = int(math.ceil((east - west) / step)), int(math.ceil((north - south) / step))
-    a = np.full((height, width), np.nan, dtype=np.float32)
-    top = south + height * step
-    for ty in range(0, height, TILE):
-        for tx in range(0, width, TILE):
-            w_, h_ = min(TILE, width - tx), min(TILE, height - ty)
-            a[ty:ty + h_, tx:tx + w_] = fetch_one(top - (ty + h_) * step, west + tx * step, w_, h_, cache, step)
-    return a, (south, west, top, west + width * step)
+    """Heights over the box (metres, NaN where none), rows north to south, and the box they cover: the whole tiles of
+    the state's lattice (TILE pixels of `step` a side from ORIGIN) that meet it - every land asks for the same tiles, so
+    neighbouring lands read the same pixels for the same ground (a grid of a land's own had the service resample them
+    differently, and the band two lands share had two grounds)."""
+    span = TILE * step
+    i0, i1 = math.floor((west - ORIGIN[1]) / span), math.floor((east - ORIGIN[1]) / span)
+    j0, j1 = math.floor((south - ORIGIN[0]) / span), math.floor((north - ORIGIN[0]) / span)
+    a = np.full(((j1 - j0 + 1) * TILE, (i1 - i0 + 1) * TILE), np.nan, dtype=np.float32)
+    for j in range(j0, j1 + 1):
+        for i in range(i0, i1 + 1):
+            row, column = (j1 - j) * TILE, (i - i0) * TILE
+            a[row:row + TILE, column:column + TILE] = fetch_one(ORIGIN[0] + j * span, ORIGIN[1] + i * span, TILE, TILE, cache, step)
+    return a, (ORIGIN[0] + j0 * span, ORIGIN[1] + i0 * span, ORIGIN[0] + (j1 + 1) * span, ORIGIN[1] + (i1 + 1) * span)
 
 
 def read_tiff(source):

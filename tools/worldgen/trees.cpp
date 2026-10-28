@@ -188,7 +188,7 @@ namespace worldgen::trees
 				// one crown, one tree: a top whose canopy runs on to a taller one's without a deep dip - the heights along the way
 				// at least three quarters of the lower, the two at most 1.1 times the taller's height apart - is part of that
 				// tree's crown, its reach the taller tree's
-				std::sort(tops.begin(), tops.end(), [](const Top& a, const Top& b) { return a.h > b.h; });
+				std::sort(tops.begin(), tops.end(), [](const Top& a, const Top& b) { return a.h != b.h ? a.h > b.h : a.x != b.x ? a.x < b.x : a.y < b.y; });
 				std::vector<Top> kept;
 				for (const Top& t : tops)
 				{
@@ -450,7 +450,11 @@ namespace worldgen::trees
 		std::vector<const Seen*> order;
 		for (const Seen& t : seen)
 			order.push_back(&t);
-		std::sort(order.begin(), order.end(), [](const Seen* a, const Seen* b) { return a->height > b->height; });
+		// (ties - the canopy heights are whole metres - by place: the sort's own order of equal ones followed the land's whole
+		// list, and a crown under its neighbour's was left out in one land and kept in the next)
+		std::sort(order.begin(), order.end(), [](const Seen* a, const Seen* b) {
+			return a->height != b->height ? a->height > b->height : a->x != b->x ? a->x < b->x : a->y < b->y;
+		});
 		std::unordered_map<int64_t, std::vector<std::array<float, 3>>> kept; // (by 10 m cell: x, y, crown)
 		const auto cellOf = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 10)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 10))); };
 		for (const Seen* tp : order)

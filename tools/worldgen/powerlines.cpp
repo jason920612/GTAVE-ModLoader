@@ -62,7 +62,7 @@ namespace worldgen::powerlines
 		}
 
 		// the point at distance s along the road's line and its direction
-		bool At(const roads::Edge& e, float s, P2& p, P2& d)
+		bool At(const roads::Edge& e, float s, P2& p, P2& d, seeds::G* g = nullptr)
 		{
 			float run = 0;
 			for (size_t i = 0; i + 1 < e.points.size(); ++i)
@@ -75,6 +75,10 @@ namespace worldgen::powerlines
 					const float t = (s - run) / l;
 					p = {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t};
 					d = {(b[0] - a[0]) / l, (b[1] - a[1]) / l};
+					// (and in the real world's plane in doubles: the same in every land - p, in floats of the land's
+					// coordinates, not quite)
+					if (g)
+						*g = seeds::Between(a, b, t);
 					return true;
 				}
 				run += l;
@@ -105,6 +109,7 @@ namespace worldgen::powerlines
 		struct Pole
 		{
 			P2 p{};
+			seeds::G g; // (its place in the real world's plane: what its choices are keyed to)
 			float z = 0;
 			P2 road{}; // the road's direction by it (a pole with no wires: its crossarm across the road)
 			bool transformer = false;
@@ -187,6 +192,7 @@ namespace worldgen::powerlines
 						d = Unit({e.points.back()[0] - e.points.front()[0], e.points.back()[1] - e.points.front()[1]});
 					Pole pole;
 					pole.p = q;
+					pole.g = {seeds::GX(q[0]), seeds::GY(q[1])};
 					pole.z = ground(q[0], q[1]) - 0.2f;
 					pole.road = d;
 					pole.transformer = (seed >> 12) % 7 == 0;
@@ -219,7 +225,9 @@ namespace worldgen::powerlines
 			for (size_t k = 0; k < at.size(); ++k)
 			{
 				P2 here, along;
-				const uint32_t seed = At(e, std::clamp(at[k], 0.0f, total), here, along) ? seeds::Place(here[0], here[1], 2, 18) : seeds::Mix(static_cast<uint32_t>(k));
+				seeds::G place;
+				const uint32_t seed =
+				    At(e, std::clamp(at[k], 0.0f, total), here, along, &place) ? seeds::PlaceAt(place, 2, 18) : seeds::Mix(static_cast<uint32_t>(k));
 				float s = at[k];
 				if (k > 0 && k + 1 < at.size())
 					s += static_cast<float>(static_cast<int>(seed % 51) - 25) / 10; // (not quite even)
@@ -227,13 +235,15 @@ namespace worldgen::powerlines
 				for (const float shift : {0.0f, 3.0f, -3.0f, 6.0f, -6.0f, 9.0f, -9.0f})
 				{
 					P2 p, d;
-					if (!At(e, std::clamp(s + shift, 0.0f, total), p, d))
+					seeds::G g;
+					if (!At(e, std::clamp(s + shift, 0.0f, total), p, d, &g))
 						break;
 					const P2 q{p[0] - d[1] * side * off, p[1] + d[0] * side * off};
 					if (!clear(q[0], q[1]))
 						continue;
 					Pole pole;
 					pole.p = q;
+					pole.g = {g.x - static_cast<double>(d[1]) * side * off, g.y + static_cast<double>(d[0]) * side * off};
 					pole.z = ground(q[0], q[1]) - 0.2f;
 					pole.road = d;
 					pole.transformer = (seed >> 12) % 7 == 0;
@@ -296,8 +306,13 @@ namespace worldgen::powerlines
 			P2 dir = pole.road;
 			if (pole.spans.size() >= 2)
 			{
-				const P2& a = all[static_cast<size_t>(pole.spans[0])].p;
-				const P2& b = all[static_cast<size_t>(pole.spans[1])].p;
+				// (the two in the order of their places in the real world, not of the wires' making - each land numbers its
+				// roads its own way, and the crossarm came round the other way)
+				const Pole *pa = &all[static_cast<size_t>(pole.spans[0])], *pb = &all[static_cast<size_t>(pole.spans[1])];
+				if (std::make_pair(pb->g.x, pb->g.y) < std::make_pair(pa->g.x, pa->g.y))
+					std::swap(pa, pb);
+				const P2& a = pa->p;
+				const P2& b = pb->p;
 				const P2 da = Unit({pole.p[0] - a[0], pole.p[1] - a[1]}), db = Unit({b[0] - pole.p[0], b[1] - pole.p[1]});
 				dir = std::hypot(da[0] + db[0], da[1] + db[1]) > 0.2f ? Unit({da[0] + db[0], da[1] + db[1]}) : da;
 			}
@@ -340,7 +355,7 @@ namespace worldgen::powerlines
 					const float length = std::sqrt(span[0] * span[0] + span[1] * span[1] + span[2] * span[2]);
 					const float sag = w.sag * length;
 					const int segments = std::clamp(static_cast<int>(std::lround(length / 7)), 4, 8);
-					const uint32_t phase = seeds::Place(a.p[0], a.p[1], 2, static_cast<uint32_t>(k)) ^ seeds::Place(b.p[0], b.p[1], 2, 19);
+					const uint32_t phase = seeds::PlaceAt(a.g, 2, static_cast<uint32_t>(k)) ^ seeds::PlaceAt(b.g, 2, 19);
 					const uint32_t base = static_cast<uint32_t>(wires.vertices.size());
 					for (int s = 0; s <= segments; ++s)
 					{

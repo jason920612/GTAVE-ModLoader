@@ -1360,9 +1360,14 @@ namespace worldgen::build
 		const float gx0 = std::max(w.min[0], bx0 - margin), gy0 = std::max(w.min[1], by0 - margin), gx1 = std::min(w.max[0], bx1 + margin),
 		            gy1 = std::min(w.max[1], by1 + margin);
 
-		// 1. land and water, the ground's classes
+		// 1. land and water, the ground's classes - with the water's bodies, their levels, the distances to the shore and the
+		// ground's heights worked out over 3 km more round the box, then cut to it (below): a body reaching past a land's box
+		// is then the same body in the two lands that show it - the sea's in both or its own at the level the elevation says -,
+		// and the band between them one water, one shore, one ground (each land's own box had a canal the sea in one and a
+		// river 20 cm higher in the other; tools/worldgen/banddiff.py)
+		const float wide = partial ? 0.0f : 3000.0f;
 		raster::Grid<uint8_t> land;
-		land.Init(gx0, gy0, gx1, gy1, o.classify, kWater);
+		land.Init(gx0 - wide, gy0 - wide, gx1 + wide, gy1 + wide, o.classify, kWater);
 		raster::ClassifyCoast(land, w.coastlines, 200.0f);
 		// (the coastline's water: the sea, before the map's lakes and rivers are drawn in - theirs are levels of their own)
 		std::vector<uint8_t> seaCells(land.v.size());
@@ -1608,7 +1613,9 @@ namespace worldgen::build
 						{
 							// (the street pictures' summer lawns - St. Augustine grass - green, not quite all of it: patches keep the
 							// pictures' brown - the reviewers had seen "pale olive", then "uniform, oversaturated turf")
-							const float patch = 0.6f + 0.4f * std::sin(x * 0.11f + std::sin(y * 0.07f) * 2.3f) * std::sin(y * 0.13f + std::sin(x * 0.05f) * 1.7f);
+							// (by the real world's place: the same patches in every land that shows them)
+							const double gx = seeds::GX(x), gy = seeds::GY(y);
+							const float patch = static_cast<float>(0.6 + 0.4 * std::sin(gx * 0.11 + std::sin(gy * 0.07) * 2.3) * std::sin(gy * 0.13 + std::sin(gx * 0.05) * 1.7));
 							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.8f * grassy / n * patch;
 							const std::array<float, 3> lawn{l * 0.76f, l * 1.13f, l * 0.55f};
 							for (int k = 0; k < 3; ++k)
@@ -1625,8 +1632,8 @@ namespace worldgen::build
 		raster::Grid<uint8_t> dry = land, wet = land;
 		for (size_t k = 0; k < land.v.size(); ++k)
 			dry.v[k] = land.v[k] != kWater, wet.v[k] = land.v[k] == kWater;
-		const auto toWater = raster::DistanceTo(dry, 1); // land cells: how far the water is
-		const auto toLand = raster::DistanceTo(wet, 1);  // water cells: how far the land is
+		auto toWater = raster::DistanceTo(dry, 1); // land cells: how far the water is
+		auto toLand = raster::DistanceTo(wet, 1);  // water cells: how far the land is
 		// the measured ground (tools/worldgen/dem.py's ground.bin, 'WBGR' version 1: x0, y0, cell (float), nx, ny (uint32), then
 		// each cell's height in centimetres (int16, -32768 not known), rows south to north): heights above NAVD88, about the
 		// mean sea level here, the game's sea at 0
@@ -1848,7 +1855,9 @@ namespace worldgen::build
 					// few metres deep a little way in, its murk then hides the bed)
 					const float d = toLand.At(i, j);
 					const float level = std::isnan(waterLevel.v[at]) ? 0.0f : waterLevel.v[at];
-					h = seaBody[at] ? -(0.7f + 3.3f * (1 - std::exp(-d / 70)) + 22.0f * (1 - std::exp(-std::max(0.0f, d - 300) / 1500)))
+					// (the distance to the land at most 2.5 km: past it the two lands' grids no longer see the same shores)
+					const float offshore = std::min(d, 2500.0f);
+					h = seaBody[at] ? -(0.7f + 3.3f * (1 - std::exp(-offshore / 70)) + 22.0f * (1 - std::exp(-std::max(0.0f, offshore - 300) / 1500)))
 					                : level - (1.0f + 4.0f * (1 - std::exp(-d / 25)));
 				}
 				height.At(i, j) = h;
@@ -1878,6 +1887,29 @@ namespace worldgen::build
 		for (size_t k = 0; k < height.v.size(); ++k)
 			if (land.v[k] != kWater && !shoreSea[k] && !std::isnan(shoreLevel.v[k]))
 				height.v[k] = std::max(height.v[k], shoreLevel.v[k] + 0.1f + 0.04f * toWater.v[k]);
+		// (all of it cut to the box, as the grids were made over it before)
+		if (wide > 0)
+		{
+			const int ci = static_cast<int>(std::lround(wide / land.cell)), cj = ci;
+			const int cnx = static_cast<int>((gx1 - gx0) / o.classify) + 1, cny = static_cast<int>((gy1 - gy0) / o.classify) + 1;
+			const int fromNx = land.nx;
+			const auto cut = [&](auto& g) {
+				std::remove_reference_t<decltype(g)> c;
+				c.x0 = gx0, c.y0 = gy0, c.cell = g.cell, c.nx = cnx, c.ny = cny;
+				c.v.resize(static_cast<size_t>(cnx) * cny);
+				for (int j = 0; j < cny; ++j)
+					std::copy_n(g.v.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(j + cj) * g.nx + ci), cnx, c.v.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(j) * cnx));
+				g = std::move(c);
+			};
+			const auto cutCells = [&](std::vector<uint8_t>& v) {
+				std::vector<uint8_t> c(static_cast<size_t>(cnx) * cny);
+				for (int j = 0; j < cny; ++j)
+					std::copy_n(v.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(j + cj) * fromNx + ci), cnx, c.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(j) * cnx));
+				v = std::move(c);
+			};
+			cut(land), cut(toWater), cut(toLand), cut(waterLevel), cut(shoreLevel), cut(upLand), cut(height);
+			cutCells(seaCells), cutCells(seaBody), cutCells(shoreSea);
+		}
 		// measured ground: the laser scan's ground returns (above the datum) on land where there is a scan; land cells
 		// without (under buildings, thick trees) from the measured ones around them
 		elevation::Scan scan;
@@ -2243,6 +2275,48 @@ namespace worldgen::build
 				}
 			}
 			near.roads = std::move(kept);
+		}
+		// (each road cut at its junctions with the other streets before what is decided along a road - its sidewalks, its kerb,
+		// its parking lanes -: by the stretch between two of them, not by all of it the land's box takes in. Two lands cut a
+		// long road at different places, and its choices along the band they share had come out different; a junction is a
+		// vertex of the network anyway, the stretches as they were.)
+		{
+			const auto street = [](const world::Road& r) { return r.kind != "service" && r.kind != "track"; };
+			const auto keyOf = [](const P2& p) {
+				return static_cast<uint64_t>(static_cast<uint32_t>(std::llround(static_cast<double>(p[0]) * 100))) << 32 |
+				       static_cast<uint32_t>(std::llround(static_cast<double>(p[1]) * 100));
+			};
+			std::unordered_map<uint64_t, int> shared;
+			for (const auto& r : near.roads)
+				if (street(r))
+				{
+					std::unordered_set<uint64_t> own; // (a road through a point twice counts once)
+					for (const P2& p : r.points)
+						if (own.insert(keyOf(p)).second)
+							++shared[keyOf(p)];
+				}
+			std::vector<world::Road> stretches;
+			for (auto& r : near.roads)
+			{
+				if (!street(r) || r.points.size() < 3)
+				{
+					stretches.push_back(std::move(r));
+					continue;
+				}
+				world::Road piece = r;
+				piece.points.assign(1, r.points[0]);
+				for (size_t k = 1; k < r.points.size(); ++k)
+				{
+					piece.points.push_back(r.points[k]);
+					if (k + 1 < r.points.size() && shared[keyOf(r.points[k])] >= 2)
+					{
+						stretches.push_back(piece);
+						piece.points.assign(1, r.points[k]);
+					}
+				}
+				stretches.push_back(std::move(piece));
+			}
+			near.roads = std::move(stretches);
 		}
 		// sidewalks the map draws on their own (OpenStreetMap footway=sidewalk beside a street: Tallahassee has 6000): each
 		// street's sides by them. One by the kerb (its middle within 1.95 m of the carriageway's edge) the street draws itself,
@@ -2628,11 +2702,27 @@ namespace worldgen::build
 			}
 			std::printf("roads: %zu points in the sea round the island cut, %zu road pieces to them pruned\n", cuts, pruned);
 		}
+		roads::Orient(network);
 		// (over water - a stream the map has no bridge over - a road at least a little above its level)
 		roads::Heights(network, [&](float x, float y) {
 			const float g = ground(x, y), lv = waterLevelAt(x, y);
 			return std::isnan(lv) ? g : std::max(g, lv + 0.4f);
 		});
+		// (the network's edges as the build has them, in the real world's plane - for tools/worldgen/banddiff.py's look at two
+		// lands' roads: their ends, their kind, lanes, sidewalks, parking, kerb, length)
+		{
+			std::ofstream list(o.out.parent_path() / (o.name + "_edges.txt"));
+			for (const auto& e : network.edges)
+				if (!e.points.empty())
+				{
+					float length = 0;
+					for (size_t k = 1; k < e.points.size(); ++k)
+						length += std::hypot(e.points[k][0] - e.points[k - 1][0], e.points[k][1] - e.points[k - 1][1]);
+					list << std::format("{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{}\t{}\t{}\t{}\t{:.2f}\t{}\t{}\t{}\t{:.2f}\t{:.2f}\t{}\t{}\t{:.1f}\t{}\n", seeds::GX(e.points.front()[0]),
+					    seeds::GY(e.points.front()[1]), seeds::GX(e.points.back()[0]), seeds::GY(e.points.back()[1]), e.kind, e.forward, e.backward, e.centre,
+					    e.laneWidth, e.sidewalks, e.walkLeft, e.walkRight, e.walkWidth, e.parking, e.curb, e.bike, length, e.points.size());
+				}
+		}
 		roads::Surfaces surfaces;
 		{
 			// (a divided road's median: planted where the aerial picture shows vegetation, as the ground cover - but on the
@@ -3093,7 +3183,7 @@ namespace worldgen::build
 				const P2 c = made[i].c;
 				mapped.push_back(b.footprint);
 				const float area = static_cast<float>(std::fabs(polygon::Area(b.footprint)));
-				const uint32_t seed = seeds::Place(c[0], c[1], 3);
+				const uint32_t seed = seeds::PlaceAt(seeds::Middle(b.footprint), 3);
 				const bool listed = all[i] >= w.buildings.data() && all[i] < w.buildings.data() + w.buildings.size();
 				const auto seenIt = listed ? seenWalls.find(static_cast<size_t>(all[i] - w.buildings.data())) : seenWalls.end();
 				const auto yearIt = listed ? builtYear.find(static_cast<size_t>(all[i] - w.buildings.data())) : builtYear.end();
@@ -3125,7 +3215,7 @@ namespace worldgen::build
 				// the nearest street within 40 m, its middle 85 %, the edge 7 m long or more)
 				Porch porch;
 				{
-					const uint32_t ps = seeds::Place(c[0], c[1], 5, 1);
+					const uint32_t ps = seeds::PlaceAt(seeds::Middle(b.footprint), 5, 1);
 					const double lat = latAt(c[1]);
 					const float share = lat >= 28.8 ? 0.35f : lat >= 27.0 ? 0.2f : 0.08f;
 					if (made[i].s.pitched && static_cast<float>(ps % 1000) < share * 1000)
@@ -3679,7 +3769,7 @@ namespace worldgen::build
 					                   b.kind == "static_caravan" || ((b.kind == "yes" || b.kind == "residential") && area > 60 && area < 350);
 					if (!house || area < 40 || area > 600 || c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1)
 						continue;
-					const uint32_t seed = seeds::Place(c[0], c[1], 7, 2);
+					const uint32_t seed = seeds::PlaceAt(seeds::Middle(b.footprint), 7, 2);
 					// (a car in three driveways in four, a second beside it in a quarter of those)
 					const bool car = seed % 100 < 75, second = car && (seed >> 4) % 100 < 25;
 					// (the nearest such street within 45 m)

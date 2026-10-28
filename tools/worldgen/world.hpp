@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -108,7 +109,15 @@ namespace worldgen::world
 	{
 		double lat0 = 0, lon0 = 0, x0 = 0, y0 = 0, kx = 0, ky = 0;
 		static Projection Around(double south, double west, double north, double east, double x0, double y0);
-		P2 To(double lat, double lon) const { return {static_cast<float>(x0 + (lon - lon0) * kx), static_cast<float>(y0 + (lat - lat0) * ky)}; }
+		// (the place in the projection's plane on a lattice of 1/1024 m, then the land's origin - whole metres -: every
+		// coordinate under 16384 m is then a float exactly, the same place the same number less the origin in every land - a
+		// float of its own in each had two neighbours' bands half a millimetre apart, and the choices keyed to the place,
+		// worldgen seeds.hpp, now and then not the same)
+		P2 To(double lat, double lon) const
+		{
+			const auto snap = [](double v) { return std::round(v * 1024) / 1024; };
+			return {static_cast<float>(x0 + snap((lon - lon0) * kx)), static_cast<float>(y0 + snap((lat - lat0) * ky))};
+		}
 	};
 
 	// A brush stroke of the world editor's: painting the ground's class (park, beach, paved, water, urban, land) or shaping

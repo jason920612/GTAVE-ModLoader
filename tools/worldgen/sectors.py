@@ -143,9 +143,10 @@ def build(c, r, flags):
         return name, f'land cover failed (see {log})'
     ground = os.path.join(folder, 'ground.bin')
     # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests; its downloads in the sector's
-    # folder, removed with the build's files - over 100 MB a sector, the state's would fill the disk)
+    # folder, removed with the build's files - over 100 MB a sector, the state's would fill the disk; 3.3 km round the box:
+    # the build works the water and the ground out 3 km past it, so that neighbours' bands are the same)
     if not os.path.exists(ground) and run([O['venv'], '-I', O['dem'], '--world', world, '--out', ground, '--step', '2', '--cell', '4',
-                                           '--cache', os.path.join(folder, 'dem_cache')], log):
+                                           '--margin', '3300', '--cache', os.path.join(folder, 'dem_cache')], log):
         return name, f'ground failed (see {log})'
     photo = os.path.join(folder, 'photo')
     if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo], log):

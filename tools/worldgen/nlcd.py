@@ -9,7 +9,8 @@ usage: python -I tools/worldgen/nlcd.py --world <world.json> --out <landcover.bi
   open water, 21-24 developed open space / low / medium / high intensity, 31 barren, 41 deciduous, 42 evergreen, 43 mixed
   forest, 52 shrub, 71 grassland, 81 pasture, 82 crops, 90 woody wetlands, 95 emergent herbaceous wetlands; 0 none),
   rows south to north.
-The coverage is asked for once per sector box (WCS 1.0.0 GetCoverage, GeoTIFF at its own 30 m grid) and kept in --cache.
+The coverage is asked for in tiles of a lattice over its own 30 m grid (1024 pixels a side; WCS 1.0.0 GetCoverage,
+GeoTIFF), each kept in --cache as first read - so that neighbouring sectors read the same classes for their common band.
 When the service is down (it has been, for hours: its TLS handshake timing out) NOAA's C-CAP 2016 regional land cover is
 read instead - the coastal expression of NLCD, public domain, the same Albers grid; Planetary Computer's cloud-optimized
 GeoTIFF of CONUS, only the box's tiles by HTTP ranges (tifffile, imagecodecs: run in the venv) - and the service is not
@@ -195,6 +196,24 @@ def fetch(x0, y0, x1, y1, year, cache, wait_hours=0.0):
     return a
 
 
+TILE = 1024  # (pixels a side of the lattice's tiles over the coverage's grid: 30.72 km)
+
+
+def tile_classes(i, j, year, cache, wait_hours):
+    """Tile (i, j) of the lattice over the coverage's grid (TILE pixels a side from its north-west corner, i east, j south):
+    its classes, rows north to south - as first read, the NLCD's or C-CAP's when the service was down, and the same for
+    every land after (each land asking for its own box had neighbours read one source each: their common band two land
+    covers)."""
+    file = os.path.join(cache, f'tile_{year}_{i}_{j}.npy')
+    if os.path.exists(file):
+        return np.load(file)
+    x0, y1 = GRID_X0 + i * TILE * PIXEL, GRID_Y0 - j * TILE * PIXEL
+    a = fetch(x0, y1 - TILE * PIXEL, x0 + TILE * PIXEL, y1, year, cache, wait_hours)
+    np.save(file + '.part.npy', a)
+    os.replace(file + '.part.npy', file)
+    return a
+
+
 def main():
     o = options(sys.argv[1:])
     w = json.load(open(o['world'], encoding='utf-8'))
@@ -211,12 +230,16 @@ def main():
     lats = lat0 + (ys - gy0) / ky
     lat, lon = np.meshgrid(lats, lons, indexing='ij')
     ax, ay = albers(lat, lon)
-    # the coverage's box over them, on its grid (a pixel more round it)
-    bx0 = GRID_X0 + (math.floor((ax.min() - GRID_X0) / PIXEL) - 1) * PIXEL
-    bx1 = GRID_X0 + (math.ceil((ax.max() - GRID_X0) / PIXEL) + 1) * PIXEL
-    by1 = GRID_Y0 - (math.floor((GRID_Y0 - ay.max()) / PIXEL) - 1) * PIXEL
-    by0 = GRID_Y0 - (math.ceil((GRID_Y0 - ay.min()) / PIXEL) + 1) * PIXEL
-    classes = fetch(bx0, by0, bx1, by1, o['year'], o['cache'], float(o['wait']))
+    # the lattice's tiles over them (a pixel more round them), put together
+    os.makedirs(o['cache'], exist_ok=True)
+    span = TILE * PIXEL
+    i0, i1 = math.floor((ax.min() - PIXEL - GRID_X0) / span), math.floor((ax.max() + PIXEL - GRID_X0) / span)
+    j0, j1 = math.floor((GRID_Y0 - ay.max() - PIXEL) / span), math.floor((GRID_Y0 - ay.min() + PIXEL) / span)
+    classes = np.zeros(((j1 - j0 + 1) * TILE, (i1 - i0 + 1) * TILE), np.uint8)
+    for j in range(j0, j1 + 1):
+        for i in range(i0, i1 + 1):
+            classes[(j - j0) * TILE:(j - j0 + 1) * TILE, (i - i0) * TILE:(i - i0 + 1) * TILE] = tile_classes(i, j, o['year'], o['cache'], float(o['wait']))
+    bx0, by1 = GRID_X0 + i0 * span, GRID_Y0 - j0 * span
     col = np.clip(((ax - bx0) / PIXEL).astype(np.int64), 0, classes.shape[1] - 1)
     row = np.clip(((by1 - ay) / PIXEL).astype(np.int64), 0, classes.shape[0] - 1)
     out = classes[row, col].astype(np.uint8)  # (rows south to north, as ys)

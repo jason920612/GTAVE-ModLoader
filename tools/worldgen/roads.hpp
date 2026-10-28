@@ -71,6 +71,12 @@ namespace worldgen::roads
 	constexpr float kHeightStep = 8.0f;
 	Network Build(const world::World& w);
 
+	// Each edge the way round from its end lower in the real world's plane (x, then y; worldgen seeds.hpp) to the other - its
+	// lanes' and sidewalks' sides turned with it: what is laid out along an edge from its start (the poles, the parked cars,
+	// the dashes, a mailbox's side of its driveway) then the same in the two lands that show it; each land's build had
+	// turned some of them the other way round.
+	void Orient(Network& n);
+
 	// How far round a street junction (three streets or more) its corners reach: the kerbs' curves end where the roads stop
 	// short of it (its widest road's half width and sidewalk, a little more), and turning cars straighten out 3 m on; 0
 	// at other vertices.

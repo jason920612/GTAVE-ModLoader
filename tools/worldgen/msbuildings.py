@@ -87,7 +87,10 @@ def merge(o):
         w = json.load(f)
     p = w['projection']
     x0, y0, x1, y1 = w['min'][0], w['min'][1], w['max'][0], w['max'][1]
-    to_game = lambda lon, lat: (p['x0'] + (lon - p['lon0']) * p['kx'], p['y0'] + (lat - p['lat0']) * p['ky'])
+    # (as worldgen's projection: the place in its plane on a lattice of 1/1024 m, then the land's origin - each coordinate a
+    # float exactly, the same in every land less its origin)
+    snap = lambda v: round(v * 1024) / 1024
+    to_game = lambda lon, lat: (p['x0'] + snap((lon - p['lon0']) * p['kx']), p['y0'] + snap((lat - p['lat0']) * p['ky']))
     to_ll = lambda x, y: (p['lon0'] + (x - p['x0']) / p['kx'], p['lat0'] + (y - p['y0']) / p['ky'])
     # the cells the box reaches into
     lon0, lat0 = to_ll(x0, y0)
@@ -128,8 +131,7 @@ def merge(o):
                 # (anticlockwise, as the world's footprints are)
                 if sum(ring[i][0] * ring[i - 1][1] - ring[i - 1][0] * ring[i][1] for i in range(len(ring))) > 0:
                     ring.reverse()
-                w['buildings'].append({'kind': 'yes', 'name': '', 'height': 4.5 if a < 350 else 7.0,
-                                       'footprint': [[round(q[0], 2), round(q[1], 2)] for q in ring]})
+                w['buildings'].append({'kind': 'yes', 'name': '', 'height': 4.5 if a < 350 else 7.0, 'footprint': [[q[0], q[1]] for q in ring]})
                 added += 1
     note = 'Building footprints: Microsoft US Building Footprints (ODbL)'
     if note not in w.get('attribution', ''):

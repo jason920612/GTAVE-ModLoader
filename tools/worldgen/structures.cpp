@@ -523,12 +523,17 @@ namespace worldgen::structures
 		}
 	}
 
-	bool Make(const world::Building& b, elevation::Scan* scan, const std::function<float(float, float)>& ground, const Options& o, Shape& out,
-	    Stats& stats)
+	namespace
 	{
+		// Make's work, in metres from `origin` - the footprint's first point - with `footprint` so (the scan, the ground and
+		// the place's own choices asked at their places in the land)
+		bool MakeFrom(const world::Building& b, const std::vector<P2>& footprint, const P2& origin, elevation::Scan* scan,
+		    const std::function<float(float, float)>& groundAt, const Options& o, Shape& out, Stats& stats)
+		{
+		const auto ground = [&](float x, float y) { return groundAt(x + origin[0], y + origin[1]); };
 		out = {};
 		out.kind = b.kind;
-		const std::vector<P2> ring = polygon::Clean(b.footprint, 0.05f);
+		const std::vector<P2> ring = polygon::Clean(footprint, 0.05f);
 		if (ring.size() < 3 || polygon::Area(ring) < 4)
 			return ++stats.skipped, false;
 		// the base: the lowest ground along the outline
@@ -563,9 +568,9 @@ namespace worldgen::structures
 			P2 mid{0, 0};
 			for (const P2& p : ring)
 				mid[0] += p[0] / ring.size(), mid[1] += p[1] / ring.size();
-			scanned = scan->Count(mid[0], mid[1]) > 0;
+			scanned = scan->Count(mid[0] + origin[0], mid[1] + origin[1]) > 0;
 			for (size_t e = 0; e < ring.size() && !scanned; ++e)
-				scanned = scan->Count(ring[e][0], ring[e][1]) > 0;
+				scanned = scan->Count(ring[e][0] + origin[0], ring[e][1] + origin[1]) > 0;
 		}
 		// (a building site's shape not measured: the scan is years older than the map - a half-built block's returns had made
 		// a roof of spikes and shards, the reviewers' "broken building mesh"; it gets the map's height, flat)
@@ -588,7 +593,7 @@ namespace worldgen::structures
 		// the height then rises only from the walls along the long side, the short sides' walls - their edges across the
 		// ridge - becoming the gables)
 		std::vector<bool> eaveEdge(ring.size(), true);
-		const float gableShare = o.gableShareAt ? o.gableShareAt(ring[0][0], ring[0][1]) : o.gableShare;
+		const float gableShare = o.gableShareAt ? o.gableShareAt(ring[0][0] + origin[0], ring[0][1] + origin[1]) : o.gableShare;
 		if ((hip || measuredHouse) && gableShare > 0)
 		{
 			float bestArea = 1e30f, axis = 0;
@@ -609,7 +614,7 @@ namespace worldgen::structures
 				if ((u1 - u0) * (v1 - v0) < bestArea)
 					bestArea = (u1 - u0) * (v1 - v0), axis = u1 - u0 >= v1 - v0 ? std::atan2(uy, ux) : std::atan2(ux, -uy);
 			}
-			const uint32_t seed = seeds::Place(ring[0][0], ring[0][1], 7, 15);
+			const uint32_t seed = seeds::Place(ring[0][0] + origin[0], ring[0][1] + origin[1], 7, 15);
 			if (area >= 0.85 * bestArea && static_cast<float>(seed % 1000) < gableShare * 1000)
 			{
 				const float ax = std::cos(axis), ay = std::sin(axis);
@@ -651,13 +656,13 @@ namespace worldgen::structures
 						h[k] = base + eave + std::min((de < 1e29f ? de : d) * kHouseSlope, riseCap), ++known;
 						continue;
 					}
-					const float roof = mode == 1 ? scan->Roof(c[0], c[1]) : scan->Top(c[0], c[1]);
+					const float roof = mode == 1 ? scan->Roof(c[0] + origin[0], c[1] + origin[1]) : scan->Top(c[0] + origin[0], c[1] + origin[1]);
 					if (!std::isnan(roof) && (mode == 1 || d > 0.5f))
 					{
 						h[k] = roof, ++known;
 						continue;
 					}
-					const float top = scan->Top(c[0], c[1]), g = scan->Ground(c[0], c[1]);
+					const float top = scan->Top(c[0] + origin[0], c[1] + origin[1]), g = scan->Ground(c[0] + origin[0], c[1] + origin[1]);
 					if (d > 1.5f && !std::isnan(top) && !std::isnan(g) && top - g < 0.8f)
 						h[k] = g, ++known;
 				}
@@ -929,6 +934,23 @@ namespace worldgen::structures
 		out.top = static_cast<float>(top) - base;
 		stats.triangles += out.roof.size();
 		return !out.roof.empty();
+		}
+	}
+
+	bool Make(const world::Building& b, elevation::Scan* scan, const std::function<float(float, float)>& ground, const Options& o, Shape& out,
+	    Stats& stats)
+	{
+		// (worked out in metres from the footprint's first point - the same numbers in every land that shows the building:
+		// in each land's own coordinates the roof's raster and the triangles fitted to it came out a little different, a
+		// roof a few centimetres higher there, now and then another shape -, then put back in the land's)
+		const P2 origin = b.footprint.empty() ? P2{0, 0} : b.footprint[0];
+		std::vector<P2> footprint = b.footprint;
+		for (P2& p : footprint)
+			p = {p[0] - origin[0], p[1] - origin[1]};
+		const bool made = MakeFrom(b, footprint, origin, scan, ground, o, out, stats);
+		for (P3& v : out.vertices)
+			v[0] += origin[0], v[1] += origin[1];
+		return made;
 	}
 
 	namespace
