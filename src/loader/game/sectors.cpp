@@ -137,7 +137,9 @@ namespace loader::game::sectors
 		// CCarGen - and not one ever came), so the loader makes them: a land's parked.bin (worldgen build: each car's place on
 		// a driveway, in a car park's stall, by a kerb - 'WBPK' version 1, the count, then x, y, z, heading, f32) read once
 		// the camera is on it; the cars within 120 m of the camera made (a sedan, an SUV or a pickup, a common colour, by
-		// the place), those past 180 m taken away again; one the player gets into or moves is the game's from then on.
+		// the place) once the ground under them is in, those past 180 m taken away again; one the player gets into or moves
+		// is the game's from then on - except in its first 8 s: one that fell or rolled then (made before the ground's
+		// collision was in, after a teleport: nearly every car had gone that way) is made again later, up to three times.
 		constexpr float kParkNear = 120, kParkFar = 180;
 		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
 		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E,
@@ -149,6 +151,8 @@ namespace loader::game::sectors
 			int32_t colour = 0;
 			int32_t vehicle = 0; // (0 none, -1 taken: not made again)
 			bool asked = false;
+			ULONGLONG made = 0; // (when it was made)
+			int tries = 0;
 		};
 		struct ParkedLand
 		{
@@ -237,15 +241,18 @@ namespace loader::game::sectors
 				{
 					const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, car.vehicle, 1);
 					const bool inside = natives::Invoke<int32_t>(kIsPedInVehicle, player, car.vehicle, 0) != 0;
-					// (on its side or roof - made where something stood: taken away, the place not used again)
-					if (!inside && natives::Invoke<float>(kGetEntityUprightValue, car.vehicle) < 0.5f)
+					// (on its side or roof - made where something stood: taken away, the place not used again; fallen or rolled
+					// in its first seconds - the ground's collision not in yet -: made again later)
+					const bool settling = now - car.made < 8000 && car.tries < 3;
+					const bool moved = std::hypot(p.x - car.x, p.y - car.y) > 3 || std::fabs(p.z - car.z) > 3;
+					if (!inside && (natives::Invoke<float>(kGetEntityUprightValue, car.vehicle) < 0.5f || (settling && moved)))
 					{
 						natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
 						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
-						car.vehicle = -1;
+						car.vehicle = settling ? 0 : -1;
 						gone = true;
 					}
-					else if (inside || std::hypot(p.x - car.x, p.y - car.y) > 3)
+					else if (inside || moved)
 					{
 						natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle);
 						car.vehicle = -1;
@@ -294,9 +301,15 @@ namespace loader::game::sectors
 						}
 						if (made >= 8 || !natives::Invoke<int32_t>(kHasModelLoaded, car.model))
 							continue;
+						// (the ground under it in: its collision found within 3 m of its place)
+						float gz = 0;
+						if (!natives::Invoke<int32_t>(kGetGroundZFor3dCoord, car.x, car.y, car.z + 3.0f, &gz, 0, 0) || std::fabs(gz - car.z) > 3)
+							continue;
 						const int32_t v = natives::Invoke<int32_t>(kCreateVehicle, car.model, car.x, car.y, car.z + 0.3f, car.heading, 0, 0, 0);
 						if (!v)
 							continue;
+						car.made = now;
+						++car.tries;
 						natives::Invoke<void>(kSetVehicleOnGroundProperly, v, 5.0f);
 						natives::Invoke<void>(kSetVehicleColours, v, car.colour, car.colour);
 						car.vehicle = v;
