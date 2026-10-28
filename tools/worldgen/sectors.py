@@ -116,7 +116,7 @@ def build(c, r, flags):
             os.remove(world)  # (made again, both steps, next time)
             return name, f'footprints failed (see {log})'
     cover = os.path.join(folder, 'landcover.bin')
-    if not os.path.exists(cover) and run([sys.executable, '-I', O['nlcd'], '--world', world, '--out', cover], log):
+    if not os.path.exists(cover) and run([O['venv'], '-I', O['nlcd'], '--world', world, '--out', cover], log):
         return name, f'land cover failed (see {log})'
     ground = os.path.join(folder, 'ground.bin')
     # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests; its downloads in the sector's

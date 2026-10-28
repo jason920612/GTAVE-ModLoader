@@ -10,8 +10,10 @@ usage: python -I tools/worldgen/nlcd.py --world <world.json> --out <landcover.bi
   forest, 52 shrub, 71 grassland, 81 pasture, 82 crops, 90 woody wetlands, 95 emergent herbaceous wetlands; 0 none),
   rows south to north.
 The coverage is asked for once per sector box (WCS 1.0.0 GetCoverage, GeoTIFF at its own 30 m grid) and kept in --cache.
-When the service is down (it has been, for hours: its TLS handshake timing out) it is waited for, up to --wait hours -
-the statewide batch's other sectors would only have failed the same way.
+When the service is down (it has been, for hours: its TLS handshake timing out) NOAA's C-CAP 2016 regional land cover is
+read instead - the coastal expression of NLCD, public domain, the same Albers grid; Planetary Computer's cloud-optimized
+GeoTIFF of CONUS, only the box's tiles by HTTP ranges (tifffile, imagecodecs: run in the venv) - and the service is not
+asked again for an hour (<cache>/service_down.txt). --wait hours (0): waited for instead, C-CAP after that.
 """
 import io, json, math, os, struct, sys, time, urllib.request
 
@@ -51,7 +53,7 @@ def albers(lat, lon):
 
 
 def options(argv):
-    o = {'year': '2024', 'cell': '10', 'cache': r'D:\GTAV-UE5\nlcd\cache', 'margin': '300', 'wait': '12'}
+    o = {'year': '2024', 'cell': '10', 'cache': r'D:\GTAV-UE5\nlcd\cache', 'margin': '300', 'wait': '0'}
     for i in range(0, len(argv) - 1, 2):
         if not argv[i].startswith('--'):
             sys.exit(__doc__)
@@ -61,11 +63,100 @@ def options(argv):
     return o
 
 
-def fetch(x0, y0, x1, y1, year, cache, wait_hours=12.0):
+# NOAA C-CAP 2016 (Planetary Computer; public domain): its item, the read token for its storage, its classes as NLCD's
+CCAP_ITEM = 'https://planetarycomputer.microsoft.com/api/stac/v1/collections/noaa-c-cap/items/conus_2016_ccap_landcover_20200311'
+CCAP_TOKEN = 'https://planetarycomputer.microsoft.com/api/sas/v1/token/noaa-c-cap'
+CCAP_NLCD = {2: 24, 3: 23, 4: 22, 5: 21, 6: 82, 7: 81, 8: 71, 9: 41, 10: 42, 11: 43, 12: 52, 13: 90, 14: 90, 15: 95, 16: 90, 17: 90, 18: 95,
+             19: 31, 20: 31, 21: 11, 22: 11, 23: 11}
+AGENT = {'User-Agent': 'GTAVE-ModLoader-worldgen/1.0'}
+
+
+class RangeFile(io.RawIOBase):
+    """A file on the web read by HTTP ranges (each read one request)."""
+
+    def __init__(self, url):
+        self.url, self.pos = url, 0
+        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD', headers=AGENT), timeout=120) as r:
+            self.size = int(r.headers['Content-Length'])
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        self.pos = offset if whence == 0 else self.pos + offset if whence == 1 else self.size + offset
+        return self.pos
+
+    def readinto(self, b):
+        n = min(len(b), self.size - self.pos)
+        if n <= 0:
+            return 0
+        for attempt in range(5):
+            try:
+                req = urllib.request.Request(self.url, headers={**AGENT, 'Range': f'bytes={self.pos}-{self.pos + n - 1}'})
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    data = r.read()
+                break
+            except Exception:
+                if attempt == 4:
+                    raise
+                time.sleep(10 * (attempt + 1))
+        b[:len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def fetch_ccap(x0, y0, x1, y1, cache):
+    """C-CAP 2016's classes over the Albers box (NLCD's grid - C-CAP's is the same), as NLCD's, rows north to south."""
+    import tifffile  # (the venv's, with imagecodecs for its tiles' compression)
+    width, height = int(round((x1 - x0) / PIXEL)), int(round((y1 - y0) / PIXEL))
+    file = os.path.join(cache, f'ccap_2016_{int(x0)}_{int(y0)}_{width}x{height}.npy')
+    if os.path.exists(file):
+        return np.load(file)
+    with urllib.request.urlopen(urllib.request.Request(CCAP_ITEM, headers=AGENT), timeout=120) as r:
+        item = json.load(r)
+    with urllib.request.urlopen(urllib.request.Request(CCAP_TOKEN, headers=AGENT), timeout=120) as r:
+        token = json.load(r)['token']
+    t = item['properties']['proj:transform']
+    ox, oy = round(t[2] / PIXEL) * PIXEL, round(t[5] / PIXEL) * PIXEL
+    c0, r0 = int(round((x0 - ox) / PIXEL)), int(round((oy - y1) / PIXEL))
+    lut = np.zeros(256, np.uint8)
+    for k, v in CCAP_NLCD.items():
+        lut[k] = v
+    out = np.zeros((height, width), np.uint8)
+    fh = io.BufferedReader(RangeFile(item['assets']['data']['href'] + '?' + token), buffer_size=1 << 20)
+    with tifffile.TiffFile(fh) as tif:
+        page = tif.pages[0]
+        tw, th = page.tilewidth, page.tilelength
+        across = math.ceil(page.imagewidth / tw)
+        for ty in range(max(0, r0) // th, min(page.imagelength, r0 + height - 1) // th + 1):
+            for tx in range(max(0, c0) // tw, min(page.imagewidth, c0 + width - 1) // tw + 1):
+                k = ty * across + tx
+                fh.seek(page.dataoffsets[k])
+                tile = np.asarray(page.decode(fh.read(page.databytecounts[k]), k)[0]).reshape(th, tw)
+                ya, yb = max(r0, ty * th), min(r0 + height, ty * th + th)
+                xa, xb = max(c0, tx * tw), min(c0 + width, tx * tw + tw)
+                if ya < yb and xa < xb:
+                    out[ya - r0:yb - r0, xa - c0:xb - c0] = lut[tile[ya - ty * th:yb - ty * th, xa - tx * tw:xb - tx * tw]]
+    np.save(file + '.part.npy', out)
+    os.replace(file + '.part.npy', file)
+    return out
+
+
+def fetch(x0, y0, x1, y1, year, cache, wait_hours=0.0):
     """The coverage's classes over the Albers box (on its grid), rows north to south."""
     os.makedirs(cache, exist_ok=True)
     width, height = int(round((x1 - x0) / PIXEL)), int(round((y1 - y0) / PIXEL))
     file = os.path.join(cache, f'nlcd_{year}_{int(x0)}_{int(y0)}_{width}x{height}.tif')
+    down = os.path.join(cache, 'service_down.txt')
+    if not os.path.exists(file) and os.path.exists(down) and time.time() - os.path.getmtime(down) < 3600 and wait_hours <= 0:
+        print('  land cover: the NLCD service was down within the hour - NOAA C-CAP 2016 instead', flush=True)
+        return fetch_ccap(x0, y0, x1, y1, cache)
     if not os.path.exists(file):
         url = (f'{SERVICE}?service=WCS&version=1.0.0&request=GetCoverage&coverage={COVERAGE}&crs=EPSG:5070'
                f'&bbox={x0:.0f},{y0:.0f},{x1:.0f},{y1:.0f}&width={width}&height={height}&format=GeoTIFF'
@@ -86,7 +177,10 @@ def fetch(x0, y0, x1, y1, year, cache, wait_hours=12.0):
                     time.sleep(10 * attempt)
                     continue
                 if waited >= wait_hours * 3600:
-                    raise
+                    with open(down, 'w') as f:
+                        f.write(f'{time.ctime()}: {e}\n')
+                    print(f'  land cover: {e}; the service is down - NOAA C-CAP 2016 instead', flush=True)
+                    return fetch_ccap(x0, y0, x1, y1, cache)
                 print(f'  land cover: {e}; the service is down - asked again in 10 minutes', flush=True)
                 time.sleep(600)
                 waited += 600
