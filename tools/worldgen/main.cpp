@@ -2431,6 +2431,7 @@ int main(int argc, char** argv)
 		if (g_options.contains("phototex"))
 			o.phototex = g_options["phototex"];
 		o.surfaceOnly = g_options.contains("surface-only") && g_options["surface-only"] != "0";
+		o.photoWalls = !g_options.contains("photo-walls") || g_options["photo-walls"] != "0";
 		if (g_options.contains("climate"))
 			o.climate = g_options["climate"];
 		if (g_options.contains("datum"))
@@ -2513,7 +2514,7 @@ int main(int argc, char** argv)
 					worldgen::raster::FillPolygon(g, rings, value);
 				}
 		};
-		for (const char* k : {"park", "grass", "pitch"})
+		for (const char* k : {"park", "grass", "cemetery", "pitch"})
 			fill(k, kPark);
 		fill("wood", kWood);
 		fill("beach", kBeach);

@@ -106,8 +106,10 @@ namespace worldgen::world
 				return "park";
 			if (leisure == "pitch" || leisure == "golf_course" || leisure == "stadium" || leisure == "track")
 				return "pitch";
-			if (landuse == "grass" || landuse == "recreation_ground" || landuse == "village_green" || landuse == "meadow" || landuse == "cemetery" ||
-			    natural == "grassland")
+			// (a cemetery: its graves - research/phase0.md §63.10)
+			if (landuse == "cemetery" || amenity == "grave_yard")
+				return "cemetery";
+			if (landuse == "grass" || landuse == "recreation_ground" || landuse == "village_green" || landuse == "meadow" || natural == "grassland")
 				return "grass";
 			if (amenity == "parking")
 				return "parking";
@@ -385,6 +387,7 @@ namespace worldgen::world
 			{
 				Area a;
 				a.kind = kind;
+				a.name = Tag(t, "name");
 				a.outer.push_back(Ring(Points(d, w, p), true));
 				if (a.outer.back().size() >= 3)
 					out.areas.push_back(std::move(a));
@@ -412,6 +415,7 @@ namespace worldgen::world
 			{
 				Area a;
 				a.kind = kind;
+				a.name = Tag(t, "name");
 				a.outer = Rings(d, r, "outer", p);
 				a.inner = Rings(d, r, "inner", p);
 				if (!a.outer.empty())
@@ -499,6 +503,8 @@ namespace worldgen::world
 				o["outer"].push_back(Line(r));
 			for (const auto& r : a.inner)
 				o["inner"].push_back(Line(r));
+			if (!a.name.empty())
+				o["name"] = a.name;
 			areas.push_back(std::move(o));
 		}
 		auto& waterways = j["waterways"] = nlohmann::json::array();
@@ -610,6 +616,7 @@ namespace worldgen::world
 				a.outer.push_back(Line(r));
 			for (const auto& r : o["inner"])
 				a.inner.push_back(Line(r));
+			a.name = o.value("name", "");
 			w.areas.push_back(std::move(a));
 		}
 		for (const auto& o : j["waterways"])

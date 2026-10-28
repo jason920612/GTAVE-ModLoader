@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 #include "convert/resource.hpp"
 
@@ -28,6 +29,7 @@ namespace worldgen::barriers
 			Retaining, // concrete, 0.3 m thick
 			Hedge,     // clipped bushes in a row
 			GuardRail, // a W-beam on posts
+			Bars,      // wrought iron pickets between square posts (the cemeteries', the older houses')
 		};
 
 		Kind KindOf(const world::Barrier& b)
@@ -45,6 +47,8 @@ namespace worldgen::barriers
 			const std::string& m = b.material;
 			if (m == "wood" || m == "wooden" || m == "board" || m == "boards" || m == "privacy" || m == "panel")
 				return Kind::Boards;
+			if (m == "bars" || m == "metal_bars" || m == "wrought_iron" || m == "iron")
+				return Kind::Bars;
 			if (m == "railing" || m == "split_rail" || m == "metal_bars" || m == "bars" || m == "pole" || m == "post_and_rail" || m == "barbed_wire" ||
 			    m == "electric" || m == "wire")
 				return Kind::Railing;
@@ -63,6 +67,8 @@ namespace worldgen::barriers
 				return tagged >= 0.6f && tagged <= 4.5f ? tagged : 1.8f;
 			case Kind::Railing:
 				return tagged >= 0.5f && tagged <= 2.0f ? tagged : 1.1f;
+			case Kind::Bars:
+				return tagged >= 0.6f && tagged <= 2.5f ? tagged : 1.5f;
 			case Kind::Wall:
 				return tagged >= 0.4f && tagged <= 6.0f ? tagged : 1.6f;
 			case Kind::Retaining:
@@ -84,6 +90,7 @@ namespace worldgen::barriers
 				return 3.05f;
 			case Kind::Boards:
 			case Kind::Railing:
+			case Kind::Bars:
 				return 2.44f;
 			case Kind::GuardRail:
 				return 1.905f;
@@ -326,6 +333,33 @@ namespace worldgen::barriers
 				++stats.fences;
 				break;
 			}
+			case Kind::Bars:
+			{
+				// the picture's panels (a panel every 1.22 m, from 8 cm over the ground to the spear tips), both faces, the
+				// vertex colours the chain link's; square posts 6 cm across of the picture's top rail - black throughout
+				const Colour foot{234, 234, 34, 255}, top{234, 234, 255, 255};
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const float za = z[k] + 0.08f, zb = z[k + 1] + 0.08f, ta = z[k] + h, tb = z[k + 1] + h, perMetre = 1 / (h - 0.08f);
+					Writer::Face(out.iron, q[k], q[k + 1], za, zb, ta, tb, s[k] / 1.22f, s[k + 1] / 1.22f, 1, perMetre, foot, top);
+					Writer::Face(out.iron, q[k + 1], q[k], zb, za, tb, ta, s[k + 1] / 1.22f, s[k] / 1.22f, 1, perMetre, foot, top);
+					w.CollideFace(q[k], q[k + 1], za, zb, ta, tb, kRailing, false);
+					++stats.pieces;
+				}
+				posts([&](size_t k, const P2& d) {
+					const P2 n = Left(d);
+					constexpr float half = 0.03f, rail = 0.105f; // (the top rail's middle in the picture)
+					const std::array<P2, 4> c{P2{q[k][0] + (d[0] + n[0]) * half, q[k][1] + (d[1] + n[1]) * half},
+					    P2{q[k][0] + (d[0] - n[0]) * half, q[k][1] + (d[1] - n[1]) * half}, P2{q[k][0] - (d[0] + n[0]) * half, q[k][1] - (d[1] + n[1]) * half},
+					    P2{q[k][0] - (d[0] - n[0]) * half, q[k][1] - (d[1] - n[1]) * half}}; // (clockwise from above: outward is each side's left)
+					for (size_t e = 0; e < 4; ++e)
+						Writer::Face(out.iron, c[e], c[(e + 1) % 4], z[k] - 0.1f, z[k] - 0.1f, z[k] + h + 0.03f, z[k] + h + 0.03f, 0.5f, 0.5f, rail, 0, foot, top);
+				});
+				++stats.fences;
+				break;
+			}
 			case Kind::Wall:
 			case Kind::Retaining:
 			{
@@ -419,5 +453,130 @@ namespace worldgen::barriers
 				if (built[k])
 					stats.metres += s[k + 1] - s[k];
 		}
+	}
+
+	texture::Image IronPicture()
+	{
+		// 512 x 512 for 1.22 m by the fence's height: pickets 10 px wide every 51.2 px, spear tips over the top 28 rows, the
+		// top rail rows 44-63 - solid across, the posts' -, the bottom rail rows 430-447, the pickets on to row 500; black
+		// paint a little lighter down each bar's middle (a round look in the light)
+		texture::Image img(512, 512, {18, 18, 20, 0});
+		const auto paint = [&](int x, int y, float shade) {
+			if (x < 0 || x >= 512 || y < 0 || y >= 512)
+				return;
+			const uint8_t c = static_cast<uint8_t>(std::clamp(16.0f + 30.0f * shade, 0.0f, 255.0f));
+			img.At(x, y) = {c, c, static_cast<uint8_t>(std::min(255, c + 2)), 255};
+		};
+		for (int p = 0; p < 10; ++p)
+		{
+			const float mid = (p + 0.5f) * 51.2f;
+			for (int y = 0; y < 500; ++y)
+			{
+				// (the tip: widening to 18 px at row 16, back to the bar's 10 px at row 28)
+				const float half = y < 16 ? 9.0f * y / 16 : y < 28 ? 9.0f - 4.0f * (y - 16) / 12 : 5.0f;
+				for (int x = static_cast<int>(std::floor(mid - half)); x <= static_cast<int>(std::ceil(mid + half)); ++x)
+				{
+					const float off = std::fabs(x + 0.5f - mid) / std::max(half, 1.0f);
+					if (off <= 1)
+						paint(x, y, 1 - off * off);
+				}
+			}
+		}
+		for (const auto [y0, y1] : {std::pair{44, 64}, std::pair{430, 448}})
+			for (int y = y0; y < y1; ++y)
+			{
+				const float off = std::fabs(y + 0.5f - (y0 + y1) / 2.0f) / ((y1 - y0) / 2.0f);
+				for (int x = 0; x < 512; ++x)
+					paint(x, y, 0.8f * (1 - off * off));
+			}
+		return img;
+	}
+
+	std::vector<world::Barrier> Enclosures(const std::vector<world::Area>& areas, const std::vector<world::Barrier>& mapped,
+	    const std::function<bool(float, float)>& byStreet, const std::function<bool(float, float)>& onPath)
+	{
+		// the map's barriers by 8 m cells (a fence along a cemetery's edge is often mapped as its own line)
+		using Key = int64_t;
+		const auto keyOf = [](float x, float y) {
+			return static_cast<Key>(std::floor(x / 8)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 8)));
+		};
+		std::unordered_map<Key, std::vector<std::array<P2, 2>>> near;
+		for (const world::Barrier& b : mapped)
+			for (size_t k = 0; k + 1 < b.points.size(); ++k)
+			{
+				const P2 &a = b.points[k], &c = b.points[k + 1];
+				for (float y = std::floor((std::min(a[1], c[1]) - 4) / 8) * 8; y <= std::max(a[1], c[1]) + 4; y += 8)
+					for (float x = std::floor((std::min(a[0], c[0]) - 4) / 8) * 8; x <= std::max(a[0], c[0]) + 4; x += 8)
+						near[keyOf(x + 1, y + 1)].push_back({a, c});
+			}
+		const auto mappedNear = [&](const P2& p) {
+			const auto it = near.find(keyOf(p[0], p[1]));
+			if (it == near.end())
+				return false;
+			for (const auto& [a, c] : it->second)
+			{
+				const float dx = c[0] - a[0], dy = c[1] - a[1], l = dx * dx + dy * dy;
+				const float t = l > 0 ? std::clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l, 0.0f, 1.0f) : 0.0f;
+				if (std::hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t) < 4)
+					return true;
+			}
+			return false;
+		};
+		std::vector<world::Barrier> out;
+		for (const world::Area& a : areas)
+		{
+			if (a.kind != "cemetery" || props::MemorialPark(a.name))
+				continue;
+			for (const auto& ring : a.outer)
+			{
+				// (the outline in pieces of up to 4 m; a piece fenced when its middle is by a street, off the paths and
+				// clear of the map's barriers; the fenced pieces one after another one fence - round the ring's start too)
+				std::vector<P2> q;
+				for (size_t k = 0; k < ring.size(); ++k)
+				{
+					const P2 &p = ring[k], &c = ring[(k + 1) % ring.size()];
+					const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(c[0] - p[0], c[1] - p[1]) / 4)));
+					for (int j = 0; j < n; ++j)
+						q.push_back({p[0] + (c[0] - p[0]) * j / n, p[1] + (c[1] - p[1]) * j / n});
+				}
+				const size_t count = q.size();
+				std::vector<bool> fenced(count);
+				for (size_t k = 0; k < count; ++k)
+				{
+					const P2 &p = q[k], &c = q[(k + 1) % count], m{(p[0] + c[0]) / 2, (p[1] + c[1]) / 2};
+					fenced[k] = byStreet(m[0], m[1]) && !onPath(m[0], m[1]) && !mappedNear(m);
+				}
+				size_t start = 0;
+				while (start < count && fenced[start])
+					++start;
+				if (start == count) // (all of it: round from the first point)
+					start = 0;
+				world::Barrier b;
+				const auto flush = [&] {
+					if (b.points.size() >= 2)
+					{
+						b.kind = "fence";
+						b.material = "bars";
+						b.height = 1.5f;
+						out.push_back(b);
+					}
+					b.points.clear();
+				};
+				for (size_t n = 0; n < count; ++n)
+				{
+					const size_t k = (start + n) % count;
+					if (!fenced[k])
+					{
+						flush();
+						continue;
+					}
+					if (b.points.empty())
+						b.points.push_back(q[k]);
+					b.points.push_back(q[(k + 1) % count]);
+				}
+				flush();
+			}
+		}
+		return out;
 	}
 }

@@ -297,6 +297,32 @@ namespace worldgen::facades
 						Window(c, x + 0.04f, y, x + 1.5f - 0.04f, y + 1.55f, 0.05f, {150, 155, 160}, {75, 95, 115}, seed * 37 + f * 8 + b, false);
 					}
 			}, k == 0, 5);
+		// parking garages: decks of 3 m - a concrete spandrel 1.1 m high, the open deck over it dark to the next slab with a
+		// ceiling light every 3 m -, columns every 6 m (the street pictures' garages had come out as offices with ribbon
+		// windows)
+		add(Kind::Garage, "garage", "garage_grey", 12, 12, [&](Canvas& c) {
+			Wall(c, {200, 200, 194}, ++seed, 0.08f, 0.14f);
+			for (int f = 0; f < 4; ++f)
+			{
+				const float y = f * 3.0f;
+				c.Rect(0, y + 1.1f, c.mw, y + 3.0f, [&](size_t i, float, float v) {
+					const float shade = 30 + 16 * (1 - v);
+					c.albedo[i] = {shade, shade + 1, shade + 3};
+					c.height[i] = 0.12f;
+					c.spec[i] = 0.04f;
+				});
+				for (int b = 0; b < 4; ++b)
+					c.Fill(b * 3.0f + 1.2f, y + 2.86f, b * 3.0f + 1.8f, y + 2.93f, {228, 228, 210}, 0.14f, 0.3f);
+				// (the slab's shadow on the spandrel's top)
+				c.Rect(0, y + 0.95f, c.mw, y + 1.1f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.8f + 0.2f * (1 - v)); });
+			}
+			for (const float x : {0.0f, 6.0f})
+				c.Rect(x, 0, x + 0.45f, c.mh, [&](size_t i, float u, float) {
+					c.albedo[i] = Scale({204, 204, 198}, 0.92f + 0.08f * u);
+					c.height[i] = 0.62f;
+					c.spec[i] = 0.06f;
+				});
+		}, true, 5);
 		// glass towers: floors of 3.4 m: 2.5 m of clear glass, 0.9 m of dark spandrel, mullions every 1.5 m
 		const std::pair<const char*, Rgb> glass[] = {{"blue", {70, 108, 142}}, {"green", {72, 118, 112}}, {"grey", {66, 76, 88}}, {"silver", {122, 138, 154}}};
 		for (size_t k = 0; k < std::size(glass); ++k)
@@ -513,6 +539,8 @@ namespace worldgen::facades
 		const bool office = kind == "office" || kind == "commercial" || kind == "retail" || kind == "hospital" || kind == "university" || kind == "school";
 		if (industrial)
 			return among(Kind::Shed);
+		if (kind == "parking" && height >= 5)
+			return among(Kind::Garage);
 		if (kind == "parking" || kind == "stadium" || kind == "grandstand" || kind == "garage" || kind == "garages" || (height < 10 && area > 3000 && !house))
 			return among(Kind::Concrete);
 		// (north Florida: frame houses in siding, brick ones, some stucco - Tallahassee's streets; south Florida: concrete

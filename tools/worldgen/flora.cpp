@@ -416,8 +416,9 @@ namespace worldgen::flora
 			return out;
 		}
 
-		// A crape myrtle: three to five thin smooth stems out of the ground in a vase, leaves and the summer's flowers (crimson,
-		// pink, white or lavender: one of the atlas's cells) on their upper half.
+		// A crape myrtle: three to five thin smooth stems out of the ground in a vase, leaves on their upper half - and on one
+		// in four the summer's flowers (crimson, pink, white or lavender: one of the atlas's cells) over them: the street
+		// pictures are of every season, and every one in bloom had read as "pink crape myrtles everywhere".
 		Model Myrtle(uint32_t seed)
 		{
 			Random rnd(seed);
@@ -428,6 +429,7 @@ namespace worldgen::flora
 			const P3 middle{0, 0, H * 0.65f};
 			const int n = 3 + static_cast<int>(rnd.Next() % 3);
 			const int bloom = static_cast<int>(rnd.Next() % 4);
+			const bool flowering = rnd.Next() % 4 == 0;
 			for (int i = 0; i < n; ++i)
 			{
 				const float az = 2 * kPi * i / n + rnd.Range(-0.4f, 0.4f);
@@ -437,8 +439,10 @@ namespace worldgen::flora
 				limbs.push_back({stem, kBarkMyrtle});
 				for (float t = 0.5f; t <= 1.0f; t += 0.1f)
 				{
-					Cluster(leaves, At(stem, t), middle, 2, 0.8f, rnd.Range(1.1f, 1.5f), kOakLeaves, rnd, 0.2f);
+					Cluster(leaves, At(stem, t), middle, flowering ? 2 : 3, 0.8f, rnd.Range(1.1f, 1.5f), kOakLeaves, rnd, 0.2f);
 					// (the flowers: their panicles on top)
+					if (!flowering)
+						continue;
 					Leaf f;
 					const P3 c = Add(At(stem, t), P3{rnd.Range(-0.6f, 0.6f), rnd.Range(-0.6f, 0.6f), rnd.Range(0.1f, 0.6f)});
 					f = {c, {rnd.Range(-1, 1), rnd.Range(-1, 1), rnd.Range(0, 1)}, Sub(c, middle), rnd.Range(0, 2 * kPi), 1.2f, 1.2f, bloom, kMyrtle, false};

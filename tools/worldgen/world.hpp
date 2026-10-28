@@ -39,9 +39,10 @@ namespace worldgen::world
 
 	struct Area
 	{
-		std::string kind;                   // park, grass, beach, wood, water, parking, residential, commercial, ...
+		std::string kind;                   // park, grass, cemetery, beach, wood, water, parking, residential, commercial, ...
 		std::vector<std::vector<P2>> outer; // closed rings (last point != first)
 		std::vector<std::vector<P2>> inner;
+		std::string name;                   // (the map's, when it has one)
 	};
 
 	struct Building

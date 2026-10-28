@@ -1,11 +1,14 @@
 #include "props.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "convert/resource.hpp"
+#include "polygon.hpp"
 
 namespace worldgen::props
 {
@@ -232,5 +235,218 @@ namespace worldgen::props
 		for (const roads::Signal& s : signals)
 			if (In(box, s.p[0], s.p[1]))
 				out.push_back({s.reach > 5.5f ? longSignal : signal, s.p, s.heading, 300});
+	}
+
+	bool MemorialPark(const std::string& name)
+	{
+		std::string n = name;
+		std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		for (const char* k : {"memorial park", "memory garden", "memorial garden", "garden of memor", "gardens of memor", "national cemetery", "columbarium"})
+			if (n.find(k) != std::string::npos)
+				return true;
+		return false;
+	}
+
+	void Graves(const std::vector<world::Area>& areas, const std::vector<world::Walk>& walks, const std::function<bool(float, float)>& open,
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<Prop>& out, GraveStats& stats)
+	{
+		// the game's (Los Santos's cemetery's - the prologue's have snow on them): along the row the model's x, its face
+		// its -y; its box's middle in its own axes; how many plots (1.9 m) along the row and rows (4 m) across it it takes
+		struct Kind
+		{
+			const char* name;
+			float width, depth;
+			P2 centre;
+			int plots, rows, weight;
+		};
+		static const Kind kKinds[] = {{"prop_gravestones_01a", 5.0f, 0.36f, {-0.175f, 0.0f}, 3, 1, 10}, {"prop_gravestones_02a", 3.71f, 0.39f, {-0.185f, 0.0f}, 2, 1, 14},
+		    {"prop_gravestones_04a", 3.4f, 3.16f, {0.0f, 0.0f}, 2, 1, 8}, {"prop_gravestones_05a", 2.11f, 0.57f, {0.0f, 1.585f}, 2, 1, 6},
+		    {"prop_gravestones_07a", 2.26f, 0.82f, {-0.01f, 0.0f}, 2, 1, 10}, {"prop_gravestones_08a", 1.58f, 1.52f, {0.0f, 0.0f}, 1, 1, 2},
+		    {"prop_gravestones_09a", 0.94f, 0.96f, {0.0f, 0.0f}, 1, 1, 22}, {"prop_gravetomb_01a", 1.88f, 3.66f, {0.0f, 0.0f}, 1, 1, 16},
+		    {"prop_gravetomb_02a", 4.16f, 5.16f, {0.0f, 0.0f}, 3, 2, 1}};
+		int total = 0;
+		for (const Kind& k : kKinds)
+			total += k.weight;
+		constexpr float kPlot = 1.9f, kRow = 4.0f;
+		// (things by 8 m cells: segments - the paths', the outline's - and props already there)
+		using Key = int64_t;
+		const auto keyOf = [](float x, float y) {
+			return static_cast<Key>(std::floor(x / 8)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 8)));
+		};
+		struct Segment
+		{
+			P2 a, b;
+			float reach;
+		};
+		const auto addSegment = [&](std::unordered_map<Key, std::vector<Segment>>& grid, const Segment& s) {
+			const float x0 = std::min(s.a[0], s.b[0]) - s.reach, x1 = std::max(s.a[0], s.b[0]) + s.reach;
+			const float y0 = std::min(s.a[1], s.b[1]) - s.reach, y1 = std::max(s.a[1], s.b[1]) + s.reach;
+			for (float y = std::floor(y0 / 8) * 8; y <= y1; y += 8)
+				for (float x = std::floor(x0 / 8) * 8; x <= x1; x += 8)
+					grid[keyOf(x + 1, y + 1)].push_back(s);
+		};
+		const auto distance = [](const P2& p, const P2& a, const P2& b) {
+			const float dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
+			const float t = l > 0 ? std::clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l, 0.0f, 1.0f) : 0.0f;
+			return std::hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+		};
+		const auto within = [&](const std::unordered_map<Key, std::vector<Segment>>& grid, const P2& p, float extra) {
+			const auto it = grid.find(keyOf(p[0], p[1]));
+			if (it != grid.end())
+				for (const Segment& s : it->second)
+					if (distance(p, s.a, s.b) < s.reach + extra)
+						return true;
+			return false;
+		};
+		const auto inside = [](const world::Area& a, const P2& p) {
+			bool in = false;
+			for (const auto& r : a.outer)
+				in = in || polygon::Inside(r, p);
+			for (const auto& r : a.inner)
+				in = in && !polygon::Inside(r, p);
+			return in;
+		};
+		for (const world::Area& a : areas)
+		{
+			if (a.kind != "cemetery" || a.outer.empty())
+				continue;
+			float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+			for (const auto& r : a.outer)
+				for (const P2& p : r)
+					bx0 = std::min(bx0, p[0]), by0 = std::min(by0, p[1]), bx1 = std::max(bx1, p[0]), by1 = std::max(by1, p[1]);
+			if (bx1 < box[0] || by1 < box[1] || bx0 >= box[2] || by0 >= box[3])
+				continue;
+			if (MemorialPark(a.name))
+				continue; // (flat markers: the lawn)
+			++stats.cemeteries;
+			// (the rows' way: the outline's edges' directions folded into a right angle, weighed by their length, in 2 degree
+			// steps - the heaviest)
+			float weights[45] = {};
+			for (const auto& r : a.outer)
+				for (size_t k = 0; k < r.size(); ++k)
+				{
+					const P2 &p = r[k], &q = r[(k + 1) % r.size()];
+					const float l = std::hypot(q[0] - p[0], q[1] - p[1]);
+					float t = std::atan2(q[1] - p[1], q[0] - p[0]);
+					t = std::fmod(t + 4 * kPi, kPi / 2);
+					weights[std::min(44, static_cast<int>(t / (kPi / 2) * 45))] += l;
+				}
+			const float turn = (std::max_element(std::begin(weights), std::end(weights)) - std::begin(weights) + 0.5f) * (kPi / 2) / 45;
+			// (the face: of the four ways along and across, the most easterly; the rows across it)
+			P2 f{std::cos(turn), std::sin(turn)};
+			for (int k = 0; k < 4; ++k)
+			{
+				const P2 g{std::cos(turn + k * kPi / 2), std::sin(turn + k * kPi / 2)};
+				if (g[0] > f[0])
+					f = g;
+			}
+			const P2 r{-f[1], f[0]}; // (along the row)
+			// the outline's segments, the paths' near it, the props there
+			std::unordered_map<Key, std::vector<Segment>> edges, paths;
+			for (const auto* rings : {&a.outer, &a.inner})
+				for (const auto& ring : *rings)
+					for (size_t k = 0; k < ring.size(); ++k)
+						addSegment(edges, {ring[k], ring[(k + 1) % ring.size()], 1.2f});
+			for (const world::Walk& wk : walks)
+			{
+				if (wk.points.size() < 2 || wk.bridge || wk.tunnel)
+					continue;
+				const float reach = (wk.width > 0 ? wk.width / 2 : 0.9f) + 0.5f;
+				for (size_t k = 0; k + 1 < wk.points.size(); ++k)
+				{
+					const P2 &p = wk.points[k], &q = wk.points[k + 1];
+					if (std::max(p[0], q[0]) < bx0 - 5 || std::min(p[0], q[0]) > bx1 + 5 || std::max(p[1], q[1]) < by0 - 5 || std::min(p[1], q[1]) > by1 + 5)
+						continue;
+					addSegment(paths, {p, q, reach});
+				}
+			}
+			std::unordered_map<Key, std::vector<P2>> taken;
+			for (const Prop& p : out)
+				if (p.position[0] >= bx0 - 4 && p.position[0] <= bx1 + 4 && p.position[1] >= by0 - 4 && p.position[1] <= by1 + 4)
+					taken[keyOf(p.position[0], p.position[1])].push_back({p.position[0], p.position[1]});
+			const auto clearOf = [&](const P2& c, float reach) {
+				for (int dj = -1; dj <= 1; ++dj)
+					for (int di = -1; di <= 1; ++di)
+						if (const auto it = taken.find(keyOf(c[0] + di * 8.0f, c[1] + dj * 8.0f)); it != taken.end())
+							for (const P2& q : it->second)
+								if (std::hypot(q[0] - c[0], q[1] - c[1]) < reach)
+									return false;
+				return true;
+			};
+			// the plots: (i along the row, j across) from the box's corners in those axes, whole multiples of the plot and
+			// the row - the same in every tile
+			float s0 = 1e30f, s1 = -1e30f, t0 = 1e30f, t1 = -1e30f;
+			for (const P2& p : {P2{bx0, by0}, P2{bx1, by0}, P2{bx0, by1}, P2{bx1, by1}})
+			{
+				const float s = p[0] * r[0] + p[1] * r[1], t = p[0] * f[0] + p[1] * f[1];
+				s0 = std::min(s0, s), s1 = std::max(s1, s), t0 = std::min(t0, t), t1 = std::max(t1, t);
+			}
+			const int i0 = static_cast<int>(std::floor(s0 / kPlot)), i1 = static_cast<int>(std::ceil(s1 / kPlot));
+			const int j0 = static_cast<int>(std::floor(t0 / kRow)), j1 = static_cast<int>(std::ceil(t1 / kRow));
+			std::unordered_map<Key, bool> used;
+			const auto plotKey = [](int i, int j) { return static_cast<Key>(i) << 32 | static_cast<uint32_t>(j); };
+			const auto at = [&](float s, float t) { return P2{r[0] * s + f[0] * t, r[1] * s + f[1] * t}; };
+			for (int j = j0; j <= j1; ++j)
+				for (int i = i0; i <= i1; ++i)
+				{
+					if (used.contains(plotKey(i, j)))
+						continue;
+					const P2 c0 = at((i + 0.5f) * kPlot, (j + 0.5f) * kRow);
+					if (!In(box, c0[0], c0[1]) || !inside(a, c0))
+						continue;
+					// (taken: in patches - a smooth noise of 35 m)
+					const uint32_t h = Mix(static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(j) * 19349663u ^ 0x9e3779b9u);
+					const float patch = 0.5f + 0.25f * std::sin(c0[0] * 0.18f + std::sin(c0[1] * 0.11f) * 1.9f) + 0.25f * std::sin(c0[1] * 0.16f + std::sin(c0[0] * 0.09f) * 2.3f);
+					const float share = 0.7f * (0.45f + 0.55f * patch);
+					if (static_cast<float>(h % 1000) >= share * 1000)
+						continue;
+					// (a kind by its weight; when it does not fit, the single plot's pillar, else none)
+					int pick = static_cast<int>((h >> 10) % static_cast<uint32_t>(total));
+					size_t kind = 0;
+					while (pick >= kKinds[kind].weight)
+						pick -= kKinds[kind].weight, ++kind;
+					for (const size_t tried : {kind, size_t{6}})
+					{
+						const Kind& k = kKinds[tried];
+						bool free = true;
+						for (int dj = 0; dj < k.rows && free; ++dj)
+							for (int di = 0; di < k.plots && free; ++di)
+								free = !used.contains(plotKey(i + di, j + dj));
+						if (!free)
+							continue;
+						// (its middle: along the row in the middle of its plots; across, a headstone at the row's west end - the
+						// grave east of it -, a tomb's or a monument's middle as deep as it is)
+						const float s = (i + k.plots * 0.5f) * kPlot;
+						const float t = j * kRow + (k.depth < 1.2f ? 0.5f : 0.3f + k.depth / 2);
+						const P2 c = at(s, t);
+						bool fits = true;
+						for (const float u : {-0.5f, 0.0f, 0.5f})
+							for (const float v : {-0.5f, 0.0f, 0.5f})
+							{
+								const P2 q = at(s + u * k.width, t + v * k.depth);
+								fits = fits && inside(a, q) && open(q[0], q[1]) && !within(edges, q, 0) && !within(paths, q, 0);
+							}
+						if (!fits || !clearOf(c, std::max(1.3f, 0.5f * std::max(k.width, k.depth) + 0.6f)))
+							continue;
+						float z = ground(c[0], c[1]);
+						for (const float u : {-0.5f, 0.5f})
+							for (const float v : {-0.5f, 0.5f})
+							{
+								const P2 q = at(s + u * k.width, t + v * k.depth);
+								z = std::min(z, ground(q[0], q[1]));
+							}
+						// (the model's x along r, its y along -f - its face, -y, the east-most way -; its origin from its box's
+						// middle)
+						const P2 mx{r[0], r[1]}, my{-f[0], -f[1]};
+						const P2 o{c[0] - mx[0] * k.centre[0] - my[0] * k.centre[1], c[1] - mx[1] * k.centre[0] - my[1] * k.centre[1]};
+						out.push_back({loader::convert::Joaat(k.name), {o[0], o[1], z - 0.03f}, std::atan2(mx[1], mx[0]), 150});
+						for (int dj = 0; dj < k.rows; ++dj)
+							for (int di = 0; di < k.plots; ++di)
+								used[plotKey(i + di, j + dj)] = true;
+						++stats.graves;
+						break;
+					}
+				}
+		}
 	}
 }

@@ -1280,7 +1280,7 @@ namespace worldgen::build
 		};
 		for (const char* k : {"residential", "commercial", "retail", "industrial", "construction", "railway", "military"})
 			fill(k, kUrban);
-		for (const char* k : {"park", "grass", "pitch", "wood", "wetland"})
+		for (const char* k : {"park", "grass", "cemetery", "pitch", "wood", "wetland"})
 			fill(k, kPark);
 		fill("parking", kPaved);
 		fill("paved", kPaved);
@@ -2606,7 +2606,7 @@ namespace worldgen::build
 		std::unordered_map<int64_t, std::vector<uint32_t>> photoNear;
 		std::mutex photoMutex;
 		std::set<uint32_t> photoMatched; // (the photo walls some wall of ours stands on)
-		if (!o.phototex.empty())
+		if (!o.phototex.empty() && o.photoWalls)
 		{
 			std::ifstream in(o.phototex / "phototex.json");
 			const nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
@@ -2929,6 +2929,17 @@ namespace worldgen::build
 				// (and on land: none in the water - the sea round the island, the bay, the canals)
 				return blocked.In(c[0], c[1]) && !blocked.At(c[0], c[1]) && land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) != kWater;
 			};
+			// (the cemeteries: no shrubs of the scan's or the woods' - the scan's low growth there is the monuments -, only
+			// their graves)
+			raster::Grid<uint8_t> graveyards;
+			graveyards.Init(gx0, gy0, gx1, gy1, 2.0f, 0);
+			for (const auto& a : w.areas)
+				if (a.kind == "cemetery" && !a.outer.empty())
+					raster::FillPolygon(graveyards, a.outer, uint8_t{1});
+			const auto inCemetery = [&](float x, float y) {
+				const auto c = graveyards.Cell({x, y});
+				return graveyards.In(c[0], c[1]) && graveyards.At(c[0], c[1]) != 0;
+			};
 			// (with a scan the trees stand where it saw them; the map's tree points and the avenues' palms then not)
 			props::Place(near, network, surfaces.signals, open, ground, {bx0, by0, bx1, by1}, furniture, !scanned && photoTrees.empty());
 			std::printf("props: %zu (palms, street lights, signals)\n", furniture.size());
@@ -3069,7 +3080,7 @@ namespace worldgen::build
 				std::printf("trees from the aerial pictures: %zu palms, %zu others\n", ts.palms, ts.broadleaf);
 				// (the woods' undergrowth where the streets see it: within 25 m of one, a metre and a half clear of its edge)
 				trees::Stats us;
-				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 1.5f && r < 25 && thicketAt(x, y); }, open, ground,
+				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 1.5f && r < 25 && thicketAt(x, y) && !inCemetery(x, y); }, open, ground,
 				    {bx0, by0, bx1, by1}, furniture, us);
 				std::printf("undergrowth: %zu shrubs in the woods by the streets\n", us.bushes);
 				if (scanned)
@@ -3081,7 +3092,7 @@ namespace worldgen::build
 					trees::LowGrowth(scan,
 					    [&](float x, float y) {
 						    const float r = roomAt(x, y);
-						    if (r < 1.0f || r >= 30)
+						    if (r < 1.0f || r >= 30 || inCemetery(x, y))
 							    return false;
 						    const auto pc = photoClass.Cell({x, y});
 						    return !photoClass.In(pc[0], pc[1]) || photoClass.At(pc[0], pc[1]) == 2;
@@ -3672,6 +3683,13 @@ namespace worldgen::build
 				            "by houses, %zu mailboxes\n",
 				    driveways, stalls, kerbside, paved, mappedDrives, shrubs, mailboxes);
 			}
+			// the cemeteries' graves (props.hpp), clear of the trees and bushes already there
+			{
+				props::GraveStats gs;
+				props::Graves(w.areas, w.walks, open, ground, {bx0, by0, bx1, by1}, furniture, gs);
+				if (gs.cemeteries)
+					std::printf("cemeteries: %zu graves in %zu\n", gs.graves, gs.cemeteries);
+			}
 			// (the game's bushes - yellowish, some in flower: the reviewers' "dry brown shrubs" - swapped for our own dark green
 			// ones, scaled to the same height and spread)
 			if (!ownShrubs.empty())
@@ -3755,8 +3773,29 @@ namespace worldgen::build
 				const auto c = paved.Cell({x, y});
 				return paved.In(c[0], c[1]) && paved.At(c[0], c[1]) != 0;
 			};
+			// (and the cemeteries' along their streets where the map has none: by a street - not a service road or a track
+			// - within 20 m of its sidewalk; not across their paths, the gates)
+			raster::Grid<uint8_t> streets, paths;
+			streets.Init(gx0, gy0, gx1, gy1, 4.0f, 0);
+			paths.Init(gx0, gy0, gx1, gy1, 1.0f, 0);
+			for (const auto& e : network.edges)
+				if (e.kind != "service" && e.kind != "track")
+					raster::DrawLine(streets, e.points, e.HalfWidth() + e.Walk() + 20, uint8_t{1});
+			for (const auto& wk : w.walks)
+				if (wk.kind != "sidewalk" && wk.kind != "crossing" && wk.points.size() >= 2)
+					raster::DrawLine(paths, wk.points, 1.2f, uint8_t{1});
+			const auto inGrid = [](const raster::Grid<uint8_t>& g, float x, float y) {
+				const auto c = g.Cell({x, y});
+				return g.In(c[0], c[1]) && g.At(c[0], c[1]) != 0;
+			};
+			std::vector<world::Barrier> list = w.barriers;
+			const auto enclosures = barriers::Enclosures(
+			    w.areas, w.barriers, [&](float x, float y) { return inGrid(streets, x, y); }, [&](float x, float y) { return inGrid(paths, x, y); });
+			list.insert(list.end(), enclosures.begin(), enclosures.end());
+			if (!enclosures.empty())
+				std::printf("barriers: %zu cemetery fences of our own\n", enclosures.size());
 			barriers::Stats bs;
-			barriers::Build(w.barriers, ground, onRoad, {bx0, by0, bx1, by1}, fences, surfaces.collision, furniture, bs);
+			barriers::Build(list, ground, onRoad, {bx0, by0, bx1, by1}, fences, surfaces.collision, furniture, bs);
 			std::printf("barriers: %zu fences, %zu walls, %zu hedges, %zu guard rails (%.1f km in %zu pieces; %zu pieces over roads left out)\n", bs.fences,
 			    bs.walls, bs.hedges, bs.rails, bs.metres / 1000, bs.pieces, bs.crossing);
 		}
@@ -3891,7 +3930,7 @@ namespace worldgen::build
 		std::array<ydr::Material, paving::kPavings> pavedMaterials;
 		pavedMaterials.fill(asphalt);
 		ydr::Material railTrackMaterial = asphalt, railBedMaterial = asphalt, railSteelMaterial = asphalt, cableMaterial;
-		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial; // (the barriers')
+		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial; // (the barriers')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
 		ydr::Material patchDecal, potholeDecal, breakupDecal;
 		{
@@ -3899,8 +3938,8 @@ namespace worldgen::build
 			// (treat: 1 a ground's texture, Flatten'ed - in the format it had; 2 also made Neutral, a tinted layer's)
 			const auto use = [&](const char* dictionary, const char* texture, std::string& name, int treat = 0) {
 				// (3: a roof covering 0.45 as bright - lit from above at noon the game's shingles came out near white; at 0.6 still
-				// white beside the street pictures)
-				const char* suffix = treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
+				// white beside the street pictures; 4: weathered concrete - 0.7 as bright, a little greyer)
+				const char* suffix = treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
 				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + suffix);
 				if (const auto it = copied.find(key); it != copied.end())
 					return name = it->second, true;
@@ -3919,6 +3958,15 @@ namespace worldgen::build
 							for (int c = 0; c < 3; ++c)
 								p[c] = static_cast<uint8_t>(p[c] * 0.45f);
 					}
+					else if (treat == 4)
+					{
+						for (auto& p : image.pixels)
+						{
+							const float l = (p[0] + p[1] + p[2]) / 3.0f;
+							for (int c = 0; c < 3; ++c)
+								p[c] = static_cast<uint8_t>(std::clamp(0.7f * (0.8f * p[c] + 0.2f * l), 0.0f, 255.0f));
+						}
+					}
 					else
 						Flatten(image);
 					if (treat == 2)
@@ -3929,6 +3977,14 @@ namespace worldgen::build
 				copied[key] = name;
 				return true;
 			};
+			// the kerbs: the game's kerb picture weathered (Los Santos's new concrete - the reviewers' "tall bright white kerbs":
+			// the street pictures' are low, grey and dirty)
+			{
+				std::string weathered;
+				if (!use("ch1_roads_rd+hi.ytd", "im_kerbs03", weathered, 4))
+					return false;
+				kerb.Texture(kDiffuseTex, weathered);
+			}
 			// the terrain's (research/phase0.md §61.25): the ground material's layers - the grass the lawns' layer 3 is too
 			// (where the two materials meet both draw it), paving, sand, wet sand - and the lawns' four grasses and their
 			// blend map
@@ -4047,7 +4103,7 @@ namespace worldgen::build
 				// shader -; that shader also for the guard rails' beam picture, weathered boards and white painted block (their
 				// shine the asphalt's dull one)
 				if (!fences.mesh.indices.empty() || !fences.steel.indices.empty() || !fences.rail.indices.empty() || !fences.boards.indices.empty() ||
-				    !fences.block.indices.empty())
+				    !fences.block.indices.empty() || !fences.iron.indices.empty())
 				{
 					if (!GameMaterial(files, "prop_fnclink_10a.ydr", 0, chainLinkMaterial, error) || !GameMaterial(files, "prop_fnclink_10a.ydr", 2, steelMaterial, error))
 						return false;
@@ -4071,6 +4127,14 @@ namespace worldgen::build
 						return false;
 					blockMaterial.Texture(kDiffuseTex, d);
 					blockMaterial.Texture(kSpecularTex, o.name + "_asphalt_s");
+					// (wrought iron: the chain link's cut-out shader with our picture of the pickets, no relief of its own)
+					ironMaterial = chainLinkMaterial;
+					if (!fences.iron.indices.empty())
+					{
+						shared.push_back(texture::Make(o.name + "_iron", barriers::IronPicture(), texture::Format::Bc3, true));
+						ironMaterial.Texture(kDiffuseTex, o.name + "_iron");
+						ironMaterial.Texture(kBumpTex, o.name + "_flat_n");
+					}
 				}
 				// The ground as the aerial pictures show it (research/phase0.md §63): the golf course's shader
 				// (terrain_cb_w_4lyr_cm_tnt, bh1_43_golf_1a #6) - four layers mixed by a picture of their weights (each tile its
@@ -4427,7 +4491,7 @@ namespace worldgen::build
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
 		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
-		         &fences.boards, &fences.block, &fences.concrete})
+		         &fences.boards, &fences.block, &fences.concrete, &fences.iron})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
 		for (const auto& m : surfaces.paved)
 			meshTiles.emplace(&m, MeshTiles(m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -5555,6 +5619,7 @@ namespace worldgen::build
 				addTo(blockMaterial, fences.block);
 				addTo(pavedMaterials[static_cast<size_t>(paving::Paving::Concrete)], fences.concrete);
 				addTo(chainLinkMaterial, fences.mesh);
+				addTo(ironMaterial, fences.iron);
 				if (!bd.lods[0].empty())
 				{
 					if (!ydr::Write(bd, file, error))

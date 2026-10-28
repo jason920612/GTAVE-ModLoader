@@ -443,13 +443,13 @@ namespace worldgen::trees
 				// rows of "lollipop" trees where the street pictures have a canopy of live oaks)
 				// (and in town one in ten of the evergreens with a crown narrower than their height magnolias - three in ten had
 				// taken the place of the live oaks the street pictures show -; a third of the leafless sweetgums)
-				// (a town's small trees - under 8 m - its crape myrtles, whatever the pictures' winter says: shrunk live oaks had
-				// stood in rows of small umbrellas where the street pictures have crape myrtles)
+				// (a town's small trees - under 8 m - a third of them crape myrtles, the rest young laurel and water oaks: shrunk
+				// live oaks had stood in rows of small umbrellas; every one a crape myrtle, "pink crape myrtles everywhere")
 				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
 				const bool magnolia = town && h >= 7 && h <= 16 && width < 0.8f * h && seed % 10 == 0;
-				const int kind = town && h < 8 ? 3
+				const int kind = town && h < 8 ? (seed % 3 == 0 ? 3 : 2)
 				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : 0)
-				                               : (town && h <= 9 && seed % 5 < 3 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
+				                               : (town && h <= 9 && seed % 5 == 0 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
 					props::Prop p;
