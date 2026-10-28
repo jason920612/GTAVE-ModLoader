@@ -549,4 +549,33 @@ namespace worldgen::trees
 			++(palm ? stats.palms : stats.broadleaf);
 		}
 	}
+
+	bool GameFlora(uint32_t archetype, float& radius, float& height)
+	{
+		// (by archetype: the trunk's radius and how high its collision goes, at scale 1; a bush none)
+		static const std::unordered_map<uint32_t, std::pair<float, float>> kTrunks = [] {
+			std::unordered_map<uint32_t, std::pair<float, float>> m;
+			// palms: a slim trunk all the way up to the crown
+			for (const Model& p : kPalms)
+				m[loader::convert::Joaat(p.name)] = {0.15f + 0.006f * p.height, 0.8f * p.height};
+			// broadleaf trees: the trunk up to the first limbs, a third of the way up
+			for (const Model& b : kBroadleaf)
+				m[loader::convert::Joaat(b.name)] = {0.1f + 0.015f * b.height, 0.3f * b.height};
+			for (const Model& b : {Model{"prop_tree_maple_03", 9.1f, 6.0f}, Model{"prop_tree_jacada_01", 14.2f, 14.8f}, Model{"prop_tree_jacada_02", 11.0f, 12.0f}})
+				m[loader::convert::Joaat(b.name)] = {0.1f + 0.015f * b.height, 0.3f * b.height};
+			// pines and the bald cypress: a straight trunk, the lower half
+			for (const Model& p : {Model{"prop_tree_pine_01", 30.8f, 15.0f}, Model{"prop_tree_pine_02", 29.4f, 16.5f}, Model{"prop_tree_cypress_01", 18.5f, 6.6f}})
+				m[loader::convert::Joaat(p.name)] = {0.12f + 0.008f * p.height, 0.5f * p.height};
+			for (const Model& b : kBushes)
+				m[loader::convert::Joaat(b.name)] = {0, 0};
+			for (const char* b : {"prop_bush_med_01", "prop_bush_med_02", "prop_bush_med_05", "prop_bush_med_07", "prop_bush_neat_02", "prop_bush_neat_04"})
+				m[loader::convert::Joaat(b)] = {0, 0};
+			return m;
+		}();
+		const auto it = kTrunks.find(archetype);
+		if (it == kTrunks.end())
+			return false;
+		radius = it->second.first, height = it->second.second;
+		return true;
+	}
 }

@@ -1169,7 +1169,7 @@ namespace loader::game::seamless
 				for (size_t b = k > 3 ? k - 3 : 0; b < k; ++b)
 					if (!g_frames[b].work.empty())
 						before += std::format("{}{}", before.empty() ? "" : "; ", g_frames[b].work.substr(0, 80));
-				if (slow.size() < 6000)
+				if (slow.size() < 40000)
 					slow += std::format(" | {:.1f} ms at {:.2f} s: {} [{}]{}", f.ms(), std::chrono::duration<double>(f.start - g_frames.front().start).count(),
 					    f.work.empty() ? "-" : f.work, debug::profile::Between(f.start, f.end), before.empty() ? "" : " (before: " + before + ")");
 			}

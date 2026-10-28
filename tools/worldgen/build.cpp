@@ -57,7 +57,9 @@ namespace worldgen::build
 		// ground classes (the land grid)
 		enum : uint8_t { kWater, kLand, kBeach, kUrban, kPark, kPaved };
 		// materials.dat rows
-		constexpr uint8_t kGrass = 47, kSand = 19, kConcrete = 1, kDirt = 43, kGrassShort = 48, kLeaves = 52;
+		constexpr uint8_t kGrass = 47, kSand = 19, kConcrete = 1, kDirt = 43, kGrassShort = 48, kLeaves = 52, kTreeBark = 54;
+		// (a map entity's flag: its model's collision not made a physics instance of its own - FLAG_DONTINSTANCECOLLISION)
+		constexpr uint32_t kDontInstanceCollision = 4;
 		// procedural.meta's procTagTable: what the game grows round the player on a material (research/phase0.md §63)
 		constexpr uint16_t kForestOvergrown = 157 << 8, kMeadowBrown = 161 << 8, kLushShort = 148 << 8;
 
@@ -5760,22 +5762,26 @@ namespace worldgen::build
 						boxTriangles.push_back({navBase + t[0], navBase + t[1], navBase + t[2]});
 				}
 			}
-			// the street furniture in this tile (props: their own collision; our own trees' trunks an octagon each in the
-			// tile's - cars and people stopped at none -, and the navmesh's obstacles)
+			// the street furniture in this tile (props: their own collision; trees' trunks a square prism each in the tile's
+			// - our own trees' by the ways, cars and people stopped at none; the game's trees' everywhere, their own collision
+			// not instanced (trees::GameFlora) -, and the navmesh's obstacles by the ways)
 			ybn::Part trunks;
-			trunks.materials.push_back(ybn::Material(kConcrete));
+			trunks.materials.push_back(ybn::Material(kTreeBark));
 			for (const uint32_t fk : furnitureTiles.Near(ti, tj))
 			{
 				const auto& prop = furniture[fk];
 				if (prop.position[0] < x0 || prop.position[0] >= x1 || prop.position[1] < y0 || prop.position[1] >= y1)
 					continue;
 				const auto wc = toWays.Cell({prop.position[0], prop.position[1]});
-				if (const auto ft = floraTrunk.find(prop.archetype);
-				    ft != floraTrunk.end() && toWays.In(wc[0], wc[1]) && toWays.At(wc[0], wc[1]) < 40)
+				const bool byWays = toWays.In(wc[0], wc[1]) && toWays.At(wc[0], wc[1]) < 40;
+				float trunk = 0, trunkHeight = 0;
+				const bool gameFlora = trees::GameFlora(prop.archetype, trunk, trunkHeight);
+				if (const auto ft = floraTrunk.find(prop.archetype); ft != floraTrunk.end())
+					trunk = ft->second.first, trunkHeight = byWays ? ft->second.second : 0;
+				if (trunkHeight > 0)
 				{
-					const float rad = std::max(0.12f, ft->second.first * prop.scale), h = ft->second.second * (prop.scaleZ > 0 ? prop.scaleZ : prop.scale);
+					const float rad = std::max(0.12f, trunk * prop.scale), h = trunkHeight * (prop.scaleZ > 0 ? prop.scaleZ : prop.scale);
 					const P3& q = prop.position;
-					const uint32_t navBase = static_cast<uint32_t>(boxVertices.size());
 					for (int k = 0; k < 4; ++k)
 					{
 						const float a0 = k * 3.14159265f / 2 + 0.785f, a1 = (k + 1) * 3.14159265f / 2 + 0.785f;
@@ -5786,21 +5792,25 @@ namespace worldgen::build
 						trunks.triangles.push_back({v0, v0 + 1, v0 + 2});
 						trunks.triangles.push_back({v0, v0 + 2, v0 + 3});
 						trunks.triangleMaterials.insert(trunks.triangleMaterials.end(), {0, 0});
-						const uint32_t n0 = static_cast<uint32_t>(boxVertices.size());
-						boxVertices.insert(boxVertices.end(), {b0, b1, t1, t0});
-						boxTriangles.push_back({n0, n0 + 1, n0 + 2});
-						boxTriangles.push_back({n0, n0 + 2, n0 + 3});
+						if (byWays)
+						{
+							const uint32_t n0 = static_cast<uint32_t>(boxVertices.size());
+							boxVertices.insert(boxVertices.end(), {b0, b1, t1, t0});
+							boxTriangles.push_back({n0, n0 + 1, n0 + 2});
+							boxTriangles.push_back({n0, n0 + 2, n0 + 3});
+						}
 					}
-					(void)navBase;
 					if (trunks.triangles.size() >= 896)
 					{
 						parts.push_back(std::move(trunks));
 						trunks = {};
-						trunks.materials.push_back(ybn::Material(kConcrete));
+						trunks.materials.push_back(ybn::Material(kTreeBark));
 					}
 				}
 				mapfiles::Entity pe;
 				pe.archetype = prop.archetype;
+				if (gameFlora)
+					pe.flags |= kDontInstanceCollision;
 				pe.position = prop.position;
 				pe.rotation = {0, 0, std::sin(prop.heading / 2), std::cos(prop.heading / 2)};
 				pe.lodDist = prop.lodDist;

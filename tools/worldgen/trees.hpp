@@ -74,4 +74,10 @@ namespace worldgen::trees
 	// The trees the scan saw in the box (its canopy's peaks, as Place finds them): where they stand, how tall, their crowns'
 	// radii; their kind left 0 (the caller's to set - the pictures', which tell a pine from a palm).
 	std::vector<Seen> Detect(elevation::Scan& scan, const std::function<float(float, float)>& ground, const std::array<float, 4>& box);
+
+	// The game's own trees, palms and bushes placed here: their models carry collision of their own, a physics instance each
+	// - thousands in a town, all put into the physics' broad phase in the frame a place's maps come in (research/phase0.md
+	// §66.2). Whether `archetype` is one, and its trunk at scale 1 (radius, how high its collision goes; a bush 0): placed
+	// with the map entity's flag not to instance its collision, a tree's trunk is the tile's collision instead.
+	bool GameFlora(uint32_t archetype, float& radius, float& height);
 }
