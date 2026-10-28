@@ -1107,7 +1107,7 @@ namespace worldgen::build
 				}
 			}
 			// a pitched roof's eaves (the HD model's): its covering on 0.45 m past the walls - a level edge's (an eave's) down as
-			// the hip roof's slope, 0.19 m, a sloping one's (a gable's rake) level -, the outline offset with mitred corners; a
+			// the hip roof's slope, a sloping one's (a gable's rake) level -, the outline offset with mitred corners; a
 			// white fascia 0.18 m high round it and a soffit under it back to the wall (the reviewers: "the walls rise above
 			// the eaves like a parapet, no overhang")
 			if (coveringKey >= 0 && trimKey >= 0 && inset == 0)
@@ -1143,7 +1143,7 @@ namespace worldgen::build
 						const P3 &n1 = normal[(k + m - 1) % m], &n2 = normal[k];
 						const float d = std::max(0.25f, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
 						const P3 p = at(loop[k]);
-						const float drop = level[(k + m - 1) % m] && level[k] ? kOver * 0.42f : 0.03f;
+						const float drop = level[(k + m - 1) % m] && level[k] ? kOver * structures::kHouseSlope : 0.03f;
 						top[k] = p;
 						outer[k] = {p[0] + (n1[0] + n2[0]) / d * kOver, p[1] + (n1[1] + n2[1]) / d * kOver, p[2] - drop};
 					}
@@ -4216,7 +4216,8 @@ namespace worldgen::build
 			const auto use = [&](const char* dictionary, const char* texture, std::string& name, int treat = 0) {
 				// (3: a roof covering 0.45 as bright - lit from above at noon the game's shingles came out near white; at 0.6 still
 				// white beside the street pictures; 4: weathered concrete - 0.58 as bright, greyer, a little warm)
-				const char* suffix = treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
+				// (5: aged concrete - 0.8 as bright, a little greyer: the sidewalks)
+				const char* suffix = treat == 5 ? "_aged" : treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
 				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + suffix);
 				if (const auto it = copied.find(key); it != copied.end())
 					return name = it->second, true;
@@ -4234,6 +4235,15 @@ namespace worldgen::build
 						for (auto& p : image.pixels)
 							for (int c = 0; c < 3; ++c)
 								p[c] = static_cast<uint8_t>(p[c] * 0.45f);
+					}
+					else if (treat == 5)
+					{
+						for (auto& p : image.pixels)
+						{
+							const float l = (p[0] + p[1] + p[2]) / 3.0f;
+							for (int c = 0; c < 3; ++c)
+								p[c] = static_cast<uint8_t>(std::clamp(0.8f * (0.85f * p[c] + 0.15f * l), 0.0f, 255.0f));
+						}
 					}
 					else if (treat == 4)
 					{
@@ -4264,6 +4274,11 @@ namespace worldgen::build
 				if (!use("ch1_roads_rd+hi.ytd", "im_kerbs03", weathered, 4))
 					return false;
 				kerb.Texture(kDiffuseTex, weathered);
+				// (and the sidewalks' concrete 0.8 as bright: wide bright-white bands beside the street pictures' grey ones)
+				std::string aged;
+				if (!use("ap1_03+hi.ytd", "dc_sidewalk001", aged, 5))
+					return false;
+				sidewalk.Texture(kDiffuseTex, aged);
 			}
 			// the terrain's (research/phase0.md §61.25): the ground material's layers - the grass the lawns' layer 3 is too
 			// (where the two materials meet both draw it), paving, sand, wet sand - and the lawns' four grasses and their

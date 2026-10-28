@@ -37,6 +37,8 @@ namespace worldgen::structures
 		std::string kind;   // the map's building value
 	};
 
+	constexpr float kHouseSlope = 0.55f; // (a house's roof: its rise a metre in)
+
 	struct Options
 	{
 		float tolerance = 0.3f;      // the roof's largest height error (m)

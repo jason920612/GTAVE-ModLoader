@@ -577,7 +577,9 @@ namespace worldgen::structures
 		// (a house the scan measured gets the same clean roof, at the eaves and ridge it measured: its lumpy surface with the
 		// aerial picture on it was a white blanket in the street pictures' comparison, not a roof)
 		const bool measuredHouse = measure && !b.planned && houseKind && area <= 700 && b.height <= 12 && nx * ny < 400000;
-		float eave = b.height > 7.5f ? b.height - 2.5f : 3.0f, riseCap = 3.5f;
+		// (a house's roof at 0.55 - 29 degrees, north Florida's cottages' 6/12 to 8/12 -, its ridge at most 4 m up: at 0.42 the
+		// roofs had hardly shown from the street, "flat roofs with a white fascia")
+		float eave = b.height > 7.5f ? b.height - 2.5f : 3.0f, riseCap = 4.0f;
 		// (a gable roof instead: on a footprint near its narrowest box - 85 % of it and more -, by the place's own number;
 		// the height then rises only from the walls along the long side, the short sides' walls - their edges across the
 		// ridge - becoming the gables)
@@ -642,7 +644,7 @@ namespace worldgen::structures
 					edgeDistance[k] = d;
 					if (mode == 0)
 					{
-						h[k] = base + eave + std::min((de < 1e29f ? de : d) * 0.42f, riseCap), ++known;
+						h[k] = base + eave + std::min((de < 1e29f ? de : d) * kHouseSlope, riseCap), ++known;
 						continue;
 					}
 					const float roof = mode == 1 ? scan->Roof(c[0], c[1]) : scan->Top(c[0], c[1]);
