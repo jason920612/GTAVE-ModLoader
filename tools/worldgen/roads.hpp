@@ -134,6 +134,7 @@ namespace worldgen::roads
 		Mesh railTrack, railBed, railSteel;       // railways: the track (sleepers on ballast), the bed's shoulders, the rails
 		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
 		Mesh legends;                             // STOP painted before a stop sign's stop line (StopPicture, a decal)
+		Mesh bikeSymbols;                         // a bicycle and an arrow in the bike lanes (BikePicture, a decal)
 		std::vector<std::pair<paving::Feature::Kind, P3>> wear; // where each feature is (for checking)
 		Collision collision;
 		// the ground under the roads: footprints (asphalt and sidewalks) for lowering the terrain below them
@@ -147,6 +148,10 @@ namespace worldgen::roads
 	// at a driver's low angle), white; alpha their shapes. u across the lane from the driver's left, v from the letters'
 	// tops (away from the driver).
 	texture::Image StopPicture();
+	// The bike lane symbol's picture: a bicycle (side on, its wheels across the lane) under an arrow ahead, white; alpha their
+	// shapes; drawn 1.5 times as tall as on paper (the decal stretches it a little more). u across the lane, v from the
+	// arrow's tip (away from the rider).
+	texture::Image BikePicture();
 
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).

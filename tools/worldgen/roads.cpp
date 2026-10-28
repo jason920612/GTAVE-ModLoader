@@ -1088,6 +1088,63 @@ namespace worldgen::roads
 		}
 	}
 
+	texture::Image BikePicture()
+	{
+		// (256 across, 512 along: the arrow in the top 40 %, the bicycle below - its wheels' rings, a frame of the hubs, the
+		// crank, the saddle and the bars - white everywhere, so the cut-out's edges stay white as it shrinks)
+		texture::Image im(256, 512, {245, 245, 240, 0});
+		const auto put = [&](float x, float y) {
+			const int xi = static_cast<int>(x), yi = static_cast<int>(y);
+			if (xi >= 0 && xi < im.width && yi >= 0 && yi < im.height)
+				im.At(xi, yi) = {245, 245, 240, 255};
+		};
+		// (a stroke from a to b, 9 px across and 13 along - round about as thick both ways once stretched)
+		const auto stroke = [&](float ax, float ay, float bx, float by) {
+			const int steps = static_cast<int>(std::max(std::fabs(bx - ax), std::fabs(by - ay))) + 1;
+			for (int k = 0; k <= steps; ++k)
+			{
+				const float x = ax + (bx - ax) * k / steps, y = ay + (by - ay) * k / steps;
+				for (int dy = -6; dy <= 6; ++dy)
+					for (int dx = -4; dx <= 4; ++dx)
+						put(x + dx, y + dy);
+			}
+		};
+		const auto ring = [&](float cx, float cy, float rx, float ry) {
+			for (int a = 0; a < 360; a += 2)
+			{
+				const float t = a * 3.14159265f / 180;
+				const float x = cx + std::cos(t) * rx, y = cy + std::sin(t) * ry;
+				for (int dy = -6; dy <= 6; ++dy)
+					for (int dx = -4; dx <= 4; ++dx)
+						put(x + dx, y + dy);
+			}
+		};
+		// the arrow: its shaft and head (tip at the top)
+		for (int y = 6; y < 70; ++y)
+		{
+			const float half = (y - 6) * 0.9f;
+			for (int x = static_cast<int>(128 - half); x <= static_cast<int>(128 + half); ++x)
+				put(static_cast<float>(x), static_cast<float>(y));
+		}
+		for (int y = 70; y < 200; ++y)
+			for (int x = 114; x <= 142; ++x)
+				put(static_cast<float>(x), static_cast<float>(y));
+		// the bicycle: wheels at 25 % and 75 % across, 88 % down
+		const float rearX = 64, frontX = 192, hubY = 430, rx = 50, ry = 72;
+		ring(rearX, hubY, rx, ry);
+		ring(frontX, hubY, rx, ry);
+		const float crankX = 118, crankY = 430, seatX = 104, seatY = 300, barX = 176, barY = 296;
+		stroke(rearX, hubY, crankX, crankY);
+		stroke(rearX, hubY, seatX, seatY);
+		stroke(crankX, crankY, seatX, seatY);
+		stroke(seatX, seatY, barX, barY + 14);
+		stroke(crankX, crankY, barX, barY + 14);
+		stroke(barX, barY, frontX, hubY);
+		stroke(seatX - 22, seatY - 8, seatX + 18, seatY - 8);
+		stroke(barX - 6, barY - 10, barX + 22, barY - 18);
+		return im;
+	}
+
 	texture::Image StopPicture()
 	{
 		// (512 across, 512 along: four cells across with gaps, the letters filling their height; white everywhere, so that
@@ -1722,11 +1779,9 @@ namespace worldgen::roads
 			};
 			// (a STOP legend in each lane coming in to a stop sign, 1.8 m before its stop line, 2.4 m long, 85 % of the lane
 			// wide - Tallahassee's stop-sign approaches have them painted; the reviewers missed them on four views)
-			const auto legend = [&](bool atB) {
-				const int lanes = atB ? e.forward : e.backward;
-				const float top = atB ? sEnd - 6.0f : sStart + 6.0f, bottom = atB ? sEnd - 8.4f : sStart + 8.4f;
-				if (!lanes || !painted || std::min(top, bottom) < sStart + 1 || std::max(top, bottom) > sEnd - 1)
-					return;
+			// a picture painted on the road: from `top` (away from whoever reads it) to `bottom` along it, `hw` either side of
+			// the offset `o`, read going to b (`atB`) or to a; lifted 14 mm
+			const auto decal = [&](Mesh& m, float top, float bottom, float o, float hw, bool atB) {
 				const auto pointAt = [&](float sv, P2& q, P2& d, float& qz) {
 					for (size_t k = 0; k + 1 < p.size(); ++k)
 						if (s[k + 1] >= sv || k + 2 == p.size())
@@ -1742,30 +1797,49 @@ namespace worldgen::roads
 				float zt = 0, zb = 0;
 				pointAt(top, qt, dt, zt);
 				pointAt(bottom, qb, db, zb);
-				const size_t i = atB ? p.size() - 1 : 0;
-				const float c = centreAt[i], turn = turnAt[i], hw = 0.425f * w;
-				for (int j = 0; j < lanes; ++j)
-				{
-					const float o = atB ? c - (j + 0.5f) * w : c + turn + (j + 0.5f) * w;
-					// (the driver's right: right of a -> b going to b, left of it coming to a)
-					const P2 lt = Left(dt), lb = Left(db);
-					const float side = atB ? -1.0f : 1.0f;
-					const auto at = [&](const P2& q, const P2& l, float zq, float across) {
-						return P3{q[0] + l[0] * (o + across * side), q[1] + l[1] * (o + across * side), zq + 0.014f};
-					};
-					auto colour = kDecalColour;
-					const uint32_t tl = b.Add(out.legends, at(qt, lt, zt, -hw), {0, 0, 1}, {0, 0}, colour);
-					const uint32_t tr = b.Add(out.legends, at(qt, lt, zt, hw), {0, 0, 1}, {1, 0}, colour);
-					const uint32_t br = b.Add(out.legends, at(qb, lb, zb, hw), {0, 0, 1}, {1, 1}, colour);
-					const uint32_t bl = b.Add(out.legends, at(qb, lb, zb, -hw), {0, 0, 1}, {0, 1}, colour);
-					// (anticlockwise from above whichever way the driver comes)
-					const P3 &a3 = out.legends.vertices[tl].position, &b3 = out.legends.vertices[bl].position, &c3 = out.legends.vertices[br].position;
-					if ((b3[0] - a3[0]) * (c3[1] - a3[1]) - (b3[1] - a3[1]) * (c3[0] - a3[0]) > 0)
-						b.Tri(out.legends, tl, bl, br), b.Tri(out.legends, tl, br, tr);
-					else
-						b.Tri(out.legends, tl, br, bl), b.Tri(out.legends, tl, tr, br);
-				}
+				// (the reader's right: right of a -> b going to b, left of it coming to a)
+				const P2 lt = Left(dt), lb = Left(db);
+				const float side = atB ? -1.0f : 1.0f;
+				const auto at = [&](const P2& q, const P2& l, float zq, float across) {
+					return P3{q[0] + l[0] * (o + across * side), q[1] + l[1] * (o + across * side), zq + 0.014f};
+				};
+				const uint32_t tl = b.Add(m, at(qt, lt, zt, -hw), {0, 0, 1}, {0, 0}, kDecalColour);
+				const uint32_t tr = b.Add(m, at(qt, lt, zt, hw), {0, 0, 1}, {1, 0}, kDecalColour);
+				const uint32_t br = b.Add(m, at(qb, lb, zb, hw), {0, 0, 1}, {1, 1}, kDecalColour);
+				const uint32_t bl = b.Add(m, at(qb, lb, zb, -hw), {0, 0, 1}, {0, 1}, kDecalColour);
+				// (anticlockwise from above whichever way the reader comes)
+				const P3 &a3 = m.vertices[tl].position, &b3 = m.vertices[bl].position, &c3 = m.vertices[br].position;
+				if ((b3[0] - a3[0]) * (c3[1] - a3[1]) - (b3[1] - a3[1]) * (c3[0] - a3[0]) > 0)
+					b.Tri(m, tl, bl, br), b.Tri(m, tl, br, tr);
+				else
+					b.Tri(m, tl, br, bl), b.Tri(m, tl, tr, br);
 			};
+			const auto legend = [&](bool atB) {
+				const int lanes = atB ? e.forward : e.backward;
+				const float top = atB ? sEnd - 6.0f : sStart + 6.0f, bottom = atB ? sEnd - 8.4f : sStart + 8.4f;
+				if (!lanes || !painted || std::min(top, bottom) < sStart + 1 || std::max(top, bottom) > sEnd - 1)
+					return;
+				const size_t i = atB ? p.size() - 1 : 0;
+				const float c = centreAt[i], turn = turnAt[i];
+				for (int j = 0; j < lanes; ++j)
+					decal(out.legends, top, bottom, atB ? c - (j + 0.5f) * w : c + turn + (j + 0.5f) * w, 0.425f * w, atB);
+			};
+			// (a bike lane's symbol - a bicycle under an arrow, 0.9 m wide and 3 m long - 12 m past each junction it leaves and
+			// every 150 m after; the bike lanes between the parking and the traffic lanes, the right of each way)
+			if (e.bike > 0 && painted)
+				for (const bool atB : {true, false})
+				{
+					if (!(atB ? e.forward : e.backward))
+						continue;
+					const float from = sStart + clearA + 12, to = sEnd - clearB - 12;
+					for (float at = from; at + 3 <= to; at += 150)
+					{
+						const float sv = atB ? at : sEnd - (at - sStart);
+						const size_t i = std::min(p.size() - 1, static_cast<size_t>(std::lower_bound(s.begin(), s.end(), sv) - s.begin()));
+						const float o = atB ? -halfAt[i] + 0.45f + parkAt[i] + e.bike / 2 : halfAt[i] - 0.45f - parkAt[i] - e.bike / 2;
+						decal(out.bikeSymbols, atB ? sv + 3 : sv - 3, sv, o, 0.45f, atB);
+					}
+				}
 			const auto crossing = [&](bool atB) {
 				const size_t i = atB ? p.size() - 1 : 0;
 				const float h = halfAt[i];
