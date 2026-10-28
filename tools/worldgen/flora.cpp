@@ -753,18 +753,19 @@ namespace worldgen::flora
 			else
 			{
 				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards (thick and pale enough
-				// to read as the grey beards they are from the street: 55 thin dark ones had all but vanished at 10 m)
-				for (int k = 0; k < 140; ++k)
+				// to read as the grey beards they are from the street: 55 thin dark ones had all but vanished at 10 m, 140 thick
+				// pale ones were solid pale rectangles at 20 m)
+				for (int k = 0; k < 100; ++k)
 				{
 					// (a beard: the strands bunched in the middle and longest there, the sides short)
 					const float g = (rnd.Unit() + rnd.Unit() + rnd.Unit()) / 3 - 0.5f;
 					float x = im.width / 2.0f + g * (im.width - 30.0f);
 					const float len = (0.25f + 0.75f * (1 - std::fabs(g) * 2)) * rnd.Range(0.6f, 1.0f) * im.height, phase = rnd.Range(0, 2 * kPi),
 					            sway = rnd.Range(3, 12);
-					const std::array<float, 3> c{rnd.Range(128, 150), rnd.Range(134, 154), rnd.Range(116, 134)};
+					const std::array<float, 3> c{rnd.Range(112, 132), rnd.Range(118, 136), rnd.Range(102, 118)};
 					for (float y = rnd.Range(0, 20); y < len; y += 1.0f)
 					{
-						const float w = 4.0f * (1 - y / len) + 1.6f;
+						const float w = 3.2f * (1 - y / len) + 1.3f;
 						const float px = x + std::sin(y / 40 + phase) * sway;
 						Ellipse(im, px, y, w / 2 + 0.2f, 0.8f, 0, Shade(c, rnd.Range(0.85f, 1.05f)), x0, y0, x1, y1);
 						if (rnd.Unit() < 0.02f)

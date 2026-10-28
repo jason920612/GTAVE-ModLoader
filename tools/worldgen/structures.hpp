@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "elevation.hpp"
@@ -48,6 +49,8 @@ namespace worldgen::structures
 		// long side, the short sides' walls up to it - the rest hip roofs (north Florida's street pictures: half and half;
 		// the south's hurricane country mostly hip)
 		float gableShare = 0;
+		// buildings joined to a big one (its wings, the map's "yes" parts of it): no house roof of their own
+		const std::unordered_set<const world::Building*>* attached = nullptr;
 	};
 
 	struct Stats

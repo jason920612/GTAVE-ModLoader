@@ -571,7 +571,7 @@ namespace worldgen::structures
 		const double area = std::fabs(polygon::Area(ring));
 		const bool houseKind = b.kind == "house" || b.kind == "detached" || b.kind == "residential" || b.kind == "semidetached_house" ||
 		                       b.kind == "bungalow" || b.kind == "terrace" || b.kind == "cabin" || b.kind == "farm" || b.kind == "static_caravan" ||
-		                       ((b.kind == "yes" || b.kind.empty()) && area >= 50 && area <= 350);
+		                       ((b.kind == "yes" || b.kind.empty()) && area >= 50 && area <= 350 && !(o.attached && o.attached->contains(&b)));
 		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000;
 		bool hip = !measure && !b.planned && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
 		// (a house the scan measured gets the same clean roof, at the eaves and ridge it measured: its lumpy surface with the

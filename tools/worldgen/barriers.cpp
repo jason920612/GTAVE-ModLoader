@@ -68,7 +68,7 @@ namespace worldgen::barriers
 			case Kind::Railing:
 				return tagged >= 0.5f && tagged <= 2.0f ? tagged : 1.1f;
 			case Kind::Bars:
-				return tagged >= 0.6f && tagged <= 2.5f ? tagged : 1.5f;
+				return tagged >= 0.6f && tagged <= 2.5f ? tagged : 1.8f;
 			case Kind::Wall:
 				return tagged >= 0.4f && tagged <= 6.0f ? tagged : 1.6f;
 			case Kind::Retaining:
@@ -464,12 +464,12 @@ namespace worldgen::barriers
 		const auto paint = [&](int x, int y, float shade) {
 			if (x < 0 || x >= 512 || y < 0 || y >= 512)
 				return;
-			const uint8_t c = static_cast<uint8_t>(std::clamp(16.0f + 30.0f * shade, 0.0f, 255.0f));
+			const uint8_t c = static_cast<uint8_t>(std::clamp(8.0f + 18.0f * shade, 0.0f, 255.0f));
 			img.At(x, y) = {c, c, static_cast<uint8_t>(std::min(255, c + 2)), 255};
 		};
-		for (int p = 0; p < 10; ++p)
+		for (int p = 0; p < 12; ++p)
 		{
-			const float mid = (p + 0.5f) * 51.2f;
+			const float mid = (p + 0.5f) * (512.0f / 12);
 			for (int y = 0; y < 500; ++y)
 			{
 				// (the tip: widening to 18 px at row 16, back to the bar's 10 px at row 28)
@@ -525,7 +525,9 @@ namespace worldgen::barriers
 		std::vector<world::Barrier> out;
 		for (const world::Area& a : areas)
 		{
-			if (a.kind != "cemetery" || props::MemorialPark(a.name))
+			// (a cemetery's wrought iron; a construction site's chain link - the street pictures' building sites are fenced)
+			const bool site = a.kind == "construction";
+			if ((a.kind != "cemetery" || props::MemorialPark(a.name)) && !site)
 				continue;
 			for (const auto& ring : a.outer)
 			{
@@ -556,8 +558,8 @@ namespace worldgen::barriers
 					if (b.points.size() >= 2)
 					{
 						b.kind = "fence";
-						b.material = "bars";
-						b.height = 1.5f;
+						b.material = site ? "chain_link" : "bars";
+						b.height = 1.8f;
 						out.push_back(b);
 					}
 					b.points.clear();

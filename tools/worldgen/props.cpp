@@ -259,10 +259,12 @@ namespace worldgen::props
 			P2 centre;
 			int plots, rows, weight;
 		};
-		static const Kind kKinds[] = {{"prop_gravestones_01a", 5.0f, 0.36f, {-0.175f, 0.0f}, 3, 1, 10}, {"prop_gravestones_02a", 3.71f, 0.39f, {-0.185f, 0.0f}, 2, 1, 14},
-		    {"prop_gravestones_04a", 3.4f, 3.16f, {0.0f, 0.0f}, 2, 1, 8}, {"prop_gravestones_05a", 2.11f, 0.57f, {0.0f, 1.585f}, 2, 1, 6},
-		    {"prop_gravestones_07a", 2.26f, 0.82f, {-0.01f, 0.0f}, 2, 1, 10}, {"prop_gravestones_08a", 1.58f, 1.52f, {0.0f, 0.0f}, 1, 1, 2},
-		    {"prop_gravestones_09a", 0.94f, 0.96f, {0.0f, 0.0f}, 1, 1, 22}, {"prop_gravetomb_01a", 1.88f, 3.66f, {0.0f, 0.0f}, 1, 1, 16},
+		// (upright headstones and monuments most, an obelisk now and then, few raised tombs: the reviewers saw "New Orleans
+		// style tombs and crosses" where the street pictures have obelisks and upright stones)
+		static const Kind kKinds[] = {{"prop_gravestones_01a", 5.0f, 0.36f, {-0.175f, 0.0f}, 3, 1, 14}, {"prop_gravestones_02a", 3.71f, 0.39f, {-0.185f, 0.0f}, 2, 1, 20},
+		    {"prop_gravestones_04a", 3.4f, 3.16f, {0.0f, 0.0f}, 2, 1, 3}, {"prop_gravestones_05a", 2.11f, 0.57f, {0.0f, 1.585f}, 2, 1, 10},
+		    {"prop_gravestones_07a", 2.26f, 0.82f, {-0.01f, 0.0f}, 2, 1, 14}, {"prop_gravestones_08a", 1.58f, 1.52f, {0.0f, 0.0f}, 1, 1, 6},
+		    {"prop_gravestones_09a", 0.94f, 0.96f, {0.0f, 0.0f}, 1, 1, 12}, {"prop_gravetomb_01a", 1.88f, 3.66f, {0.0f, 0.0f}, 1, 1, 5},
 		    {"prop_gravetomb_02a", 4.16f, 5.16f, {0.0f, 0.0f}, 3, 2, 1}};
 		int total = 0;
 		for (const Kind& k : kKinds)
@@ -346,7 +348,7 @@ namespace worldgen::props
 			for (const auto* rings : {&a.outer, &a.inner})
 				for (const auto& ring : *rings)
 					for (size_t k = 0; k < ring.size(); ++k)
-						addSegment(edges, {ring[k], ring[(k + 1) % ring.size()], 1.2f});
+						addSegment(edges, {ring[k], ring[(k + 1) % ring.size()], 3.0f}); // (a strip of lawn inside the fence)
 			for (const world::Walk& wk : walks)
 			{
 				if (wk.points.size() < 2 || wk.bridge || wk.tunnel)

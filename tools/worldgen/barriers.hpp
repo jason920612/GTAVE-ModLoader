@@ -28,13 +28,13 @@ namespace worldgen::barriers
 		roads::Mesh iron;     // wrought iron pickets: IronPicture cut out (the chain link's shader; both faces), their posts
 	};
 
-	// The wrought iron fence's picture: a 1.22 m panel of ten square pickets with spear tips, a rail under the tips and
+	// The wrought iron fence's picture: a 1.22 m panel of twelve square pickets with spear tips, a rail under the tips and
 	// one near the foot, black paint (its alpha the cut-out; the top rail's rows solid across, the posts' colour).
 	texture::Image IronPicture();
 
 	// A cemetery's fence where the map has none: wrought iron along its outline's edges by the streets (`byStreet(x, y)`),
 	// not where the map has a barrier within 4 m, not across its paths (`onPath(x, y)`: their gates); none round a
-	// memorial park's.
+	// memorial park's. A construction site's (landuse=construction) the same way in chain link.
 	std::vector<world::Barrier> Enclosures(const std::vector<world::Area>& areas, const std::vector<world::Barrier>& mapped,
 	    const std::function<bool(float, float)>& byStreet, const std::function<bool(float, float)>& onPath);
 

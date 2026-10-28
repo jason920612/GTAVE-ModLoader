@@ -34,7 +34,7 @@ namespace worldgen::props
 	// A cemetery's graves (research/phase0.md §63.10): the game's headstones, raised tombs, monuments, an obelisk and now
 	// and then a mausoleum, in rows along the outline's longest straight run, their faces the most easterly way across
 	// the rows - patches of them, some lawn between -; none in a memorial park's (its name says so: flat markers in the
-	// lawn). None on its paths (`walks`: the map's ways people walk), on a road or in a building (`open`), within 1.2 m of
+	// lawn). None on its paths (`walks`: the map's ways people walk), on a road or in a building (`open`), within 3 m of
 	// its edge or by a prop already in `out` (its trees and bushes).
 	// Whether a cemetery's name is a memorial park's, a national cemetery's or a columbarium's (flat markers in the lawn
 	// or niches in a wall: no rows of upright stones, no fence).

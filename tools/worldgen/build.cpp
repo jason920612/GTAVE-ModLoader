@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -2215,6 +2216,7 @@ namespace worldgen::build
 		// land cover's rule (below) only for the streets nobody mapped them along.
 		std::vector<std::vector<bool>> walkSkip(w.walks.size());
 		std::vector<bool> walksDecided(near.roads.size(), false);
+		std::vector<world::Walk> aerialWalks; // (sidewalks the aerial pictures show and the map lacks, set back past a verge)
 		{
 			const auto cellKey = [](float x, float y, float size) {
 				return static_cast<int64_t>(std::floor(x / size)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / size)));
@@ -2246,7 +2248,7 @@ namespace worldgen::build
 					}
 				}
 			}
-			size_t sides = 0, attached = 0, none = 0;
+			size_t sides = 0, attached = 0, none = 0, aerialSides = 0;
 			for (size_t ri = 0; ri < near.roads.size() && !pieces.empty(); ++ri)
 			{
 				world::Road& r = near.roads[ri];
@@ -2314,11 +2316,110 @@ namespace worldgen::build
 				for (int side = 0; side < 2; ++side)
 				{
 					has[side] = found[side] * 10 >= samples * 4;
-					own[side] = has[side] && out[side] / static_cast<float>(found[side]) < half + 1.95f;
+					// (by the kerb when its middle is within 1.3 m of the carriageway's edge; farther, past a verge - at 1.95 m the
+					// reviewers saw sidewalks drawn at the kerb where the street pictures have a strip of grass first)
+					own[side] = has[side] && out[side] / static_cast<float>(found[side]) < half + 1.3f;
 					if (own[side])
 						for (const auto& [wi, pk] : matched[side])
 							walkSkip[wi][pk] = true;
 					sides += has[side], attached += own[side];
+				}
+				// (a side the map has none along, a town street's: the aerial pictures' 1 m classes every 3 m along it, 12 m
+				// clear of its ends, from half a metre past its kerb 6 m out - a strip of paving 1-2.5 m wide with lawn or bare
+				// ground past it, at half of the places they see the ground at all, is a sidewalk the map lacks: by the kerb
+				// the street's own, past a verge one of its own. The reviewers had missed sidewalks on 7 of 12 views.)
+				const bool townStreet = r.kind == "residential" || r.kind == "tertiary" || r.kind == "secondary" || r.kind == "primary" ||
+				                        r.kind == "unclassified" || r.kind == "living_street";
+				if (!photoClass.v.empty() && townStreet && (!has[0] || !has[1]))
+				{
+					const auto classAt = [&](float x, float y) {
+						const auto c = photoClass.Cell({x, y});
+						return photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : uint8_t{0};
+					};
+					float total = 0;
+					for (size_t k = 0; k + 1 < r.points.size(); ++k)
+						total += Dist(r.points[k], r.points[k + 1]);
+					for (int side = 0; side < 2; ++side)
+					{
+						if (has[side] || total < 40)
+							continue;
+						const float sign = side == 0 ? 1.0f : -1.0f;
+						size_t seen = 0, hits = 0;
+						std::vector<float> starts, ends;
+						float run = 0;
+						for (size_t k = 0; k + 1 < r.points.size(); ++k)
+						{
+							const P2 &a = r.points[k], &c = r.points[k + 1];
+							const float l = Dist(a, c);
+							if (l < 1e-3f)
+								continue;
+							const P2 d{(c[0] - a[0]) / l, (c[1] - a[1]) / l}, n{-d[1] * sign, d[0] * sign};
+							for (float t = 0; t < l; t += 3, run += 3)
+							{
+								if (run < 12 || run > total - 12)
+									continue;
+								const P2 q{a[0] + d[0] * t, a[1] + d[1] * t};
+								// (the classes across: 0.5 m steps from half a metre past the kerb to 7 m)
+								uint8_t across[14];
+								bool known = true;
+								for (int s2 = 0; s2 < 14; ++s2)
+								{
+									const float o = half + 0.5f + 0.5f * s2;
+									across[s2] = classAt(q[0] + n[0] * o, q[1] + n[1] * o);
+									known = known && across[s2] != 0 && across[s2] != 1 && across[s2] != 2;
+								}
+								if (!known)
+									continue;
+								++seen;
+								const auto pavedAt = [&](int s2) { return across[s2] == 5 || across[s2] == 6; };
+								const auto greenAt = [&](int s2) { return across[s2] == 3 || across[s2] == 4; };
+								for (int s0 = 0; s0 < 11; ++s0)
+								{
+									if (!pavedAt(s0) || (s0 > 0 && !greenAt(s0 - 1) && !pavedAt(s0 - 1)))
+										continue;
+									int s1 = s0;
+									while (s1 + 1 < 14 && pavedAt(s1 + 1))
+										++s1;
+									const float width = 0.5f * (s1 - s0 + 1);
+									// (lawn on its far side; on its near side the kerb or a verge of lawn)
+									if (width >= 1.0f && width <= 2.5f && s1 + 2 < 14 && greenAt(s1 + 1) && greenAt(s1 + 2) && (s0 == 0 || greenAt(s0 - 1)))
+									{
+										++hits;
+										starts.push_back(half + 0.5f * s0 + 0.25f), ends.push_back(half + 0.5f * s1 + 0.75f);
+										break;
+									}
+									s0 = s1;
+								}
+							}
+						}
+						if (seen < 8 || hits * 2 < seen)
+							continue;
+						std::sort(starts.begin(), starts.end());
+						std::sort(ends.begin(), ends.end());
+						const float s0 = starts[starts.size() / 2], s1 = ends[ends.size() / 2];
+						has[side] = true, ++aerialSides;
+						if (s0 <= half + 1.0f)
+						{
+							own[side] = true;
+							continue;
+						}
+						// (set back past a verge: a walk of its own along the street, its middle that far out)
+						world::Walk wk;
+						wk.kind = "sidewalk";
+						wk.surface = "concrete";
+						wk.width = std::clamp(s1 - s0, 1.2f, 2.0f);
+						const float mid = (s0 + s1) / 2;
+						for (size_t k = 0; k < r.points.size(); ++k)
+						{
+							const P2& p = r.points[k];
+							const P2& a = r.points[k > 0 ? k - 1 : k];
+							const P2& c = r.points[k + 1 < r.points.size() ? k + 1 : k];
+							const float l = std::max(1e-3f, Dist(a, c));
+							const P2 n{-(c[1] - a[1]) / l * sign, (c[0] - a[0]) / l * sign};
+							wk.points.push_back({p[0] + n[0] * mid, p[1] + n[1] * mid});
+						}
+						aerialWalks.push_back(std::move(wk));
+					}
 				}
 				const P2 mid = r.points[r.points.size() / 2];
 				if (!has[0] && !has[1] && !mappedAround.contains(cellKey(mid[0], mid[1], 100)))
@@ -2329,8 +2430,8 @@ namespace worldgen::build
 				none += !has[0] && !has[1];
 			}
 			std::printf("sidewalks: %zu street sides along the map's own (%zu by the kerb, drawn as the street's), %zu streets without where they are "
-			            "mapped round about\n",
-			    sides, attached, none);
+			            "mapped round about; %zu sides the aerial pictures show (%zu set back)\n",
+			    sides, attached, none, aerialSides, aerialWalks.size());
 		}
 		// sidewalks where the map says; where it says nothing, by how built up the land along the road is (NLCD): the street
 		// pictures' suburbs and country roads mostly have none - a verge of grass to the ditch -, the towns' middles and their
@@ -2609,7 +2710,8 @@ namespace worldgen::build
 				return u + v <= 1 ? a + (b - a) * u + (c - a) * v : d + (c - d) * (1 - u) + (b - d) * (1 - v);
 			};
 			const roads::Asphalt onRoad(surfaces.collision, 0.5f);
-			const size_t walked = roads::Walkways(w.walks, walkSkip, terrainAt, [&](float x, float y) { return onRoad.Within(x, y, 0.4f); }, surfaces);
+			const size_t walked = roads::Walkways(w.walks, walkSkip, terrainAt, [&](float x, float y) { return onRoad.Within(x, y, 0.4f); }, surfaces) +
+			                      roads::Walkways(aerialWalks, {}, terrainAt, [&](float x, float y) { return onRoad.Within(x, y, 0.4f); }, surfaces);
 			std::printf("walks: %zu of the map's %zu sidewalks, footways and paths drawn\n", walked, w.walks.size());
 		}
 
@@ -2843,6 +2945,55 @@ namespace worldgen::build
 			}
 			else
 				all = ownWithout;
+			// (the map's small "yes" buildings joined to a big one - 1200 m² or 12 m and up -, within a metre of its walls: its
+			// wings, not houses - a house's roof on one had jutted across an office's facade)
+			std::unordered_set<const world::Building*> attached;
+			{
+				std::unordered_map<int64_t, std::vector<std::array<P2, 2>>> walls; // (by 20 m cell)
+				const auto key20 = [](float x, float y) {
+					return static_cast<int64_t>(std::floor(x / 20)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 20)));
+				};
+				for (const world::Building* b : all)
+				{
+					if (b->footprint.size() < 3 || (std::fabs(polygon::Area(b->footprint)) < 1200 && b->height < 12))
+						continue;
+					for (size_t k = 0; k < b->footprint.size(); ++k)
+					{
+						const P2 &p = b->footprint[k], &q = b->footprint[(k + 1) % b->footprint.size()];
+						for (float t = 0; t <= 1.0f; t += 0.25f)
+						{
+							const P2 m{p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t};
+							auto& list = walls[key20(m[0], m[1])];
+							if (list.empty() || list.back()[0] != p || list.back()[1] != q)
+								list.push_back({p, q});
+						}
+					}
+				}
+				for (const world::Building* b : all)
+				{
+					if ((b->kind != "yes" && !b->kind.empty()) || b->footprint.size() < 3 || std::fabs(polygon::Area(b->footprint)) > 350)
+						continue;
+					bool joined = false;
+					for (const P2& v : b->footprint)
+					{
+						for (int dj = -1; dj <= 1 && !joined; ++dj)
+							for (int di = -1; di <= 1 && !joined; ++di)
+								if (const auto it = walls.find(key20(v[0] + di * 20.0f, v[1] + dj * 20.0f)); it != walls.end())
+									for (const auto& [p, q] : it->second)
+										if (polygon::DistanceToSegment(v, p, q) < 1.0f)
+										{
+											joined = true;
+											break;
+										}
+						if (joined)
+							break;
+					}
+					if (joined)
+						attached.insert(b);
+				}
+				so.attached = &attached;
+				std::printf("buildings: %zu small ones joined to a big one (no house roof)\n", attached.size());
+			}
 			// (a scan tile at a time: in the map's order the buildings jump about the city and the scan's tiles, read as they
 			// are asked for, were read again and again - 96 GB for the whole of Miami)
 			const auto scanTile = [](const world::Building* b) {
@@ -3383,6 +3534,20 @@ namespace worldgen::build
 				const auto place = [&](float x, float y, const P2& dir) {
 					if (x < bx0 || y < by0 || x >= bx1 || y >= by1 || !free(x, y, dir) || !clearOfTrunks(x, y))
 						return false;
+					// (not on a bank: the ground under its four wheels within 0.4 m of level - a lot behind a retaining wall,
+					// smoothed into a slope by the elevation's cells, had its cars tilted on it)
+					{
+						const P2 side{-dir[1], dir[0]};
+						float lo = 1e30f, hi = -1e30f;
+						for (const float a : {-1.4f, 1.4f})
+							for (const float b : {-0.8f, 0.8f})
+							{
+								const float z = ground(x + dir[0] * a + side[0] * b, y + dir[1] * a + side[1] * b);
+								lo = std::min(lo, z), hi = std::max(hi, z);
+							}
+						if (hi - lo > 0.4f)
+							return false;
+					}
 					mapfiles::CarGen c;
 					c.position = {x, y, ground(x, y) + 0.05f};
 					c.direction = {dir[0], dir[1]};
@@ -3871,7 +4036,7 @@ namespace worldgen::build
 			    w.areas, w.barriers, [&](float x, float y) { return inGrid(streets, x, y); }, [&](float x, float y) { return inGrid(paths, x, y); });
 			list.insert(list.end(), enclosures.begin(), enclosures.end());
 			if (!enclosures.empty())
-				std::printf("barriers: %zu cemetery fences of our own\n", enclosures.size());
+				std::printf("barriers: %zu cemetery and building site fences of our own\n", enclosures.size());
 			barriers::Stats bs;
 			barriers::Build(list, ground, onRoad, {bx0, by0, bx1, by1}, fences, surfaces.collision, furniture, bs);
 			std::printf("barriers: %zu fences, %zu walls, %zu hedges, %zu guard rails (%.1f km in %zu pieces; %zu pieces over roads left out)\n", bs.fences,
@@ -3985,9 +4150,22 @@ namespace worldgen::build
 						mean[c] += p[c];
 				for (double& m : mean)
 					m /= std::max<size_t>(1, road.pixels.size());
-				for (auto& p : road.pixels)
-					for (int c = 0; c < 3; ++c)
-						p[c] = static_cast<uint8_t>(std::clamp((mean[c] + (p[c] - mean[c]) * 0.7) * 0.75, 0.0, 255.0));
+				// (and its columns evened out - a dark joint down its left edge and lighter wheel tracks, tiled across our lanes
+				// every 6 m, had drawn a dark seam down the middle of a lane in the reviewers' eyes: each column's mean brought
+				// 90 % of the way to the whole's, its grain kept)
+				std::vector<std::array<double, 3>> column(static_cast<size_t>(road.width));
+				for (int y = 0; y < road.height; ++y)
+					for (int x = 0; x < road.width; ++x)
+						for (int c = 0; c < 3; ++c)
+							column[static_cast<size_t>(x)][c] += road.At(x, y)[c] / static_cast<double>(road.height);
+				for (int y = 0; y < road.height; ++y)
+					for (int x = 0; x < road.width; ++x)
+						for (int c = 0; c < 3; ++c)
+						{
+							auto& p = road.At(x, y);
+							const double even = p[c] - 0.9 * (column[static_cast<size_t>(x)][c] - mean[c]);
+							p[c] = static_cast<uint8_t>(std::clamp((mean[c] + (even - mean[c]) * 0.7) * 0.75, 0.0, 255.0));
+						}
 			}
 			shared.push_back(texture::Make(o.name + "_asphalt", road, texture::Format::Bc1));
 			shared.push_back(texture::Make(o.name + "_flat_n", texture::Image(4, 4, {128, 128, 255, 255}), texture::Format::Bc1));

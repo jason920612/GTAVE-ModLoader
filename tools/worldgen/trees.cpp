@@ -443,18 +443,24 @@ namespace worldgen::trees
 				// rows of "lollipop" trees where the street pictures have a canopy of live oaks)
 				// (and in town one in ten of the evergreens with a crown narrower than their height magnolias - three in ten had
 				// taken the place of the live oaks the street pictures show -; a third of the leafless sweetgums)
-				// (a town's small trees - under 8 m - a third of them crape myrtles, the rest young laurel and water oaks: shrunk
-				// live oaks had stood in rows of small umbrellas; every one a crape myrtle, "pink crape myrtles everywhere")
+				// (a town's small trees - under 8 m -: half the leafless ones in the pictures' winter crape myrtles, the rest young
+				// laurel and water oaks - shrunk live oaks had stood in rows of small umbrellas; every one a crape myrtle had been
+				// "pink crape myrtles everywhere", a third of them at random missed a park's row of them)
 				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
 				const bool magnolia = town && h >= 7 && h <= 16 && width < 0.8f * h && seed % 10 == 0;
-				const int kind = town && h < 8 ? (seed % 3 == 0 ? 3 : 2)
+				const int kind = town && h < 8 ? (t.kind == 1 && seed % 2 == 0 ? 3 : 2)
 				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : 0)
 				                               : (town && h <= 9 && seed % 5 == 0 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
 					props::Prop p;
 					p.archetype = loader::convert::Joaat(o->name);
-					p.position = {t.x, t.y, ground(t.x, t.y) - 0.15f};
+					// (its foot at the lowest ground a metre round it: on a bank the trunk had stood on its uphill side, its
+					// downhill side floating - the reviewers' "trunk cut off above the ground")
+					float foot = ground(t.x, t.y);
+					for (int a = 0; a < 6; ++a)
+						foot = std::min(foot, ground(t.x + std::cos(a * 1.0472f), t.y + std::sin(a * 1.0472f)));
+					p.position = {t.x, t.y, foot - 0.15f};
 					p.heading = static_cast<float>((seed >> 8) % 360) * kPi / 180;
 					p.lodDist = 600;
 					p.scaleZ = std::clamp(h / o->height, 0.4f, 1.6f);

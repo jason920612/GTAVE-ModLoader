@@ -1683,10 +1683,11 @@ namespace worldgen::roads
 			const auto crossing = [&](bool atB) {
 				const size_t i = atB ? p.size() - 1 : 0;
 				const float h = halfAt[i];
-				for (float o = -h + 0.7f; o <= h - 0.6f; o += 1.2f)
+				// (Florida's continental bars: 0.8 m wide, 0.8 m apart - the street pictures' are wider than the 0.55 m ones had been)
+				for (float o = -h + 0.8f; o <= h - 0.7f; o += 1.6f)
 				{
 					const std::vector<float> oo(p.size(), o);
-					line(oo, 0.55f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
+					line(oo, 0.8f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
 				}
 				stopLine(atB);
 			};
