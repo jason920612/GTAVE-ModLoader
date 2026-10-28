@@ -52,4 +52,7 @@ namespace loader::game::seamless
 	// or stopped and summed up (false: the longest, the share over 15 ms and the steps that ran in the long ones, where the
 	// threads were in them).
 	std::string Frames(bool start, const std::vector<unsigned long>& others = {});
+
+	// Game thread: what else was done in the frame under way, while the frames' times are recorded (shown with a long one).
+	void Note(const std::string& what);
 }

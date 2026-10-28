@@ -309,6 +309,7 @@ namespace loader::game::sectors
 				}
 			// those made: taken away far off (or off the land), the game's once the player is in one or it was moved
 			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			int removed = 0;
 			for (size_t k = 0; k < g_parkedLive.size();)
 			{
 				ParkedCar& car = g_parked[g_parkedLive[k].first].cars[g_parkedLive[k].second];
@@ -331,6 +332,7 @@ namespace loader::game::sectors
 						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
 						car.vehicle = settling ? 0 : -1;
 						gone = true;
+						++removed;
 					}
 					else if (inside || moved)
 					{
@@ -344,6 +346,7 @@ namespace loader::game::sectors
 						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
 						car.vehicle = 0;
 						gone = true;
+						++removed;
 					}
 				}
 				if (gone)
@@ -354,6 +357,8 @@ namespace loader::game::sectors
 				else
 					++k;
 			}
+			if (removed)
+				seamless::Note(std::format("{} parked car(s) taken away", removed));
 			if (!here)
 				return;
 			ParkedLand& pl = g_parked[here->name];
@@ -397,6 +402,8 @@ namespace loader::game::sectors
 						++made;
 					}
 				}
+			if (made)
+				seamless::Note(std::format("{} parked car(s) made", made));
 		}
 
 		// The map types store (fwMapTypesStore: the streaming modules' tenth, research/phase0.md §63.4): its slot entries
@@ -1025,13 +1032,15 @@ namespace loader::game::sectors
 		constexpr float kBandHalf = 3500; // (the band round the place they will arrive at: past what the game streams round them)
 		constexpr float kLate = 900;      // (how far past the edge the shift may wait for the place to be ready)
 		constexpr float kCarry = 400;     // (the traffic and people round the player moved with them)
+		constexpr float kSceneReach = 400; // (what round the place they will come over the edge at is loaded ahead)
+		constexpr float kReprepare = 250;  // (how far that place may move - they turn - before it is made ready again)
 		struct Cross
 		{
 			enum class State { None, Registering, Preparing } state = State::None;
 			std::string from, to;
 			char side = 0;
 			float offset[2]{}, band[4]{}, prepared[2]{};
-			ULONGLONG since = 0;
+			ULONGLONG since = 0, preparedAt = 0;
 			bool toldLate = false, toldHazard = false;
 		} g_cross;
 		// (the edge the player has just come over, not crossed back over until they are away from it or turn round)
@@ -1066,6 +1075,22 @@ namespace loader::game::sectors
 			default:
 				return x - l.core[0];
 			}
+		}
+
+		// Where the player will come over a land's core edge `side` (crossed `line` inside it): where their course meets it
+		// if they are on their way to it (going at it within 60 degrees), else its point nearest them - within the core's
+		// length of it.
+		void EdgePoint(const Land& l, char side, float line, const natives::ScrVector& p, const natives::ScrVector& v, float* out)
+		{
+			const bool ew = side == 'e' || side == 'w';
+			const float edge = side == 'e' ? l.core[2] - line : side == 'w' ? l.core[0] + line : side == 'n' ? l.core[3] - line : l.core[1] + line;
+			const float across = ew ? p.x : p.y, speed = ew ? v.x : v.y, drift = ew ? v.y : v.x;
+			float along = ew ? p.y : p.x;
+			if ((edge - across) * speed > 0 && std::abs(speed) > 2.0f && std::abs(speed) >= 0.5f * std::hypot(v.x, v.y))
+				along += drift * (edge - across) / speed;
+			along = std::clamp(along, ew ? l.core[1] : l.core[0], ew ? l.core[3] : l.core[2]);
+			out[0] = ew ? edge : along;
+			out[1] = ew ? along : edge;
 		}
 
 		// The parked cars the shift moved: the next land's same cars (worldgen puts the same car in the band both share) from
@@ -1295,25 +1320,34 @@ namespace loader::game::sectors
 				g_cross = {};
 				return;
 			}
-			// where they will arrive (half a second on): made ready, again once they have gone 150 m from where it was
+			// where they will come over the edge, in the next land's place: made ready - once; again only when that has moved
+			// kReprepare (a load scene started again asks for all of it again) -; where the shift would put them now (half a
+			// second on) its collision asked for each frame
+			float over[2];
+			EdgePoint(*here, g_cross.side, line, p, v, over);
+			const float prepare[3] = {over[0] + g_cross.offset[0], over[1] + g_cross.offset[1], p.z};
 			const float dest[3] = {p.x + v.x * 0.5f + g_cross.offset[0], p.y + v.y * 0.5f + g_cross.offset[1], p.z};
+			const auto ready = [&] {
+				crossing::Prepare(prepare, kSceneReach);
+				g_cross.prepared[0] = prepare[0], g_cross.prepared[1] = prepare[1];
+				g_cross.preparedAt = now;
+				seamless::Note(std::format("the place over the edge made ready at ({:.0f}, {:.0f})", prepare[0], prepare[1]));
+			};
 			if (g_cross.state == Cross::State::Registering)
 			{
 				if (!seamless::Registered(to->name))
 					return;
-				crossing::Prepare(dest, 400);
-				g_cross.prepared[0] = dest[0], g_cross.prepared[1] = dest[1];
+				ready();
 				g_cross.state = Cross::State::Preparing;
 				ParkedLand& theirs = g_parked[to->name];
 				if (!theirs.read)
 					ReadParked(*to, theirs);
 				return;
 			}
-			if (std::hypot(dest[0] - g_cross.prepared[0], dest[1] - g_cross.prepared[1]) > 150)
-			{
-				crossing::Prepare(dest, 400);
-				g_cross.prepared[0] = dest[0], g_cross.prepared[1] = dest[1];
-			}
+			// (not while they turn: their course swings past it for a moment)
+			if (std::hypot(prepare[0] - g_cross.prepared[0], prepare[1] - g_cross.prepared[1]) > kReprepare && now - g_cross.preparedAt > 3000)
+				ready();
+			crossing::Arrive(dest);
 			if (d > 0)
 				return;
 			const float late = here->hasCore ? kLate : kEdge - 15;

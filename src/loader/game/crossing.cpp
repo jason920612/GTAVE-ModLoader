@@ -12,6 +12,7 @@
 #include "../log.hpp"
 #include "../pattern.hpp"
 #include "natives.hpp"
+#include "seamless.hpp"
 
 namespace loader::game::crossing
 {
@@ -39,13 +40,19 @@ namespace loader::game::crossing
 		// - 4 off, (& 0x38) == 8 not wanted, >> 6 its kind -, +0x61 and +0x66 the kinds wanted, +0x68 the reach the game holds
 		// it to). Each frame the game asks for the files round the camera (0x92D4A0) and then checks those within the reach
 		// of it (0x92D650: 10 m): one not in yet, and it asks for it and loads everything asked for there and then (0xCF03F0)
-		// - a long frame after a jump to where the collision was not in.
-		constexpr uintptr_t kBoundsStreamer = 0x3ED8E30, kAskAround = 0x92D4A0, kFree = 0x18D0;
+		// - a long frame after a jump to where the collision was not in, and a long one too when much else is asked for
+		// first (a load scene's: it waits for all of it).
+		// The asking (0x92CA40) makes the streamer's whole wanted set from that one call's searches - the place given, its
+		// second place (+0xC0, when +0xB5 is set: REQUEST_COLLISION_AT_COORD sets both, the call clears +0xB5), the load
+		// scenes' and streaming volumes' (0x3ED6B30, vtable +0x10) - and lets go of every file it wanted before and does not
+		// now (0x92D280: a request still waiting dropped, a file in free to be thrown out). So another place is never asked for
+		// with a call of its own (it would drop the camera's files every frame: thrown out as a load scene made room, then
+		// loaded at once by the check) but as the second place of the game's own call.
+		constexpr uintptr_t kBoundsStreamer = 0x3ED8E30, kFree = 0x18D0;
 		const Known kKnown[] = {{0xECF910, {0x48, 0x89, 0x1D, 0x21, 0xF9, 0x48, 0x03}},
 		    {0xD4E842, {0x48, 0x8B, 0x15, 0xE7, 0xC0, 0x5F, 0x03, 0x48, 0xC1, 0xC2, 0x1E}},
 		    {0xD4E85C, {0x80, 0xE1, 0x1F, 0x80, 0xC1, 0x02, 0x48, 0xD3, 0xCE, 0x48, 0x31, 0xD6, 0x48, 0x89, 0x35, 0xB9, 0xC0, 0x5F, 0x03}},
 		    {kGuidOf, {0x56, 0x57, 0x48, 0x83, 0xEC, 0x28, 0x48, 0x89, 0xCF, 0x48, 0x8D, 0x71, 0x10}},
-		    {kAskAround, {0x56, 0x48, 0x83, 0xEC, 0x70, 0x48, 0x89, 0xCE, 0x80, 0xB9, 0xB4, 0x00, 0x00, 0x00, 0x01}},
 		    // (0x92D650's look-up: the reach, the box, the query through the vtable)
 		    {0x92D65B, {0x44, 0x0F, 0xB6, 0x41, 0x61, 0x45, 0x84, 0xC0}}, {0x92D66C, {0x0F, 0x10, 0x41, 0x68}}, {0x92D6B3, {0xFF, 0x50, 0x18}},
 		    {0x92D6E5, {0x48, 0x8B, 0x46, 0x38, 0x0F, 0xB7, 0x0C, 0x58, 0xF6, 0xC1, 0x04}}, {0x92D710, {0x48, 0x8B, 0x4E, 0x20, 0x48, 0x8B, 0x01, 0x89, 0xDA, 0xFF, 0x50, 0x70}}};
@@ -149,15 +156,12 @@ namespace loader::game::crossing
 			}
 		}
 
-		// The collision round a place: asked for as the game asks for the camera's (`ask`), and how many of the files within
-		// `radius` of it are not in yet - the game's own check (0x92D650) made for the place, wider.
-		size_t CollisionMissing(const float* at, float radius, bool ask)
+		// How many of the collision files within `radius` of a place are not in yet - the game's own check (0x92D650) made for
+		// the place, wider.
+		size_t CollisionMissing(const float* at, float radius)
 		{
 			const auto base = pattern::Module::Main().base;
 			auto* streamer = reinterpret_cast<uint8_t*>(base + kBoundsStreamer);
-			alignas(16) float p[4] = {at[0], at[1], at[2], 0};
-			if (ask)
-				reinterpret_cast<void (*)(uint8_t*, const float*)>(base + kAskAround)(streamer, p);
 			alignas(16) float box[8] = {at[0] - radius, at[1] - radius, at[2] - radius, 0, at[0] + radius, at[1] + radius, at[2] + radius, 0};
 			struct
 			{
@@ -243,19 +247,30 @@ namespace loader::game::crossing
 			return done;
 		}
 
-		// A place made ready ahead of the shift: everything round it asked for (the game's load scene, collision included)
-		// and its collision asked for every frame.
+		// A place made ready ahead of the shift: everything round it asked for (the game's load scene, collision included),
+		// and the collision round where the shift would put the player now asked for every frame (as the streamer's second
+		// place) and looked at. The load scene grows a ring at a time, each once the last is in: a whole sphere's maps come
+		// in together, and every tree on them (the game's trees, each with its own collision) goes into the physics' broad
+		// phase in the same frame - 2000 and more in a town, ~25 ms.
 		constexpr uint64_t kNewLoadSceneStartSphere = 0xACCFB4ACF53551B0, kIsNewLoadSceneLoaded = 0x01B8247A7A8B9AD1, kNewLoadSceneStop = 0xC197616D221FF4A4,
 		                   kRequestCollisionAtCoord = 0x07503F7948F491A7;
 		constexpr int32_t kLoadSceneCollision = 1; // (NEWLOADSCENE_FLAG_REQUIRE_COLLISION)
 		constexpr float kCollisionReach = 30;     // (the game holds the camera to 10 m)
+		constexpr float kSceneFrom = 100, kSceneRing = 25;
 		struct Preload
 		{
 			bool on = false;
-			float at[3]{};
+			float at[3]{}, arrive[3]{};
 			size_t missing = 0;
 			Clock::time_point since;
+			bool scene = false;         // (the load scene all in, at its full reach)
+			float radius = 0, reach = 0; // (how far it reaches now, and in the end)
 		} g_preload;
+
+		void StartScene()
+		{
+			natives::Invoke<int32_t>(kNewLoadSceneStartSphere, g_preload.at[0], g_preload.at[1], g_preload.at[2], g_preload.radius, kLoadSceneCollision);
+		}
 	}
 
 	void Prepare(const float* at, float radius)
@@ -265,8 +280,13 @@ namespace loader::game::crossing
 			return;
 		if (g_preload.on)
 			Invoke<void>(kNewLoadSceneStop);
-		g_preload = {true, {at[0], at[1], at[2]}, 0, Clock::now()};
-		Invoke<int32_t>(kNewLoadSceneStartSphere, at[0], at[1], at[2], radius, kLoadSceneCollision);
+		g_preload = {true, {at[0], at[1], at[2]}, {at[0], at[1], at[2]}, 0, Clock::now(), false, std::min(radius, kSceneFrom), radius};
+		StartScene();
+	}
+
+	void Arrive(const float* at)
+	{
+		std::copy(at, at + 3, g_preload.arrive);
 	}
 
 	void Release()
@@ -280,11 +300,10 @@ namespace loader::game::crossing
 	{
 		if (!g_preload.on)
 			return false;
-		const bool scene = natives::Invoke<int32_t>(kIsNewLoadSceneLoaded) != 0;
 		if (why)
-			*why = std::format("scene {}, {} collision file(s) within {:.0f} m not in, {:.1f} s", scene ? "in" : "loading", g_preload.missing, kCollisionReach,
-			    std::chrono::duration<double>(Clock::now() - g_preload.since).count());
-		return scene && g_preload.missing == 0;
+			*why = std::format("scene {} ({:.0f} of {:.0f} m), {} collision file(s) within {:.0f} m not in, {:.1f} s", g_preload.scene ? "in" : "loading",
+			    g_preload.radius, g_preload.reach, g_preload.missing, kCollisionReach, std::chrono::duration<double>(Clock::now() - g_preload.since).count());
+		return g_preload.scene && g_preload.missing == 0;
 	}
 
 	std::string Hazards(float x, float y, float z)
@@ -308,8 +327,20 @@ namespace loader::game::crossing
 			SetOnTheirWay(kAll);
 		if (!g_preload.on)
 			return;
-		natives::Invoke<void>(kRequestCollisionAtCoord, g_preload.at[0], g_preload.at[1], g_preload.at[2]);
-		g_preload.missing = CollisionMissing(g_preload.at, kCollisionReach, true);
+		natives::Invoke<void>(kRequestCollisionAtCoord, g_preload.arrive[0], g_preload.arrive[1], g_preload.arrive[2]);
+		g_preload.missing = CollisionMissing(g_preload.arrive, kCollisionReach);
+		if (g_preload.scene || natives::Invoke<int32_t>(kIsNewLoadSceneLoaded) == 0)
+			return;
+		if (g_preload.radius < g_preload.reach)
+		{
+			// (the next ring)
+			natives::Invoke<void>(kNewLoadSceneStop);
+			g_preload.radius = std::min(g_preload.reach, g_preload.radius + kSceneRing);
+			StartScene();
+			return;
+		}
+		g_preload.scene = true;
+		seamless::Note(std::format("the place made ready all in ({:.1f} s)", std::chrono::duration<double>(Clock::now() - g_preload.since).count()));
 	}
 
 	std::string Shift(float dx, float dy, float dz, float radius)

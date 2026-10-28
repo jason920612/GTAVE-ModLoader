@@ -10,6 +10,7 @@
 #include <deque>
 #include <format>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -107,7 +108,10 @@ namespace loader::game::seamless
 		// the next) of the road network's regions (the Paths module, its first object + region = y * 32 + x on 1024 m from
 		// -16384; past 1024 the island's set) and of the navmeshes (NavMeshes, + y * 147 + x on 150 m squares from the runtime
 		// origin, +0x42F6580; a file "navmesh[<x * 3>][<y * 3>]", research/phase0.md §61.8): each one file, its handle. A
-		// land's overlay (its start-up change set) brings both. Its files are registered one by one (0xCE3320: rcx the
+		// land's overlay (its start-up change set) brings both, its map archives the road regions the game has no file for
+		// (left to them, a land registered took those names over everywhere: a region loaded later had the other land's
+		// roads, linked to nodes its neighbours did not have - the route look-up's crash, 0xF4A020). Its files are
+		// registered one by one (0xCE3320: rcx the
 		// streaming, rdx where the object's index goes - -1 refused -, r8 the file's name, r9d its handle; nine arguments): a
 		// later land's file takes over a name the land there has (0xCE36C5, the old handle kept for when it goes - a chain
 		// of them as lands come and go) and for a loaded object first looks through all the objects for those depending on
@@ -218,12 +222,13 @@ namespace loader::game::seamless
 			return g_lands.contains(land) ? land : "";
 		}
 
-		// Each land's overlay files the game has (object -> handle): taken down as they are registered (all refused), or read
-		// from the objects for the land the game registered itself at the start; kept while its overlay is on.
+		// Each land's road region and navmesh files the game has (object -> handle; its overlay's and its map archives'): taken
+		// down as they are registered (all refused), or read from the objects for the land the game registered itself at the
+		// start; kept while it is registered.
 		std::map<std::string, std::unordered_map<uint32_t, uint32_t>> g_overlays;
 		// What each object had before any land's overlay (the game's own file, 0 none): read once
 		std::vector<uint32_t> g_base;
-		std::string* g_capture = nullptr; // (the land whose overlay is being registered)
+		std::string* g_capture = nullptr; // (the land whose data files are being registered)
 		DWORD g_captureThread = 0;
 
 		// The radar's supertiles of each land registered (minimap_<column>_<row>.ydd, name hash -> handle): the same names in
@@ -334,10 +339,12 @@ namespace loader::game::seamless
 		Clock::time_point g_deferredSince;
 
 		// One of them unloaded by the streaming engine (RemoveObject, +0xCE4CD0) when nothing holds it - no hold flags, its
-		// module's count of holders (vtable +0xC8) none - and its square is far from the player: the road network and the path
-		// server keep what they once loaded till they want room, the old place's for good. Whether it was.
+		// module's count of holders (vtable +0xC8) none - and its square is not round the player: the road network and the
+		// path server keep what they once loaded till they want room, the old place's for good (one the game wants is
+		// loaded again - with its new file). Whether it was. (Not only far off: a land taken back as the player turned
+		// round left a region 2 km from them loaded, and its removal - and with it the next land's coming - waited on it.)
 		constexpr uintptr_t kRemoveObject = 0xCE4CD0;
-		constexpr float kUnloadFar = 2500; // (m from the player)
+		constexpr float kUnloadFar = 1200; // (m from the player)
 		bool Unload(uint32_t object, float px, float py)
 		{
 			uint32_t* e = Entries() + static_cast<size_t>(object) * 2;
@@ -527,6 +534,43 @@ namespace loader::game::seamless
 		};
 		std::vector<Frame> g_frames;
 		std::string g_frameWork;
+		std::mutex g_noteMutex; // (notes may come from other threads)
+
+		// Research, while the frames are recorded: the physics' broad phase taking objects in (0x1059E40: rcx the sweep and
+		// prune, rdx their boxes' low corners, r8 the high ones - 16 bytes each -, r9 their handles, the fifth a u16 how
+		// many; their ends sorted into place along each axis, 0x105A8E0) - how many and where, when it takes long.
+		constexpr uintptr_t kBroadPhaseAdd = 0x1059E40;
+		constexpr uint8_t kBroadPhaseAddBytes[] = {0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x56, 0x57, 0x55, 0x53, 0x48, 0x81, 0xEC, 0x48, 0x01, 0x00, 0x00};
+		using BroadPhaseAddFn = void (*)(void*, const float*, const float*, void*, uint64_t, uint64_t, uint64_t, uint64_t);
+		BroadPhaseAddFn g_broadPhaseAdd = nullptr;
+		void BroadPhaseAddHook(void* sap, const float* low, const float* high, void* handles, uint64_t count, uint64_t a, uint64_t b, uint64_t c)
+		{
+			if (!g_recording)
+				return g_broadPhaseAdd(sap, low, high, handles, count, a, b, c);
+			const auto t = Clock::now();
+			g_broadPhaseAdd(sap, low, high, handles, count, a, b, c);
+			const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+			if (ms < 3)
+				return;
+			const uint16_t n = static_cast<uint16_t>(count);
+			float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+			size_t sizes[5]{}; // (by the longest side: < 1 m, < 3, < 6, < 20, more)
+			std::string some;
+			for (uint16_t i = 0; i < n; ++i)
+			{
+				const float* l = low + i * 4;
+				const float* h = high + i * 4;
+				x0 = std::min(x0, l[0]), y0 = std::min(y0, l[1]);
+				x1 = std::max(x1, h[0]), y1 = std::max(y1, h[1]);
+				const float side = std::max({h[0] - l[0], h[1] - l[1], h[2] - l[2]});
+				++sizes[side < 1 ? 0 : side < 3 ? 1 : side < 6 ? 2 : side < 20 ? 3 : 4];
+				if (i < 4)
+					some += std::format(" ({:.1f}, {:.1f}, {:.1f}) {:.1f}x{:.1f}x{:.1f} h{:08x}", l[0], l[1], l[2], h[0] - l[0], h[1] - l[1], h[2] - l[2],
+					    static_cast<const uint32_t*>(handles)[i]);
+			}
+			Note(std::format("the physics' broad phase took {} in ({:.1f} ms; x {:.0f}..{:.0f}, y {:.0f}..{:.0f}; sides <1 m {}, <3 {}, <6 {}, <20 {}, more {};{})", n,
+			    ms, x0, x1, y0, y1, sizes[0], sizes[1], sizes[2], sizes[3], sizes[4], some));
+		}
 
 		void Say(const std::string& line)
 		{
@@ -562,7 +606,8 @@ namespace loader::game::seamless
 				const auto t1 = Clock::now();
 				if (on)
 				{
-					g_capture = cs.group == kGroupStartup ? &land : nullptr;
+					// (its map archives' too: the road regions the game has no file for are there, not in the overlay)
+					g_capture = &land;
 					g_registering = &land;
 					g_captureThread = GetCurrentThreadId();
 					setPackFlag(*reinterpret_cast<const uint32_t*>(j.pack + 0xFC));
@@ -645,10 +690,14 @@ namespace loader::game::seamless
 					work = "its names being read";
 					if (landfiles::NamesReady(j.land))
 					{
+						// (the road regions its map archives brought - registered after the overlay's were handed - given it
+						// in the band too)
+						const auto [changed, waiting] = Hand(j.land, j.band, nullptr);
+						work = std::format("in the band {} more objects given its files, {} wait for being unloaded", changed, waiting);
 						// (a land crossed into before: its collision files' boxes and flags as they were when it gave them back -
 						// its registration does not set them again -, before its areas are switched)
 						if (const size_t back = landfiles::PutBoxesBack(j.land))
-							work = std::format("{} collision boxes put back", back);
+							work += std::format("; {} collision boxes put back", back);
 						next(6);
 					}
 					return false;
@@ -904,6 +953,10 @@ namespace loader::game::seamless
 		              MH_EnableHook(reg) == MH_OK;
 		if (!g_installed)
 			log::Warn("seamless: the file registration could not be hooked; crossing without a cut is off");
+		// (research: the broad phase's long frames told)
+		if (auto* add = reinterpret_cast<void*>(base + kBroadPhaseAdd); std::memcmp(add, kBroadPhaseAddBytes, sizeof(kBroadPhaseAddBytes)) == 0)
+			if (MH_CreateHook(add, reinterpret_cast<void*>(&BroadPhaseAddHook), reinterpret_cast<void**>(&g_broadPhaseAdd)) != MH_OK || MH_EnableHook(add) != MH_OK)
+				log::Warn("seamless: the broad phase could not be watched");
 	}
 
 	bool Available()
@@ -995,6 +1048,7 @@ namespace loader::game::seamless
 		const auto frame = Clock::now();
 		if (g_recording)
 		{
+			std::lock_guard lock(g_noteMutex);
 			g_frames.push_back({g_lastFrame, frame, g_frameWork});
 			g_frameWork.clear();
 		}
@@ -1024,7 +1078,7 @@ namespace loader::game::seamless
 		const double ms = Since(t);
 		const char* kinds[] = {"register", "handover", "cancel", "remove"};
 		Say(std::format("{} {}: {} in {:.2f} ms", kinds[static_cast<int>(j.kind)], j.land, work, ms));
-		g_frameWork = std::format("{} ({:.1f} ms)", work, ms);
+		Note(std::format("{} ({:.1f} ms)", work, ms));
 		if (done)
 		{
 			log::Info("seamless: {} {} done in {:.0f} ms", kinds[static_cast<int>(j.kind)], j.land, Since(j.began));
@@ -1087,6 +1141,10 @@ namespace loader::game::seamless
 		{
 			g_frames.clear();
 			g_recording = true;
+			// (thread 0: none sampled - the frames' times alone, without the sampler stopping threads a thousand times a
+			// second)
+			if (!others.empty() && others[0] == 0)
+				return "recording (no thread sampled)";
 			debug::profile::Start(others);
 			return std::format("recording (the game's thread {} and {} more sampled)", GetCurrentThreadId(), others.size());
 		}
@@ -1115,7 +1173,22 @@ namespace loader::game::seamless
 					slow += std::format(" | {:.1f} ms at {:.2f} s: {} [{}]{}", f.ms(), std::chrono::duration<double>(f.start - g_frames.front().start).count(),
 					    f.work.empty() ? "-" : f.work, debug::profile::Between(f.start, f.end), before.empty() ? "" : " (before: " + before + ")");
 			}
-		return std::format("{} frames: median {:.1f} ms, p99 {:.1f}, longest {:.1f}; {} more than 15 ms over the median{}", g_frames.size(), at(0.5),
-		    at(0.99), times.back(), over, slow);
+		// (research: the broad phase's long takes all along, long frame or not)
+		std::string broad;
+		size_t takes = 0;
+		for (const Frame& f : g_frames)
+			for (size_t k = f.work.find("broad phase took "); k != std::string::npos; k = f.work.find("broad phase took ", k + 1))
+				if (++takes <= 40)
+					broad += std::format(" {:.2f} s {:.1f} ms {}", std::chrono::duration<double>(f.start - g_frames.front().start).count(), f.ms(),
+					    f.work.substr(k + 17, f.work.find(';', k) - k - 17));
+		return std::format("{} frames: median {:.1f} ms, p99 {:.1f}, longest {:.1f}; {} more than 15 ms over the median{}{}", g_frames.size(), at(0.5),
+		    at(0.99), times.back(), over, slow, takes ? std::format(" | the broad phase's takes of 3 ms and more: {}:{}", takes, broad) : "");
+	}
+
+	void Note(const std::string& what)
+	{
+		std::lock_guard lock(g_noteMutex);
+		if (g_recording)
+			g_frameWork += (g_frameWork.empty() ? "" : "; ") + what;
 	}
 }

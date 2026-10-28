@@ -16,10 +16,12 @@ namespace loader::game::crossing
 	std::string Shift(float dx, float dy, float dz, float radius);
 
 	// Game thread: the place the player will arrive at made ready ahead of the shift - everything within `radius` of it
-	// asked for (the game's load scene, its collision included), and its collision asked for every frame as the game asks
-	// for the camera's: a jump to where the collision round the camera is not all in makes the game load everything asked
-	// for at once (a 60-80 ms frame). Ready: all in (else why not, in `why`). Release: no longer.
+	// asked for (the game's load scene, its collision included). Arrive: where the shift would put them now (each frame;
+	// Prepare's place until then): the collision round it asked for every frame, with the camera's: a jump to where the
+	// collision round the camera is not all in makes the game load everything asked for at once (a 60-150 ms frame).
+	// Ready: the scene and that collision all in (else why not, in `why`). Release: no longer.
 	void Prepare(const float* at, float radius);
+	void Arrive(const float* at);
 	bool Ready(std::string* why = nullptr);
 	void Release();
 
