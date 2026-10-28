@@ -1013,6 +1013,20 @@ namespace loader::debug::remote
 						const std::string error = game::seamless::Begin(land, there == "-" ? std::string() : there, band);
 						return error.empty() ? std::string("begun") : error;
 					}
+					if (what == "handover")
+					{
+						// (seamless handover <to> <from> x0 y0 x1 y1: the band <to> was registered for)
+						game::seamless::Handover(land, there, band);
+						return std::string("queued");
+					}
+					if (what == "cancel")
+					{
+						// (seamless cancel <land> <there> x0 y0 x1 y1)
+						game::seamless::Cancel(land, there, band);
+						return std::string("queued");
+					}
+					if (what == "brief")
+						return game::seamless::Status(true);
 					if (what == "profile")
 					{
 						// (seamless profile <from hex> <to hex>: the data files' enabling sampled, 0 0 not)

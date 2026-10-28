@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -26,6 +27,9 @@
 #include "landfiles.hpp"
 #include "minimap.hpp"
 #include "natives.hpp"
+#include "crossing.hpp"
+#include "sea.hpp"
+#include "seamless.hpp"
 #include "text_override.hpp"
 
 namespace loader::game::sectors
@@ -47,6 +51,10 @@ namespace loader::game::sectors
 			double proj[6]{};
 			float world[4]{};
 			std::string open;
+			// its own part (land.json "core": min x, min y, max x, max y): its box less the band it shares with each neighbour -
+			// the same real-world content in both (worldgen); a land made before has none (its whole box)
+			float core[4]{};
+			bool hasCore = false;
 			// its population zones (land.json "zones": [i, j, kind, name] for each 1 km block, tools/worldgen/zones.py)
 			struct Zone
 			{
@@ -271,7 +279,10 @@ namespace loader::game::sectors
 				in.read(reinterpret_cast<char*>(rec), sizeof(rec));
 				ParkedCar& c = pl.cars[k];
 				c.x = rec[0], c.y = rec[1], c.z = rec[2], c.heading = rec[3];
-				uint32_t h = static_cast<uint32_t>(std::lround(c.x * 10)) * 2654435761u ^ static_cast<uint32_t>(std::lround(c.y * 10)) * 40503u;
+				// (chosen by the real world's place - the same car in the band two lands share: x0, y0 is where the projection puts
+				// the real world's origin)
+				const double gx = c.x - l.proj[2], gy = c.y - l.proj[3];
+				uint32_t h = static_cast<uint32_t>(std::llround(gx * 10)) * 2654435761u ^ static_cast<uint32_t>(std::llround(gy * 10)) * 40503u;
 				h ^= h >> 15, h *= 0x2c1b3c6d, h ^= h >> 12;
 				c.model = convert::Joaat(kModels[h % std::size(kModels)]);
 				c.colour = kColours[(h >> 8) % std::size(kColours)];
@@ -839,6 +850,14 @@ namespace loader::game::sectors
 						land.world[k] = j["world"].at(k).get<float>();
 					land.projected = land.proj[4] != 0 && land.proj[5] != 0;
 					land.open = j.value("open", "");
+					for (int k = 0; k < 4; ++k)
+						land.core[k] = land.world[k];
+					if (j.contains("core"))
+					{
+						for (int k = 0; k < 4; ++k)
+							land.core[k] = j["core"].at(k).get<float>();
+						land.hasCore = true;
+					}
 				}
 				if (j.contains("zones"))
 					for (const auto& z : j["zones"])
@@ -853,6 +872,7 @@ namespace loader::game::sectors
 		}
 		std::sort(g_lands.begin(), g_lands.end(), [](const Land& a, const Land& b) { return a.name < b.name; });
 		Settle(config::Get().worldSector);
+		seamless::SetLands(Lands());
 		if (!g_lands.empty())
 		{
 			std::ifstream list(paths::Get().root / L"data" / L"ls_far_maps.txt");
@@ -939,7 +959,9 @@ namespace loader::game::sectors
 	{
 		// The player at an open edge of the land there (a neighbouring sector's side: land.json "open"): the sector whose
 		// own box takes in the real world's place just past it, there (kArrive into it), in the vehicle they are in.
-		void WatchEdges()
+		// `fallback`: only into a land that could not be crossed into without a cut.
+		std::vector<std::string> g_noSeamless; // (lands crossed into with the screen faded: one that could not be readied in time)
+		void WatchEdges(bool fallback)
 		{
 			const ULONGLONG now = GetTickCount64();
 			if (now - g_lastWatch < 250)
@@ -969,7 +991,8 @@ namespace loader::game::sectors
 					double lat, lon;
 					l.ToWorld(e.beyond[0], e.beyond[1], lat, lon);
 					const auto next = std::find_if(g_lands.begin(), g_lands.end(), [&](const Land& o) {
-						return &o != &l && o.Covers(lat, lon) && std::find(g_unmountable.begin(), g_unmountable.end(), o.name) == g_unmountable.end();
+						return &o != &l && o.Covers(lat, lon) && std::find(g_unmountable.begin(), g_unmountable.end(), o.name) == g_unmountable.end() &&
+						       (!fallback || std::find(g_noSeamless.begin(), g_noSeamless.end(), o.name) != g_noSeamless.end());
 					});
 					if (next == g_lands.end())
 					{
@@ -991,6 +1014,342 @@ namespace loader::game::sectors
 			}
 		}
 
+		// Crossing without a cut (game/seamless, game/crossing; research/phase0.md §65): the land beyond the edge of its own
+		// part ("core") the player nears registered over frames - streamed only round where they will arrive (its band), the
+		// land there not in that part - and the place they will arrive at made ready (everything asked for, its collision
+		// in); once they are over the edge, they and everything round them moved there in one frame, then the lands handed
+		// over over frames. One that cannot be made so (the place not ready by the time they are deep in the band) falls back
+		// to the switch with the screen faded.
+		constexpr float kPrepare = 1500;  // (how near the core's edge the next land is registered)
+		constexpr float kGiveUp = 2500;   // (how far back from it a crossing made ready is taken back)
+		constexpr float kBandHalf = 3500; // (the band round the place they will arrive at: past what the game streams round them)
+		constexpr float kLate = 900;      // (how far past the edge the shift may wait for the place to be ready)
+		constexpr float kCarry = 400;     // (the traffic and people round the player moved with them)
+		struct Cross
+		{
+			enum class State { None, Registering, Preparing } state = State::None;
+			std::string from, to;
+			char side = 0;
+			float offset[2]{}, band[4]{}, prepared[2]{};
+			ULONGLONG since = 0;
+			bool toldLate = false, toldHazard = false;
+		} g_cross;
+		// (the edge the player has just come over, not crossed back over until they are away from it or turn round)
+		std::string g_arrivedLand;
+		char g_arrivedSide = 0;
+		ULONGLONG g_arrivedAt = 0;
+		// (work for the frames after a shift: one a frame)
+		std::vector<std::function<void()>> g_afterShift;
+		// (when the save was loaded: nothing begun before the game has put the player where it puts them - a place set
+		// before that is undone)
+		ULONGLONG g_loadedAt = 0;
+
+		bool CoreCovers(const Land& l, double lat, double lon)
+		{
+			double s, w, n, e;
+			l.ToWorld(l.core[0], l.core[1], s, w);
+			l.ToWorld(l.core[2], l.core[3], n, e);
+			return l.projected && lat >= s && lat < n && lon >= w && lon < e;
+		}
+
+		// how far inside its core's edge `side` a point is (negative: past it)
+		float Inside(const Land& l, char side, float x, float y)
+		{
+			switch (side)
+			{
+			case 'n':
+				return l.core[3] - y;
+			case 's':
+				return y - l.core[1];
+			case 'e':
+				return l.core[2] - x;
+			default:
+				return x - l.core[0];
+			}
+		}
+
+		// The parked cars the shift moved: the next land's same cars (worldgen puts the same car in the band both share) from
+		// now on - the land's list read first; one without a match the game's; those left behind taken away.
+		void HandParkedOver(const Land& from, const Land& to, const float* offset)
+		{
+			ParkedLand& theirs = g_parked[to.name];
+			if (!theirs.read)
+				ReadParked(to, theirs);
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, player, 1);
+			size_t kept = 0, released = 0, removed = 0;
+			for (size_t k = 0; k < g_parkedLive.size();)
+			{
+				if (g_parkedLive[k].first != from.name)
+				{
+					++k;
+					continue;
+				}
+				ParkedCar& car = g_parked[from.name].cars[g_parkedLive[k].second];
+				const bool exists = car.vehicle > 0 && natives::Invoke<int32_t>(kDoesEntityExist, car.vehicle) &&
+				                    natives::Invoke<uint32_t>(kGetEntityModel, car.vehicle) == car.model;
+				const float x = car.x + offset[0], y = car.y + offset[1];
+				int64_t match = -1;
+				if (exists && std::hypot(x - p.x, y - p.y) < kCarry)
+					if (const auto it = theirs.cells.find(ParkCell(x, y)); it != theirs.cells.end())
+						for (const uint32_t m : it->second)
+							if (std::hypot(theirs.cars[m].x - x, theirs.cars[m].y - y) < 1.5f && theirs.cars[m].vehicle == 0)
+								match = m;
+				if (match >= 0)
+				{
+					ParkedCar& same = theirs.cars[static_cast<size_t>(match)];
+					same.vehicle = car.vehicle, same.made = car.made, same.tries = car.tries, same.asked = true;
+					g_parkedLive[k] = {to.name, static_cast<uint32_t>(match)};
+					car.vehicle = 0;
+					++kept, ++k;
+					continue;
+				}
+				if (exists && std::hypot(x - p.x, y - p.y) < kCarry)
+					natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle), ++released;
+				else if (exists)
+				{
+					natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
+					natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
+					++removed;
+				}
+				car.vehicle = 0;
+				g_parkedLive[k] = g_parkedLive.back();
+				g_parkedLive.pop_back();
+			}
+			log::Info("sectors: the parked cars: {} handed over to {}, {} the game's, {} left behind taken away", kept, to.name, released, removed);
+		}
+
+		// The shift (one frame): the player and everything round them moved from `from`'s place into `to`'s, the player's road
+		// node and the junctions (the old land's nodes) forgotten, the map's waypoint and routes (the old land's nodes too)
+		// cleared, `to` the land there - the rest handed over in the frames after.
+		void ShiftOver(Land& from, Land& to)
+		{
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			const int32_t vehicle = natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0) ? natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0) : 0;
+			const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, vehicle ? vehicle : player, 1);
+			// (the same place in both: the band's content is the same - for lands made before the bands, the ground's
+			// difference)
+			float dz = 0;
+			if (!from.hasCore || !to.hasCore)
+			{
+				float here = 0, there = 0;
+				if (natives::Invoke<int32_t>(kGetGroundZFor3dCoord, p.x, p.y, p.z + 3.0f, &here, 0, 0) &&
+				    natives::Invoke<int32_t>(kGetGroundZFor3dCoord, p.x + g_cross.offset[0], p.y + g_cross.offset[1], p.z + 100.0f, &there, 0, 0))
+					dz = there - here;
+			}
+			const auto t = GetTickCount64();
+			const std::string moved = crossing::Shift(g_cross.offset[0], g_cross.offset[1], dz, kCarry);
+			ForgetPlayerRoadNode();
+			ClearJunctions();
+			natives::Invoke<void>(kSetWaypointOff);
+			natives::Invoke<void>(kClearGpsPlayerWaypoint);
+			natives::Invoke<void>(kClearGpsMultiRoute);
+			natives::Invoke<void>(kClearGpsCustomRoute);
+			HandParkedOver(from, to, g_cross.offset);
+			from.dormant = true;
+			to.dormant = false;
+			to.registered = true;
+			sea::Refresh();
+			crossing::Release();
+			seamless::Handover(to.name, from.name, g_cross.band);
+			log::Info("sectors: crossed from {} to {} at ({:.0f}, {:.0f}) +({:.0f}, {:.0f}, {:.1f}): {} ({} ms)", from.name, to.name, p.x, p.y,
+			    g_cross.offset[0], g_cross.offset[1], dz, moved, GetTickCount64() - t);
+			// the frames after: the new land's zones, the old place emptied (its traffic and people hold its road nodes and
+			// navmeshes), the land there kept for the next start
+			const float old[3] = {p.x, p.y, p.z};
+			Land* landTo = &to;
+			g_afterShift = {[landTo] {
+				                if (!g_zonesOf.empty())
+					                ApplyZones(*landTo);
+			                },
+			    [old] {
+				    natives::Invoke<void>(kClearAreaOfVehicles, old[0], old[1], old[2], kOldPlace, 0, 0, 0, 0, 0, 0, 0);
+				    natives::Invoke<void>(kClearAreaOfPeds, old[0], old[1], old[2], kOldPlace, 1);
+			    },
+			    [landTo] {
+				    config::Get().worldSector = landTo->name;
+				    config::Save();
+			    }};
+			g_arrivedLand = to.name;
+			g_arrivedSide = g_cross.side == 'n' ? 's' : g_cross.side == 's' ? 'n' : g_cross.side == 'e' ? 'w' : 'e';
+			g_arrivedAt = GetTickCount64();
+			g_cross = {};
+		}
+
+		// Each frame: the crossing under way, or the next one begun.
+		void WatchCrossing()
+		{
+			if (!g_afterShift.empty())
+			{
+				const auto work = std::move(g_afterShift.front());
+				g_afterShift.erase(g_afterShift.begin());
+				work();
+				return;
+			}
+			const ULONGLONG now = GetTickCount64();
+			if (!g_loadedAt || now - g_loadedAt < 5000)
+				return;
+			Land* here = nullptr;
+			for (Land& l : g_lands)
+				if (!l.dormant && l.projected && !l.open.empty())
+				{
+					here = &l;
+					break;
+				}
+			if (!here)
+				return;
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			const int32_t vehicle = natives::Invoke<int32_t>(kIsPedInAnyVehicle, player, 0) ? natives::Invoke<int32_t>(kGetVehiclePedIsIn, player, 0) : 0;
+			const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, vehicle ? vehicle : player, 1);
+			const auto v = natives::Invoke<natives::ScrVector>(0x4805D2B1D8CF94A9, vehicle ? vehicle : player); // (GET_ENTITY_VELOCITY)
+			// (not on the land - in Los Santos, or put somewhere by a teleport -: nothing begun; one under way taken back)
+			if (p.x < here->world[0] || p.x > here->world[2] || p.y < here->world[1] || p.y > here->world[3])
+			{
+				if (g_cross.state != Cross::State::None)
+					if (const Land* to = Find(g_cross.to))
+					{
+						log::Info("sectors: the player off {} ({:.0f}, {:.0f}); {} taken back", here->name, p.x, p.y, to->name);
+						seamless::Cancel(to->name, here->name, g_cross.band);
+						crossing::Release();
+						g_cross = {};
+					}
+				return;
+			}
+			// (a land made before the bands has its whole box for its core: crossed kEdge inside its edge)
+			const float line = here->hasCore ? 0.0f : kEdge;
+			if (g_cross.state == Cross::State::None)
+			{
+				if (seamless::Crossing())
+					return;
+				// the nearest open edge within reach, not the one just come over unless they have turned round to it
+				char side = 0;
+				float nearest = kPrepare;
+				for (const char s : here->open)
+				{
+					const float d = Inside(*here, s, p.x, p.y) - line;
+					if (d >= nearest)
+						continue;
+					const bool back = here->name == g_arrivedLand && s == g_arrivedSide;
+					const float outward = s == 'n' ? v.y : s == 's' ? -v.y : s == 'e' ? v.x : -v.x;
+					if (back && (now - g_arrivedAt < 20000 || outward <= 0) && d < 300)
+						continue;
+					side = s, nearest = d;
+				}
+				if (!side)
+					return;
+				// the land past it: the one whose core takes in the real world's place just over the edge, at the player's side
+				const float over[2] = {side == 'e' ? here->core[2] + 1 : side == 'w' ? here->core[0] - 1 : p.x,
+				    side == 'n' ? here->core[3] + 1 : side == 's' ? here->core[1] - 1 : p.y};
+				double lat, lon;
+				here->ToWorld(over[0], over[1], lat, lon);
+				Land* next = nullptr;
+				for (Land& o : g_lands)
+					if (&o != here && CoreCovers(o, lat, lon) && std::find(g_unmountable.begin(), g_unmountable.end(), o.name) == g_unmountable.end())
+						next = &o;
+				if (!next || std::find(g_noSeamless.begin(), g_noSeamless.end(), next->name) != g_noSeamless.end())
+					return;
+				float at[2];
+				next->FromWorld(lat, lon, at[0], at[1]);
+				g_cross.offset[0] = at[0] - over[0], g_cross.offset[1] = at[1] - over[1];
+				// (lands made before the bands share no band: they arrive kArrive into the next land's box, as the switch puts
+				// them)
+				if (!here->hasCore || !next->hasCore)
+				{
+					const float push = kEdge + kArrive;
+					g_cross.offset[0] += side == 'e' ? push : side == 'w' ? -push : 0;
+					g_cross.offset[1] += side == 'n' ? push : side == 's' ? -push : 0;
+				}
+				// (the band not cut to the land's box: the game's own road regions and navmeshes round it are handed over too)
+				const float dest[2] = {p.x + g_cross.offset[0], p.y + g_cross.offset[1]};
+				g_cross.band[0] = dest[0] - kBandHalf, g_cross.band[1] = dest[1] - kBandHalf;
+				g_cross.band[2] = dest[0] + kBandHalf, g_cross.band[3] = dest[1] + kBandHalf;
+				const std::string error = seamless::Register(next->name, here->name, g_cross.band);
+				if (error.starts_with("busy"))
+					return; // (the last land still being taken back: again next frame)
+				if (!error.empty())
+				{
+					log::Warn("sectors: {} could not be readied for the crossing ({}); the edge switches with the screen faded", next->name, error);
+					g_noSeamless.push_back(next->name);
+					return;
+				}
+				g_cross.state = Cross::State::Registering;
+				g_cross.from = here->name, g_cross.to = next->name, g_cross.side = side, g_cross.since = now;
+				sea::Prepare(next->name);
+				log::Info("sectors: nearing {}'s {} edge ({:.0f} m) at ({:.0f}, {:.0f}): {} registered, +({:.0f}, {:.0f})", here->name, side, nearest, p.x, p.y,
+				    next->name, g_cross.offset[0], g_cross.offset[1]);
+				return;
+			}
+			Land* to = Find(g_cross.to);
+			if (!to || here->name != g_cross.from)
+			{
+				g_cross = {};
+				return;
+			}
+			const float d = Inside(*here, g_cross.side, p.x, p.y) - line;
+			// turned back: the land registered taken back
+			if (d > kGiveUp)
+			{
+				log::Info("sectors: away from {}'s {} edge again; {} taken back", here->name, g_cross.side, to->name);
+				seamless::Cancel(to->name, here->name, g_cross.band);
+				crossing::Release();
+				g_cross = {};
+				return;
+			}
+			// where they will arrive (half a second on): made ready, again once they have gone 150 m from where it was
+			const float dest[3] = {p.x + v.x * 0.5f + g_cross.offset[0], p.y + v.y * 0.5f + g_cross.offset[1], p.z};
+			if (g_cross.state == Cross::State::Registering)
+			{
+				if (!seamless::Registered(to->name))
+					return;
+				crossing::Prepare(dest, 400);
+				g_cross.prepared[0] = dest[0], g_cross.prepared[1] = dest[1];
+				g_cross.state = Cross::State::Preparing;
+				ParkedLand& theirs = g_parked[to->name];
+				if (!theirs.read)
+					ReadParked(*to, theirs);
+				return;
+			}
+			if (std::hypot(dest[0] - g_cross.prepared[0], dest[1] - g_cross.prepared[1]) > 150)
+			{
+				crossing::Prepare(dest, 400);
+				g_cross.prepared[0] = dest[0], g_cross.prepared[1] = dest[1];
+			}
+			if (d > 0)
+				return;
+			const float late = here->hasCore ? kLate : kEdge - 15;
+			std::string why;
+			if (crossing::Ready(&why))
+			{
+				// (rockets in flight, explosions and fires round them do not go with the shift: it waits for them - the band
+				// is the same place in both lands -, not so far that it would come to the switch with the screen faded)
+				if (const std::string hazard = crossing::Hazards(p.x, p.y, p.z); !hazard.empty() && d > -(late - 150))
+				{
+					if (!g_cross.toldHazard)
+					{
+						g_cross.toldHazard = true;
+						log::Info("sectors: the crossing to {} waits for {} round the player", to->name, hazard);
+					}
+					return;
+				}
+				ShiftOver(*here, *to);
+				return;
+			}
+			if (!g_cross.toldLate)
+			{
+				g_cross.toldLate = true;
+				log::Info("sectors: over {}'s {} edge, the place in {} not ready yet ({})", here->name, g_cross.side, to->name, why);
+			}
+			// deep in the band and still not: the switch with the screen faded (the land registered taken back first; a land
+			// made before the bands has none past its box's edge)
+			if (d < -late)
+			{
+				log::Warn("sectors: the crossing to {} not ready {:.0f} m past the edge ({}); switching with the screen faded", to->name, late, why);
+				seamless::Cancel(to->name, here->name, g_cross.band);
+				crossing::Release();
+				g_cross = {};
+				g_noSeamless.push_back(to->name); // (not crossed so again this session)
+			}
+		}
 	}
 
 	void Tick()
@@ -1006,7 +1365,13 @@ namespace loader::game::sectors
 						break;
 					}
 			WatchFar();
-			WatchEdges();
+			// (without a cut where it can be: the screen faded only into a land that could not be readied, once the work for
+			// it is over)
+			const bool seamlessOn = config::Get().worldSeamless && seamless::Available();
+			if (seamlessOn)
+				WatchCrossing();
+			if (!seamlessOn || (g_cross.state == Cross::State::None && !seamless::Busy() && g_afterShift.empty()))
+				WatchEdges(seamlessOn);
 			WatchParked();
 			if (const ULONGLONG now = GetTickCount64(); now - g_lastAudit > 5000)
 			{
@@ -1135,7 +1500,16 @@ namespace loader::game::sectors
 					if (Land* l = Find(g_switch.leaving[i]))
 					{
 						if (landfiles::Release(l->name, paths::Get().mods / l->name / L"dlc.rpf", spent > 30000).done)
+						{
 							g_switch.released[i] = true, l->registered = false;
+							// (its map caches read again when it comes back: its maps' boxes from them, not from each map
+							// loaded there and then)
+							std::vector<uint32_t> sets;
+							uint16_t count = 0;
+							if (const uint32_t* hashes = content::GroupChangeSets(content::PackRecord(l->hash), kGroupMapSp, count))
+								sets.assign(hashes, hashes + count);
+							landfiles::ForgetCaches(l->name, sets);
+						}
 						else
 							released = false;
 					}
@@ -1347,6 +1721,7 @@ namespace loader::game::sectors
 
 	void Loaded(int32_t save)
 	{
+		g_loadedAt = GetTickCount64();
 		ForgetParked();
 		if (!save || g_lands.empty())
 			return;

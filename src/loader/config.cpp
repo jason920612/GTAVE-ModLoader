@@ -64,6 +64,7 @@ namespace loader::config
 			c.worldNavGrid = j.value("worldNavGrid", c.worldNavGrid);
 			c.worldPlayArea = j.value("worldPlayArea", c.worldPlayArea);
 			c.worldSector = j.value("worldSector", c.worldSector);
+			c.worldSeamless = j.value("worldSeamless", c.worldSeamless);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -106,6 +107,7 @@ namespace loader::config
 				{"worldNavGrid", c.worldNavGrid},
 				{"worldPlayArea", c.worldPlayArea},
 				{"worldSector", c.worldSector},
+				{"worldSeamless", c.worldSeamless},
 			};
 		}
 	}

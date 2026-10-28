@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 // A world builder land's map files in the game's streaming stores (research/phase0.md §63.12-63.14). A map group's revert
 // only switches its archives off: their files stay registered - a slot in their store each, a streaming object - and each
@@ -13,7 +15,10 @@
 // (else the next file given that slot is taken for one already there and refused), a map's two boxes and flags in the map
 // store's box streamer reset as its RemoveSlot does not. When the land comes again its change set registers its files
 // anew. In the order they hold each other by slot: maps and archetype files first, then the models, then their texture
-// dictionaries; a kind whose objects cannot all be unloaded keeps its slots, and so do the kinds it holds.
+// dictionaries - none of a kind unloaded while a kind that holds it has any loaded (the archetypes of a map still in the
+// world, the models of its archetypes: their stores count no hold of the entities on them); a kind whose objects cannot
+// all be unloaded keeps its slots, and so do the kinds it holds. A name another land's file has now (the radar's
+// supertiles: the same names in every land) is that land's: left as it is.
 namespace loader::game::landfiles
 {
 	struct Progress
@@ -28,6 +33,34 @@ namespace loader::game::landfiles
 	// and navmeshes are the game's own regions and squares, taken over by the next land's) unloaded, then given back once
 	// all of a kind are; `last`: the last try - what is still loaded is kept.
 	Progress Release(const std::string& land, const std::filesystem::path& pack, bool last);
+	// The same over as many frames as it takes, `budget` ms a call (the land's 35000 files gone through in one call took a
+	// frame of their own): each call goes on from where the last one stopped.
+	Progress ReleaseSome(const std::string& land, const std::filesystem::path& pack, double budget, bool last);
+
+	// Game thread, once a frame until it is done: a land's maps switched off (SwitchArea) whose boxes meet `box` and that
+	// are still loaded unloaded as the game's own switch of a map group off does it (0x931770: a loaded map holds a hold of
+	// kind 2 on itself, let go before the streaming engine unloads it and taken again if it cannot). With only the flag set
+	// the box streamer never let go of the ones it had: a land gone stayed in the world, its entities drawn with the models
+	// its files' release had taken from under them (+0x315532). The maps with a LOD parent first. `budget` ms a call.
+	Progress UnloadMaps(const std::string& land, const std::filesystem::path& pack, const float* box, double budget);
+
+	// Game thread: drawable dictionaries (by name hash - the radar's supertiles, the same names in every land) given another
+	// land's files (`handles`, the files that land's registration brought and the game did not take, the names had): each
+	// one loaded unloaded first once nothing holds it (the radar let go of them, minimap::Suspend). How many still wait; how
+	// many have a file not theirs.
+	size_t GiveDictionaries(const std::unordered_map<uint32_t, uint32_t>& handles);
+	size_t DictionariesToGive(const std::unordered_map<uint32_t, uint32_t>& handles);
+
+	// Game thread, once a land's change sets are taken back: its map caches (cacheLoaderData_DLC/<land>_<change set>_cache_y.dat,
+	// one a set: where each map and collision file lies) taken off the game's list of caches read (+0x42F9BB8: the hashes of
+	// their paths - one on it is not read again; the land's next registration had none of its maps' boxes, and the game
+	// loaded all 3000 of them in one frame to find them, 0x935A30: 3 s). How many were on it.
+	size_t ForgetCaches(const std::string& land, const std::vector<uint32_t>& sets);
+
+	// A land's file names read on a thread of their own ahead of the frames that want them (they are read from its pack:
+	// the archives' tables); whether they are in.
+	void Prefetch(const std::string& land, const std::filesystem::path& pack);
+	bool NamesReady(const std::string& land);
 
 	// Game thread, once a frame before the land's maps are put away, until it is done: its pause map pictures
 	// (minimap_*.ytd - the radar draws them too, zoomed out) let go while their archive is still there: the pause map's

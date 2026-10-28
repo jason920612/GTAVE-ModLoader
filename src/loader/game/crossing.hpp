@@ -23,6 +23,10 @@ namespace loader::game::crossing
 	bool Ready(std::string* why = nullptr);
 	void Release();
 
+	// Game thread: what round (x, y, z) does not go with the shift - rockets and grenades in flight (the game's objects),
+	// explosions, fires (places of their own) -, "" none: the shift waits for them (the band is the same place in both lands).
+	std::string Hazards(float x, float y, float z);
+
 	// Game thread, each frame.
 	void Tick();
 }

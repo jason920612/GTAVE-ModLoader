@@ -96,6 +96,10 @@ namespace loader::config
 		// start (its folder name in ModLoader\mods; empty: the first by name) - the others wait, dormant, for a switch
 		// (game/sectors.cpp). The last one switched to is kept here.
 		std::string worldSector;
+		// World builder: the lands crossed without a cut (game/seamless, game/crossing: the next land registered over frames
+		// as the player nears its edge, everything round them moved into it in one frame) - else (or when that cannot be
+		// done) the screen fades and the player waits while the lands change.
+		bool worldSeamless = true;
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

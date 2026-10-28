@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -54,8 +55,24 @@ namespace loader::game::crossing
 		                   kSetEntityVelocity = 0x1C99BB7B6E96D16F, kGetCamRelativeHeading = 0x743607648ADD4587, kSetCamRelativeHeading = 0xB4EC2312F4E5B1F1,
 		                   kGetCamRelativePitch = 0x3A6867B4845BEDA2, kSetCamRelativePitch = 0x6D0858B8EDFD2B7D, kGetPedInVehicleSeat = 0xBB40DD2270B65366,
 		                   kTaskVehicleDriveWander = 0x480142959D337D00, kTaskWanderStandard = 0xBB9CE077274F6A1B, kIsPedAPlayer = 0x12534C348C6CB68B,
-		                   kIsEntityDead = 0x5F9532F3B5CC2551, kGetEntitySpeed = 0xD5037BA82E12416F, kIsEntityAMissionEntity = 0x0A7B270912999B3C;
+		                   kIsEntityDead = 0x5F9532F3B5CC2551, kGetEntitySpeed = 0xD5037BA82E12416F, kIsEntityAMissionEntity = 0x0A7B270912999B3C,
+		                   kDoesEntityExist = 0x7239B21A38F536BA;
+		// (a fight goes on: those fighting the player given the fight again - its paths were the old place's -, the police
+		// left to the game's own dispatch while the player is wanted, those running from them running on)
+		constexpr uint64_t kIsPedInCombat = 0x4859F1FC66A6278E, kTaskCombatPed = 0xF166E48407BAC484, kTaskVehicleChase = 0x3C08A8E30363B353,
+		                   kIsPedFleeing = 0xBBCCE00B381F8482, kTaskSmartFleePed = 0x22B0D0E37CCB840D, kGetPedType = 0xFF059E1E4C01E63C,
+		                   kPlayerId = 0x4F8644AF03D0E0D6, kGetPlayerWantedLevel = 0xE28E54788CE8F12D;
+		// (what does not go with the shift: the rockets and grenades in flight - the game's objects -, the explosions and the
+		// fires - places of their own)
+		constexpr uint64_t kIsProjectileInArea = 0x5270A8FBC098C3F8, kIsExplosionInSphere = 0xAB0F816885B0E483, kGetNumberOfFiresInRange = 0x50CAD495A460B305;
 		constexpr int32_t kDrivingStyle = 786603; // (the traffic's own: stops for lights and cars, keeps to its lane)
+
+		// a person of the police, the SWAT or the army (the game's ped types 6, 27, 29)
+		bool Police(int32_t ped)
+		{
+			const int32_t type = natives::Invoke<int32_t>(kGetPedType, ped);
+			return type == 6 || type == 27 || type == 29;
+		}
 
 		uint64_t Rol(uint64_t v, unsigned n)
 		{
@@ -168,6 +185,64 @@ namespace loader::game::crossing
 			return missing;
 		}
 
+		// The traffic and people moved, still to be set on their way (nearest first): a driver wanders on at its speed, a
+		// person walks on; a mission's own, the dead and those gone left alone. SetOnTheirWay: those within `reach` m of the
+		// player (all: kAll), or as many as a frame's budget allows.
+		struct Retask
+		{
+			int32_t handle;
+			bool vehicle;
+		};
+		std::vector<Retask> g_retask;
+		constexpr float kNear = 60, kAll = 1e9f;
+		constexpr double kRetaskBudget = 1.5;
+
+		size_t SetOnTheirWay(float reach)
+		{
+			using natives::Invoke;
+			const auto t = Clock::now();
+			const int32_t player = Invoke<int32_t>(kPlayerPedId);
+			const auto p = Invoke<natives::ScrVector>(kGetEntityCoords, player, 1);
+			size_t done = 0, at = 0;
+			for (; at < g_retask.size(); ++at)
+			{
+				if (reach >= kAll ? std::chrono::duration<double, std::milli>(Clock::now() - t).count() > kRetaskBudget : false)
+					break;
+				const Retask& r = g_retask[at];
+				if (!Invoke<int32_t>(kDoesEntityExist, r.handle))
+					continue;
+				if (reach < kAll)
+				{
+					const auto q = Invoke<natives::ScrVector>(kGetEntityCoords, r.handle, 0);
+					if (std::hypot(q.x - p.x, q.y - p.y) > reach)
+						break;
+				}
+				if (Invoke<int32_t>(kIsEntityAMissionEntity, r.handle) || Invoke<int32_t>(kIsEntityDead, r.handle, 0))
+					continue;
+				const int32_t ped = r.vehicle ? Invoke<int32_t>(kGetPedInVehicleSeat, r.handle, -1, 0) : r.handle;
+				if (!ped || Invoke<int32_t>(kIsPedAPlayer, ped) || (r.vehicle && Invoke<int32_t>(kIsEntityAMissionEntity, ped)))
+					continue;
+				if (Police(ped) && Invoke<int32_t>(kGetPlayerWantedLevel, Invoke<int32_t>(kPlayerId)) > 0)
+					continue; // (the dispatch's own: it sends them on after the player)
+				if (Invoke<int32_t>(kIsPedInCombat, ped, player))
+				{
+					if (r.vehicle)
+						Invoke<void>(kTaskVehicleChase, ped, player);
+					else
+						Invoke<void>(kTaskCombatPed, ped, player, 0, 16);
+				}
+				else if (Invoke<int32_t>(kIsPedFleeing, ped))
+					Invoke<void>(kTaskSmartFleePed, ped, player, 300.0f, -1, 0, 0);
+				else if (r.vehicle)
+					Invoke<void>(kTaskVehicleDriveWander, ped, r.handle, std::max(Invoke<float>(kGetEntitySpeed, r.handle), 8.0f), kDrivingStyle);
+				else
+					Invoke<void>(kTaskWanderStandard, ped, 10.0f, 10);
+				++done;
+			}
+			g_retask.erase(g_retask.begin(), g_retask.begin() + static_cast<std::ptrdiff_t>(at));
+			return done;
+		}
+
 		// A place made ready ahead of the shift: everything round it asked for (the game's load scene, collision included)
 		// and its collision asked for every frame.
 		constexpr uint64_t kNewLoadSceneStartSphere = 0xACCFB4ACF53551B0, kIsNewLoadSceneLoaded = 0x01B8247A7A8B9AD1, kNewLoadSceneStop = 0xC197616D221FF4A4,
@@ -212,8 +287,25 @@ namespace loader::game::crossing
 		return scene && g_preload.missing == 0;
 	}
 
+	std::string Hazards(float x, float y, float z)
+	{
+		using natives::Invoke;
+		constexpr float kReach = 150, kFireReach = 80;
+		std::string out;
+		const auto say = [&](const std::string& s) { out += (out.empty() ? "" : ", ") + s; };
+		if (Invoke<int32_t>(kIsProjectileInArea, x - kReach, y - kReach, z - 100.0f, x + kReach, y + kReach, z + 100.0f, 0))
+			say("a rocket or grenade in flight");
+		if (Invoke<int32_t>(kIsExplosionInSphere, -1, x, y, z, kReach))
+			say("an explosion");
+		if (const int32_t fires = Invoke<int32_t>(kGetNumberOfFiresInRange, x, y, z, kFireReach); fires > 0)
+			say(std::format("{} fire(s)", fires));
+		return out;
+	}
+
 	void Tick()
 	{
+		if (!g_retask.empty())
+			SetOnTheirWay(kAll);
 		if (!g_preload.on)
 			return;
 		natives::Invoke<void>(kRequestCollisionAtCoord, g_preload.at[0], g_preload.at[1], g_preload.at[2]);
@@ -238,12 +330,20 @@ namespace loader::game::crossing
 		{
 			int32_t handle;
 			bool vehicle;
-			ScrVector velocity;
+			float p[3];
+			float distance;
 		};
 		std::vector<Mover> movers;
+		const auto add = [&](uintptr_t entity, bool vehicle) {
+			Mover m{guidOf(entity), vehicle};
+			if (!m.handle || !Copy(m.p, entity + 0x90, sizeof(m.p)))
+				return false;
+			m.distance = std::hypot(m.p[0] - at.x, m.p[1] - at.y);
+			movers.push_back(m);
+			return true;
+		};
 		for (const uintptr_t v : vehicleEntities)
-			if (const int32_t h = guidOf(v))
-				movers.push_back({h, true});
+			add(v, true);
 		const size_t vehicles = movers.size();
 		size_t riding = 0;
 		for (const uintptr_t p : pedEntities)
@@ -253,45 +353,33 @@ namespace loader::game::crossing
 				if (Invoke<int32_t>(kIsPedInAnyVehicle, h, 0))
 					++riding;
 				else
-					movers.push_back({h, false});
+					add(p, false);
 			}
 		const auto found = Clock::now();
-		for (Mover& m : movers)
+		// (each where it was - its matrix's place - plus the offset; its velocity again where it had one: the move stops it)
+		for (const Mover& m : movers)
 		{
-			m.velocity = Invoke<ScrVector>(kGetEntityVelocity, m.handle);
-			const auto p = Invoke<ScrVector>(kGetEntityCoords, m.handle, 0);
-			Invoke<void>(kSetEntityCoordsNoOffset, m.handle, p.x + dx, p.y + dy, p.z + dz, 0, 0, 0);
-			Invoke<void>(kSetEntityVelocity, m.handle, m.velocity.x, m.velocity.y, m.velocity.z);
+			const auto v = Invoke<ScrVector>(kGetEntityVelocity, m.handle);
+			Invoke<void>(kSetEntityCoordsNoOffset, m.handle, m.p[0] + dx, m.p[1] + dy, m.p[2] + dz, 0, 0, 0);
+			if (v.x * v.x + v.y * v.y + v.z * v.z > 0.0025f)
+				Invoke<void>(kSetEntityVelocity, m.handle, v.x, v.y, v.z);
 		}
 		Invoke<void>(kSetCamRelativeHeading, heading);
 		Invoke<void>(kSetCamRelativePitch, pitch, 1.0f);
 		const auto moved = Clock::now();
-		// on their way again from here: the drivers wandering on at their speed, the people walking on (a mission's own left
-		// to the mission)
-		size_t drivers = 0, walkers = 0;
+		// on their way again from here (their road nodes and routes were the old place's): the drivers wandering on at their
+		// speed, the people walking on - the nearest now, the rest over the next frames (a task given costs ~0.15 ms); a
+		// mission's own left to the mission
+		std::sort(movers.begin(), movers.end(), [](const Mover& a, const Mover& b) { return a.distance < b.distance; });
+		g_retask.clear();
 		for (const Mover& m : movers)
-		{
-			if (Invoke<int32_t>(kIsEntityAMissionEntity, m.handle) || Invoke<int32_t>(kIsEntityDead, m.handle, 0))
-				continue;
-			if (m.vehicle)
-			{
-				const int32_t driver = Invoke<int32_t>(kGetPedInVehicleSeat, m.handle, -1, 0);
-				if (driver && !Invoke<int32_t>(kIsPedAPlayer, driver) && !Invoke<int32_t>(kIsEntityAMissionEntity, driver))
-				{
-					Invoke<void>(kTaskVehicleDriveWander, driver, m.handle, std::max(Invoke<float>(kGetEntitySpeed, m.handle), 8.0f), kDrivingStyle);
-					++drivers;
-				}
-			}
-			else if (!Invoke<int32_t>(kIsPedAPlayer, m.handle))
-			{
-				Invoke<void>(kTaskWanderStandard, m.handle, 10.0f, 10);
-				++walkers;
-			}
-		}
+			if (m.handle != player)
+				g_retask.push_back({m.handle, m.vehicle});
+		const size_t now = SetOnTheirWay(kNear);
 		const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
 		const auto done = Clock::now();
-		return std::format("{} vehicles, {} people on foot ({} riding) moved by ({:.0f}, {:.0f}); {} drivers and {} walkers set on again; found {:.2f} ms, moved "
-		                   "{:.2f} ms, tasks {:.2f} ms (all {:.2f} ms)",
-		    vehicles, movers.size() - vehicles, riding, dx, dy, drivers, walkers, ms(t, found), ms(found, moved), ms(moved, done), ms(t, done));
+		return std::format("{} vehicles, {} people on foot ({} riding) moved by ({:.0f}, {:.0f}); {} set on their way now, {} over the next frames; found "
+		                   "{:.2f} ms, moved {:.2f} ms, tasks {:.2f} ms (all {:.2f} ms)",
+		    vehicles, movers.size() - vehicles, riding, dx, dy, now, g_retask.size(), ms(t, found), ms(found, moved), ms(moved, done), ms(t, done));
 	}
 }

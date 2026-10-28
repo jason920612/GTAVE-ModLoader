@@ -121,21 +121,41 @@ namespace loader::debug::profile
 			std::atomic<bool> running = false;
 			std::vector<HANDLE> threads;
 			std::vector<DWORD> ids;
+			std::vector<uintptr_t> stackEnds; // (each thread's stack's end: its TEB's StackBase, 0 not known)
 			std::thread sampler;
 		};
 		std::unique_ptr<Trace> g_trace;
 
-		// (the stack's top copied while the thread is stopped: nothing that takes a lock is called then - a thread stopped
-		// holding the function tables' lock would have held us too)
-		constexpr size_t kStackCopy = 32 * 1024;
-		size_t CopyStack(uint8_t* to, uintptr_t from)
+		// a thread's stack's end (its TEB's StackBase, +8: ThreadBasicInformation's TebBaseAddress), 0 if not known
+		uintptr_t StackEnd(HANDLE thread)
 		{
+			struct BasicInformation
+			{
+				LONG exitStatus;
+				void* teb;
+				void* clientId[2];
+				ULONG_PTR affinity;
+				LONG priority, basePriority;
+			} info{};
+			using QueryFn = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
+			static const auto query = reinterpret_cast<QueryFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+			if (!query || query(thread, 0, &info, sizeof(info), nullptr) < 0 || !info.teb)
+				return 0;
+			return *reinterpret_cast<const uintptr_t*>(static_cast<const uint8_t*>(info.teb) + 8);
+		}
+
+		// (the stack's top copied while the thread is stopped: nothing that takes a lock is called then - a thread stopped
+		// holding the function tables' lock would have held us too; not past the stack's end - the page after it is not there)
+		constexpr size_t kStackCopy = 32 * 1024;
+		size_t CopyStack(uint8_t* to, uintptr_t from, uintptr_t end)
+		{
+			const size_t most = end > from ? std::min<size_t>(kStackCopy, end - from) : kStackCopy;
 			size_t got = 0;
 			__try
 			{
-				for (; got < kStackCopy; got += 4096)
+				for (; got < most; got += 4096)
 				{
-					const size_t chunk = std::min<size_t>(4096 - (from + got) % 4096, kStackCopy - got);
+					const size_t chunk = std::min<size_t>(4096 - (from + got) % 4096, most - got);
 					std::memcpy(to + got, reinterpret_cast<const void*>(from + got), chunk);
 					if (chunk != 4096)
 						return got + chunk;
@@ -198,7 +218,7 @@ namespace loader::debug::profile
 			c.ContextFlags = CONTEXT_FULL;
 			const bool got = GetThreadContext(t->threads[k], &c) != 0;
 			const uintptr_t top = got ? c.Rsp : 0;
-			const size_t size = got ? CopyStack(copy.data(), top) : 0;
+			const size_t size = got ? CopyStack(copy.data(), top, k < t->stackEnds.size() ? t->stackEnds[k] : 0) : 0;
 			ResumeThread(t->threads[k]);
 			if (!got)
 				return;
@@ -234,7 +254,7 @@ namespace loader::debug::profile
 				g_trace->ids.push_back(id);
 		for (const DWORD id : g_trace->ids)
 			if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id))
-				g_trace->threads.push_back(h);
+				g_trace->threads.push_back(h), g_trace->stackEnds.push_back(StackEnd(h));
 		g_trace->running = true;
 		g_trace->sampler = std::thread(TraceThread, g_trace.get());
 	}

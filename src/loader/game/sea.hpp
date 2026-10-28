@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 
 // The sea round the world builder's new land (research/phase0.md §61.20). Out past the game's water grid (water.xml's
 // quads in 500 m blocks, x -4000..4500, y -4000..8000) the game takes everywhere for the open sea: its level queries and
@@ -16,4 +17,10 @@ namespace loader::game::sea
 
 	// Game thread, story mode, each tick.
 	void Tick();
+
+	// Game thread: a land about to be crossed into without a cut (game/sectors) - its water mask read and its rectangles
+	// worked out on a thread of their own (60-80 ms of the game thread's when it was first there); then, the frame the land
+	// there changes, which lands are there taken again at once (not up to 250 ms later).
+	void Prepare(const std::string& land);
+	void Refresh();
 }

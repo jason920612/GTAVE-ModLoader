@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -218,6 +220,8 @@ namespace loader::game::sea
 					land.farRects.push_back(Cover(land, fi * kFarBlock, fj * kFarBlock, kFarBlock, kFar));
 					farCount += land.farRects.back().size();
 				}
+			// (set last: the drawing threads and the level queries look at it first - read on a thread of its own too)
+			std::atomic_thread_fence(std::memory_order_release);
 			land.water = true;
 			log::Info("sea: land {}: water mask {} x {} cells of {:.0f} m, {} level(s); {} / {} / {} rectangles near / further / far", land.name, land.nx,
 			    land.ny, land.cell, land.levels.size(), nearCount, middleCount, farCount);
@@ -684,6 +688,28 @@ namespace loader::game::sea
 				land.waterFile.clear();
 		ReadThere();
 		return g_patched;
+	}
+
+	void Prepare(const std::string& name)
+	{
+		for (Land& land : g_lands)
+			if (land.name == name && !land.read && !land.waterFile.empty())
+			{
+				// (the lands are all read at the start: this one stays where it is)
+				land.read = true;
+				Land* l = &land;
+				std::thread([l] {
+					if (!ReadWater(*l, l->waterFile))
+						log::Warn("sea: land {}: no usable water mask ({}); the sea stays under it", l->name, l->waterFile.filename().string());
+				}).detach();
+			}
+	}
+
+	void Refresh()
+	{
+		for (Land& land : g_lands)
+			land.there = !sectors::Dormant(land.name);
+		g_next = {};
 	}
 
 	void Tick()
