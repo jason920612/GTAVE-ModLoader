@@ -359,6 +359,7 @@ namespace loader::core
 		game::playarea::Install();
 		game::sectors::Install();
 		game::content::Install();
+		game::seamless::Install();
 		game::sea::Install();
 		game::minimap::Install();
 		if (config::Get().ue5Renderer)

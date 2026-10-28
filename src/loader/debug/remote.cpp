@@ -895,10 +895,31 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "modules")
+			{
+				// modules: the streaming engine's modules (+0x42F9E48: +0x1A0 by range, 16 bytes each - the module, the end of
+				// its range -, +0x1A8 how many): vtable, first object, range end, name (a store's +0x18 when +0x20 is set)
+				const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+				const auto* streaming = reinterpret_cast<const uint8_t*>(base + 0x42F9E48);
+				const auto* ranges = *reinterpret_cast<const uint8_t* const*>(streaming + 0x1A0);
+				const uint16_t count = *reinterpret_cast<const uint16_t*>(streaming + 0x1A8);
+				std::string out = "ok";
+				for (uint16_t m = 0; ranges && m < count; ++m)
+				{
+					const auto* module = *reinterpret_cast<const uint8_t* const*>(ranges + m * 16);
+					const uint32_t end = *reinterpret_cast<const uint32_t*>(ranges + m * 16 + 8);
+					if (!module)
+						continue;
+					const char* name = *reinterpret_cast<const uint16_t*>(module + 0x20) ? *reinterpret_cast<const char* const*>(module + 0x18) : "";
+					out += std::format(" | {} vt {:#x} first {} end {} size {}", name ? name : "", *reinterpret_cast<const uintptr_t*>(module) - base,
+					    *reinterpret_cast<const uint32_t*>(module + 8), end, *reinterpret_cast<const int32_t*>(module + 0x50));
+				}
+				return out;
+			}
 			if (cmd == "seamless" || cmd == "frames")
 			{
-				// seamless begin <land> | seamless status | frames start|stop: research (game/seamless.hpp) - a land's maps
-				// registered over frames, the frames' times
+				// seamless begin <land> <there|-> x0 y0 x1 y1 | seamless status | frames start|stop: research
+				// (game/seamless.hpp) - a land's overlay and maps registered over frames, only its band on, the frames' times
 				std::string what, land, there;
 				float band[4]{};
 				in >> what >> land >> there >> band[0] >> band[1] >> band[2] >> band[3];
@@ -910,6 +931,11 @@ namespace loader::debug::remote
 					{
 						const std::string error = game::seamless::Begin(land, there == "-" ? std::string() : there, band);
 						return error.empty() ? std::string("begun") : error;
+					}
+					if (what == "profile")
+					{
+						// (seamless profile <from hex> <to hex>: the data files' enabling sampled, 0 0 not)
+						return game::seamless::Profile(std::strtoull(land.c_str(), nullptr, 16), std::strtoull(there.c_str(), nullptr, 16));
 					}
 					return game::seamless::Status();
 				};
