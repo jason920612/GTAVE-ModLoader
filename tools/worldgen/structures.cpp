@@ -566,14 +566,17 @@ namespace worldgen::structures
 			for (size_t e = 0; e < ring.size() && !scanned; ++e)
 				scanned = scan->Count(ring[e][0], ring[e][1]) > 0;
 		}
-		const bool measure = scanned && !b.planned && nx * ny < 4000000;
+		// (a building site's shape not measured: the scan is years older than the map - a half-built block's returns had made
+		// a roof of spikes and shards, the reviewers' "broken building mesh"; it gets the map's height, flat)
+		const bool site = b.kind == "construction";
+		const bool measure = scanned && !b.planned && !site && nx * ny < 4000000;
 		// (no measurement: a house's hip roof - each cell's height up from the nearest wall)
 		const double area = std::fabs(polygon::Area(ring));
 		const bool houseKind = b.kind == "house" || b.kind == "detached" || b.kind == "residential" || b.kind == "semidetached_house" ||
 		                       b.kind == "bungalow" || b.kind == "terrace" || b.kind == "cabin" || b.kind == "farm" || b.kind == "static_caravan" ||
 		                       ((b.kind == "yes" || b.kind.empty()) && area >= 50 && area <= 350 && !(o.attached && o.attached->contains(&b)));
 		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000;
-		bool hip = !measure && !b.planned && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
+		bool hip = !measure && !b.planned && !site && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
 		// (a house the scan measured gets the same clean roof, at the eaves and ridge it measured: its lumpy surface with the
 		// aerial picture on it was a white blanket in the street pictures' comparison, not a roof)
 		const bool measuredHouse = measure && !b.planned && houseKind && area <= 700 && b.height <= 12 && nx * ny < 400000;
@@ -883,7 +886,11 @@ namespace worldgen::structures
 			for (int ti = 0; ti < static_cast<int>(tin.tris.size()); ++ti)
 				push(ti);
 			std::vector<int> changed;
-			while (!heap.empty() && tin.tris.size() < o.maxTriangles)
+			// (a big roof more triangles - one every 2.5 m² over 800 -: a set-back tower's terraces had run out of them, their
+			// steps drawn as slopes metres wide with the walls' glass on them, the reviewers' "glass wedge floating halfway up
+			// the facade")
+			const size_t cap = std::max(o.maxTriangles, static_cast<size_t>(area / 2.5));
+			while (!heap.empty() && tin.tris.size() < cap)
 			{
 				const auto [e, ti, c, stamp] = heap.top();
 				heap.pop();

@@ -297,6 +297,29 @@ namespace worldgen::facades
 						Window(c, x + 0.04f, y, x + 1.5f - 0.04f, y + 1.55f, 0.05f, {150, 155, 160}, {75, 95, 115}, seed * 37 + f * 8 + b, false);
 					}
 			}, k == 0, 5);
+		// stucco and block offices, schools, clinics: floors of 3.4 m, a window 1.2 m wide every 3 m with a sill under it and a
+		// shallow band at each floor line (the reviewers: "every office, shop and government building one template of cream
+		// walls with continuous blue ribbon windows" - most of the street pictures' low ones have windows of their own)
+		const std::pair<const char*, Rgb> punched[] = {{"tan", {214, 200, 176}}, {"white", {232, 230, 222}}, {"grey", {192, 192, 188}}, {"cream", {228, 216, 190}}};
+		for (size_t k = 0; k < std::size(punched); ++k)
+			add(Kind::Concrete, "punched", std::string("punched_") + punched[k].first, 12, 13.6f, [&](Canvas& c) {
+				Wall(c, punched[k].second, ++seed, 0.07f, 0.1f);
+				const Rgb trim = Mix(punched[k].second, {250, 250, 246}, 0.4f);
+				for (int f = 0; f < 4; ++f)
+				{
+					const float y = f * 3.4f;
+					// (the floor line's band, a little proud)
+					c.Fill(0, y + 3.2f, c.mw, y + 3.4f, Scale(punched[k].second, 0.94f), 0.35f, 0.08f);
+					for (int b = 0; b < 4; ++b)
+					{
+						const float x = b * 3.0f + 0.9f, wy = y + 1.0f;
+						Window(c, x, wy, x + 1.2f, wy + 1.6f, 0.06f, {236, 236, 232}, {70, 88, 106}, seed * 41 + f * 4 + b, true);
+						// the sill and the shadow under it
+						c.Fill(x - 0.1f, wy - 0.12f, x + 1.3f, wy, trim, 0.55f, 0.1f);
+						c.Rect(x - 0.1f, wy - 0.3f, x + 1.3f, wy - 0.12f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.82f + 0.18f * v); });
+					}
+				}
+			}, k == 0, 5);
 		// parking garages: decks of 3 m - a concrete spandrel 1.1 m high, the open deck over it dark to the next slab with a
 		// ceiling light every 3 m -, columns every 6 m (the street pictures' garages had come out as offices with ribbon
 		// windows)
@@ -515,6 +538,9 @@ namespace worldgen::facades
 			// (siding weighted as the street pictures show the colours: white most, cream and light grey next - picked evenly
 			// the reviewers had seen tan siding where most houses are white or pale)
 			const auto weight = [&](const Style& st) {
+				// (block and stucco walls with windows of their own twice as often as ribbons of windows)
+				if (k == Kind::Concrete)
+					return st.diffuse.find("punched_") != std::string::npos ? 2 : 1;
 				if (k != Kind::Siding)
 					return 1;
 				return st.diffuse.ends_with("siding_white") ? 6 : st.diffuse.ends_with("siding_cream") || st.diffuse.ends_with("siding_grey") ? 3

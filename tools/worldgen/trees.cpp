@@ -119,6 +119,13 @@ namespace worldgen::trees
 				const auto at = [&](int i, int j) { return i < 0 || j < 0 || i >= n || j >= n ? 0.0f : v[static_cast<size_t>(j) * n + i]; };
 				const int inner0 = static_cast<int>(margin / cell), inner1 = n - inner0;
 				const int step = std::max(1, static_cast<int>(std::lround(bushStep / cell)));
+				struct Top
+				{
+					int i, j;
+					float x, y, h, radius;
+					uint32_t seed;
+				};
+				std::vector<Top> tops;
 				for (int j = inner0; j < inner1; ++j)
 					for (int i = inner0; i < inner1; ++i)
 					{
@@ -137,8 +144,10 @@ namespace worldgen::trees
 							bush(x, y, h, seed);
 							continue;
 						}
-						// a peak: the highest within a reach growing with the height
-						const int reach = static_cast<int>(std::clamp(0.6f + 0.1f * h, 1.0f, 3.5f) / cell);
+						// a peak: the highest within a reach growing with the height (0.8 m and a quarter of the height, at most 6 m:
+						// 0.6 m and a tenth had cut a big oak's crown into a peak every 2-3 m - 144000 trees where the aerial
+						// pictures see 36000, the reviewers' "rows of small identical trees")
+						const int reach = static_cast<int>(std::clamp(0.8f + 0.25f * h, 1.2f, 6.0f) / cell);
 						bool peak = true;
 						for (int dj = -reach; dj <= reach && peak; ++dj)
 							for (int di = -reach; di <= reach && peak; ++di)
@@ -153,24 +162,57 @@ namespace worldgen::trees
 							}
 						if (!peak || !open(x, y))
 							continue;
-						// the crown: out in 8 directions until under half the height or rising again (the next crown)
+						// the crown: out in 8 directions until under half the height or rising again past a seventh of it (the
+						// next crown: a crown's own lumps go on)
 						float radius = 0;
 						for (int d = 0; d < 8; ++d)
 						{
 							const float a = d * kPi / 4, ca = std::cos(a), sa = std::sin(a);
 							float last = h, r = 0;
-							for (float s = cell; s <= 12; s += cell)
+							for (float s = cell; s <= 16; s += cell)
 							{
 								const float o = at(i + static_cast<int>(std::lround(ca * s / cell)), j + static_cast<int>(std::lround(sa * s / cell)));
-								if (o < 0.5f * h || o > last + 0.3f)
+								if (o < 0.5f * h || o > last + std::max(0.3f, 0.15f * h))
 									break;
 								last = std::min(last, o);
 								r = s;
 							}
 							radius += r / 8;
 						}
-						tree(x, y, h, radius, seed);
+						tops.push_back({i, j, x, y, h, radius, seed});
 					}
+				// one crown, one tree: a top whose canopy runs on to a taller one's without a deep dip - the heights along the way
+				// at least three quarters of the lower, the two at most 1.1 times the taller's height apart - is part of that
+				// tree's crown, its reach the taller tree's
+				std::sort(tops.begin(), tops.end(), [](const Top& a, const Top& b) { return a.h > b.h; });
+				std::vector<Top> kept;
+				for (const Top& t : tops)
+				{
+					bool merged = false;
+					for (Top& k : kept)
+					{
+						const float d = std::hypot(k.x - t.x, k.y - t.y);
+						if (d > std::min(16.0f, 1.1f * k.h))
+							continue;
+						const int steps = std::max(2, static_cast<int>(d / cell) + 1);
+						float lowest = 1e30f;
+						for (int q = 0; q <= steps; ++q)
+						{
+							const float f = static_cast<float>(q) / steps;
+							lowest = std::min(lowest, at(static_cast<int>(std::lround(t.i + (k.i - t.i) * f)), static_cast<int>(std::lround(t.j + (k.j - t.j) * f))));
+						}
+						if (lowest >= 0.75f * t.h)
+						{
+							k.radius = std::min(16.0f, std::max(k.radius, d + 0.6f * t.radius));
+							merged = true;
+							break;
+						}
+					}
+					if (!merged)
+						kept.push_back(t);
+				}
+				for (const Top& t : kept)
+					tree(t.x, t.y, t.h, t.radius, t.seed);
 			}
 		}
 	}
@@ -446,10 +488,14 @@ namespace worldgen::trees
 				// (a town's small trees - under 8 m -: half the leafless ones in the pictures' winter crape myrtles, the rest young
 				// laurel and water oaks - shrunk live oaks had stood in rows of small umbrellas; every one a crape myrtle had been
 				// "pink crape myrtles everywhere", a third of them at random missed a park's row of them)
+				// (an evergreen crown narrower than 1.1 times its height a laurel or water oak - rounder, taller -, not a live
+				// oak squeezed to it: the live oaks, as wide as 1.3-1.8 times their height, squeezed to 0.6 of their spread had
+				// stood as "small identical Y-trunk trees" in the reviewers' eyes, the pictures' crowns 0.9-1.1 times the
+				// height across)
 				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
 				const bool magnolia = town && h >= 7 && h <= 16 && width < 0.8f * h && seed % 10 == 0;
 				const int kind = town && h < 8 ? (t.kind == 1 && seed % 2 == 0 ? 3 : 2)
-				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : 0)
+				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : width >= 1.1f * h ? 0 : 2)
 				                               : (town && h <= 9 && seed % 5 == 0 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
@@ -464,7 +510,8 @@ namespace worldgen::trees
 					p.heading = static_cast<float>((seed >> 8) % 360) * kPi / 180;
 					p.lodDist = 600;
 					p.scaleZ = std::clamp(h / o->height, 0.4f, 1.6f);
-					p.scale = std::clamp(std::clamp(width / o->width, 0.4f, 1.8f), p.scaleZ * 0.6f, p.scaleZ * 1.7f);
+					// (a live oak keeps its spread: never under 0.8 of it)
+					p.scale = std::clamp(std::clamp(width / o->width, 0.4f, 1.8f), p.scaleZ * (kind == 0 ? 0.8f : 0.6f), p.scaleZ * 1.7f);
 					out.push_back(p);
 					++stats.broadleaf;
 					continue;

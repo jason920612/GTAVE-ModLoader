@@ -696,8 +696,14 @@ namespace worldgen::roads
 						const float g = best - h - o.HalfWidth();
 						if (g > kMedian)
 							continue;
-						gap[side][k] = std::max(0.0f, g);
-						if (planted && g > 0.1f)
+						// (carriageways that touch or overlap - North Macomb Street's two, 10 m apart with three and two lanes and bike
+						// lanes, 1.75 m into each other -: a paved median of 12 cm, no kerb and sidewalk on that side - else each drew
+						// its inner kerb inside the other's lanes, the reviewers' "broken, twisted raised kerb pieces")
+						gap[side][k] = std::max(0.12f, g);
+						// (a gap under 2 m never a planted median: the aerial pictures' green there - a tree's crown over the road, the
+						// verge beside - had made a strip of kerbs 1 m wide, twisting with the carriageways, down the middle of North
+						// Macomb Street, the reviewers' "broken raised kerb pieces lying in the carriageway")
+						if (planted && g > 2.0f)
 						{
 							const float mid = h + g / 2;
 							green[side][k] = planted(q[0] + u[0] * mid, q[1] + u[1] * mid);

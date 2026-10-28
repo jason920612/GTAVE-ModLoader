@@ -220,6 +220,10 @@ namespace worldgen::flora
 			Random rnd(seed);
 			Model out;
 			const float H = rnd.Range(12, 16), W = H * rnd.Range(1.3f, 1.8f), fork = rnd.Range(2.4f, 3.6f);
+			// (Spanish moss on some: a quarter of the live oaks none, a quarter a little, the rest hung with it - every tree's
+			// had been "stiff pale strips on every tree, residential ones that have none too")
+			const uint32_t mossHash = seed * 2654435761u;
+			const float moss = (mossHash >> 13) % 4 == 0 ? 0.0f : (mossHash >> 13) % 4 == 1 ? 0.2f : 0.45f;
 			std::vector<std::pair<Limb, Texture>> limbs;
 			std::vector<Leaf> leaves;
 			const P3 lean{rnd.Range(-0.12f, 0.12f), rnd.Range(-0.12f, 0.12f), 1};
@@ -256,10 +260,10 @@ namespace worldgen::flora
 					const P3 at = At(limb, t);
 					Cluster(leaves, at, middle, 16, 1.5f, rnd.Range(0.62f, 0.88f), kOakLeaves, rnd, 0.5f);
 					// (moss under the limb)
-					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.55f)
+					if (t > 0.35f && t < 0.92f && rnd.Unit() < moss)
 					{
 						const P3 drop{at[0] + rnd.Range(-0.4f, 0.4f), at[1] + rnd.Range(-0.4f, 0.4f), at[2] - RadiusAt(limb, t)};
-						const float len2 = rnd.Range(0.9f, 2.0f), wd = rnd.Range(0.3f, 0.5f);
+						const float len2 = rnd.Range(0.6f, 2.2f), wd = rnd.Range(0.2f, 0.36f);
 						const float spin = rnd.Range(0, kPi);
 						const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 						for (int c = 0; c < 2; ++c)
@@ -283,14 +287,14 @@ namespace worldgen::flora
 					{
 						const P3 at = At(br, s);
 						Cluster(leaves, at, middle, 12, 1.2f, rnd.Range(0.6f, 0.85f), kOakLeaves, rnd, 0.4f);
-						if (s < 0.85f && rnd.Unit() < 0.4f)
+						if (s < 0.85f && rnd.Unit() < moss * 0.75f)
 						{
 							const P3 drop{at[0], at[1], at[2] - 0.05f};
 							const float spin = rnd.Range(0, kPi);
 							const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 							for (int c = 0; c < 2; ++c)
-								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.25f, 0.45f),
-								    rnd.Range(0.7f, 1.6f), static_cast<int>(rnd.Next() % 4), kMoss, true});
+								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.18f, 0.32f),
+								    rnd.Range(0.5f, 1.8f), static_cast<int>(rnd.Next() % 4), kMoss, true});
 						}
 					}
 				}
@@ -369,8 +373,9 @@ namespace worldgen::flora
 			return out;
 		}
 
-		// A laurel or water oak: a trunk to 3-4.5 m, three or four limbs climbing at 30-50 degrees and forking, a round crown
-		// about as wide as two thirds of its height.
+		// A laurel or water oak: a trunk to 3-4.5 m going on up as a leader through the crown, four or five limbs climbing at
+		// 30-50 degrees out of it at different heights and forking, a round crown about as wide as two thirds of its height
+		// (three limbs from one point had read as "one generic Y-forked tree" to every reviewer).
 		Model Oak(uint32_t seed)
 		{
 			Random rnd(seed);
@@ -382,15 +387,22 @@ namespace worldgen::flora
 			    rnd, 0.05f);
 			limbs.push_back({trunk, kBarkOak});
 			const P3 top = trunk.p.back(), middle{top[0], top[1], fork + (H - fork) * 0.5f};
-			const int n = 3 + static_cast<int>(rnd.Next() % 2);
+			// (the leader: on up through the crown, thinning)
+			const Limb leader = Grow(top, {rnd.Range(-0.08f, 0.08f), rnd.Range(-0.08f, 0.08f), 1}, {0, 0, 1}, 0.06f, (H - fork) * 0.7f, 5, 0.3f, 0.06f, rnd, 0.08f);
+			limbs.push_back({leader, kBarkOak});
+			for (float t = 0.5f; t <= 1.0f; t += 0.1f)
+				Cluster(leaves, At(leader, t), middle, 9, 1.2f, rnd.Range(0.7f, 1.0f), kOakLeaves, rnd, 0.3f);
+			const int n = 4 + static_cast<int>(rnd.Next() % 2);
 			const float az0 = rnd.Range(0, 2 * kPi);
 			for (int i = 0; i < n; ++i)
 			{
 				const float az = az0 + 2 * kPi * i / n + rnd.Range(-0.3f, 0.3f);
-				const float tilt = rnd.Range(0.55f, 0.95f);
+				const float tilt = rnd.Range(0.75f, 1.2f);
 				const P3 dir{std::cos(az) * tilt, std::sin(az) * tilt, 1};
-				const float len = std::hypot(W * 0.4f, H - fork) * rnd.Range(0.75f, 0.95f);
-				Limb limb = Grow(top, dir, {std::cos(az), std::sin(az), 0.2f}, 0.1f, len, 6, 0.24f, 0.05f, rnd, 0.1f);
+				const float len = std::hypot(W * 0.42f, H - fork) * rnd.Range(0.7f, 0.9f);
+				// (each out of the leader at its own height: no fork of them all at one point)
+				const P3 from = At(leader, rnd.Range(0.0f, 0.35f));
+				Limb limb = Grow(from, dir, {std::cos(az), std::sin(az), 0.2f}, 0.1f, len, 6, 0.22f, 0.05f, rnd, 0.1f);
 				limbs.push_back({limb, kBarkOak});
 				for (int k = 0; k < 3; ++k)
 				{
@@ -666,7 +678,7 @@ namespace worldgen::flora
 					const float a = rnd.Range(0, 2 * kPi), d = lobe[2] * std::sqrt(rnd.Unit());
 					const float x = lobe[0] + std::cos(a) * d, y = lobe[1] + std::sin(a) * d * 0.9f;
 					const float lit = 0.65f + 0.4f * (1 - (y - y0) / 256.0f) * rnd.Range(0.6f, 1.0f);
-					const std::array<float, 3> base = t == kOakLeaves ? std::array<float, 3>{rnd.Range(30, 46), rnd.Range(44, 62), rnd.Range(26, 36)}
+					const std::array<float, 3> base = t == kOakLeaves ? std::array<float, 3>{rnd.Range(26, 40), rnd.Range(38, 54), rnd.Range(22, 32)}
 					                                                  : std::array<float, 3>{rnd.Range(46, 62), rnd.Range(70, 88), rnd.Range(34, 46)};
 					Ellipse(im, x, y, rnd.Range(5.5f, 9.5f), rnd.Range(3.0f, 4.6f), rnd.Range(0, kPi), Shade(base, lit), x0, y0, x1, y1);
 				}

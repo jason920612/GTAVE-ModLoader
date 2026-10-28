@@ -1476,7 +1476,7 @@ namespace worldgen::build
 		// what the aerial pictures show (tools/worldgen/photo.py, research/phase0.md §63): every tree, each metre's cover,
 		// each 4 m cell's ground colour - the trees and the ground then as they are there
 		std::vector<trees::Seen> photoTrees;
-		raster::Grid<uint8_t> photoClass;
+		raster::Grid<uint8_t> photoClass, canopySeen;
 		raster::Grid<std::array<uint8_t, 4>> photoCover;
 		if (!o.photo.empty())
 		{
@@ -1486,6 +1486,17 @@ namespace worldgen::build
 			// (the map's car parks and paved areas paved, whatever the pictures make of them - a stained concrete lot came out
 			// as sand, a lot under trees as their lawn: Tallahassee maps 1600 of them; where the pictures saw the trees'
 			// canopy over one, the colour of asphalt)
+			// (where the pictures see canopy, every 2 m - before the car parks' paving goes over it: the scan's trees are checked
+			// against it below)
+			canopySeen.Init(photoClass.x0, photoClass.y0, photoClass.x0 + photoClass.nx * photoClass.cell, photoClass.y0 + photoClass.ny * photoClass.cell, 2.0f, 0);
+			for (int j = 0; j < photoClass.ny; ++j)
+				for (int i = 0; i < photoClass.nx; ++i)
+					if (photoClass.At(i, j) == 2)
+					{
+						const auto c = canopySeen.Cell({photoClass.x0 + (i + 0.5f) * photoClass.cell, photoClass.y0 + (j + 0.5f) * photoClass.cell});
+						if (canopySeen.In(c[0], c[1]))
+							canopySeen.At(c[0], c[1]) = 1;
+					}
 			raster::Grid<uint8_t> paved;
 			paved.x0 = photoClass.x0, paved.y0 = photoClass.y0, paved.cell = photoClass.cell, paved.nx = photoClass.nx, paved.ny = photoClass.ny;
 			paved.v.assign(photoClass.v.size(), 0);
@@ -2722,7 +2733,8 @@ namespace worldgen::build
 		std::vector<int> shapeStyle, shapeRoof; // (shapeRoof: a pitched roof's covering, kRoofCoverings; -1 flat)
 		std::vector<Porch> shapePorch;          // (a house's front porch, AddPorch)
 		std::vector<P2> shapeCentre;
-		// (north Florida's trees of our own - flora.hpp -: four of each kind, made here, written with the textures below)
+		// (north Florida's trees of our own - flora.hpp -: eight of each kind, made here, written with the textures below - four
+		// had shown as the same tree again and again)
 		trees::OwnTrees ownTrees;
 		std::vector<std::pair<std::string, flora::Model>> floraModels;
 		std::unordered_map<uint32_t, std::pair<float, float>> floraTrunk; // (by archetype: the trunk's radius, its collision's height)
@@ -2730,7 +2742,7 @@ namespace worldgen::build
 		// (as far south as 27 N - central Florida's live oaks and pines; the south's palms, figs and mahoganies stay the game's)
 		if (photographed && w.projection.lat0 >= 27.0)
 			for (int s = 0; s < flora::kSpecies; ++s)
-				for (int k = 0; k < 4; ++k)
+				for (int k = 0; k < 8; ++k)
 				{
 					const auto species = static_cast<flora::Species>(s);
 					const std::string name = std::format("{}_tree_{}_{}", o.name, s, k);
@@ -3245,10 +3257,23 @@ namespace worldgen::build
 											best = dd, t.kind = q->kind;
 						kinds += best < 4;
 					}
+					// (a tree the scan measured that the newer aerial pictures no longer show - no canopy within 3 m of it: cut
+					// down since, a building or a lawn there now - left out: a parking garage's lawn had a row of the scan's trees)
+					size_t gone = 0;
+					if (!canopySeen.v.empty())
+						std::erase_if(measured, [&](const trees::Seen& t) {
+							for (float dy = -3; dy <= 3; dy += 2)
+								for (float dx = -3; dx <= 3; dx += 2)
+									if (const auto c = canopySeen.Cell({t.x + dx, t.y + dy}); canopySeen.In(c[0], c[1]) && canopySeen.At(c[0], c[1]))
+										return false;
+							++gone;
+							return true;
+						});
 					const size_t before = photoTrees.size();
 					std::erase_if(photoTrees, [&](const trees::Seen& t) { return scan.Count(t.x, t.y) > 0; });
-					std::printf("trees: %zu the scan measured (%zu of the pictures' kind), in place of %zu of the pictures'\n", measured.size(), kinds,
-					    before - photoTrees.size());
+					std::printf("trees: %zu the scan measured (%zu of the pictures' kind, %zu the pictures no longer show left out), in place of %zu of "
+					            "the pictures'\n",
+					    measured.size(), kinds, gone, before - photoTrees.size());
 					photoTrees.insert(photoTrees.end(), measured.begin(), measured.end());
 				}
 				// (every tree the aerial pictures show, at its height and crown - a crown over a road shrunk to the room there,
@@ -3900,10 +3925,17 @@ namespace worldgen::build
 				// traffic, six in ten taken; none round a junction's corners and its crossing (its corner reach and 6 m on), nor
 				// in the 40 m a street takes to change into another (a taper)
 				size_t kerbside = 0;
+				// (and now and then a car by a town's residential street's kerb without a parking lane - a slot every 8 m, one in
+				// twenty taken, its middle 1.05 m from the kerb: the street pictures have a few along most of them, the
+				// reviewers missed them on eight of twelve views; few, for the traffic's sake)
 				for (size_t ei = 0; ei < network.edges.size(); ++ei)
 				{
 					const auto& e = network.edges[ei];
-					if (e.parking <= 0 || e.bridge || e.points.size() < 2 || e.z.size() != e.points.size())
+					if (e.bridge || e.points.size() < 2 || e.z.size() != e.points.size())
+						continue;
+					const bool lane = e.parking > 0;
+					const bool sparse = !lane && (e.kind == "residential" || e.kind == "living_street") && (e.sidewalks || e.curb) && e.forward && e.backward;
+					if (!lane && !sparse)
 						continue;
 					std::vector<float> along(e.points.size(), 0.0f);
 					for (size_t k = 1; k < e.points.size(); ++k)
@@ -3912,15 +3944,17 @@ namespace worldgen::build
 						const size_t streets = network.vertices[static_cast<size_t>(v)].edges.size();
 						return streets >= 3 ? roads::CornerReach(network, v) + 6.0f : streets == 2 ? 40.0f : 3.0f;
 					};
-					const float from = clearOf(e.a), to = along.back() - clearOf(e.b), off = e.HalfWidth() - e.parking / 2;
+					const float from = clearOf(e.a), to = along.back() - clearOf(e.b), off = lane ? e.HalfWidth() - e.parking / 2 : e.HalfWidth() - 1.05f;
+					const float step = lane ? 6.6f : 8.0f;
+					const uint32_t share = lane ? 60 : 5;
 					uint32_t seed = static_cast<uint32_t>(e.id) * 0x9E3779B1u ^ static_cast<uint32_t>(ei) * 0x85EBCA6Bu;
 					for (const float side : {-1.0f, 1.0f}) // (right of a -> b, then left)
 					{
 						size_t k = 0;
-						for (float at = from + 3.3f; at <= to - 3.3f; at += 6.6f)
+						for (float at = from + step / 2; at <= to - step / 2; at += step)
 						{
 							seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
-							if (seed % 100 >= 60)
+							if (seed % 100 >= share)
 								continue;
 							while (k + 2 < e.points.size() && along[k + 1] < at)
 								++k;

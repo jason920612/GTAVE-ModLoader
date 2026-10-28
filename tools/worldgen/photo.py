@@ -42,7 +42,9 @@ def options(argv):
     return o
 
 
-def fetch(url, tries=4):
+def fetch(url, tries=9):
+    # (the picture service goes down for minutes at a time - 504s for a quarter of an hour took four lands of the
+    # statewide batch: waits of 15 s doubling to 5 min, about 20 min in all)
     for k in range(tries):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=180) as r:
@@ -50,7 +52,7 @@ def fetch(url, tries=4):
         except Exception:
             if k == tries - 1:
                 raise
-            time.sleep(3 + 5 * k)
+            time.sleep(min(300, 15 * 2 ** k))
 
 
 class Projection:
