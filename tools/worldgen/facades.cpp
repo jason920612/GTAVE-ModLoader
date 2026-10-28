@@ -573,12 +573,15 @@ namespace worldgen::facades
 				{
 					if (std::find(kinds.begin(), kinds.end(), set.styles[i].kind) == kinds.end())
 						continue;
-					float distance = 0;
-					for (int c = 0; c < 3; ++c)
-					{
-						const float diff = set.styles[i].average[c] * 1.08f - seen->colour[c];
-						distance += diff * diff;
-					}
+					// (by hue and saturation far more than by lightness: the pictures' walls come out darker than their paint
+					// - shade, windows, trim -, and a white or mint house measured mid grey had matched tan siding by plain
+					// distance; lightness a quarter, the two colour differences (red-green, yellow-blue) one and a half)
+					const auto& a = set.styles[i].average;
+					const float q[3] = {static_cast<float>(seen->colour[0]), static_cast<float>(seen->colour[1]), static_cast<float>(seen->colour[2])};
+					const float dl = ((a[0] + a[1] + a[2]) * 1.08f - (q[0] + q[1] + q[2])) / 3 * 0.25f;
+					const float d1 = ((a[0] - a[1]) * 1.08f - (q[0] - q[1])) * 1.5f;
+					const float d2 = (((a[0] + a[1]) / 2.0f - a[2]) * 1.08f - ((q[0] + q[1]) / 2 - q[2])) * 1.5f;
+					const float distance = dl * dl + d1 * d1 + d2 * d2;
 					if (distance < bestDistance)
 						bestDistance = distance, best = static_cast<int>(i);
 				}
