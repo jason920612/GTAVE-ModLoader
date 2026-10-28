@@ -508,11 +508,11 @@ namespace worldgen::roads
 			}
 		}
 
-		// a letter's strokes in a cell of the STOP picture (x0..x1, y0..y1 pixels; strokes 22 % of the cell's width thick
-		// across, 9 % of its height along - the same paint width once stretched 2.5 times)
+		// a letter's strokes in a cell of the STOP picture (x0..x1, y0..y1 pixels; strokes 30 % of the cell's width thick
+		// across, 12 % of its height along - at 22 and 9 % the letters read as thin outlines from a driver's seat)
 		void Letter(texture::Image& im, char letter, int x0, int x1, int y0, int y1)
 		{
-			const int tx = std::max(2, (x1 - x0) * 22 / 100), ty = std::max(2, (y1 - y0) * 9 / 100), ym = (y0 + y1) / 2;
+			const int tx = std::max(2, (x1 - x0) * 30 / 100), ty = std::max(2, (y1 - y0) * 12 / 100), ym = (y0 + y1) / 2;
 			const auto box = [&](int a0, int a1, int b0, int b1) {
 				for (int y = std::max(0, b0); y < std::min(im.height, b1); ++y)
 					for (int x = std::max(0, a0); x < std::min(im.width, a1); ++x)
