@@ -4,12 +4,14 @@ resampled onto the sector's game coordinates - what its woods, wetlands, fields 
 map (OpenStreetMap) leaves most of the countryside untagged.
 
 usage: python -I tools/worldgen/nlcd.py --world <world.json> --out <landcover.bin> [--year 2024] [--cell 10]
-       [--cache <dir>] [--margin 300]
+       [--cache <dir>] [--margin 300] [--wait 12]
   landcover.bin ('WBLC' version 1): x0, y0, cell (float32), nx, ny (uint32); then each cell's NLCD class (uint8: 11
   open water, 21-24 developed open space / low / medium / high intensity, 31 barren, 41 deciduous, 42 evergreen, 43 mixed
   forest, 52 shrub, 71 grassland, 81 pasture, 82 crops, 90 woody wetlands, 95 emergent herbaceous wetlands; 0 none),
   rows south to north.
 The coverage is asked for once per sector box (WCS 1.0.0 GetCoverage, GeoTIFF at its own 30 m grid) and kept in --cache.
+When the service is down (it has been, for hours: its TLS handshake timing out) it is waited for, up to --wait hours -
+the statewide batch's other sectors would only have failed the same way.
 """
 import io, json, math, os, struct, sys, time, urllib.request
 
@@ -49,7 +51,7 @@ def albers(lat, lon):
 
 
 def options(argv):
-    o = {'year': '2024', 'cell': '10', 'cache': r'D:\GTAV-UE5\nlcd\cache', 'margin': '300'}
+    o = {'year': '2024', 'cell': '10', 'cache': r'D:\GTAV-UE5\nlcd\cache', 'margin': '300', 'wait': '12'}
     for i in range(0, len(argv) - 1, 2):
         if not argv[i].startswith('--'):
             sys.exit(__doc__)
@@ -59,7 +61,7 @@ def options(argv):
     return o
 
 
-def fetch(x0, y0, x1, y1, year, cache):
+def fetch(x0, y0, x1, y1, year, cache, wait_hours=12.0):
     """The coverage's classes over the Albers box (on its grid), rows north to south."""
     os.makedirs(cache, exist_ok=True)
     width, height = int(round((x1 - x0) / PIXEL)), int(round((y1 - y0) / PIXEL))
@@ -68,7 +70,8 @@ def fetch(x0, y0, x1, y1, year, cache):
         url = (f'{SERVICE}?service=WCS&version=1.0.0&request=GetCoverage&coverage={COVERAGE}&crs=EPSG:5070'
                f'&bbox={x0:.0f},{y0:.0f},{x1:.0f},{y1:.0f}&width={width}&height={height}&format=GeoTIFF'
                f'&TIME={year}-01-01T00:00:00.000Z')
-        for attempt in range(5):
+        attempt, waited = 0, 0.0
+        while True:
             try:
                 with urllib.request.urlopen(url, timeout=300) as r:
                     data = r.read()
@@ -76,11 +79,18 @@ def fetch(x0, y0, x1, y1, year, cache):
                     raise IOError(data[:300].decode('utf-8', 'replace'))
                 Image.open(io.BytesIO(data)).load()  # (all of it: an answer cut short is asked for again)
                 break
-            except Exception as e:  # (the service is busy now and then: tried again)
-                if attempt == 4:
+            except Exception as e:  # (the service is busy now and then: tried again; down: waited for)
+                attempt += 1
+                if attempt < 5:
+                    print(f'  land cover: {e}; again', flush=True)
+                    time.sleep(10 * attempt)
+                    continue
+                if waited >= wait_hours * 3600:
                     raise
-                print(f'  land cover: {e}; again', flush=True)
-                time.sleep(10 * (attempt + 1))
+                print(f'  land cover: {e}; the service is down - asked again in 10 minutes', flush=True)
+                time.sleep(600)
+                waited += 600
+                attempt = 0
         with open(file + '.part', 'wb') as f:
             f.write(data)
         os.replace(file + '.part', file)
@@ -112,7 +122,7 @@ def main():
     bx1 = GRID_X0 + (math.ceil((ax.max() - GRID_X0) / PIXEL) + 1) * PIXEL
     by1 = GRID_Y0 - (math.floor((GRID_Y0 - ay.max()) / PIXEL) - 1) * PIXEL
     by0 = GRID_Y0 - (math.ceil((GRID_Y0 - ay.min()) / PIXEL) + 1) * PIXEL
-    classes = fetch(bx0, by0, bx1, by1, o['year'], o['cache'])
+    classes = fetch(bx0, by0, bx1, by1, o['year'], o['cache'], float(o['wait']))
     col = np.clip(((ax - bx0) / PIXEL).astype(np.int64), 0, classes.shape[1] - 1)
     row = np.clip(((by1 - ay) / PIXEL).astype(np.int64), 0, classes.shape[0] - 1)
     out = classes[row, col].astype(np.uint8)  # (rows south to north, as ys)
