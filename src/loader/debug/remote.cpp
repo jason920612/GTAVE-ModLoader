@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <MinHook.h>
+#include <TlHelp32.h>
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
 
@@ -32,6 +33,7 @@
 #include "../game/dlcpacks.hpp"
 #include "../game/landfiles.hpp"
 #include "../game/seamless.hpp"
+#include "../game/crossing.hpp"
 #include "../game/natives.hpp"
 #include "../game/sectors.hpp"
 #include "../graphics/bridge.hpp"
@@ -895,6 +897,79 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "threads")
+			{
+				// threads: the game's threads - id, name (GetThreadDescription), CPU time (ms) - busiest first (research: which
+				// thread a frame waits for)
+				struct Row
+				{
+					DWORD id;
+					std::string name;
+					double cpu;
+				};
+				std::vector<Row> rows;
+				HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+				THREADENTRY32 te{sizeof(te)};
+				for (BOOL more = Thread32First(snap, &te); more; more = Thread32Next(snap, &te))
+				{
+					if (te.th32OwnerProcessID != GetCurrentProcessId())
+						continue;
+					HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+					if (!h)
+						continue;
+					std::string name;
+					PWSTR wide = nullptr;
+					if (SUCCEEDED(GetThreadDescription(h, &wide)) && wide)
+					{
+						for (const wchar_t* c = wide; *c; ++c)
+							name += static_cast<char>(*c);
+						LocalFree(wide);
+					}
+					FILETIME created, exited, kernel, user;
+					double cpu = 0;
+					if (GetThreadTimes(h, &created, &exited, &kernel, &user))
+						cpu = ((static_cast<uint64_t>(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime) +
+						          (static_cast<uint64_t>(user.dwHighDateTime) << 32 | user.dwLowDateTime)) /
+						      1e4;
+					CloseHandle(h);
+					rows.push_back({te.th32ThreadID, name, cpu});
+				}
+				CloseHandle(snap);
+				std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.cpu > b.cpu; });
+				std::string out = std::format("ok {} threads", rows.size());
+				for (const Row& r : rows)
+					out += std::format(" | {} {} {:.0f}", r.id, r.name.empty() ? "-" : r.name, r.cpu);
+				return out;
+			}
+			if (cmd == "cross")
+			{
+				// cross shift dx dy [radius [dz]]: the player and the traffic and people round them moved in one frame;
+				// cross prepare x y z [radius] | ready | release: a place made ready ahead of it (game/crossing.hpp)
+				std::string what;
+				float d[4]{}, radius = 400;
+				in >> what;
+				if (what == "prepare")
+					in >> d[0] >> d[1] >> d[2] >> radius;
+				else
+					in >> d[0] >> d[1] >> radius >> d[2];
+				auto job = std::make_shared<Job>();
+				job->run = [what, d, radius] {
+					if (what == "shift")
+						return game::crossing::Shift(d[0], d[1], d[2], radius);
+					if (what == "prepare")
+						return game::crossing::Prepare(d, radius), std::string("preparing");
+					if (what == "release")
+						return game::crossing::Release(), std::string("released");
+					std::string why;
+					const bool ready = game::crossing::Ready(&why);
+					return std::format("{} ({})", ready ? "ready" : "not ready", why);
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
 			if (cmd == "modules")
 			{
 				// modules: the streaming engine's modules (+0x42F9E48: +0x1A0 by range, 16 bytes each - the module, the end of
@@ -918,15 +993,21 @@ namespace loader::debug::remote
 			}
 			if (cmd == "seamless" || cmd == "frames")
 			{
-				// seamless begin <land> <there|-> x0 y0 x1 y1 | seamless status | frames start|stop: research
+				// seamless begin <land> <there|-> x0 y0 x1 y1 | seamless status | frames start [thread id...]|stop: research
 				// (game/seamless.hpp) - a land's overlay and maps registered over frames, only its band on, the frames' times
 				std::string what, land, there;
 				float band[4]{};
-				in >> what >> land >> there >> band[0] >> band[1] >> band[2] >> band[3];
+				std::vector<unsigned long> threads;
+				in >> what;
+				if (cmd == "frames")
+					for (unsigned long id = 0; in >> id;)
+						threads.push_back(id);
+				else
+					in >> land >> there >> band[0] >> band[1] >> band[2] >> band[3];
 				auto job = std::make_shared<Job>();
-				job->run = [cmd, what, land, there, band] {
+				job->run = [cmd, what, land, there, band, threads] {
 					if (cmd == "frames")
-						return game::seamless::Frames(what == "start");
+						return game::seamless::Frames(what == "start", threads);
 					if (what == "begin")
 					{
 						const std::string error = game::seamless::Begin(land, there == "-" ? std::string() : there, band);

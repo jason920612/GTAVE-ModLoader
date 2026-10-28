@@ -61,6 +61,7 @@ add_library(loader SHARED
     src/loader/game/sectors.cpp
     src/loader/game/landfiles.cpp
     src/loader/game/seamless.cpp
+    src/loader/game/crossing.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp

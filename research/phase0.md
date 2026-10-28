@@ -4843,3 +4843,14 @@ D:\mapillary → D:\GTAV-UE5\mapillary，metadata.csv：lat、lon、heading）�
 - 實測（099_101 北側，099_102 南帶）：18 幀、301 ms 完成（overlay 5 檔 2.3 ms、handles 1.4 ms、地圖 set 每幀 ≤ 3.2 ms、
   gtxd.meta 6 ms、landfiles 開關 7.0／7.7 ms、框樹 2.8 ms）；842 幀中位數 16.7 ms、最長 21.4 ms、**沒有一幀超過中位數 15 ms**；
   帶內道路節點、地面碰撞正常（站在 B 的屋頂 (10148,−2501,12.9)）。
+- **一幀瞬移（game/crossing）**：車輛池 [+0x435F238]（自有結構：+8 指標陣列、+0x10 容量、+0x38 有效位元、+0x68 數量）、
+  行人池（fwBasePool，指標加密 +0x434A928、鍵 +0x434A930、+0x434A920 位元 0：k = rol(key,30)，pool = ~rol(stored^k, 32+(k&31)+2)；
+  +8 儲存、+0x10 每格一 byte（位元 7 空）、+0x18 格數、+0x1C 大小 0x1980）；實體 → 腳本 handle 0x149200（反查 0x1494B0）。
+  400 m 內 116 車＋16 人一起平移（保留速度、鏡頭相對角度）7 ms，重派任務（TASK_VEHICLE_DRIVE_WANDER／TASK_WANDER_STANDARD）
+  每個 ~0.16 ms → 要分幀。先前以為瞬移後有 3 個 170 ms 長幀——其實是測試腳本的**截圖**（每張都從 GPU 讀回整個畫面）。
+- 跨越大小（10 km）的瞬移：遊戲每幀以鏡頭為中心要求碰撞（0x92D4A0），再檢查 10 m 內（streamer +0x68）的碰撞檔是否都在
+  （0x92D650）——缺一個就以旗標 5 要求並同步全部載完（0xCF03F0：60–83 ms 一幀）。→ 瞬移前對目的地每幀呼叫同一個要求函式、
+  NEW_LOAD_SCENE_START_SPHERE(…, 旗標 1 要碰撞)，並仿 0x92D650 檢查目的地 30 m 內沒有缺檔才瞬移：行駛中的車跨 10 km，
+  308 幀最長 20.5 ms、沒有長幀、車子落地（測試時兩地內容不同，z 要補地面差）。
+- 取樣器：暫停執行緒時只複製 32 KB 堆疊、恢復後才展開（暫停時呼叫 RtlLookupFunctionEntry 會跟持有函式表鎖的執行緒互鎖；
+  展開別的執行緒時在 ntdll 讀到 0x10 崩潰過）＋ SEH；frames start <thread id…> 同時取樣其他執行緒；threads 列出執行緒與 CPU 時間。

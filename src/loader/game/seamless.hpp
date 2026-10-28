@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Crossing between the world builder's lands without a cut (research/phase0.md §64; the user: a switch under 15 ms).
 // The game registers a pack's maps in one go when it executes the map change sets: 94-138 ms on the game thread, the
@@ -30,7 +31,8 @@ namespace loader::game::seamless
 	// Research: each data file's enabling sampled (debug/profile.hpp) by its calls in [from, to) - 0, not.
 	std::string Profile(uintptr_t from, uintptr_t to);
 
-	// The frames' times: recording started (true) or stopped and summed up (false: the longest, the share over 15 ms and
-	// the steps that ran in the long ones).
-	std::string Frames(bool start);
+	// The frames' times: recording started (true; the game's thread sampled all along, and the `others` - thread ids - too)
+	// or stopped and summed up (false: the longest, the share over 15 ms and the steps that ran in the long ones, where the
+	// threads were in them).
+	std::string Frames(bool start, const std::vector<unsigned long>& others = {});
 }

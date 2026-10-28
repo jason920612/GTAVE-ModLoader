@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <format>
 #include <map>
 #include <memory>
@@ -112,55 +113,110 @@ namespace loader::debug::profile
 				std::chrono::steady_clock::time_point at;
 				uintptr_t leaf = 0, leafBase = 0; // (the innermost function's start and its module)
 				std::array<uint32_t, 6> through{};
+				uint8_t thread = 0; // (which of the threads: 0 the game's)
 			};
-			static constexpr size_t kMax = 600000; // (ten minutes)
+			static constexpr size_t kMax = 1200000; // (ten minutes of the game's thread and another)
 			std::vector<Sample> samples = std::vector<Sample>(kMax);
 			std::atomic<size_t> taken = 0;
 			std::atomic<bool> running = false;
-			HANDLE thread = nullptr;
+			std::vector<HANDLE> threads;
+			std::vector<DWORD> ids;
 			std::thread sampler;
 		};
 		std::unique_ptr<Trace> g_trace;
+
+		// (the stack's top copied while the thread is stopped: nothing that takes a lock is called then - a thread stopped
+		// holding the function tables' lock would have held us too)
+		constexpr size_t kStackCopy = 32 * 1024;
+		size_t CopyStack(uint8_t* to, uintptr_t from)
+		{
+			size_t got = 0;
+			__try
+			{
+				for (; got < kStackCopy; got += 4096)
+				{
+					const size_t chunk = std::min<size_t>(4096 - (from + got) % 4096, kStackCopy - got);
+					std::memcpy(to + got, reinterpret_cast<const void*>(from + got), chunk);
+					if (chunk != 4096)
+						return got + chunk;
+				}
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+			}
+			return got;
+		}
+
+		// the stack walked on the copy (the stack pointer, and the frame pointer when it points into the copied part, moved
+		// over to it; a frame that reads past it ends the walk)
+		void Walk(Trace::Sample& s, CONTEXT& c, const uint8_t* copy, uintptr_t top, size_t size, uintptr_t base)
+		{
+			const auto relocate = [&](DWORD64& r) {
+				if (r >= top && r < top + size)
+					r = reinterpret_cast<uintptr_t>(copy) + (r - top);
+			};
+			const auto inCopy = [&](DWORD64 r) { return r >= reinterpret_cast<uintptr_t>(copy) && r + 8 <= reinterpret_cast<uintptr_t>(copy) + size; };
+			c.Rsp = reinterpret_cast<uintptr_t>(copy);
+			relocate(c.Rbp);
+			size_t n = 0;
+			__try
+			{
+				for (int i = 0; i < 64 && c.Rip && n < s.through.size() && inCopy(c.Rsp); ++i)
+				{
+					DWORD64 image = 0;
+					RUNTIME_FUNCTION* f = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+					if (i == 0)
+						s.leaf = f ? image + f->BeginAddress : c.Rip, s.leafBase = image;
+					else if (image == base && f)
+						s.through[n++] = f->BeginAddress;
+					if (f)
+					{
+						void* data = nullptr;
+						DWORD64 frame = 0;
+						RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, nullptr);
+					}
+					else
+					{
+						c.Rip = *reinterpret_cast<const DWORD64*>(c.Rsp);
+						c.Rsp += 8;
+					}
+					relocate(c.Rbp);
+				}
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+			}
+		}
+
+		// one of the threads stopped for a moment: where it is
+		void SampleOne(Trace* t, size_t k, uintptr_t base)
+		{
+			static thread_local std::vector<uint8_t> copy(kStackCopy);
+			if (SuspendThread(t->threads[k]) == static_cast<DWORD>(-1))
+				return;
+			CONTEXT c{};
+			c.ContextFlags = CONTEXT_FULL;
+			const bool got = GetThreadContext(t->threads[k], &c) != 0;
+			const uintptr_t top = got ? c.Rsp : 0;
+			const size_t size = got ? CopyStack(copy.data(), top) : 0;
+			ResumeThread(t->threads[k]);
+			if (!got)
+				return;
+			Trace::Sample& s = t->samples[t->taken % Trace::kMax];
+			s = {};
+			s.at = std::chrono::steady_clock::now();
+			s.thread = static_cast<uint8_t>(k);
+			Walk(s, c, copy.data(), top, size, base);
+			++t->taken;
+		}
 
 		void TraceThread(Trace* t)
 		{
 			const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
 			while (t->running)
 			{
-				if (SuspendThread(t->thread) != static_cast<DWORD>(-1))
-				{
-					CONTEXT c{};
-					c.ContextFlags = CONTEXT_FULL;
-					if (GetThreadContext(t->thread, &c))
-					{
-						Trace::Sample& s = t->samples[t->taken % Trace::kMax];
-						s = {};
-						s.at = std::chrono::steady_clock::now();
-						size_t n = 0;
-						for (int i = 0; i < 64 && c.Rip && n < s.through.size(); ++i)
-						{
-							DWORD64 image = 0;
-							RUNTIME_FUNCTION* f = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
-							if (i == 0)
-								s.leaf = f ? image + f->BeginAddress : c.Rip, s.leafBase = image;
-							else if (image == base && f)
-								s.through[n++] = f->BeginAddress;
-							if (f)
-							{
-								void* data = nullptr;
-								DWORD64 frame = 0;
-								RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, nullptr);
-							}
-							else
-							{
-								c.Rip = *reinterpret_cast<const DWORD64*>(c.Rsp);
-								c.Rsp += 8;
-							}
-						}
-						++t->taken;
-					}
-					ResumeThread(t->thread);
-				}
+				for (size_t k = 0; k < t->threads.size(); ++k)
+					SampleOne(t, k, base);
 				const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(1000);
 				while (std::chrono::steady_clock::now() < until)
 					std::this_thread::yield();
@@ -168,11 +224,17 @@ namespace loader::debug::profile
 		}
 	}
 
-	void Start()
+	void Start(const std::vector<unsigned long>& others)
 	{
 		Stop();
 		g_trace = std::make_unique<Trace>();
-		g_trace->thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, GetCurrentThreadId());
+		g_trace->ids.push_back(GetCurrentThreadId());
+		for (const unsigned long id : others)
+			if (id != GetCurrentThreadId())
+				g_trace->ids.push_back(id);
+		for (const DWORD id : g_trace->ids)
+			if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id))
+				g_trace->threads.push_back(h);
 		g_trace->running = true;
 		g_trace->sampler = std::thread(TraceThread, g_trace.get());
 	}
@@ -183,56 +245,69 @@ namespace loader::debug::profile
 			return;
 		g_trace->running = false;
 		g_trace->sampler.join();
-		CloseHandle(g_trace->thread);
+		for (HANDLE h : g_trace->threads)
+			CloseHandle(h);
+	}
+
+	namespace
+	{
+		// one thread's samples between two moments, summed up
+		std::string Summary(size_t thread, std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to)
+		{
+			const auto game = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+			std::map<std::string, int> leaves, chains;
+			int n = 0;
+			const size_t taken = g_trace->taken, first = taken > Trace::kMax ? taken - Trace::kMax : 0;
+			for (size_t i = first; i < taken; ++i)
+			{
+				const Trace::Sample& s = g_trace->samples[i % Trace::kMax];
+				if (s.thread != thread || s.at < from || s.at > to)
+					continue;
+				++n;
+				std::string where;
+				if (s.leafBase == game)
+					where = std::format("{:#x}", s.leaf - game);
+				else
+				{
+					wchar_t path[MAX_PATH] = L"?";
+					if (s.leafBase)
+						GetModuleFileNameW(reinterpret_cast<HMODULE>(s.leafBase), path, MAX_PATH);
+					std::wstring_view wide(path);
+					if (const size_t slash = wide.find_last_of(L"\\/"); slash != std::wstring_view::npos)
+						wide.remove_prefix(slash + 1);
+					std::string name;
+					for (const wchar_t ch : wide)
+						name += static_cast<char>(ch);
+					where = std::format("{}+{:#x}", name, s.leaf - s.leafBase);
+				}
+				++leaves[where];
+				std::string chain;
+				for (const uint32_t f : s.through)
+					if (f)
+						chain += std::format("{}{:#x}", chain.empty() ? "" : "<", f);
+				++chains[chain.empty() ? "-" : chain];
+			}
+			const auto top = [](const std::map<std::string, int>& m, size_t count) {
+				std::vector<std::pair<int, std::string>> v;
+				for (const auto& [k, c] : m)
+					v.push_back({c, k});
+				std::sort(v.rbegin(), v.rend());
+				std::string out;
+				for (size_t i = 0; i < std::min(count, v.size()); ++i)
+					out += std::format(" {}:{}", v[i].second, v[i].first);
+				return out;
+			};
+			return std::format("{} samples; functions{}; through{}", n, top(leaves, 8), top(chains, 5));
+		}
 	}
 
 	std::string Between(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to)
 	{
 		if (!g_trace)
 			return "not sampled";
-		const auto game = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-		std::map<std::string, int> leaves, chains;
-		int n = 0;
-		const size_t taken = g_trace->taken, first = taken > Trace::kMax ? taken - Trace::kMax : 0;
-		for (size_t i = first; i < taken; ++i)
-		{
-			const Trace::Sample& s = g_trace->samples[i % Trace::kMax];
-			if (s.at < from || s.at > to)
-				continue;
-			++n;
-			std::string where;
-			if (s.leafBase == game)
-				where = std::format("{:#x}", s.leaf - game);
-			else
-			{
-				wchar_t path[MAX_PATH] = L"?";
-				if (s.leafBase)
-					GetModuleFileNameW(reinterpret_cast<HMODULE>(s.leafBase), path, MAX_PATH);
-				std::wstring_view wide(path);
-				if (const size_t slash = wide.find_last_of(L"\\/"); slash != std::wstring_view::npos)
-					wide.remove_prefix(slash + 1);
-				std::string name;
-				for (const wchar_t ch : wide)
-					name += static_cast<char>(ch);
-				where = std::format("{}+{:#x}", name, s.leaf - s.leafBase);
-			}
-			++leaves[where];
-			std::string chain;
-			for (const uint32_t f : s.through)
-				if (f)
-					chain += std::format("{}{:#x}", chain.empty() ? "" : "<", f);
-			++chains[chain.empty() ? "-" : chain];
-		}
-		const auto top = [](const std::map<std::string, int>& m, size_t count) {
-			std::vector<std::pair<int, std::string>> v;
-			for (const auto& [k, c] : m)
-				v.push_back({c, k});
-			std::sort(v.rbegin(), v.rend());
-			std::string out;
-			for (size_t i = 0; i < std::min(count, v.size()); ++i)
-				out += std::format(" {}:{}", v[i].second, v[i].first);
-			return out;
-		};
-		return std::format("{} samples; functions{}; through{}", n, top(leaves, 8), top(chains, 5));
+		std::string all = Summary(0, from, to);
+		for (size_t thread = 1; thread < g_trace->ids.size(); ++thread)
+			all += std::format(" || thread {}: {}", g_trace->ids[thread], Summary(thread, from, to));
+		return all;
 	}
 }

@@ -515,14 +515,14 @@ namespace loader::game::seamless
 		return out;
 	}
 
-	std::string Frames(bool start)
+	std::string Frames(bool start, const std::vector<unsigned long>& others)
 	{
 		if (start)
 		{
 			g_frames.clear();
 			g_recording = true;
-			debug::profile::Start();
-			return "recording";
+			debug::profile::Start(others);
+			return std::format("recording (the game's thread {} and {} more sampled)", GetCurrentThreadId(), others.size());
 		}
 		g_recording = false;
 		debug::profile::Stop();
