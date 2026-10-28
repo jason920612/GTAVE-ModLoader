@@ -21,7 +21,7 @@ uneven (crowns and their shadows, not a lawn's even green) - at least a crown's 
 import io, json, math, os, struct, sys, time, urllib.parse, urllib.request
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy import ndimage
 
 NAIP = 'https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage'
@@ -139,8 +139,9 @@ class Canopy:
         return out
 
 
-def analyse(rgbn, chm):
-    """One block (rows north to south): the canopy, its trees (block pixel coordinates), and each pixel's ground class."""
+def analyse(rgbn, chm, near_built=None):
+    """One block (rows north to south): the canopy, its trees (block pixel coordinates), and each pixel's ground class.
+    `near_built`: the pixels within 6 m of a building (the map's and the footprints'), or None."""
     r, g, b, n = (rgbn[..., k].astype(np.float32) for k in range(4))
     ndvi = (n - r) / np.maximum(n + r, 1)
     bright = (r + g + b) / 3
@@ -180,6 +181,11 @@ def analyse(rgbn, chm):
     canopy &= ~((bright > 110) & (ndvi < 0.1))
     canopy = ndimage.binary_opening(canopy, iterations=1)
     canopy = ndimage.binary_closing(canopy, iterations=2)
+    # (by a building only canopy the canopy heights see - 4 m and more - and green: a lawn's edge against a building's
+    # shadow, or the roof's edge, had been uneven enough to be canopy - the reviewers' row of identical trees along every
+    # garage's and office's facade)
+    if near_built is not None:
+        canopy &= ~near_built | ((chm >= 4) & (ndvi > 0.2))
     # (a crown on its own - a canopy patch about as round as one crown, no wider than a live oak's for its height - one
     # tree at its middle: the peaks had cut a lawn's live oak into a grove of small trees, the reviewers' "three trunks
     # where the photo has one oak")
@@ -283,6 +289,25 @@ def main():
     out = o['out']
     os.makedirs(out, exist_ok=True)
     chm = Canopy(o['chm'])
+    # the buildings' footprints by 500 m cell (the map's and the footprints merged into the world)
+    by_cell = {}
+    for b in w.get('buildings', []):
+        fp = b.get('footprint') or []
+        if len(fp) < 3:
+            continue
+        xs_, ys_ = [p[0] for p in fp], [p[1] for p in fp]
+        for i in range(int(math.floor(min(xs_) / 500)), int(math.floor(max(xs_) / 500)) + 1):
+            for j in range(int(math.floor(min(ys_) / 500)), int(math.floor(max(ys_) / 500)) + 1):
+                by_cell.setdefault((i, j), []).append(fp)
+
+    def footprints_near(bx0, by0, bx1, by1):
+        seen = set()
+        for i in range(int(math.floor(bx0 / 500)), int(math.floor(bx1 / 500)) + 1):
+            for j in range(int(math.floor(by0 / 500)), int(math.floor(by1 / 500)) + 1):
+                for fp in by_cell.get((i, j), []):
+                    if id(fp) not in seen:
+                        seen.add(id(fp))
+                        yield fp
     # the ground grid: the land's 4 m cells (worldgen's: from the world's corner)
     gx0, gy0 = w['min'][0], w['min'][1]
     gnx, gny = int(math.ceil((w['max'][0] - gx0) / GROUND)), int(math.ceil((w['max'][1] - gy0) / GROUND))
@@ -327,7 +352,14 @@ def main():
         heights = chm.heights(np.ascontiguousarray(lat), np.ascontiguousarray(lon))
         if not rgbn.any():
             continue
-        canopy, block_trees, cls, shade = analyse(rgbn, heights)
+        # (the buildings round the block: their footprints drawn at its pixels, 6 m round them)
+        built = Image.new('L', (nx, ny), 0)
+        draw = ImageDraw.Draw(built)
+        top = y0 + ny * CELL
+        for fp in footprints_near(x0, y0, x0 + nx * CELL, top):
+            draw.polygon([((px - x0) / CELL, (top - py) / CELL) for px, py in fp], fill=1)
+        near_built = ndimage.binary_dilation(np.asarray(built, bool), iterations=6)
+        canopy, block_trees, cls, shade = analyse(rgbn, heights, near_built)
         for px, py, h, crown, kind in block_trees:
             x, y = float(xs[px]), float(ys[py])
             if bx <= x < bx + BLOCK and by <= y < by + BLOCK and x < ax1 and y < ay1:

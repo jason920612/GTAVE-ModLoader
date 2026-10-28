@@ -259,7 +259,7 @@ namespace worldgen::flora
 					if (t > 0.35f && t < 0.92f && rnd.Unit() < 0.55f)
 					{
 						const P3 drop{at[0] + rnd.Range(-0.4f, 0.4f), at[1] + rnd.Range(-0.4f, 0.4f), at[2] - RadiusAt(limb, t)};
-						const float len2 = rnd.Range(0.9f, 2.0f), wd = rnd.Range(0.45f, 0.8f);
+						const float len2 = rnd.Range(0.9f, 2.0f), wd = rnd.Range(0.3f, 0.5f);
 						const float spin = rnd.Range(0, kPi);
 						const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 						for (int c = 0; c < 2; ++c)
@@ -289,7 +289,7 @@ namespace worldgen::flora
 							const float spin = rnd.Range(0, kPi);
 							const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 							for (int c = 0; c < 2; ++c)
-								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.4f, 0.7f),
+								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.25f, 0.45f),
 								    rnd.Range(0.7f, 1.6f), static_cast<int>(rnd.Next() % 4), kMoss, true});
 						}
 					}
@@ -752,20 +752,20 @@ namespace worldgen::flora
 			}
 			else
 			{
-				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards (thick and pale enough
-				// to read as the grey beards they are from the street: 55 thin dark ones had all but vanished at 10 m, 140 thick
-				// pale ones were solid pale rectangles at 20 m)
-				for (int k = 0; k < 100; ++k)
+				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards (55 thin dark ones had
+				// all but vanished at 10 m; 100-140 thick pale ones on wide cards were "flat opaque paper strips" at 20 m: 60 of
+				// them, on narrower cards)
+				for (int k = 0; k < 60; ++k)
 				{
 					// (a beard: the strands bunched in the middle and longest there, the sides short)
 					const float g = (rnd.Unit() + rnd.Unit() + rnd.Unit()) / 3 - 0.5f;
 					float x = im.width / 2.0f + g * (im.width - 30.0f);
 					const float len = (0.25f + 0.75f * (1 - std::fabs(g) * 2)) * rnd.Range(0.6f, 1.0f) * im.height, phase = rnd.Range(0, 2 * kPi),
 					            sway = rnd.Range(3, 12);
-					const std::array<float, 3> c{rnd.Range(112, 132), rnd.Range(118, 136), rnd.Range(102, 118)};
+					const std::array<float, 3> c{rnd.Range(118, 138), rnd.Range(124, 142), rnd.Range(108, 124)};
 					for (float y = rnd.Range(0, 20); y < len; y += 1.0f)
 					{
-						const float w = 3.2f * (1 - y / len) + 1.3f;
+						const float w = 2.6f * (1 - y / len) + 1.0f;
 						const float px = x + std::sin(y / 40 + phase) * sway;
 						Ellipse(im, px, y, w / 2 + 0.2f, 0.8f, 0, Shade(c, rnd.Range(0.85f, 1.05f)), x0, y0, x1, y1);
 						if (rnd.Unit() < 0.02f)
@@ -793,13 +793,14 @@ namespace worldgen::flora
 				const float a = rnd.Range(0, 2 * kPi);
 				limbs.push_back({Grow({0, 0, -0.1f}, {std::cos(a) * 0.5f, std::sin(a) * 0.5f, 1}, {0, 0, 1}, 0.05f, H * 0.6f, 2, 0.03f, 0.015f, rnd), kBarkMyrtle});
 			}
-			const int cards = static_cast<int>(28 * W * H);
+			// (many small cards, from the ground up: a few big ones lifted off it had read as "blocky floating clumps")
+			const int cards = static_cast<int>(62 * W * H);
 			for (int k = 0; k < cards; ++k)
 			{
 				// (on and under the surface of a half ellipsoid)
 				const float a = rnd.Range(0, 2 * kPi), up = std::asin(rnd.Range(0.0f, 1.0f)), depth = rnd.Range(0.6f, 1.0f);
-				const P3 c{std::cos(a) * std::cos(up) * W * 0.45f * depth, std::sin(a) * std::cos(up) * W * 0.45f * depth, H * 0.12f + std::sin(up) * H * 0.78f * depth};
-				Cluster(leaves, c, middle, 1, 0.1f, rnd.Range(0.7f, 1.1f), kOakLeaves, rnd, 0.0f);
+				const P3 c{std::cos(a) * std::cos(up) * W * 0.45f * depth, std::sin(a) * std::cos(up) * W * 0.45f * depth, H * 0.04f + std::sin(up) * H * 0.84f * depth};
+				Cluster(leaves, c, middle, 1, 0.1f, rnd.Range(0.45f, 0.7f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
 			out.height = H, out.width = W, out.trunk = 0;

@@ -83,7 +83,17 @@ def gtactl(*steps):
 
 
 def hud_off():
-    """The radar and the HUD hidden (DISPLAY_RADAR, DISPLAY_HUD: they stay so) - the pictures have none."""
+    """The radar and the HUD hidden (DISPLAY_RADAR, DISPLAY_HUD: they stay so) - the pictures have none. First the world
+    there: no loading screen (GET_IS_LOADING_SCREEN_ACTIVE), the screen not faded out (IS_SCREEN_FADED_OUT) - a comparison
+    started as story mode was still loading had taken the loading screen's art for the first place's views."""
+    end = time.time() + 600
+    while time.time() < end:
+        loading = gtactl('raw:native 0x10D0A8F259E93EC9').split()
+        faded = gtactl('raw:native 0xB16FCE9DDC7BA182').split()
+        if len(loading) > 1 and len(faded) > 1 and loading[-6:][1] == '0' and faded[-6:][1] == '0':
+            break
+        time.sleep(5)
+    gtactl('wait:10')
     gtactl('raw:native 0xA0EBB943C300E693 0', 'raw:native 0xA6294919E56FF02A 0')
 
 
