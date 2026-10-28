@@ -25,7 +25,9 @@
 //     rewrite:<hex>             replace the instruction's bytes in place (nop-padded), no stub
 //   grid.tsv:      rva [imm] -- reads of the region grid's constants (8192, 1/512, 512, 256, -8192, in any lane of a
 //                  vector), pointed at copies scaled for 1024 m regions from -16384 (still 32 x 32); "imm": a float
-//                  immediate of the instruction, rewritten scaled
+//                  immediate of the instruction, rewritten scaled. Also the int16 range (-32768, 32767) a query's y in
+//                  node units is clamped to before a region's nodes (sorted by y) are searched: the cmp16 stubs compare
+//                  32 bits, so it widens to +-131072 (past the +-16384 m the grid covers)
 #include <Zydis/Zydis.h>
 
 #include <algorithm>
@@ -974,12 +976,15 @@ int main(int argc, char** argv)
 	std::vector<Redirect> redirects;
 	std::vector<Immediate> immediates;
 	std::vector<std::array<float, 4>> constants;
-	// one lane scaled: 8192, -8192, 512 and 256 doubled, 1/512 halved, 0 kept; anything else is not the grid's
+	// one lane scaled: 8192, -8192, 512 and 256 doubled, 1/512 halved, the int16 clamp widened, 0 kept; anything else
+	// is not the grid's
 	const auto scale = [](float v, float& out) {
 		if (v == 8192.0f || v == -8192.0f || v == 512.0f || v == 256.0f)
 			out = v * 2;
 		else if (v == 1.0f / 512)
 			out = 1.0f / 1024;
+		else if (v == -32768.0f || v == 32767.0f)
+			out = v < 0 ? -131072.0f : 131071.0f;
 		else if (v == 0.0f)
 			out = 0.0f;
 		else

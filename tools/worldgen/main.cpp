@@ -1234,6 +1234,31 @@ int main(int argc, char** argv)
 		}
 		return bad ? 1 : 0;
 	}
+	if (command == "ynd-dump")
+	{
+		// a road-network region file's nodes (--file nodes<N>.ynd): index, place in the world (the region's origin on the
+		// loader's 1024 m grid plus the node's own), its links - to see what a region has where
+		const fs::path path = g_options["file"];
+		std::ifstream in(path, std::ios::binary);
+		Bytes data(std::istreambuf_iterator<char>(in), {});
+		worldgen::ynd::Region r;
+		if (!worldgen::ynd::Read(data, r, error))
+			return Fail(error);
+		const std::string stem = path.stem().string();
+		const int area = std::atoi(stem.c_str() + 5);
+		const float ox = (area % 32) * 1024.0f - 16384, oy = (area / 32 % 32) * 1024.0f - 16384;
+		std::printf("%s: %zu nodes (%u vehicle), %zu links, %zu junctions; origin (%.0f, %.0f)\n", stem.c_str(), r.nodes.size(), r.vehicleNodes,
+		    r.links.size(), r.junctions.size(), ox, oy);
+		for (size_t k = 0; k < r.nodes.size(); ++k)
+		{
+			const auto& n = r.nodes[k];
+			std::printf("%zu %s (%.1f, %.1f) links", k, k < r.vehicleNodes ? "v" : "p", ox + n.X() / 4.0f, oy + n.Y() / 4.0f);
+			for (uint32_t l = 0; l < n.LinkCount() && n.FirstLink() + l < r.links.size(); ++l)
+				std::printf(" %u:%u", r.links[n.FirstLink() + l].area, r.links[n.FirstLink() + l].node);
+			std::printf("\n");
+		}
+		return 0;
+	}
 	if (command == "extract-ynd")
 	{
 		// the road-network files the game uses, as they are (to compare against)

@@ -236,6 +236,8 @@
 0xf4c850	node	x	trace	6415	decode-vec
 0xf4f00c	node	x	trace	445	decode-vec
 0xf4f12c	node	x	trace	450	decode-vec
+0xf4f99f	node	y	static	0	int
+0xf4fa0f	node	y	static	0	int
 0xf4fa8c	node	x	static	0	static
 0xf4faa7	node	y	static	0	static
 0xf503ee	node	x	trace	68	int
@@ -351,6 +353,8 @@
 0xf5e9c0	node	y	trace	22004	decode-scalar
 0xf5ee8f	node	y	trace	2799	int
 0xf5ef1f	node	y	trace	2497	int
+0xf5f30f	node	y	static	0	int
+0xf5f39f	node	y	static	0	int
 0xf5f429	node	x	static	0	static
 0xf5f59a	node	x	static	0	static
 0xf5f848	node	x	static	0	static
