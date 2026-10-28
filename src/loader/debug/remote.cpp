@@ -1224,7 +1224,7 @@ namespace loader::debug::remote
 					std::string all;
 					for (const std::string& l : game::sectors::Lands())
 						all += (all.empty() ? "" : " ") + l;
-					return "ok lands " + all + " | there " + game::sectors::Active();
+					return "ok lands " + all + " | there " + game::sectors::Active() + " | parked cars " + game::sectors::Parked();
 				}
 				auto job = std::make_shared<Job>();
 				job->run = [to, at, place] {

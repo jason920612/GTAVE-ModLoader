@@ -23,6 +23,8 @@ namespace loader::game::sectors
 	// The sector there now ("" without sectors) and all the lands.
 	std::string Active();
 	std::vector<std::string> Lands();
+	// The parked cars the loader has made (and their limit), for the debug pipe.
+	std::string Parked();
 
 	// The game thread: that land there instead of the one that shares its place, and the player then at `at` (x, y; null:
 	// wherever the world's clearing leaves them). The switch runs on in Tick (the screen faded meanwhile); "" when it

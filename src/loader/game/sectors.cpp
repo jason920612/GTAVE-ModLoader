@@ -193,10 +193,17 @@ namespace loader::game::sectors
 		// the place) once the ground under them is in, those past 180 m taken away again; one the player gets into or moves
 		// is the game's from then on - except in its first 8 s: one that fell or rolled then (made before the ground's
 		// collision was in, after a teleport: nearly every car had gone that way) is made again later, up to three times.
-		constexpr float kParkNear = 120, kParkFar = 180;
+		// Each is a mission vehicle of the loader's script, and the game makes no more than 128 of those in all (CREATE_VEHICLE
+		// gives 0 past them, whoever asks; objects and the game's own traffic are not counted): a car park's 450 stalls round
+		// the camera took them all, and the game's missions, the mods and the trainer got no vehicle. So no more than
+		// kParkMax at once, the nearest first (one farther off and out of sight taken away for one 30 m nearer), and when
+		// the game says no (the others hold the rest), the farthest 8 let go and none made for 10 s.
+		constexpr float kParkNear = 120, kParkFar = 180, kParkSwap = 30;
+		constexpr size_t kParkMax = 60;
 		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
 		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E,
-		                   kGetEntityUprightValue = 0x95EED5A694951F9F;
+		                   kGetEntityUprightValue = 0x95EED5A694951F9F, kIsEntityOnScreen = 0xE659E47AF827484B,
+		                   kSetAllVehicleGeneratorsActiveInArea = 0xC12321827687FE4D, kRemoveVehiclesFromGeneratorsInArea = 0x46A1E1A299EC4BBA;
 		struct ParkedCar
 		{
 			float x = 0, y = 0, z = 0, heading = 0;
@@ -215,7 +222,7 @@ namespace loader::game::sectors
 		};
 		std::map<std::string, ParkedLand> g_parked;
 		std::vector<std::pair<std::string, uint32_t>> g_parkedLive; // (the cars made: their land, their place in its list)
-		ULONGLONG g_lastPark = 0;
+		ULONGLONG g_lastPark = 0, g_parkRefused = 0;
 
 		// (the world cleared - a land put away, a save loaded -: the cars made are gone, and their numbers will be other
 		// entities' - nothing done with them again)
@@ -361,11 +368,16 @@ namespace loader::game::sectors
 				seamless::Note(std::format("{} parked car(s) taken away", removed));
 			if (!here)
 				return;
+			// The game's car generators round the camera off, and the cars they made taken away: worldgen writes them into the
+			// near maps too, and some do make a car now - the zone's model, in a stall a car of ours stands in: the two pushed
+			// each other over, a car park became a heap of them.
+			natives::Invoke<void>(kSetAllVehicleGeneratorsActiveInArea, c.x - 400, c.y - 400, -200.0f, c.x + 400, c.y + 400, 1500.0f, 0, 0);
+			natives::Invoke<void>(kRemoveVehiclesFromGeneratorsInArea, c.x - 400, c.y - 400, -200.0f, c.x + 400, c.y + 400, 1500.0f, 0);
 			ParkedLand& pl = g_parked[here->name];
 			if (!pl.read)
 				ReadParked(*here, pl);
-			// the near ones made, a few each time (each once its model is in)
-			int made = 0;
+			// the near ones not made, nearest first; those made, farthest first (all of them this land's now)
+			std::vector<std::pair<float, uint32_t>> wanted;
 			const int reach = static_cast<int>(std::ceil(kParkNear / 50));
 			for (int dj = -reach; dj <= reach; ++dj)
 				for (int di = -reach; di <= reach; ++di)
@@ -374,36 +386,91 @@ namespace loader::game::sectors
 					if (it == pl.cells.end())
 						continue;
 					for (const uint32_t k : it->second)
-					{
-						ParkedCar& car = pl.cars[k];
-						if (car.vehicle != 0 || std::hypot(c.x - car.x, c.y - car.y) > kParkNear)
-							continue;
-						if (!car.asked)
-						{
-							natives::Invoke<void>(kRequestModel, car.model);
-							car.asked = true;
-							continue;
-						}
-						if (made >= 8 || !natives::Invoke<int32_t>(kHasModelLoaded, car.model))
-							continue;
-						// (the ground under it in: its collision found within 3 m of its place)
-						float gz = 0;
-						if (!natives::Invoke<int32_t>(kGetGroundZFor3dCoord, car.x, car.y, car.z + 3.0f, &gz, 0, 0) || std::fabs(gz - car.z) > 3)
-							continue;
-						const int32_t v = natives::Invoke<int32_t>(kCreateVehicle, car.model, car.x, car.y, car.z + 0.3f, car.heading, 0, 0, 0);
-						if (!v)
-							continue;
-						car.made = now;
-						++car.tries;
-						natives::Invoke<void>(kSetVehicleOnGroundProperly, v, 5.0f);
-						natives::Invoke<void>(kSetVehicleColours, v, car.colour, car.colour);
-						car.vehicle = v;
-						g_parkedLive.push_back({here->name, k});
-						++made;
-					}
+						if (const float d = std::hypot(c.x - pl.cars[k].x, c.y - pl.cars[k].y); pl.cars[k].vehicle == 0 && d <= kParkNear)
+							wanted.push_back({d, k});
 				}
+			std::sort(wanted.begin(), wanted.end());
+			std::vector<std::pair<float, size_t>> live;
+			for (size_t k = 0; k < g_parkedLive.size(); ++k)
+			{
+				const ParkedCar& car = pl.cars[g_parkedLive[k].second];
+				live.push_back({std::hypot(c.x - car.x, c.y - car.y), k});
+			}
+			std::sort(live.begin(), live.end(), std::greater<>());
+			size_t count = g_parkedLive.size(), farthest = 0;
+			std::vector<bool> letGo(g_parkedLive.size());
+			const auto release = [&](size_t k) {
+				ParkedCar& old = pl.cars[g_parkedLive[k].second];
+				natives::Invoke<void>(kSetEntityAsMissionEntity, old.vehicle, 1, 1);
+				natives::Invoke<void>(kDeleteVehicle, &old.vehicle);
+				old.vehicle = 0;
+				letGo[k] = true;
+				--count;
+			};
+			// a few each time (each once its model is in)
+			int made = 0, swapped = 0;
+			for (const auto& [d, k] : wanted)
+			{
+				ParkedCar& car = pl.cars[k];
+				if (!car.asked)
+				{
+					natives::Invoke<void>(kRequestModel, car.model);
+					car.asked = true;
+					continue;
+				}
+				if (made >= 8 || now - g_parkRefused < 10000)
+					break;
+				if (!natives::Invoke<int32_t>(kHasModelLoaded, car.model))
+					continue;
+				// (the ground under it in: its collision found within 3 m of its place)
+				float gz = 0;
+				if (!natives::Invoke<int32_t>(kGetGroundZFor3dCoord, car.x, car.y, car.z + 3.0f, &gz, 0, 0) || std::fabs(gz - car.z) > 3)
+					continue;
+				if (count >= kParkMax)
+				{
+					// (room made: one farther off by kParkSwap and out of sight - or past 90 m - taken away; none, and the nearest
+					// are all there)
+					bool room = false;
+					for (; farthest < live.size() && live[farthest].first > d + kParkSwap && !room; ++farthest)
+						if (live[farthest].first > 90 || !natives::Invoke<int32_t>(kIsEntityOnScreen, pl.cars[g_parkedLive[live[farthest].second].second].vehicle))
+						{
+							release(live[farthest].second);
+							room = true;
+							++swapped;
+						}
+					if (!room)
+						break;
+				}
+				const int32_t v = natives::Invoke<int32_t>(kCreateVehicle, car.model, car.x, car.y, car.z + 0.3f, car.heading, 0, 0, 0);
+				if (!v)
+				{
+					// (the game's 128 reached, the others holding the rest: the farthest 8 let go, none made for a while)
+					g_parkRefused = now;
+					for (int n = 0; n < 8 && farthest < live.size(); ++farthest)
+						if (!letGo[live[farthest].second])
+						{
+							release(live[farthest].second);
+							++n;
+						}
+					seamless::Note("the game made no more vehicles: parked cars let go");
+					break;
+				}
+				car.made = now;
+				++car.tries;
+				natives::Invoke<void>(kSetVehicleOnGroundProperly, v, 5.0f);
+				natives::Invoke<void>(kSetVehicleColours, v, car.colour, car.colour);
+				car.vehicle = v;
+				g_parkedLive.push_back({here->name, k});
+				++count;
+				++made;
+			}
+			size_t kept = 0;
+			for (size_t k = 0; k < g_parkedLive.size(); ++k)
+				if (k >= letGo.size() || !letGo[k])
+					g_parkedLive[kept++] = g_parkedLive[k];
+			g_parkedLive.resize(kept);
 			if (made)
-				seamless::Note(std::format("{} parked car(s) made", made));
+				seamless::Note(std::format("{} parked car(s) made ({} for farther ones)", made, swapped));
 		}
 
 		// The map types store (fwMapTypesStore: the streaming modules' tenth, research/phase0.md §63.4): its slot entries
@@ -920,6 +987,13 @@ namespace loader::game::sectors
 			if (!l.dormant)
 				out += (out.empty() ? "" : " ") + l.name;
 		return out;
+	}
+
+	std::string Parked()
+	{
+		const ULONGLONG now = GetTickCount64();
+		return std::format("{} made (at most {}){}", g_parkedLive.size(), kParkMax,
+		    g_parkRefused && now - g_parkRefused < 60000 ? std::format(", the game made none {:.0f} s ago", (now - g_parkRefused) / 1000.0) : "");
 	}
 
 	std::vector<std::string> Lands()
