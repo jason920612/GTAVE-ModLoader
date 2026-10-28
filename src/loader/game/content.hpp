@@ -14,4 +14,10 @@ namespace loader::game::content
 	// A pack's group of change sets executed / reverted (the game's thread); false when there is no such pack or group.
 	bool Execute(uint32_t pack, uint32_t group);
 	bool Revert(uint32_t pack, uint32_t group);
+
+	// Research (seamless crossing): a pack's change sets of `group` executed / reverted one by one as if they were of the
+	// group `as` - the manager takes the map path (the world cleared, its maps' cache read: 0xC27740) only for the map
+	// groups. How many change sets; -1 when there is no such pack or group.
+	int ExecuteAs(uint32_t pack, uint32_t group, uint32_t as);
+	int RevertAs(uint32_t pack, uint32_t group, uint32_t as);
 }

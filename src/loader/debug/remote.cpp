@@ -28,6 +28,7 @@
 #include "../config.hpp"
 #include "../convert/resource.hpp"
 #include "../game/content.hpp"
+#include "../game/dlcpacks.hpp"
 #include "../game/landfiles.hpp"
 #include "../game/natives.hpp"
 #include "../game/sectors.hpp"
@@ -840,6 +841,53 @@ namespace loader::debug::remote
 				std::string how;
 				in >> how;
 				return Window(how);
+			}
+			if (cmd == "shift")
+			{
+				// shift dx dy dz: the player (or their vehicle) moved by that much in one frame, the gameplay camera's heading
+				// and pitch relative to them kept (research: a land crossed without a cut)
+				float d[3]{};
+				in >> d[0] >> d[1] >> d[2];
+				auto job = std::make_shared<Job>();
+				job->run = [d] {
+					using game::natives::Invoke;
+					const int32_t player = Invoke<int32_t>(0xD80958FC74E988A6ull);
+					const int32_t vehicle = Invoke<int32_t>(0x997ABD671D25CA0Bull, player, 0) ? Invoke<int32_t>(0x9A9112A0FE9A4713ull, player, 0) : 0;
+					const int32_t e = vehicle ? vehicle : player;
+					const float heading = Invoke<float>(0x743607648ADD4587ull), pitch = Invoke<float>(0x3A6867B4845BEDA2ull);
+					const float speed = Invoke<float>(0xD5037BA82E12416Full, e);
+					const auto p = Invoke<game::natives::ScrVector>(0x3FEF770D40960D5Aull, e, 1);
+					Invoke<void>(0x239A3351AC1DA385ull, e, p.x + d[0], p.y + d[1], p.z + d[2], 0, 0, 0);
+					Invoke<void>(0xB4EC2312F4E5B1F1ull, heading);
+					Invoke<void>(0x6D0858B8EDFD2B7Dull, pitch, 1.0f);
+					return std::format("{:.1f} {:.1f} {:.1f} -> +({:.0f} {:.0f} {:.0f}), speed {:.1f}, camera {:.1f} {:.1f}", p.x, p.y, p.z, d[0], d[1], d[2], speed,
+					    heading, pitch);
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
+			if (cmd == "execas" || cmd == "revertas")
+			{
+				// execas|revertas <pack folder> <group hex> <as hex>: research - a pack's change sets run through another
+				// group's path (game/content.hpp); the pack mounted first if it waits
+				std::string pack, group, as;
+				in >> pack >> group >> as;
+				auto job = std::make_shared<Job>();
+				job->run = [cmd, pack, group, as] {
+					const std::string mounted = cmd == "execas" ? game::dlcpacks::MountLater(pack) : std::string();
+					const ULONGLONG t = GetTickCount64();
+					const uint32_t g = static_cast<uint32_t>(std::stoul(group, nullptr, 16)), a = static_cast<uint32_t>(std::stoul(as, nullptr, 16));
+					const int n = cmd == "execas" ? game::content::ExecuteAs(convert::Joaat(pack), g, a) : game::content::RevertAs(convert::Joaat(pack), g, a);
+					return std::format("{} change set(s) in {} ms{}", n, GetTickCount64() - t, mounted.empty() ? "" : " (mount: " + mounted + ")");
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(60), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
 			}
 			if (cmd == "landboxes")
 			{

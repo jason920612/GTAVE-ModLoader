@@ -134,6 +134,60 @@ namespace loader::game::content
 		return true;
 	}
 
+	namespace
+	{
+		// a group's change sets (their hashes), or null
+		const uint32_t* ChangeSets(const uint8_t* pack, uint32_t group, uint16_t& count)
+		{
+			const auto* groups = *reinterpret_cast<uint8_t* const*>(pack + 0x98);
+			for (uint16_t g = 0; g < *reinterpret_cast<const uint16_t*>(pack + 0xA0); ++g)
+				if (*reinterpret_cast<const uint32_t*>(groups + g * 0x18) == group)
+				{
+					count = *reinterpret_cast<const uint16_t*>(groups + g * 0x18 + 0x10);
+					return *reinterpret_cast<uint32_t* const*>(groups + g * 0x18 + 8);
+				}
+			return nullptr;
+		}
+		// 0xC272A0 (manager, pack, &group, &change set, flags 3): one change set executed; 0xC274B0 (..., -1, 3): reverted
+		constexpr uintptr_t kExecuteSet = 0xC272A0, kRevertSet = 0xC274B0;
+		using ExecuteSetFn = void(__fastcall*)(void* manager, void* pack, const uint32_t* group, const uint32_t* set, uint32_t flags);
+		using RevertSetFn = void(__fastcall*)(void* manager, void* pack, const uint32_t* group, const uint32_t* set, int32_t a, uint32_t flags);
+	}
+
+	int ExecuteAs(uint32_t pack, uint32_t group, uint32_t as)
+	{
+		uint8_t* p = g_ok ? FindPack(pack) : nullptr;
+		uint16_t count = 0;
+		const uint32_t* sets = p ? ChangeSets(p, group, count) : nullptr;
+		if (!sets)
+			return -1;
+		const auto execute = reinterpret_cast<ExecuteSetFn>(pattern::Module::Main().base + kExecuteSet);
+		for (uint16_t s = 0; s < count; ++s)
+		{
+			const uint32_t set = sets[s];
+			execute(Manager(), p, &as, &set, 3);
+		}
+		log::Info("content: pack {:08x}'s group {:08x}: {} change set(s) executed as {:08x}", pack, group, count, as);
+		return count;
+	}
+
+	int RevertAs(uint32_t pack, uint32_t group, uint32_t as)
+	{
+		uint8_t* p = g_ok ? FindPack(pack) : nullptr;
+		uint16_t count = 0;
+		const uint32_t* sets = p ? ChangeSets(p, group, count) : nullptr;
+		if (!sets)
+			return -1;
+		const auto revert = reinterpret_cast<RevertSetFn>(pattern::Module::Main().base + kRevertSet);
+		for (uint16_t s = 0; s < count; ++s)
+		{
+			const uint32_t set = sets[s];
+			revert(Manager(), p, &as, &set, -1, 3);
+		}
+		log::Info("content: pack {:08x}'s group {:08x}: {} change set(s) reverted as {:08x}", pack, group, count, as);
+		return count;
+	}
+
 	bool Revert(uint32_t pack, uint32_t group)
 	{
 		uint8_t* p = g_ok ? FindPack(pack) : nullptr;
