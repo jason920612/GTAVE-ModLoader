@@ -35,6 +35,7 @@
 #include "game/content.hpp"
 #include "game/playarea.hpp"
 #include "game/sectors.hpp"
+#include "game/seamless.hpp"
 #include "game/pathregions.hpp"
 #include "game/pools.hpp"
 #include "game/minimap.hpp"
@@ -304,6 +305,8 @@ namespace loader::core
 				game::sea::Tick();
 			if (!state::online)
 				game::sectors::Tick();
+			if (!state::online)
+				game::seamless::Tick();
 			if (!state::online)
 				debug::scripttrace::Tick();
 			if (!state::online)

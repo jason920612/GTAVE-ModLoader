@@ -46,6 +46,12 @@ namespace loader::game::landfiles
 	// streamer never asked for one, and the land had no ground). How many.
 	size_t PutBoxesBack(const std::string& land);
 
+	// Game thread: a land's maps and collision files whose boxes meet `box` (min x, min y, max x, max y) switched on or off
+	// for the box streamers' searches (their flags' bit 2, as a map group's revert sets it; research/phase0.md §64: two lands
+	// in the one box, each streamed only in its own part). The box trees must be made again after (the searches go through
+	// them, the flags read for what they find). How many were switched.
+	size_t SwitchArea(const std::string& land, const std::filesystem::path& pack, const float* box, bool on);
+
 	// Development: the land's collision and map files' boxes in their stores (how many empty).
 	std::string Boxes(const std::string& land, const std::filesystem::path& pack);
 

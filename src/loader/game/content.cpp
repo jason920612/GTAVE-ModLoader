@@ -188,6 +188,37 @@ namespace loader::game::content
 		return count;
 	}
 
+	uint8_t* ManagerRecord()
+	{
+		return g_ok ? Manager() : nullptr;
+	}
+
+	uint8_t* PackRecord(uint32_t pack)
+	{
+		return g_ok ? FindPack(pack) : nullptr;
+	}
+
+	const uint32_t* GroupChangeSets(const uint8_t* pack, uint32_t group, uint16_t& count)
+	{
+		return pack ? ChangeSets(pack, group, count) : nullptr;
+	}
+
+	uint8_t* ChangeSetRecord(uint32_t changeSet)
+	{
+		// (the change sets' table: [+0x29CAFC0], beside the manager's pointer - 0xC27740 and 0xC272A0 read it)
+		uint8_t* table = g_ok ? *reinterpret_cast<uint8_t**>(pattern::Module::Main().base + 0x29CAFC0) : nullptr;
+		if (!table)
+			return nullptr;
+		auto* const* buckets = *reinterpret_cast<uint8_t** const*>(table + 0x30);
+		const uint16_t count = *reinterpret_cast<const uint16_t*>(table + 0x38);
+		if (!buckets || !count)
+			return nullptr;
+		for (uint8_t* r = buckets[changeSet % count]; r; r = *reinterpret_cast<uint8_t**>(r + 0xD0))
+			if (*reinterpret_cast<const uint32_t*>(r) == changeSet)
+				return r;
+		return nullptr;
+	}
+
 	bool Revert(uint32_t pack, uint32_t group)
 	{
 		uint8_t* p = g_ok ? FindPack(pack) : nullptr;

@@ -900,6 +900,8 @@ namespace loader::game::dlcpacks
 		if (!g_manager || !g_mountSetup || !g_mountContent)
 			return "the game's pack mounting was not found";
 		WatchdogPause pause;
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto since = [](std::chrono::steady_clock::time_point t) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); };
 		auto* manager = static_cast<uint8_t*>(g_manager);
 		const auto packs = [&] { return *reinterpret_cast<uint8_t**>(manager + 0x28); };
 		const auto count = [&] { return *reinterpret_cast<uint16_t*>(manager + 0x30); };
@@ -916,8 +918,12 @@ namespace loader::game::dlcpacks
 					record = packs() + i * 0x120;
 		if (!record)
 			return "the game has no record of it";
+		const double added = since(t0);
+		const auto t1 = std::chrono::steady_clock::now();
 		if (!g_mountSetup(record, *reinterpret_cast<uint32_t*>(manager + 0x178)))
 			return std::format("its setup2.xml was not read (state {})", *reinterpret_cast<uint32_t*>(record + 0x100));
+		const double setup = since(t1);
+		const auto t2 = std::chrono::steady_clock::now();
 		if (*reinterpret_cast<uint32_t*>(record + 0x100) == 1)
 		{
 			const char* device = *reinterpret_cast<uint16_t*>(record + 0x48) ? *reinterpret_cast<const char**>(record + 0x40) : "";
@@ -925,13 +931,14 @@ namespace loader::game::dlcpacks
 				return std::format("its content was not mounted ({})", r);
 			*reinterpret_cast<uint32_t*>(record + 0x100) = 2;
 		}
+		const double content = since(t2);
 		{
 			std::lock_guard lock(g_mutex);
 			for (Pack& p : g_packs)
 				if (p.name == name)
 					p = pack, p.registered = true, p.heldBack = false;
 		}
-		log::Info("dlc pack {}: mounted now", name);
+		log::Info("dlc pack {}: mounted now in {:.1f} ms (added {:.1f}, setup {:.1f}, content {:.1f})", name, since(t0), added, setup, content);
 		return "";
 	}
 

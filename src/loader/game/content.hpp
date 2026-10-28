@@ -20,4 +20,12 @@ namespace loader::game::content
 	// groups. How many change sets; -1 when there is no such pack or group.
 	int ExecuteAs(uint32_t pack, uint32_t group, uint32_t as);
 	int RevertAs(uint32_t pack, uint32_t group, uint32_t as);
+
+	// The manager's own records (game/seamless): the manager; a pack's record (0x120 bytes) by its name's hash; a group's
+	// change sets in it (their hashes, `count` of them); a change set's record by its hash (the change sets' table,
+	// [+0x29CAFC0]: +0x30 buckets, +0x38 how many, chained at +0xD0, +0 the hash) - null when there is none.
+	uint8_t* ManagerRecord();
+	uint8_t* PackRecord(uint32_t pack);
+	const uint32_t* GroupChangeSets(const uint8_t* pack, uint32_t group, uint16_t& count);
+	uint8_t* ChangeSetRecord(uint32_t changeSet);
 }

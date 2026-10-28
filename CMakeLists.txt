@@ -60,6 +60,7 @@ add_library(loader SHARED
     src/loader/game/content.cpp
     src/loader/game/sectors.cpp
     src/loader/game/landfiles.cpp
+    src/loader/game/seamless.cpp
     src/loader/game/models.cpp
     src/loader/game/pausemenu.cpp
     src/loader/game/scripts.cpp
@@ -92,6 +93,7 @@ add_library(loader SHARED
     src/loader/debug/dred.cpp
     src/loader/debug/remote.cpp
     src/loader/debug/watchdog.cpp
+    src/loader/debug/profile.cpp
     src/loader/game/dlcpacks.cpp
     src/loader/game/pools.cpp
     src/loader/convert/resource.cpp

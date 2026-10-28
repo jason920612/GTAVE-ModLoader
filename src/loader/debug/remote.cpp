@@ -31,6 +31,7 @@
 #include "../game/content.hpp"
 #include "../game/dlcpacks.hpp"
 #include "../game/landfiles.hpp"
+#include "../game/seamless.hpp"
 #include "../game/natives.hpp"
 #include "../game/sectors.hpp"
 #include "../graphics/bridge.hpp"
@@ -41,6 +42,7 @@
 #include "../state.hpp"
 #include "../ui/overlay.hpp"
 #include "../ui/recorder.hpp"
+#include "profile.hpp"
 #include "watchdog.hpp"
 
 namespace loader::debug::remote
@@ -70,97 +72,28 @@ namespace loader::debug::remote
 		};
 		std::mutex g_mutex;
 
-		// Research: where the game thread's time goes in a call. A thread of ours stops it about every millisecond and
-		// unwinds its stack: each sample is put down by the innermost game function it is in, and by the return address in
-		// the first frame inside [from, to) (which of that function's calls it was under). Nothing is allocated while the
-		// game thread is stopped (it may hold the heap's lock).
-		struct Profile
-		{
-			static constexpr int kMax = 20000;
-			uintptr_t from = 0, to = 0;
-			std::atomic<bool> running = false;
-			int taken = 0;
-			std::array<uint32_t, kMax> leaf{}, site{};
-		};
+		// Research: each data file a change set enables (0xC39440: its entry - +0 the data file, +8 its kind, +0xC enable)
+		// timed while `g_timeDataFiles` (the data file's name at +0x10 as the game keeps it - logged as it is)
+		using EnableDataFileFn = uint64_t (*)(uint8_t* entry);
+		EnableDataFileFn g_enableDataFile = nullptr;
+		bool g_timeDataFiles = false;
+		std::vector<std::string> g_dataFileTimes;
 
-		void SampleThread(Profile* p, HANDLE thread)
+		uint64_t EnableDataFileHook(uint8_t* entry)
 		{
-			const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-			while (p->running && p->taken < Profile::kMax)
-			{
-				if (SuspendThread(thread) != static_cast<DWORD>(-1))
-				{
-					CONTEXT c{};
-					c.ContextFlags = CONTEXT_FULL;
-					if (GetThreadContext(thread, &c))
-					{
-						uint32_t leaf = 0, site = 0;
-						for (int i = 0; i < 64 && c.Rip; ++i)
-						{
-							DWORD64 image = 0;
-							RUNTIME_FUNCTION* f = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
-							if (image == base)
-							{
-								if (!leaf)
-									leaf = f ? f->BeginAddress : static_cast<uint32_t>(c.Rip - base);
-								if (i && c.Rip >= base + p->from && c.Rip < base + p->to)
-								{
-									site = static_cast<uint32_t>(c.Rip - base);
-									break;
-								}
-							}
-							if (f)
-							{
-								void* data = nullptr;
-								DWORD64 frame = 0;
-								RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, nullptr);
-							}
-							else
-							{
-								c.Rip = *reinterpret_cast<const DWORD64*>(c.Rsp);
-								c.Rsp += 8;
-							}
-						}
-						p->leaf[p->taken] = leaf;
-						p->site[p->taken] = site;
-						++p->taken;
-					}
-					ResumeThread(thread);
-				}
-				const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(1000);
-				while (std::chrono::steady_clock::now() < until)
-					std::this_thread::yield();
-			}
+			if (!g_timeDataFiles)
+				return g_enableDataFile(entry);
+			const auto t = std::chrono::steady_clock::now();
+			const uint64_t r = g_enableDataFile(entry);
+			const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+			const auto* file = *reinterpret_cast<const uint8_t* const*>(entry);
+			char name[96] = "?";
+			if (file)
+				strncpy_s(name, reinterpret_cast<const char*>(file), _TRUNCATE);
+			g_dataFileTimes.push_back(std::format("{} kind {} {:.1f} ms", name, *reinterpret_cast<const uint32_t*>(entry + 8), ms));
+			return r;
 		}
 
-		// `run` on this (the game's) thread, sampled; the samples by call site of [from, to) and by function, most first
-		template <class Run>
-		std::string Profiled(uintptr_t from, uintptr_t to, Run run)
-		{
-			auto p = std::make_unique<Profile>();
-			p->from = from, p->to = to;
-			HANDLE self = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, GetCurrentThreadId());
-			p->running = true;
-			std::thread sampler(SampleThread, p.get(), self);
-			run();
-			p->running = false;
-			sampler.join();
-			CloseHandle(self);
-			std::map<uint32_t, int> sites, leaves;
-			for (int i = 0; i < p->taken; ++i)
-				++sites[p->site[i]], ++leaves[p->leaf[i]];
-			const auto top = [](const std::map<uint32_t, int>& m, size_t n) {
-				std::vector<std::pair<int, uint32_t>> v;
-				for (const auto& [k, c] : m)
-					v.push_back({c, k});
-				std::sort(v.rbegin(), v.rend());
-				std::string out;
-				for (size_t i = 0; i < std::min(n, v.size()); ++i)
-					out += std::format(" {:#x}:{}", v[i].second, v[i].first);
-				return out;
-			};
-			return std::format("{} samples; sites{}; functions{}", p->taken, top(sites, 14), top(leaves, 14));
-		}
 		std::map<int, Held> g_held; // control -> how long
 		// "call": a mod's web function called as a page would (game.call), its answer back to the tester
 		struct ModCall
@@ -962,13 +895,75 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "seamless" || cmd == "frames")
+			{
+				// seamless begin <land> | seamless status | frames start|stop: research (game/seamless.hpp) - a land's maps
+				// registered over frames, the frames' times
+				std::string what, land, there;
+				float band[4]{};
+				in >> what >> land >> there >> band[0] >> band[1] >> band[2] >> band[3];
+				auto job = std::make_shared<Job>();
+				job->run = [cmd, what, land, there, band] {
+					if (cmd == "frames")
+						return game::seamless::Frames(what == "start");
+					if (what == "begin")
+					{
+						const std::string error = game::seamless::Begin(land, there == "-" ? std::string() : there, band);
+						return error.empty() ? std::string("begun") : error;
+					}
+					return game::seamless::Status();
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
+			if (cmd == "ipls")
+			{
+				// ipls remove|request <map> [<map> ...]: maps switched off or on by name in one go (REMOVE_IPL / REQUEST_IPL;
+				// research: a land's band)
+				std::string what, name;
+				in >> what;
+				std::vector<std::string> names;
+				while (in >> name)
+					names.push_back(name);
+				auto job = std::make_shared<Job>();
+				job->run = [what, names] {
+					const auto t = std::chrono::steady_clock::now();
+					int active = 0;
+					for (const std::string& n : names)
+					{
+						game::natives::Invoke<void>(what == "remove" ? 0xEE6C5AD3ECE0A82Dull : 0x41B4893843BBDB74ull, n.c_str());
+						active += game::natives::Invoke<int32_t>(0x88A741E44A2B3495ull, n.c_str()) != 0;
+					}
+					return std::format("{} map(s) {}d in {:.1f} ms, {} active now", names.size(), what,
+					    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(), active);
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
 			if (cmd == "mapsoft")
 			{
 				// mapsoft <hex mask>: research - calls of the content manager's map path (0xC27740) made to do nothing, a bit
-				// each (0 puts them all back): which of them clear the world
-				static constexpr std::pair<uintptr_t, uintptr_t> kSites[] = {{0xC27B8F, 0x3A6370}, {0xC27B94, 0x127A3A0}, {0xC27BA0, 0xCEECD0},
-				    {0xC27BB4, 0x926EE0}, {0xC27BBB, 0x112D1F0}, {0xC27BC5, 0x1D94BB0}, {0xC27C45, 0xC527D0}, {0xC27C63, 0x926EE0},
-				    {0xC27C73, 0x935490}, {0xC27C7B, 0x4B9EE0}, {0xC27B81, 0xC2DB90}};
+				// each (0 puts them all back): which of them clear the world, which cost the time. A call rel32 (its target
+				// checked) or a call through a vtable (its bytes checked).
+				struct Site
+				{
+					uintptr_t at;
+					uint8_t size;
+					uintptr_t target;   // (rel32 calls)
+					uint8_t bytes[3];   // (vtable calls)
+				};
+				static constexpr Site kSites[] = {{0xC27B8F, 5, 0x3A6370}, {0xC27B94, 5, 0x127A3A0}, {0xC27BA0, 5, 0xCEECD0}, {0xC27BB4, 5, 0x926EE0},
+				    {0xC27BBB, 5, 0x112D1F0}, {0xC27BC5, 5, 0x1D94BB0}, {0xC27C45, 5, 0xC527D0}, {0xC27C63, 5, 0x926EE0}, {0xC27C73, 5, 0x935490},
+				    {0xC27C7B, 5, 0x4B9EE0}, {0xC27B81, 5, 0xC2DB90}, {0xC27C6B, 5, 0xC2E0B0}, {0xC27E44, 5, 0xCF03F0},
+				    {0xC27DAD, 3, 0, {0xFF, 0x50, 0x30}}, {0xC27DBE, 3, 0, {0xFF, 0x50, 0x10}},
+				    // (bit 15: a data file list's "load everything asked for now" - 0xC39440's kind 4, a jump to 0x4D5110 - made a return)
+				    {0xC395F6, 5, 0x4D5110}};
 				static std::map<uintptr_t, std::array<uint8_t, 5>> saved;
 				std::string word;
 				in >> word;
@@ -977,37 +972,45 @@ namespace loader::debug::remote
 				std::string out = "ok";
 				for (size_t i = 0; i < std::size(kSites); ++i)
 				{
-					auto* at = reinterpret_cast<uint8_t*>(base + kSites[i].first);
+					const Site& site = kSites[i];
+					auto* at = reinterpret_cast<uint8_t*>(base + site.at);
 					DWORD old = 0;
 					if (mask & (1u << i))
 					{
-						if (saved.contains(kSites[i].first))
+						if (saved.contains(site.at))
 							continue;
-						int32_t rel = 0;
-						std::memcpy(&rel, at + 1, 4);
-						if (at[0] != 0xE8 || kSites[i].first + 5 + rel != kSites[i].second)
+						bool same = false;
+						if (site.size == 5)
 						{
-							out += std::format(" (site {:#x} differs)", kSites[i].first);
+							int32_t rel = 0;
+							std::memcpy(&rel, at + 1, 4);
+							same = (at[0] == 0xE8 || at[0] == 0xE9) && site.at + 5 + rel == site.target;
+						}
+						else
+							same = std::memcmp(at, site.bytes, 3) == 0;
+						if (!same)
+						{
+							out += std::format(" (site {:#x} differs)", site.at);
 							continue;
 						}
 						std::array<uint8_t, 5> was{};
-						std::memcpy(was.data(), at, 5);
-						saved[kSites[i].first] = was;
-						static constexpr uint8_t kNop5[] = {0x0F, 0x1F, 0x44, 0x00, 0x00};
-						VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old);
-						std::memcpy(at, kNop5, 5);
-						VirtualProtect(at, 5, old, &old);
-						out += std::format(" off {:#x}", kSites[i].second);
+						std::memcpy(was.data(), at, site.size);
+						saved[site.at] = was;
+						static constexpr uint8_t kNop5[] = {0x0F, 0x1F, 0x44, 0x00, 0x00}, kNop3[] = {0x0F, 0x1F, 0x00}, kRet5[] = {0xC3, 0x90, 0x90, 0x90, 0x90};
+						VirtualProtect(at, site.size, PAGE_EXECUTE_READWRITE, &old);
+						std::memcpy(at, site.size == 3 ? kNop3 : at[0] == 0xE9 ? kRet5 : kNop5, site.size);
+						VirtualProtect(at, site.size, old, &old);
+						out += std::format(" off {:#x}", site.at);
 					}
-					else if (const auto it = saved.find(kSites[i].first); it != saved.end())
+					else if (const auto it = saved.find(site.at); it != saved.end())
 					{
-						VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old);
-						std::memcpy(at, it->second.data(), 5);
-						VirtualProtect(at, 5, old, &old);
+						VirtualProtect(at, site.size, PAGE_EXECUTE_READWRITE, &old);
+						std::memcpy(at, it->second.data(), site.size);
+						VirtualProtect(at, site.size, old, &old);
 						saved.erase(it);
-						out += std::format(" on {:#x}", kSites[i].second);
+						out += std::format(" on {:#x}", site.at);
 					}
-					FlushInstructionCache(GetCurrentProcess(), at, 5);
+					FlushInstructionCache(GetCurrentProcess(), at, site.size);
 				}
 				return out;
 			}
@@ -1026,10 +1029,26 @@ namespace loader::debug::remote
 					const auto run = [&] {
 						n = cmd == "execas" ? game::content::ExecuteAs(convert::Joaat(pack), g, a) : game::content::RevertAs(convert::Joaat(pack), g, a);
 					};
-					// (profile: sampled, by the calls of the change set's own execution or revert, 0xC27740 / 0xC27E80)
+					// (profile: sampled, by the calls of the change set's own execution or revert, 0xC27740 / 0xC27E80; files: each
+					// data file enabled timed)
 					std::string samples;
 					if (profile == "profile")
-						samples = "; " + (cmd == "execas" ? Profiled(0xC27740, 0xC27E80, run) : Profiled(0xC27E80, 0xC28800, run));
+						samples = "; " + (cmd == "execas" ? profile::Profiled(0xC27740, 0xC27E80, run) : profile::Profiled(0xC27E80, 0xC28800, run));
+					else if (profile == "files")
+					{
+						if (!g_enableDataFile)
+						{
+							auto* at = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + 0xC39440);
+							if (MH_CreateHook(at, reinterpret_cast<void*>(&EnableDataFileHook), reinterpret_cast<void**>(&g_enableDataFile)) == MH_OK)
+								MH_EnableHook(at);
+						}
+						g_dataFileTimes.clear();
+						g_timeDataFiles = true;
+						run();
+						g_timeDataFiles = false;
+						for (const std::string& d : g_dataFileTimes)
+							samples += "; " + d;
+					}
 					else
 						run();
 					const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();

@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <tuple>
 #include <vector>
 
 #include "../convert/archive.hpp"
@@ -75,6 +76,9 @@ namespace loader::game::landfiles
 			std::array<std::vector<uint32_t>, kKinds> hashes;
 			std::vector<uint32_t> pictures; // (the pause map's: among the texture dictionaries too)
 			std::map<uint32_t, std::array<uint8_t, 34>> bounds; // (the collision files' boxes and flags when given back)
+			// (the maps' and collision files' slots, looked up once while they are registered: SwitchArea)
+			std::vector<int32_t> mapSlots, boundsSlots;
+			bool slotsKnown = false;
 		};
 		std::map<std::string, Names> g_names;
 
@@ -335,6 +339,50 @@ namespace loader::game::landfiles
 		return back;
 	}
 
+	size_t SwitchArea(const std::string& land, const std::filesystem::path& pack, const float* box, bool on)
+	{
+		if (!Supported())
+			return 0;
+		Names& names = g_names[land];
+		if (!names.read)
+			Read(land, pack, names);
+		const auto base = pattern::Module::Main().base;
+		if (!names.slotsKnown)
+		{
+			for (const auto& [kind, slots] : {std::pair<Kind, std::vector<int32_t>*>{kMap, &names.mapSlots}, {kBounds, &names.boundsSlots}})
+			{
+				const uint8_t* module = ModuleOf(base, kKindInfo[kind].vtable);
+				slots->clear();
+				for (const uint32_t hash : names.hashes[kind])
+					if (const int32_t slot = Slot(module, hash); Used(module, slot))
+						slots->push_back(slot);
+			}
+			names.slotsKnown = true;
+		}
+		size_t switched = 0;
+		// (the map store's box streamer at +0xC0: boxes +0xE8, flags +0xF8; the collision store's at +0xB0: +0xD8, +0xE8)
+		for (const auto& [kind, boxesAt, flagsAt] : {std::tuple{kMap, kMapBoxes, kMapFlags}, std::tuple{kBounds, kBoundsBoxes, kBoundsFlags}})
+		{
+			uint8_t* module = ModuleOf(base, kKindInfo[kind].vtable);
+			const auto* boxes = *reinterpret_cast<const float* const*>(module + boxesAt);
+			auto* flags = *reinterpret_cast<uint16_t* const*>(module + flagsAt);
+			if (!boxes || !flags)
+				continue;
+			for (const int32_t slot : kind == kMap ? names.mapSlots : names.boundsSlots)
+			{
+				if (!Used(module, slot))
+					continue;
+				const float* b = boxes + static_cast<size_t>(slot) * 8;
+				if (b[0] > box[2] || b[4] < box[0] || b[1] > box[3] || b[5] < box[1])
+					continue;
+				const uint16_t was = flags[slot];
+				flags[slot] = static_cast<uint16_t>(on ? was & ~4 : was | 4);
+				switched += flags[slot] != was;
+			}
+		}
+		return switched;
+	}
+
 	std::string Boxes(const std::string& land, const std::filesystem::path& pack)
 	{
 		if (!Supported())
@@ -584,6 +632,7 @@ namespace loader::game::landfiles
 		}
 		p.loaded = stillLoaded;
 		p.done = true;
+		names.slotsKnown = false;
 		log::Info("land files: {}: {} given back to the stores{}", land, p.released,
 		    p.kept ? std::format(", {} kept registered ({} still loaded)", p.kept, stillLoaded) : std::string());
 		return p;
