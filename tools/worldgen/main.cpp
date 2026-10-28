@@ -877,7 +877,20 @@ namespace
 		if (!loader::convert::BuildArchive(root, packed, error))
 			return false;
 		fs::create_directories(out.parent_path());
-		std::ofstream(out, std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), static_cast<std::streamsize>(packed.size()));
+		// (written beside it and put in its place whole: a game starting meanwhile took a half-written pack - the loader
+		// replaces dlc.rpf with a dlc.rpf.new it finds)
+		fs::path part = out;
+		part += ".part";
+		{
+			std::ofstream file(part, std::ios::binary);
+			file.write(reinterpret_cast<const char*>(packed.data()), static_cast<std::streamsize>(packed.size()));
+			if (!file.flush())
+				return error = "cannot write " + part.string(), false;
+		}
+		std::error_code ec;
+		fs::rename(part, out, ec);
+		if (ec)
+			return error = "cannot put " + part.string() + " in place: " + ec.message(), false;
 		std::printf("%s: %zu files in %zu archive(s), %zu map change set(s) (%zu bytes)\n", out.string().c_str(), count, archiveNames.size(),
 		    setNames.size(), packed.size());
 		return true;

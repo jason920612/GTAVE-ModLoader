@@ -381,6 +381,20 @@ namespace loader::game::dlcpacks
 			{
 				if (!entry.is_directory())
 					continue;
+				// A world builder's sector that came after the start (one being built while the game runs) waits for the next
+				// one: the lands are read once, before the packs, and mounted as a pack of its own its road network's files
+				// took the place of the land's there - links to nodes that are not there stopped the game (research/phase0.md
+				// §63.10).
+				if (std::filesystem::is_regular_file(entry.path() / L"land.json", ec))
+				{
+					const std::string name = Utf8(entry.path().filename().u8string());
+					const auto lands = sectors::Lands();
+					if (std::find(lands.begin(), lands.end(), name) == lands.end())
+					{
+						log::Info("dlc pack {}: a land that came after the start - mounted at the next start", name);
+						continue;
+					}
+				}
 				// A pack rebuilt while the game ran (it holds dlc.rpf open: the world editor writes dlc.rpf.new) takes the
 				// old one's place now.
 				if (const auto fresh = entry.path() / L"dlc.rpf.new"; std::filesystem::is_regular_file(fresh, ec))
