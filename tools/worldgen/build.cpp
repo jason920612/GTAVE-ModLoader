@@ -3265,7 +3265,21 @@ namespace worldgen::build
 					return toRoad.In(c[0], c[1]) ? toRoad.At(c[0], c[1]) : 1e9f;
 				};
 				constexpr float kTurn = 3.14159265f / 6;
-				size_t moved = 0;
+				// (and how far each place is from a big building's walls - 400 m² and up, or over 6 m on the map -: a crown is
+				// kept 0.5 m off them, as drawn - a quarter wider than the pictures' -; the reviewers saw crowns cutting through
+				// a parking garage's and an office's facades)
+				raster::Grid<uint8_t> offBig;
+				offBig.Init(gx0, gy0, gx1, gy1, 2.0f, 1);
+				for (const std::vector<world::Building>* list : {&w.buildings, static_cast<const std::vector<world::Building>*>(&found)})
+					for (const auto& b : *list)
+						if (b.footprint.size() >= 3 && (b.height > 6 || std::fabs(polygon::Area(b.footprint)) >= 400))
+							raster::FillPolygon(offBig, {b.footprint}, uint8_t{0});
+				const auto toBig = raster::DistanceTo(offBig, 1);
+				const auto bigRoomAt = [&](float x, float y) {
+					const auto c = toBig.Cell({x, y});
+					return toBig.In(c[0], c[1]) ? toBig.At(c[0], c[1]) : 1e9f;
+				};
+				size_t moved = 0, trimmed = 0;
 				for (trees::Seen t : photoTrees)
 				{
 					// (a trunk the pictures put on a road or a roof - a crown's brightest point is often over one - to the
@@ -3283,6 +3297,13 @@ namespace worldgen::build
 						if (!found)
 							continue;
 						++moved;
+					}
+					if (const float wall = bigRoomAt(t.x, t.y); 1.25f * t.crown > wall + 0.5f)
+					{
+						t.crown = (wall + 0.5f) / 1.25f;
+						++trimmed;
+						if (t.crown < 1.2f)
+							continue;
 					}
 					// (a crown over a road shrunk to the room there where the pictures see the road open - the woods' roads -,
 					// not where they see the canopy close over it, as over Tallahassee's streets)
@@ -3303,7 +3324,7 @@ namespace worldgen::build
 					}
 					kept.push_back(t);
 				}
-				std::printf("trees from the aerial pictures: %zu moved off roads and roofs\n", moved);
+				std::printf("trees from the aerial pictures: %zu moved off roads and roofs, %zu kept off big buildings' walls\n", moved, trimmed);
 				trees::Stats ts;
 				trees::Photo(kept, landCoverAt, w.projection.lat0, open, ground, {bx0, by0, bx1, by1}, furniture, ts, ownTrees.front().empty() ? nullptr : &ownTrees);
 				std::printf("trees from the aerial pictures: %zu palms, %zu others\n", ts.palms, ts.broadleaf);
