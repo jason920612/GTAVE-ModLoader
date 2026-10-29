@@ -3918,7 +3918,8 @@ namespace worldgen::build
 				{
 					const uint32_t ps = seeds::PlaceAt(seeds::Middle(b.footprint), 5, 1);
 					const double lat = latAt(c[1]);
-					const float share = lat >= 28.8 ? 0.35f : lat >= 27.0 ? 0.2f : 0.08f;
+					// (central Florida's few too: a fifth had been "porches added" in round 25's Orlando views)
+					const float share = lat >= 28.8 ? 0.35f : 0.08f;
 					if (made[i].s.pitched && static_cast<float>(ps % 1000) < share * 1000)
 					{
 						P2 street{};

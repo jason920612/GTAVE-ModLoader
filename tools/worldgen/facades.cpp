@@ -781,7 +781,9 @@ namespace worldgen::facades
 				if (brick)
 					kinds = {homely ? Kind::Brick : Kind::BrickCity};
 				else if (homely)
-					kinds = north || latitude >= 27.0                        ? std::vector<Kind>{Kind::Siding, Kind::House}
+					// (central Florida's houses seen painted: concrete block and stucco - round 25's reviewers on Orlando's: "Florida
+					// stucco houses become wood or vinyl siding", the pale walls' nearest colour had often been white siding)
+					kinds = north                                            ? std::vector<Kind>{Kind::Siding, Kind::House}
 					        : miami && !house && year >= 1945 && year < 1973 ? std::vector<Kind>{Kind::MiMo}
 					                                                         : std::vector<Kind>{Kind::House};
 				else if (height < 6.5f)
@@ -827,7 +829,9 @@ namespace worldgen::facades
 			if (miami && !house && year >= 1945 && year < 1973 && r < 0.8f)
 				return among(Kind::MiMo);
 			// (Miami's none: block and stucco - lap siding's boards, far off, had read as "horizontal stripe bands" to the reviewers)
-			float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : miami ? 0.0f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
+			// (central Florida's mostly block and stucco too: a fifth in siding and a tenth in brick had been "sided houses with
+			// porches, red brick" in the reviewers' Orlando views)
+			float siding = north ? 0.45f : latitude >= 27.0 ? 0.08f : miami ? 0.0f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.06f : 0.03f;
 			// (by its era, where the rolls say when it was built: north Florida's old frame houses, its post-war brick ranches)
 			if (north && year > 0)
 			{
