@@ -494,7 +494,9 @@ namespace worldgen::trees
 			for (const Own& o : (*own)[kind])
 				v.push_back(&o);
 			std::sort(v.begin(), v.end(), [&](const Own* a, const Own* b) { return std::fabs(a->height - h) < std::fabs(b->height - h); });
-			return v[seed % std::min<size_t>(3, v.size())];
+			// (one of the six nearest in height - of three, a street's trees had been "the same tree model cloned in rows" to
+			// round 26's reviewers; the scale makes up the height)
+			return v[(seed >> 3) % std::min<size_t>(6, v.size())];
 		};
 		// (the tallest first; one whose crown would lie mostly under a taller one's - closer than half their crowns' radii
 		// together, at least 2.5 m - left out: a row of crape myrtles had come out a peak every 2-3 m, overlapping umbrellas)

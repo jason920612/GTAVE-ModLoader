@@ -557,11 +557,12 @@ namespace worldgen::facades
 		// on one lip), the wall a smooth painted concrete with faint form marks; a reveal pair across at 4.2 m and one at
 		// 7.4 m, the band over it a second tone on most; the foot splashed darker; on a third of them a roll-up door on one
 		// panel of the two (3.6 x 4.3 m, slats every 7.6 cm, a steel jamb, a dark bottom bar)
+		// (light grey and white most: the tan pair had been "beige/tan where the photo has a light grey/white tilt-wall")
 		const std::array<std::array<Rgb, 2>, 5> tilts{{{Rgb{200, 200, 194}, Rgb{168, 170, 168}}, {Rgb{228, 224, 214}, Rgb{196, 200, 204}},
-		    {Rgb{216, 204, 182}, Rgb{186, 170, 146}}, {Rgb{204, 188, 162}, Rgb{226, 220, 206}}, {Rgb{186, 194, 200}, Rgb{150, 162, 172}}}};
+		    {Rgb{214, 214, 208}, Rgb{182, 184, 184}}, {Rgb{204, 188, 162}, Rgb{226, 220, 206}}, {Rgb{186, 194, 200}, Rgb{150, 162, 172}}}};
 		for (size_t k = 0; k < tilts.size(); ++k)
-			for (int doors = 0; doors < 2; ++doors)
-				add(Kind::TiltUp, "tilt", std::string("tilt_") + std::to_string(k) + (doors ? "_doors" : ""), 15, 12, [&](Canvas& c) {
+			for (int doors = 0; doors < 3; ++doors)
+				add(Kind::TiltUp, "tilt", std::string("tilt_") + std::to_string(k) + (doors == 1 ? "_doors" : doors == 2 ? "_entry" : ""), 15, 12, [&](Canvas& c) {
 					const Rgb body = tilts[k][0], band = k % 2 ? tilts[k][1] : body;
 					Wall(c, body, ++seed, 0.025f, 0.05f); // (painted: evener than bare concrete)
 					// (the second tone over the upper reveal)
@@ -593,7 +594,19 @@ namespace worldgen::facades
 					}
 					// (rain-washed streaks under the joints' tops and the foot splashed with soil)
 					c.Rect(0, 0, c.mw, 0.6f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.8f + 0.2f * v); });
-					if (doors)
+					if (doors == 2)
+					{
+						// (an office's entry: a glass storefront in aluminium on the first panel under a small canopy, a steel man
+						// door on the second)
+						Window(c, 1.6f, 0.02f, 6.0f, 3.0f, 0.07f, {176, 180, 184}, {58, 70, 78}, seed * 37 + static_cast<uint32_t>(k), false);
+						c.Fill(1.35f, 3.05f, 6.25f, 3.28f, {204, 206, 206}, 0.5f, 0.35f);
+						c.Rect(1.35f, 2.98f, 6.25f, 3.05f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.6f); });
+						c.Fill(10.6f, 0.02f, 11.55f, 2.15f, {152, 156, 154}, 0.55f, 0.3f);
+						c.Rect(10.55f, 0.02f, 10.6f, 2.2f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.5f); });
+						c.Rect(11.55f, 0.02f, 11.6f, 2.2f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.5f); });
+						c.Rect(10.55f, 2.15f, 11.6f, 2.2f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.5f); });
+					}
+					else if (doors)
 					{
 						const float x0 = 9.45f, x1 = 13.05f, top = 4.3f;
 						c.Fill(x0 - 0.12f, 0, x1 + 0.12f, top + 0.14f, {92, 96, 98}, 0.55f, 0.35f); // (the steel jamb and head)
@@ -726,9 +739,9 @@ namespace worldgen::facades
 			// (siding weighted as the street pictures show the colours: white most, cream and light grey next - picked evenly
 			// the reviewers had seen tan siding where most houses are white or pale)
 			const auto weight = [&](const Style& st) {
-				// (a tilt-up wall without doors twice as often as one with)
+				// (a tilt-up wall without doors twice as often as one with a roll-up door or an office's entry)
 				if (k == Kind::TiltUp)
-					return st.diffuse.ends_with("_doors") ? 1 : 2;
+					return st.diffuse.ends_with("_doors") || st.diffuse.ends_with("_entry") ? 1 : 2;
 				// (block and stucco walls with windows of their own twice as often as ribbons of windows)
 				if (k == Kind::Concrete)
 					return st.diffuse.find("punched_") != std::string::npos ? 2 : 1;
