@@ -112,15 +112,84 @@ namespace worldgen::powerlines
 			seeds::G g; // (its place in the real world's plane: what its choices are keyed to)
 			float z = 0;
 			P2 road{}; // the road's direction by it (a pole with no wires: its crossarm across the road)
+			P2 toRoad{}; // from it to the road
 			bool transformer = false;
+			bool lamp = false; // (a street light on it)
 			std::vector<int> spans; // the poles it is wired to
 			float heading = 0;
 		};
 	}
 
+	namespace
+	{
+		// A cobra-head street light on a pole standing at `foot`: its arm a tube 4 cm thick from the pole's side 9.2 m up out
+		// 2.3 m towards `out`, rising 0.35 m; the luminaire at its end a tapered box 0.8 m long, 0.34 m wide at its back and 0.22
+		// at its front, 0.17 m deep, its flat lens underneath.
+		void Lamp(roads::Mesh& m, const P3& foot, const P2& out)
+		{
+			const P3 side{-out[1], out[0], 0};
+			const auto at = [&](float along, float across, float up) {
+				return P3{foot[0] + out[0] * along + side[0] * across, foot[1] + out[1] * along + side[1] * across, foot[2] + up};
+			};
+			const auto vertex = [&](const P3& p, const P3& n, float u, float v) {
+				ydr::Vertex x;
+				x.position = p;
+				x.normal = n;
+				x.tangent = {out[0], out[1], 0, 1};
+				x.colour0 = {255, 255, 255, 255};
+				x.uv[0] = {u, v};
+				m.vertices.push_back(x);
+				return static_cast<uint32_t>(m.vertices.size() - 1);
+			};
+			// the arm: six sides round its line
+			constexpr int kSides = 6;
+			constexpr float kR = 0.04f, kPi = 3.14159265f;
+			const P3 a = at(0.13f, 0, 9.2f), b = at(2.3f, 0, 9.55f);
+			const float len = std::hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+			const P3 dir{(b[0] - a[0]) / len, (b[1] - a[1]) / len, (b[2] - a[2]) / len};
+			const P3 upish{-dir[0] * dir[2], -dir[1] * dir[2], 1 - dir[2] * dir[2]};
+			const float ul = std::hypot(upish[0], upish[1], upish[2]);
+			const P3 up{upish[0] / ul, upish[1] / ul, upish[2] / ul};
+			const uint32_t first = static_cast<uint32_t>(m.vertices.size());
+			for (int end = 0; end < 2; ++end)
+				for (int k = 0; k <= kSides; ++k)
+				{
+					const float t = 2 * kPi * k / kSides, c = std::cos(t), s = std::sin(t);
+					const P3 n{side[0] * c + up[0] * s, side[1] * c + up[1] * s, side[2] * c + up[2] * s};
+					const P3& o = end ? b : a;
+					vertex({o[0] + n[0] * kR, o[1] + n[1] * kR, o[2] + n[2] * kR}, n, static_cast<float>(k) / kSides, end ? len : 0.0f);
+				}
+			for (int k = 0; k < kSides; ++k)
+			{
+				const uint32_t p0 = first + static_cast<uint32_t>(k), p1 = p0 + 1, q0 = p0 + kSides + 1, q1 = q0 + 1;
+				m.indices.insert(m.indices.end(), {p0, q0, q1, p0, q1, p1});
+			}
+			// the luminaire: its eight corners (back to front, left and right, bottom and top)
+			const float z0 = 9.44f, z1 = 9.61f;
+			const P3 c[8] = {at(2.15f, -0.17f, z0), at(2.15f, 0.17f, z0), at(2.95f, 0.11f, z0 + 0.03f), at(2.95f, -0.11f, z0 + 0.03f),
+			    at(2.15f, -0.17f, z1), at(2.15f, 0.17f, z1), at(2.95f, 0.11f, z1 - 0.04f), at(2.95f, -0.11f, z1 - 0.04f)};
+			const auto face = [&](int i0, int i1, int i2, int i3) {
+				const P3 &p = c[i0], &q = c[i1], &r = c[i2];
+				const P3 u{q[0] - p[0], q[1] - p[1], q[2] - p[2]}, v{r[0] - p[0], r[1] - p[1], r[2] - p[2]};
+				P3 n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+				const float l = std::max(1e-6f, std::hypot(n[0], n[1], n[2]));
+				n = {n[0] / l, n[1] / l, n[2] / l};
+				const uint32_t j0 = vertex(c[i0], n, 0, 0), j1 = vertex(c[i1], n, 1, 0), j2 = vertex(c[i2], n, 1, 1), j3 = vertex(c[i3], n, 0, 1);
+				m.indices.insert(m.indices.end(), {j0, j1, j2, j0, j2, j3});
+			};
+			// (each anticlockwise seen from outside)
+			face(0, 3, 2, 1); // (the lens, underneath)
+			face(4, 5, 6, 7); // (the top)
+			face(0, 1, 5, 4); // (the back)
+			face(3, 7, 6, 2); // (the front)
+			face(0, 4, 7, 3); // (the sides)
+			face(1, 2, 6, 5);
+		}
+	}
+
 	void Place(const roads::Network& n, const std::function<bool(float, float)>& clear, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& buried, const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires,
-	    Stats& stats, const std::function<float(const roads::Edge&, std::vector<std::array<float, 2>>&)>& measured)
+	    Stats& stats, const std::function<float(const roads::Edge&, std::vector<std::array<float, 2>>&)>& measured, roads::Mesh* lamps)
 	{
 		std::vector<Pole> all;
 		std::vector<std::vector<int>> edgePoles(n.edges.size()); // (each road's, from its a to its b)
@@ -174,6 +243,8 @@ namespace worldgen::powerlines
 			                                                           : -1.0f;
 			// (behind the sidewalk, or in the verge 2 m off the asphalt)
 			const float off = e.HalfWidth() + (e.sidewalks ? e.Walk() + 0.9f : 2.0f);
+			// (the streets without street lights of their own - props.cpp - have theirs on every other pole)
+			const bool lit = e.kind == "residential" || e.kind == "unclassified" || e.kind == "living_street" || e.kind == "road";
 			// the poles the scan shows, where it shows two or more on the line's side: each where it stands, one more evenly
 			// between two farther apart than 60 m
 			if (measuredSide != 0 && scanned.size() >= 2)
@@ -195,7 +266,9 @@ namespace worldgen::powerlines
 					pole.g = {seeds::GX(q[0]), seeds::GY(q[1])};
 					pole.z = ground(q[0], q[1]) - 0.2f;
 					pole.road = d;
+					pole.toRoad = Unit({p[0] - q[0], p[1] - q[1]});
 					pole.transformer = (seed >> 12) % 7 == 0;
+					pole.lamp = lit && edgePoles[ei].size() % 2 == 0;
 					edgePoles[ei].push_back(static_cast<int>(all.size()));
 					all.push_back(std::move(pole));
 				};
@@ -246,7 +319,9 @@ namespace worldgen::powerlines
 					pole.g = {g.x - static_cast<double>(d[1]) * side * off, g.y + static_cast<double>(d[0]) * side * off};
 					pole.z = ground(q[0], q[1]) - 0.2f;
 					pole.road = d;
+					pole.toRoad = {d[1] * side, -d[0] * side};
 					pole.transformer = (seed >> 12) % 7 == 0;
+					pole.lamp = lit && edgePoles[ei].size() % 2 == 0;
 					edgePoles[ei].push_back(static_cast<int>(all.size()));
 					all.push_back(std::move(pole));
 					break;
@@ -331,6 +406,8 @@ namespace worldgen::powerlines
 			{
 				poles.push_back({pole.transformer ? transformer : plain, {pole.p[0], pole.p[1], pole.z}, pole.heading, 350});
 				++stats.poles;
+				if (pole.lamp && lamps)
+					Lamp(*lamps, {pole.p[0], pole.p[1], pole.z}, pole.toRoad);
 			}
 		// the wires of each span (both its poles here): each from its place on one pole to the same place on the other,
 		// the crossarms' sides matched by the span's own right

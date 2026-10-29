@@ -14,6 +14,8 @@ usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
                    red, green, blue (u8: the mean colour of the cell's ground the pictures see, not the trees')
   <dir>/classes.bin 'WBCL' version 1, x0, y0, cell (f32: 1 m), nx, ny (u32); each metre's class as above (rows south to
                    north; over --area, else the world's box)
+  <dir>/paving.bin 'WBPR' version 1, the same grid; each metre of paving in the sun: its redness, red less the mean of green and
+                   blue, + 128 (u8, 1-255), 0 elsewhere (worldgen: red concrete sidewalks where they are red)
   --keep: the 1 m pictures (naip_<i>_<j>.npz) kept there, read from there again
   --cache: the service's answers kept there for every land (a land's blocks lie on the state plane's 2 km lattice - the
           lands' corners are whole metres of it, 8 and 10 km apart -, so a neighbour asks for the same blocks of the band
@@ -375,6 +377,7 @@ def main():
     # the 1 m classes (rows south to north)
     fnx, fny = int(math.ceil((ax1 - ax0) / CELL)), int(math.ceil((ay1 - ay0) / CELL))
     fine = np.zeros((fny, fnx), np.uint8)
+    red = np.zeros((fny, fnx), np.uint8)
     trees = []
     started = time.time()
     blocks = [(bx, by) for by in np.arange(ay0, ay1, BLOCK) for bx in np.arange(ax0, ax1, BLOCK)]
@@ -472,6 +475,10 @@ def main():
         FI, FJ = np.broadcast_to(fi[None, :], (ny, nx)), np.broadcast_to(fj[:, None], (ny, nx))
         put = inner & (FI >= 0) & (FJ >= 0) & (FI < fnx) & (FJ < fny)
         fine[FJ[put], FI[put]] = cls[put]
+        # (the paving's redness, where it is in the sun)
+        lit = put & (cls == 6) & ~shade
+        rb = rgbn[..., 0].astype(np.int16) - (rgbn[..., 1].astype(np.int16) + rgbn[..., 2].astype(np.int16)) // 2
+        red[FJ[lit], FI[lit]] = np.clip(rb[lit] + 128, 1, 255).astype(np.uint8)
         print(f'block {k + 1}/{len(blocks)} at {bx:.0f},{by:.0f}: {len(block_trees)} trees, canopy {canopy.mean():.0%} '
               f'({time.time() - started:.0f} s)', flush=True)
     procs.shutdown()
@@ -492,6 +499,9 @@ def main():
     with open(os.path.join(out, 'classes.bin'), 'wb') as f:
         f.write(b'WBCL' + struct.pack('<I3f2I', 1, ax0, ay0, CELL, fnx, fny))
         f.write(fine.tobytes())
+    with open(os.path.join(out, 'paving.bin'), 'wb') as f:
+        f.write(b'WBPR' + struct.pack('<I3f2I', 1, ax0, ay0, CELL, fnx, fny))
+        f.write(red.tobytes())
     if skipped:
         print(f'{skipped} of {len(blocks)} blocks all open water: not asked for')
     print(f'{len(trees)} trees ({sum(1 for t in trees if t[4] == 0)} evergreen, {sum(1 for t in trees if t[4] == 1)} bare); '

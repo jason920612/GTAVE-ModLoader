@@ -144,6 +144,7 @@ namespace worldgen::roads
 		std::array<Mesh, paving::kPavings> paved; // the carriageways (and junctions) by what they are made of
 		Mesh worn;                                // worn asphalt carriageways (paving::Wear 0.5 and more): cracked all over
 		Mesh sidewalk, kerb, markings;
+		Mesh sidewalkRed;                         // sidewalks of red-tinted concrete (where the aerial pictures see them red)
 		Mesh structure;                           // bridges' decks, parapets and piers (concrete)
 		Mesh railTrack, railBed, railSteel;       // railways: the track (sleepers on ballast), the bed's shoulders, the rails
 		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
@@ -175,8 +176,10 @@ namespace worldgen::roads
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).
 	// `ground(x, y)`: the terrain's height (bridges' piers stand on it; without: none).
+	// `pavingRed(x, y)`: the aerial pictures' paving there - its redness (red less the mean of green and blue), NaN where they
+	// see none - a sidewalk stretch whose middle they see red (Miami Beach's red concrete) goes into sidewalkRed.
 	void Geometry(const Network& n, Surfaces& out, const std::function<bool(float, float)>& planted = {},
-	    const std::function<float(float, float)>& ground = {});
+	    const std::function<float(float, float)>& ground = {}, const std::function<float(float, float)>& pavingRed = {});
 
 	// Railways (research/phase0.md §63): on the ground a ballast bed 0.35 m high, its track pictured on it (sleepers and
 	// ballast) with the rails themselves on top, its shoulders sloping to the ground; elevated (a bridge: an elevated

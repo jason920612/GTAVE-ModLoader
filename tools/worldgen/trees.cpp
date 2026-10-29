@@ -26,8 +26,9 @@ namespace worldgen::trees
 		    {"prop_palm_fan_04_d", 25.1f, 6.2f}, {"prop_palm_med_01a", 27.7f, 13.6f}, {"prop_palm_med_01b", 28.0f, 10.9f}};
 		// broadleaf trees (figs first: the commonest shade trees there)
 		// (no jacarandas: their purple flowers are rare there)
-		constexpr Model kBroadleaf[] = {{"prop_tree_mquite_01", 5.2f, 5.6f}, {"prop_tree_maple_02", 8.2f, 9.8f}, {"prop_tree_lficus_03", 9.4f, 8.1f},
-		    {"prop_tree_lficus_05", 14.7f, 15.2f},
+		// (no maple: the reviewers' "oversized maple-leaf cards" in Miami's small trees; no jacaranda either - the game's are
+		// in bloom, pink all over, as the crape myrtles had been)
+		constexpr Model kBroadleaf[] = {{"prop_tree_mquite_01", 5.2f, 5.6f}, {"prop_tree_lficus_03", 9.4f, 8.1f}, {"prop_tree_lficus_05", 14.7f, 15.2f},
 		    {"prop_tree_lficus_06", 15.5f, 13.9f}, {"prop_tree_lficus_02", 16.6f, 19.4f}, {"prop_tree_olive_01", 17.2f, 17.8f},
 		    {"prop_tree_eng_oak_01", 17.5f, 15.9f}, {"prop_tree_oak_01", 23.4f, 29.7f}};
 		constexpr Model kBushes[] = {{"prop_bush_med_06", 2.0f, 3.1f}, {"prop_bush_med_03", 2.5f, 3.1f}, {"prop_bush_lrg_01", 2.6f, 6.1f},
@@ -508,11 +509,16 @@ namespace worldgen::trees
 				++stats.palms;
 				return true;
 			};
+			// (the south's towns' low crowns - under 7 m -: one in three a clump of areca palms, the yards' and hedges' palm)
+			if (tropicalTown && t.kind != 1 && h < 7 && (seed >> 13) % 3 == 0 && ownPalm(9))
+				continue;
 			if (tropicalTown && t.kind != 1 && ((h >= 14 && width < 0.6f * h) || (width < 1.1f * h && seed % 2 == 0) || t.kind == 2))
 			{
 				// (the south's towns' palms ours: royal palms, coconut palms and cabbage palms - the game's fan and date palms are
-				// California's)
+				// California's; a low one an areca's clump as often as not)
 				const uint32_t which = (seed >> 11) % 100;
+				if (h < 7 && which % 2 == 0 && ownPalm(9))
+					continue;
 				if (ownPalm(which < 45 ? 6 : which < 75 ? 7 : 8))
 					continue;
 				m = &Choose(kPalms, h, width, 0.0f, seed), palm = true;
@@ -599,7 +605,8 @@ namespace worldgen::trees
 			// broadleaf trees: the trunk up to the first limbs, a third of the way up
 			for (const Model& b : kBroadleaf)
 				m[loader::convert::Joaat(b.name)] = {0.1f + 0.015f * b.height, 0.3f * b.height};
-			for (const Model& b : {Model{"prop_tree_maple_03", 9.1f, 6.0f}, Model{"prop_tree_jacada_01", 14.2f, 14.8f}, Model{"prop_tree_jacada_02", 11.0f, 12.0f}})
+			for (const Model& b : {Model{"prop_tree_maple_02", 8.2f, 10.0f}, Model{"prop_tree_maple_03", 9.1f, 6.0f}, Model{"prop_tree_jacada_01", 14.2f, 14.8f},
+			         Model{"prop_tree_jacada_02", 11.0f, 12.0f}})
 				m[loader::convert::Joaat(b.name)] = {0.1f + 0.015f * b.height, 0.3f * b.height};
 			// pines and the bald cypress: a straight trunk, the lower half
 			for (const Model& p : {Model{"prop_tree_pine_01", 30.8f, 15.0f}, Model{"prop_tree_pine_02", 29.4f, 16.5f}, Model{"prop_tree_cypress_01", 18.5f, 6.6f}})

@@ -1120,6 +1120,77 @@ namespace worldgen::flora
 		}
 	}
 
+	namespace
+	{
+		// An areca palm (the yards' and hedges' of south Florida): a clump 0.5-1 m across of 8-16 stems, thin (3-6 cm), ringed,
+		// yellow-green, leaning out 5-25 degrees and curving up, 2.5-6 m tall, the outer ones lower; at each stem's top five to
+		// eight feather fronds 1.4-2.2 m long arching up and out - the clump a fountain of fronds 3-5 m across.
+		Model ArecaPalm(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const float H = rnd.Range(3.5f, 6.0f), clump = rnd.Range(0.25f, 0.5f);
+			const int stems = 8 + static_cast<int>(rnd.Next() % 9);
+			std::vector<std::pair<Limb, Texture>> limbs;
+			struct Crown
+			{
+				P3 at, middle;
+				std::vector<std::array<float, 6>> fronds;
+			};
+			std::vector<Crown> crowns;
+			float top = 0, reach = 0;
+			for (int k = 0; k < stems; ++k)
+			{
+				const float a = k * 2.39996f + rnd.Range(-0.3f, 0.3f), d = clump * std::sqrt(rnd.Range(0.05f, 1.0f));
+				const float outer = d / clump; // (the outer stems lower, leaning more)
+				const float h = H * rnd.Range(0.55f, 1.0f) * (1 - 0.3f * outer), lean = 0.1f + 0.35f * outer + rnd.Range(0, 0.1f);
+				const P3 foot{std::cos(a) * d, std::sin(a) * d, -0.2f};
+				const Limb stem = Grow(foot, {std::cos(a) * lean, std::sin(a) * lean, 1}, {0, 0, 1}, 0.04f, h, 6, rnd.Range(0.035f, 0.06f), 0.03f, rnd, 0.02f);
+				limbs.push_back({stem, kCrownshaft});
+				Crown c;
+				c.at = stem.p.back();
+				c.middle = {c.at[0], c.at[1], c.at[2] + 0.2f};
+				const int n = 6 + static_cast<int>(rnd.Next() % 4);
+				const float frond = rnd.Range(1.5f, 2.3f);
+				for (int q = 0; q < n; ++q)
+				{
+					const float age = static_cast<float>(q) / static_cast<float>(n - 1);
+					const float fa = q * 2.39996f + a + rnd.Range(-0.3f, 0.3f);
+					// (arching: up at their base, over and down to their tips; the older ones lower)
+					const float rise = 1.15f - 0.9f * age + rnd.Range(-0.15f, 0.15f), droop = 1.3f + 0.6f * age;
+					c.fronds.push_back({fa, rise, droop, frond * rnd.Range(0.8f, 1.05f), rnd.Range(0.7f, 0.95f), static_cast<float>(rnd.Next() % 3)});
+				}
+				top = std::max(top, c.at[2] + frond * 0.45f);
+				reach = std::max(reach, std::hypot(c.at[0], c.at[1]) + frond * 0.8f);
+				crowns.push_back(std::move(c));
+				// (and the older fronds lower down the stem, two or three, out and hanging: the clump leafy from knee height up,
+				// not a bundle of bare sticks with tufts on them)
+				Crown low;
+				low.at = At(stem, rnd.Range(0.45f, 0.7f));
+				low.middle = {low.at[0], low.at[1], low.at[2] + 0.2f};
+				for (int q = 0, m = 2 + static_cast<int>(rnd.Next() % 2); q < m; ++q)
+					low.fronds.push_back({a + 1.3f + q * 2.39996f + rnd.Range(-0.4f, 0.4f), rnd.Range(0.2f, 0.6f), rnd.Range(1.5f, 2.1f), frond * rnd.Range(0.85f, 1.05f),
+					    rnd.Range(0.7f, 0.95f), static_cast<float>(rnd.Next() % 3)});
+				crowns.push_back(std::move(low));
+			}
+			Finish(out, limbs, {});
+			const int segments[4] = {6, 4, 3, 2};
+			for (int lod = 0; lod < 4; ++lod)
+				for (size_t k = 0; k < crowns.size(); ++k)
+				{
+					// (further off the lower fronds left out - inside the clump, the upper ones cover them -, furthest every other
+					// stem's too)
+					if ((lod == 2 && k % 2) || (lod == 3 && k % 4))
+						continue;
+					for (const auto& f : crowns[k].fronds)
+						Frond(out.lods[static_cast<size_t>(lod)][kPalmFrond], crowns[k].at, f[0], f[1], f[2], f[3], f[4], 0.3f, crowns[k].middle, static_cast<int>(f[5]),
+						    segments[lod]);
+				}
+			out.height = top, out.width = 2 * reach, out.trunk = clump + 0.05f;
+			return out;
+		}
+	}
+
 	Model Make(Species s, uint32_t seed)
 	{
 		switch (s)
@@ -1133,6 +1204,7 @@ namespace worldgen::flora
 		case Species::RoyalPalm: return RoyalPalm(seed);
 		case Species::CoconutPalm: return CoconutPalm(seed);
 		case Species::SabalPalm: return SabalPalm(seed);
+		case Species::ArecaPalm: return ArecaPalm(seed);
 		default: return Shrub(seed);
 		}
 	}

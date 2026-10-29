@@ -243,6 +243,33 @@ namespace worldgen::facades
 			}
 		}
 
+		// a jalousie window (mid-century Florida's): glass slats 10 cm apart in a white aluminium frame - each slat's upper part
+		// the sky's reflection, its overlap with the next darker -, cranked open on some (the room dark between the slats), a
+		// mullion down a wide one's middle, a sill and its shadow
+		void Jalousie(Canvas& c, float x0, float y0, float x1, float y1, uint32_t seed)
+		{
+			const Rgb frame{232, 232, 226}, tint{90, 110, 124};
+			const bool open = Rand(seed, 7) < 0.4f;
+			const float r = Rand(seed, 11), f = 0.05f;
+			c.Fill(x0, y0, x1, y1, frame, 0.56f, 0.25f);
+			c.Rect(x0 + f, y0 + f, x1 - f, y1 - f, [&](size_t i, float, float v) {
+				const float t = std::fmod(v * (y1 - y0 - 2 * f) / 0.1f, 1.0f);
+				Rgb g = Glass(tint, v, r);
+				if (t < (open ? 0.45f : 0.22f))
+					g = open ? Rgb{40, 44, 48} : Scale(g, 0.72f);
+				c.albedo[i] = g;
+				c.height[i] = 0.4f + 0.06f * t;
+				c.spec[i] = open && t < 0.45f ? 0.3f : 0.8f;
+			});
+			if (x1 - x0 > 1.2f)
+			{
+				const float mid = (x0 + x1) / 2;
+				c.Fill(mid - 0.025f, y0, mid + 0.025f, y1, frame, 0.56f, 0.25f);
+			}
+			c.Fill(x0 - 0.06f, y0 - 0.05f, x1 + 0.06f, y0 + 0.01f, Rgb{236, 234, 228}, 0.7f, 0.2f);
+			c.Rect(x0 - 0.06f, y0 - 0.15f, x1 + 0.06f, y0 - 0.05f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.72f + 0.28f * (1 - v)); });
+		}
+
 		// the canvas as the three textures
 		void Finish(const Canvas& c, const std::string& diffuse, const std::string& normal, const std::string& specular, int detailSize, float bump,
 		    std::vector<loader::convert::DictionaryTexture>& out)
@@ -340,6 +367,24 @@ namespace worldgen::facades
 					}
 				}
 			}, k == 0, 6, 3.0f, 0.9f);
+		// Miami's mid-century (MiMo) walk-ups, the garden apartments of 1945-1972: floors of 3 m, a wide jalousie window every
+		// 3 m, over each floor's windows a thin eyebrow slab - its edge and its shadow painted here, the slab itself built on
+		// the walls -, pale stucco
+		const std::pair<const char*, Rgb> mimo[] = {{"white", {238, 236, 230}}, {"cream", {234, 226, 204}}, {"yellow", {240, 230, 186}},
+		    {"aqua", {200, 226, 222}}, {"pink", {238, 214, 208}}, {"grey", {214, 214, 208}}};
+		for (size_t k = 0; k < std::size(mimo); ++k)
+			add(Kind::MiMo, "mimo", std::string("mimo_") + mimo[k].first, 12, 9, [&](Canvas& c) {
+				Wall(c, mimo[k].second, ++seed, 0.05f, 0.09f);
+				for (int f = 0; f < 3; ++f)
+				{
+					const float y = f * 3.0f;
+					for (int b = 0; b < 4; ++b)
+						Jalousie(c, b * 3.0f + 0.6f, y + 0.95f, b * 3.0f + 2.4f, y + 2.05f, seed * 43 + f * 4 + b);
+					// (the eyebrow's edge, white, and its shadow on the wall and the windows' tops under it)
+					c.Rect(0, y + 2.0f, c.mw, y + 2.35f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.68f + 0.32f * (1 - v)); });
+					c.Fill(0, y + 2.35f, c.mw, y + 2.45f, {244, 244, 240}, 0.66f, 0.08f);
+				}
+			}, k == 0, 6, 3.0f, 1.2f);
 		// concrete mid-rises: floors of 3.1 m, a ribbon of windows along each
 		const std::pair<const char*, Rgb> concrete[] = {{"grey", {198, 198, 192}}, {"beige", {214, 204, 184}}, {"white", {228, 228, 222}}};
 		for (size_t k = 0; k < std::size(concrete); ++k)
@@ -641,9 +686,17 @@ namespace worldgen::facades
 				if (brick)
 					kinds = {homely ? Kind::Brick : Kind::BrickCity};
 				else if (homely)
-					kinds = north || latitude >= 27.0 ? std::vector<Kind>{Kind::Siding, Kind::House} : std::vector<Kind>{Kind::House};
+					kinds = north || latitude >= 27.0                        ? std::vector<Kind>{Kind::Siding, Kind::House}
+					        : miami && !house && year >= 1945 && year < 1973 ? std::vector<Kind>{Kind::MiMo}
+					                                                         : std::vector<Kind>{Kind::House};
 				else if (height < 6.5f)
 					kinds = {Kind::Shop, Kind::Concrete};
+				else if (height < 16 && miami)
+					// (Miami's by their era: Art Deco before 1945, mid-century after, block and stucco from the 1970s)
+					kinds = year >= 1973 ? std::vector<Kind>{Kind::Concrete}
+					        : year >= 1945 ? std::vector<Kind>{Kind::MiMo}
+					        : year > 0     ? std::vector<Kind>{Kind::Deco}
+					                       : std::vector<Kind>{Kind::Concrete, Kind::Deco, Kind::MiMo};
 				else if (height < 16)
 					kinds = {Kind::Concrete, Kind::BrickCity}; // (no glass boxes: the low offices and shops are block and brick)
 				else
@@ -675,6 +728,9 @@ namespace worldgen::facades
 			// (a mobile home: lap siding, the light vinyl of a single- or double-wide)
 			if (kind == "static_caravan")
 				return among(Kind::Siding);
+			// (Miami's mid-century garden apartments: jalousies under eyebrows)
+			if (miami && !house && year >= 1945 && year < 1973 && r < 0.8f)
+				return among(Kind::MiMo);
 			// (Miami's none: block and stucco - lap siding's boards, far off, had read as "horizontal stripe bands" to the reviewers)
 			float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : miami ? 0.0f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
 			// (by its era, where the rolls say when it was built: north Florida's old frame houses, its post-war brick ranches)
@@ -715,6 +771,12 @@ namespace worldgen::facades
 			return among(r < 0.35f ? Kind::BrickCity : Kind::Concrete);
 		if (!miami)
 			return among(r < 0.5f ? Kind::Concrete : r < 0.8f ? Kind::House : Kind::BrickCity);
-		return among(office ? (r < 0.6f ? Kind::Concrete : Kind::Deco) : (r < 0.75f ? Kind::Deco : Kind::Concrete));
+		// (Miami's by their era where the rolls say when they were built: Art Deco before 1945, mid-century to 1972, block and
+		// stucco after; not known, all three)
+		if (year > 0)
+			return among(year < 1945 ? (r < 0.8f ? Kind::Deco : Kind::Concrete)
+			             : year < 1973 ? (r < 0.75f ? Kind::MiMo : Kind::Concrete)
+			                           : (r < 0.85f ? Kind::Concrete : Kind::MiMo));
+		return among(office ? (r < 0.6f ? Kind::Concrete : r < 0.8f ? Kind::Deco : Kind::MiMo) : (r < 0.4f ? Kind::Deco : r < 0.75f ? Kind::MiMo : Kind::Concrete));
 	}
 }

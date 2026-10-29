@@ -29,6 +29,7 @@ namespace worldgen::facades
 		Brick,     // a brick house
 		BrickCity, // red brick floors of 3 m: walk-ups, offices, campuses
 		Garage,    // a parking garage's open decks: concrete spandrels, dark decks, columns
+		MiMo,      // Miami's mid-century walk-ups: jalousie windows under a thin eyebrow slab along each floor
 	};
 
 	struct Style

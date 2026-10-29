@@ -26,8 +26,9 @@ namespace worldgen::flora
 		RoyalPalm,   // a smooth pale grey column swollen a third of the way up, a green crownshaft, feather fronds arching
 		CoconutPalm, // a ringed grey-brown trunk leaning out and curving up, a crown of drooping feather fronds
 		SabalPalm,   // the cabbage palm: a trunk in criss-cross boots, a round head of fan leaves on long stalks
+		ArecaPalm,   // a clump of thin ringed yellow-green stems, each with a few arching feather fronds (yards, hedges)
 	};
-	constexpr int kSpecies = 10;
+	constexpr int kSpecies = 11;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.

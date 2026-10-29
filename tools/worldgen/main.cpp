@@ -681,9 +681,12 @@ namespace
 			                           "      </ContentChangeSets>\n    </Item>\n",
 			    startupSet);
 		}
-		// Archetype files (.ytyp): requested with the change set that enables their archive (DLC_ITYP_REQUEST), kept while
-		// it is on - asked for by an earlier change set, before their archive was there, they were never loaded: none of
-		// the land's own models drawn (a town's pack, its archetype files past the first set's archives)
+		// Archetype files (.ytyp): requested with the last change set (DLC_ITYP_REQUEST), kept while it is on - asked for by
+		// an earlier change set than the one that enables their archive, they were never loaded: none of the land's own
+		// models drawn (a town's pack, its archetype files past the first set's archives); and asked for before the archives
+		// of their models were there, those models never loaded: the input's files in name order (a build on an NTFS drive)
+		// put the archetype files - "<name>.ytyp" before "<name>_..." - into the first archive, the terrain's, the roads' and
+		// the trees' models into the second set's, and Orlando had its buildings without the ground under them
 		std::string typeItems, typeEnables;
 		std::vector<std::string> ownTypeEnables(setNames.size());
 		{
@@ -697,7 +700,8 @@ namespace
 					typeItems += std::format("    <Item>\n      <filename>{}</filename>\n      <fileType>DLC_ITYP_REQUEST</fileType>\n"
 					                         "      <overlay value=\"false\" />\n      <disabled value=\"true\" />\n      <persistent value=\"true\" />\n    </Item>\n",
 					    path);
-					ownTypeEnables[setOf[archiveIndex.at(archiveOf[child.name])]] += std::format("            <Item>{}</Item>\n", path);
+					ownTypeEnables[std::max<size_t>(static_cast<size_t>(setOf[archiveIndex.at(archiveOf[child.name])]), setNames.size() - 1)] +=
+					    std::format("            <Item>{}</Item>\n", path);
 				}
 		}
 		// (requests.txt in the input: the game's own archetype files to keep loaded, one path a line, "platform:/..." -
@@ -2001,6 +2005,9 @@ int main(int argc, char** argv)
 			++count;
 			const uint32_t nameHash = a.Get<uint32_t>(Hash("name"));
 			++seen[nameHash];
+			// (--names 1: each archetype's name hash, its texture and drawable dictionaries', in the file's order)
+			if (g_options.contains("names"))
+				std::printf("%08x %08x %08x\n", nameHash, a.Get<uint32_t>(Hash("textureDictionary")), a.Get<uint32_t>(Hash("drawableDictionary")));
 			const auto lo = a.Get<std::array<float, 4>>(Hash("bbMin")), hi = a.Get<std::array<float, 4>>(Hash("bbMax"));
 			const auto centre = a.Get<std::array<float, 4>>(Hash("bsCentre"));
 			const float radius = a.Get<float>(Hash("bsRadius")), lod = a.Get<float>(Hash("lodDist"));

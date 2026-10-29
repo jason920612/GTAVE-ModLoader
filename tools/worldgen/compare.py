@@ -198,7 +198,10 @@ def dem_at(land, x, y):
     rows south to north) at a point; None where it is not known or there is none."""
     if land.name not in _dems:
         folder = 'miami' if land.name == 'wbmia' else land.name
+        # (the land's work folder: the batch's on E:, the older ones' on D:)
         path = os.path.join(r'D:\GTAV-UE5\world', folder, 'ground.bin')
+        if not os.path.exists(path):
+            path = os.path.join(r'E:\GTAV-World', folder, 'ground.bin')
         _dems[land.name] = None
         if os.path.exists(path):
             with open(path, 'rb') as f:
@@ -556,7 +559,12 @@ def pano(o):
         # they are not the place, a car had stopped on the camera; the parked cars stay. The phone hidden (SET_MOBILE_PHONE_SCALE 0): a call came up over a view. Each place anew: an
         # "every" lasts at most 600 s)
         gtactl('raw:every 120 0x245A6883D966D537 0.0', 'raw:every 120 0x95E3D6257B166CF2 0.0', 'raw:every 120 0xCBDD322A73D6D932 0.0')
-        gtactl(f'raw:cam {x:.1f} {y:.1f} 60 0 -89.9 {FOV}', 'wait:4')
+        # (the place loaded from the ground - the player put there at the measured ground's height, the camera beside it
+        # looking up at the sky -, not from a camera 60 m over it: someone watching the game took the views from the sky
+        # for the land's bugs)
+        d = dem_at(land, x, y)
+        d = 1.0 if d is None else d
+        gtactl(f'raw:tp {x:.1f} {y:.1f} {d + 1.0:.1f}', f'raw:cam {x:.1f} {y:.1f} {d + 2.0:.1f} 0 89 {EYE_FOV}', 'wait:5')
         gz = ground_z(x, y, land)
         if gz is None:
             gtactl('wait:4')

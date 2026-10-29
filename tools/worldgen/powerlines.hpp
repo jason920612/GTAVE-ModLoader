@@ -29,8 +29,9 @@ namespace worldgen::powerlines
 	// `measured(edge, poles)`: the side its line runs on where something measured it (the poles a laser scan shows: 1 left of
 	// a -> b, -1 right, 0 not known: by the rule above) and the measured poles on that side - the line's poles stand there
 	// instead of every 40 m (the street pictures' poles are where they are, not on a rule's spacing), one more wherever
-	// two are farther apart than 60 m (a pole in a crown the scan did not make out).
+	// two are farther apart than 60 m (a pole in a crown the scan did not make out). `lamps`: the residential streets' street
+	// lights - a cobra head on an arm over the road on every other pole (in the world's coordinates; galvanised steel).
 	void Place(const roads::Network& n, const std::function<bool(float, float)>& clear, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& buried, const std::array<float, 4>& box, std::vector<props::Prop>& poles, roads::Mesh& wires,
-	    Stats& stats, const std::function<float(const roads::Edge&, std::vector<std::array<float, 2>>&)>& measured = {});
+	    Stats& stats, const std::function<float(const roads::Edge&, std::vector<std::array<float, 2>>&)>& measured = {}, roads::Mesh* lamps = nullptr);
 }

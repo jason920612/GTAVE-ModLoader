@@ -1494,9 +1494,34 @@ namespace worldgen::roads
 		return im;
 	}
 
-	void Geometry(const Network& source, Surfaces& out, const std::function<bool(float, float)>& planted, const std::function<float(float, float)>& ground)
+	void Geometry(const Network& source, Surfaces& out, const std::function<bool(float, float)>& planted, const std::function<float(float, float)>& ground,
+	    const std::function<float(float, float)>& pavingRed)
 	{
 		Builder b{out};
+		// (a sidewalk's mesh by what the pictures see down its middle - between its two edges, every 2 m -: red concrete when
+		// at least four of them see paving and half of those more than 15 redder than grey)
+		const auto sidewalkOf = [&](const std::vector<P3>& a, const std::vector<P3>& c) -> Mesh& {
+			if (!pavingRed || a.size() < 2)
+				return out.sidewalk;
+			std::vector<float> seen;
+			for (size_t i = 0; i + 1 < a.size(); ++i)
+			{
+				const float l = Dist({a[i][0], a[i][1]}, {a[i + 1][0], a[i + 1][1]});
+				const int steps = std::max(1, static_cast<int>(l / 2));
+				for (int k = 0; k < steps; ++k)
+				{
+					const float t = static_cast<float>(k) / steps;
+					const float x = (a[i][0] + (a[i + 1][0] - a[i][0]) * t + c[i][0] + (c[i + 1][0] - c[i][0]) * t) / 2;
+					const float y = (a[i][1] + (a[i + 1][1] - a[i][1]) * t + c[i][1] + (c[i + 1][1] - c[i][1]) * t) / 2;
+					if (const float r = pavingRed(x, y); !std::isnan(r))
+						seen.push_back(r);
+				}
+			}
+			if (seen.size() < 4)
+				return out.sidewalk;
+			std::nth_element(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(seen.size() / 2), seen.end());
+			return seen[seen.size() / 2] > 15 ? out.sidewalkRed : out.sidewalk;
+		};
 		// 0. divided roads' medians: paved where narrow and not planted, the links across those not drawn (gone from the
 		// vertices' lists: the carriageways go on through there)
 		const std::vector<bool> crossover = Crossovers(source);
@@ -1980,7 +2005,8 @@ namespace worldgen::roads
 					b.Wall(out.kerb, slice(line, i0, i1), kKerb, faceLeft, kConcrete, kKerbRow, kKerbBand);
 				};
 				stretches(fillL, [&](size_t i0, size_t i1) {
-					b.Strip(out.sidewalk, slice(walkLi, i0, i1), slice(walkLo, i0, i1), slice(uvWi, i0, i1), slice(uvWoL, i0, i1), kPavement, !e.bridge,
+					b.Strip(sidewalkOf(slice(walkLi, i0, i1), slice(walkLo, i0, i1)), slice(walkLi, i0, i1), slice(walkLo, i0, i1), slice(uvWi, i0, i1),
+					    slice(uvWoL, i0, i1), kPavement, !e.bridge,
 					    2);                       // (left: inner on the right of its direction)
 					kerb(left, i0, i1, false); // facing the road (to the right of the left kerb's direction)
 					// the sidewalk's outer edge down to the ground below it
@@ -1990,7 +2016,8 @@ namespace worldgen::roads
 					b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0, kKerbRow, kKerbBand);
 				});
 				stretches(fillR, [&](size_t i0, size_t i1) {
-					b.Strip(out.sidewalk, slice(walkRo, i0, i1), slice(walkRi, i0, i1), slice(uvWoR, i0, i1), slice(uvWi, i0, i1), kPavement, !e.bridge, 2);
+					b.Strip(sidewalkOf(slice(walkRo, i0, i1), slice(walkRi, i0, i1)), slice(walkRo, i0, i1), slice(walkRi, i0, i1), slice(uvWoR, i0, i1),
+					    slice(uvWi, i0, i1), kPavement, !e.bridge, 2);
 					kerb(right, i0, i1, true);
 					auto ro = slice(walkRo, i0, i1);
 					for (P3& q : ro)
@@ -2556,7 +2583,7 @@ namespace worldgen::roads
 					uvO.push_back({Dist(cr.kerb[q], cr.outer[q]) / kTexture, run / kTexture});
 				}
 				// (the kerb runs anticlockwise round the junction: the junction on its left, the sidewalk on its right)
-				b.Strip(out.sidewalk, outer, inner, uvO, uvI, kPavement, true, 2);
+				b.Strip(sidewalkOf(outer, inner), outer, inner, uvO, uvI, kPavement, true, 2);
 				std::vector<P3> foot;
 				for (size_t q = 0; q < cr.kerb.size(); ++q)
 					foot.push_back({cr.kerb[q][0], cr.kerb[q][1], inner[q][2] - kKerb});

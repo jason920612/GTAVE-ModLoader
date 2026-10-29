@@ -54,7 +54,7 @@ namespace worldgen::trees
 		std::string name;
 		float height = 0, width = 0;
 	};
-	using OwnTrees = std::array<std::vector<Own>, 9>;
+	using OwnTrees = std::array<std::vector<Own>, 10>;
 
 	// (`own`: north Florida's trees of our own in place of the game's California pines and English oaks, where given)
 	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, const std::function<double(float)>& latitudeAt,

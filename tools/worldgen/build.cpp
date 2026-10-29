@@ -384,7 +384,7 @@ namespace worldgen::build
 		// What the aerial pictures show (tools/worldgen/photo.py): trees.bin (every tree), classes.bin (each metre's cover),
 		// cover.bin (each 4 m cell's class and its ground's colour).
 		bool ReadPhoto(const std::filesystem::path& folder, std::vector<trees::Seen>& seen, raster::Grid<uint8_t>& classes,
-		    raster::Grid<std::array<uint8_t, 4>>& cover, std::string& error)
+		    raster::Grid<std::array<uint8_t, 4>>& cover, std::string& error, raster::Grid<uint8_t>* red = nullptr)
 		{
 			{
 				std::ifstream in(folder / "trees.bin", std::ios::binary);
@@ -426,7 +426,12 @@ namespace worldgen::build
 					return error = std::string("cut short: ") + (folder / file).string(), false;
 				return true;
 			};
-			return grid("classes.bin", "WBCL", classes) && grid("cover.bin", "WBPC", cover);
+			if (!grid("classes.bin", "WBCL", classes) || !grid("cover.bin", "WBPC", cover))
+				return false;
+			// (paving.bin, each metre of paving's redness: an older photo.py's folder has none)
+			if (red && std::filesystem::exists(folder / "paving.bin") && !grid("paving.bin", "WBPR", *red))
+				return false;
+			return true;
 		}
 
 		// (a tinted ground layer's mean in each channel; the aerial pictures' colour of the ground times kPhotoGain is the
@@ -1223,8 +1228,9 @@ namespace worldgen::build
 					collide(a0, pb, pa);
 					// an Art Deco wall's eyebrows: over each window its texture paints - 1.6 m wide every 3 m, floors of 3.2 m from
 					// the foot - a white slab 0.4 m deep and 2.1 m long, its top at the painted ledge's (the reviewers: "plain boxes, no
-					// eyebrows" - a painted ledge casts no shadow)
-					if (wall.kind == facades::Kind::Deco && trimKey >= 0 && inset == 0)
+					// eyebrows" - a painted ledge casts no shadow); a mid-century walk-up's one slab 0.6 m out along the whole wall
+					// over each floor's windows (floors of 3 m, its top at the painted band's, 2.45 m up each)
+					if ((wall.kind == facades::Kind::Deco || wall.kind == facades::Kind::MiMo) && trimKey >= 0 && inset == 0)
 					{
 						roads::Mesh& tm = meshes[static_cast<uint32_t>(trimKey)];
 						// (texture metres per metre along the wall: its bays stretched to fit)
@@ -1237,7 +1243,17 @@ namespace worldgen::build
 							tm.indices.insert(tm.indices.end(), {j0, j1, j2, j0, j2, j3});
 						};
 						const auto p = [&](float along, float out, float z) { return P3{pa[0] + t[0] * along + n[0] * out, pa[1] + t[1] * along + n[1] * out, z}; };
-						for (float zt = s.base + 2.73f; zt < top - 0.3f; zt += 3.2f)
+						if (wall.kind == facades::Kind::MiMo)
+							for (float zt = s.base + 2.45f; zt < top - 0.3f && len >= 1.0f; zt += 3.0f)
+							{
+								const float s0 = 0.03f, s1 = len - 0.03f, zb = zt - 0.1f, d = 0.6f;
+								face(p(s0, d, zb), p(s1, d, zb), p(s1, d, zt), p(s0, d, zt), n, t);    // (its front)
+								face(p(s0, 0, zt), p(s0, d, zt), p(s1, d, zt), p(s1, 0, zt), up, t);   // (its top)
+								face(p(s0, 0, zb), p(s1, 0, zb), p(s1, d, zb), p(s0, d, zb), down, t); // (its underside)
+								face(p(s1, d, zb), p(s1, 0, zb), p(s1, 0, zt), p(s1, d, zt), t, n);    // (its ends)
+								face(p(s0, 0, zb), p(s0, d, zb), p(s0, d, zt), p(s0, 0, zt), back, n);
+							}
+						for (float zt = s.base + 2.73f; zt < top - 0.3f && wall.kind == facades::Kind::Deco; zt += 3.2f)
 							for (float bay = std::floor((r0 - 0.45f) / 3.0f) * 3.0f + 0.45f; bay < r1; bay += 3.0f)
 							{
 								const float s0 = std::max((bay - r0) / scale, 0.1f), s1 = std::min((bay + 2.1f - r0) / scale, len - 0.1f), zb = zt - 0.12f,
@@ -1730,9 +1746,10 @@ namespace worldgen::build
 		std::vector<trees::Seen> photoTrees;
 		raster::Grid<uint8_t> photoClass, growing;
 		raster::Grid<std::array<uint8_t, 4>> photoCover;
+		raster::Grid<uint8_t> photoRed; // (each metre of paving's redness + 128, 0 none: the red sidewalks)
 		if (!o.photo.empty())
 		{
-			if (!ReadPhoto(o.photo, photoTrees, photoClass, photoCover, error))
+			if (!ReadPhoto(o.photo, photoTrees, photoClass, photoCover, error, &photoRed))
 				return false;
 			std::printf("photo: %zu trees, cover over %d x %d m\n", photoTrees.size(), photoClass.nx, photoClass.ny);
 			// (the map's car parks and paved areas paved, whatever the pictures make of them - a stained concrete lot came out
@@ -3041,7 +3058,26 @@ namespace worldgen::build
 					}
 					return n > 0 && green * 2 > n;
 				};
-			roads::Geometry(network, surfaces, planted, ground);
+			// (the pictures' paving's redness round a point: the median of the 3 x 3 metres' that are paving, NaN under two)
+			std::function<float(float, float)> pavingRed;
+			if (!photoRed.v.empty())
+				pavingRed = [&](float x, float y) {
+					const auto c = photoRed.Cell({x, y});
+					std::array<float, 9> v{};
+					size_t n = 0;
+					for (int dj = -1; dj <= 1; ++dj)
+						for (int di = -1; di <= 1; ++di)
+							if (photoRed.In(c[0] + di, c[1] + dj))
+								if (const uint8_t r = photoRed.At(c[0] + di, c[1] + dj); r)
+									v[n++] = static_cast<float>(r) - 128;
+					if (n < 2)
+						return std::numeric_limits<float>::quiet_NaN();
+					std::sort(v.begin(), v.begin() + static_cast<ptrdiff_t>(n));
+					return v[n / 2];
+				};
+			roads::Geometry(network, surfaces, planted, ground, pavingRed);
+			if (!surfaces.sidewalkRed.indices.empty())
+				std::printf("sidewalks: %zu triangles of red concrete where the pictures see them red\n", surfaces.sidewalkRed.indices.size() / 3);
 			// (the railways; a level crossing under the road's surface)
 			const roads::Asphalt crossing(surfaces.collision, 0.5f);
 			roads::Rails(w.rails, ground, [&](float x, float y) { return crossing.Within(x, y, 0.5f); }, surfaces);
@@ -3160,7 +3196,8 @@ namespace worldgen::build
 				for (int k = 0; k < 8; ++k)
 				{
 					const auto species = static_cast<flora::Species>(s);
-					const bool palm = species == flora::Species::RoyalPalm || species == flora::Species::CoconutPalm || species == flora::Species::SabalPalm;
+					const bool palm = species == flora::Species::RoyalPalm || species == flora::Species::CoconutPalm || species == flora::Species::SabalPalm ||
+					                  species == flora::Species::ArecaPalm;
 					if (palm ? species != flora::Species::SabalPalm && latAt(w.min[1]) >= 27.5 : latAt(w.max[1]) < 27.0)
 						continue;
 					const std::string name = std::format("{}_tree_{}_{}", o.name, s, k);
@@ -3172,6 +3209,7 @@ namespace worldgen::build
 					                 : species == flora::Species::RoyalPalm   ? 6
 					                 : species == flora::Species::CoconutPalm ? 7
 					                 : species == flora::Species::SabalPalm   ? 8
+					                 : species == flora::Species::ArecaPalm   ? 9
 					                                                          : s;
 					if (kind >= 0)
 						ownTrees[static_cast<size_t>(kind)].push_back({name, m.height, m.width});
@@ -3596,6 +3634,7 @@ namespace worldgen::build
 		// street furniture and trees: off the asphalt, outside buildings
 		std::vector<props::Prop> furniture;
 		roads::Mesh wires; // (the power lines', powerlines.hpp)
+		roads::Mesh lampArms; // (the street lights on their poles: galvanised steel, with the barriers)
 		std::vector<mapfiles::CarGen> parked; // (parked cars: the game's car generators)
 		std::vector<world::Barrier> yards;    // (south Florida's front yards' fences and hedges: built with the barriers)
 		signs::Meshes nameSigns;              // (the street name signs at the junctions, signs.hpp)
@@ -4011,7 +4050,7 @@ namespace worldgen::build
 						if (!any)
 							raster::DrawLine(tall, e.points, 10.0f, uint8_t{1}), ++unpoled;
 					}
-				powerlines::Place(network, poleClear, ground, buried, {bx0, by0, bx1, by1}, poles, wires, ps, sideOf);
+				powerlines::Place(network, poleClear, ground, buried, {bx0, by0, bx1, by1}, poles, wires, ps, sideOf, &lampArms);
 				if (unpoled)
 					std::printf("power lines: %zu streets the scan shows no pole along left without\n", unpoled);
 				if (!scanPoles.empty())
@@ -4988,7 +5027,7 @@ namespace worldgen::build
 
 		took("map");
 		// 4. tiles: terrain and roads, their collision; entities and archetypes
-		ydr::Material ground3, asphalt, sidewalk, kerb, marking;
+		ydr::Material ground3, asphalt, sidewalk, sidewalkRed, kerb, marking;
 		// (terrain_cb_4lyr: the terrain shader without the rain's puddles, which on flat ground mirror the sky in blue patches)
 		if (!GameMaterial(files, "kt1_04_02_r3iint.ydr", 4, ground3, error) || !GameMaterial(files, "dt1_rd1_r1_05.ydr", 1, asphalt, error) ||
 		    !GameMaterial(files, "dt1_rd1_r1_05.ydr", 3, sidewalk, error) || !GameMaterial(files, "dt1_rd1_r1_05.ydr", 0, kerb, error) ||
@@ -5111,7 +5150,8 @@ namespace worldgen::build
 				// (3: a roof covering 0.45 as bright - lit from above at noon the game's shingles came out near white; at 0.6 still
 				// white beside the street pictures; 4: weathered concrete - 0.58 as bright, greyer, a little warm)
 				// (5: aged concrete - 0.8 as bright, a little greyer: the sidewalks)
-				const char* suffix = treat == 5 ? "_aged" : treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
+				// (6: red concrete - the aged concrete tinted a dull brick red)
+				const char* suffix = treat == 6 ? "_red" : treat == 5 ? "_aged" : treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
 				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + suffix);
 				if (const auto it = copied.find(key); it != copied.end())
 					return name = it->second, true;
@@ -5130,13 +5170,14 @@ namespace worldgen::build
 							for (int c = 0; c < 3; ++c)
 								p[c] = static_cast<uint8_t>(p[c] * 0.45f);
 					}
-					else if (treat == 5)
+					else if (treat == 5 || treat == 6)
 					{
+						const float tint[2][3] = {{1, 1, 1}, {1.02f, 0.68f, 0.6f}};
 						for (auto& p : image.pixels)
 						{
 							const float l = (p[0] + p[1] + p[2]) / 3.0f;
 							for (int c = 0; c < 3; ++c)
-								p[c] = static_cast<uint8_t>(std::clamp(0.8f * (0.85f * p[c] + 0.15f * l), 0.0f, 255.0f));
+								p[c] = static_cast<uint8_t>(std::clamp(0.8f * (0.85f * p[c] + 0.15f * l) * tint[treat - 5][c], 0.0f, 255.0f));
 						}
 					}
 					else if (treat == 4)
@@ -5173,6 +5214,15 @@ namespace worldgen::build
 				if (!use("ap1_03+hi.ytd", "dc_sidewalk001", aged, 5))
 					return false;
 				sidewalk.Texture(kDiffuseTex, aged);
+				// (the red concrete's: the same slabs tinted - Miami Beach's sidewalks, a dull brick red in the street pictures)
+				sidewalkRed = sidewalk;
+				if (!surfaces.sidewalkRed.indices.empty())
+				{
+					std::string red;
+					if (!use("ap1_03+hi.ytd", "dc_sidewalk001", red, 6))
+						return false;
+					sidewalkRed.Texture(kDiffuseTex, red);
+				}
 			}
 			// the terrain's (research/phase0.md §61.25): the ground material's layers - the grass the lawns' layer 3 is too
 			// (where the two materials meet both draw it), paving, sand, wet sand - and the lawns' four grasses and their
@@ -5292,7 +5342,8 @@ namespace worldgen::build
 				// shader -; that shader also for the guard rails' beam picture, weathered boards and white painted block (their
 				// shine the asphalt's dull one)
 				if (!fences.mesh.indices.empty() || !fences.steel.indices.empty() || !fences.rail.indices.empty() || !fences.boards.indices.empty() ||
-				    !fences.block.indices.empty() || !fences.iron.indices.empty() || !fences.ironWhite.indices.empty() || !nameSigns.posts.indices.empty())
+				    !fences.block.indices.empty() || !fences.iron.indices.empty() || !fences.ironWhite.indices.empty() || !nameSigns.posts.indices.empty() ||
+				    !lampArms.indices.empty())
 				{
 					if (!GameMaterial(files, "prop_fnclink_10a.ydr", 0, chainLinkMaterial, error) || !GameMaterial(files, "prop_fnclink_10a.ydr", 2, steelMaterial, error))
 						return false;
@@ -5754,9 +5805,9 @@ namespace worldgen::build
 			toWays = raster::DistanceTo(off, 1);
 		}
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
-		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.drips, &surfaces.gutters, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
+		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.sidewalkRed, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.drips, &surfaces.gutters, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
-		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite, &nameSigns.blades, &nameSigns.letters, &nameSigns.posts})
+		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite, &nameSigns.blades, &nameSigns.letters, &nameSigns.posts, &lampArms})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
 		for (const auto& m : surfaces.paved)
 			meshTiles.emplace(&m, MeshTiles(m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -6735,6 +6786,7 @@ namespace worldgen::build
 				add(pavedMaterials[k], surfaces.paved[k]);
 			add(wornMaterial, surfaces.worn);
 			add(sidewalk, surfaces.sidewalk);
+			add(sidewalkRed, surfaces.sidewalkRed);
 			add(kerb, surfaces.kerb);
 			add(structureMaterial, surfaces.structure); // (bridges' decks, parapets, piers)
 			add(railTrackMaterial, surfaces.railTrack);
@@ -6950,6 +7002,7 @@ namespace worldgen::build
 				addTo(ironMaterial, fences.iron);
 				addTo(aluminiumMaterial, fences.ironWhite);
 				addTo(steelMaterial, nameSigns.posts);
+				addTo(steelMaterial, lampArms);
 				addTo(signBladeMaterial, nameSigns.blades);
 				addTo(signLetterMaterial, nameSigns.letters);
 				if (!bd.lods[0].empty())
