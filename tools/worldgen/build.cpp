@@ -1069,6 +1069,62 @@ namespace worldgen::build
 					wm.indices.insert(wm.indices.end(), {i0, i1, i2, i0, i2, i3});
 					collide(a0, b0, pb);
 					collide(a0, pb, pa);
+					// an Art Deco wall's eyebrows: over each window its texture paints - 1.6 m wide every 3 m, floors of 3.2 m from
+					// the foot - a white slab 0.4 m deep and 2.1 m long, its top at the painted ledge's (the reviewers: "plain boxes, no
+					// eyebrows" - a painted ledge casts no shadow)
+					if (wall.kind == facades::Kind::Deco && trimKey >= 0 && inset == 0)
+					{
+						roads::Mesh& tm = meshes[static_cast<uint32_t>(trimKey)];
+						const float r0 = u0 * wall.width, top = std::min(pa[2], pb[2]);
+						const P3 up{0, 0, 1}, down{0, 0, -1}, back{-t[0], -t[1], 0};
+						const auto plainUv = [](int k) { return std::array<float, 2>{k == 1 || k == 2 ? 0.14f : 0.03f, k >= 2 ? -0.6f : -0.45f}; };
+						const auto face = [&](const P3& q0, const P3& q1, const P3& q2, const P3& q3, const P3& fn, const P3& ft) {
+							const uint32_t j0 = add(tm, q0, fn, ft, plainUv(0)[0], plainUv(0)[1]), j1 = add(tm, q1, fn, ft, plainUv(1)[0], plainUv(1)[1]),
+							               j2 = add(tm, q2, fn, ft, plainUv(2)[0], plainUv(2)[1]), j3 = add(tm, q3, fn, ft, plainUv(3)[0], plainUv(3)[1]);
+							tm.indices.insert(tm.indices.end(), {j0, j1, j2, j0, j2, j3});
+						};
+						const auto p = [&](float along, float out, float z) { return P3{pa[0] + t[0] * along + n[0] * out, pa[1] + t[1] * along + n[1] * out, z}; };
+						for (float zt = s.base + 2.73f; zt < top - 0.3f; zt += 3.2f)
+							for (float bay = std::floor((r0 - 0.45f) / 3.0f) * 3.0f + 0.45f; bay < r0 + len; bay += 3.0f)
+							{
+								const float s0 = std::max(bay - r0, 0.1f), s1 = std::min(bay + 2.1f - r0, len - 0.1f), zb = zt - 0.12f, d = 0.4f;
+								if (s1 - s0 < 0.5f)
+									continue;
+								face(p(s0, d, zb), p(s1, d, zb), p(s1, d, zt), p(s0, d, zt), n, t);    // (its front)
+								face(p(s0, 0, zt), p(s0, d, zt), p(s1, d, zt), p(s1, 0, zt), up, t);   // (its top)
+								face(p(s0, 0, zb), p(s1, 0, zb), p(s1, d, zb), p(s0, d, zb), down, t); // (its underside)
+								face(p(s1, d, zb), p(s1, 0, zb), p(s1, 0, zt), p(s1, d, zt), t, n);    // (its ends)
+								face(p(s0, 0, zb), p(s0, d, zb), p(s0, d, zt), p(s0, 0, zt), back, n);
+							}
+					}
+					// a balcony tower's balconies: from the first floor up, each floor's slab (the texture's band 0.3 m deep at the
+					// floor line, floors of 3.1 m) 1.2 m out along the wall and its railing (the band 0.3-1.35 m over it) standing at
+					// the slab's edge - both in the wall's own texture at the same heights and u: its painted ones a flat grid, "no
+					// balconies" to the reviewers
+					if (wall.kind == facades::Kind::Balcony && inset == 0 && len >= 3)
+					{
+						const float top = std::min(pa[2], pb[2]), d = 1.2f, s0 = 0.15f, s1 = len - 0.15f;
+						const P3 up{0, 0, 1}, down{0, 0, -1}, back{-t[0], -t[1], 0};
+						const auto q = [&](float along, float out, float z) { return P3{pa[0] + t[0] * along + n[0] * out, pa[1] + t[1] * along + n[1] * out, z}; };
+						const auto uAt = [&](float along) { return u0 + (u1 - u0) * along / len; };
+						const auto quad = [&](const P3& c0, const P3& c1, const P3& c2, const P3& c3, const P3& fn, float ua, float ub, float va, float vb) {
+							const uint32_t j0 = add(wm, c0, fn, t, ua, va), j1 = add(wm, c1, fn, t, ub, va), j2 = add(wm, c2, fn, t, ub, vb), j3 = add(wm, c3, fn, t, ua, vb);
+							wm.indices.insert(wm.indices.end(), {j0, j1, j2, j0, j2, j3});
+						};
+						for (float z0 = s.base + 3.1f; z0 + 1.6f < top; z0 += 3.1f)
+						{
+							const float zs = z0 + 0.3f, zr = z0 + 1.35f, vs = wallV(z0 + 0.15f);
+							quad(q(s0, d, z0), q(s1, d, z0), q(s1, d, zs), q(s0, d, zs), n, uAt(s0), uAt(s1), wallV(z0), wallV(zs)); // (the slab's edge)
+							quad(q(s0, 0, z0), q(s1, 0, z0), q(s1, d, z0), q(s0, d, z0), down, uAt(s0), uAt(s1), vs, vs);                // (its underside)
+							quad(q(s0, 0, zs), q(s0, d, zs), q(s1, d, zs), q(s1, 0, zs), up, uAt(s0), uAt(s0), vs, vs);                // (its floor)
+							quad(q(s1, d, z0), q(s1, 0, z0), q(s1, 0, zs), q(s1, d, zs), t, uAt(s1), uAt(s1), vs, vs);                // (its ends)
+							quad(q(s0, 0, z0), q(s0, d, z0), q(s0, d, zs), q(s0, 0, zs), back, uAt(s0), uAt(s0), vs, vs);
+							// (the railing: its front out, its back in - the same picture)
+							quad(q(s0, d, zs), q(s1, d, zs), q(s1, d, zr), q(s0, d, zr), n, uAt(s0), uAt(s1), wallV(zs), wallV(zr));
+							quad(q(s1, d - 0.03f, zs), q(s0, d - 0.03f, zs), q(s0, d - 0.03f, zr), q(s1, d - 0.03f, zr), P3{-n[0], -n[1], 0}, uAt(s1), uAt(s0),
+							    wallV(zs), wallV(zr));
+						}
+					}
 				}
 			}
 			for (const auto& tri : s.roof)
