@@ -72,6 +72,123 @@ namespace worldgen::build
 
 		float Dist(const P2& a, const P2& b) { return std::hypot(b[0] - a[0], b[1] - a[1]); }
 
+		// A lifeguard tower of our own (the map's footprints had been built as houses: round 25's reviewers saw "an
+		// apartment-building chunk standing on the beach" where the photos have Miami Beach's painted towers): a cabin 2.5 x
+		// 2.25 m on a deck on four posts 2.25 m up, a porch with a railing and the windows to the front (+y: the sea), a door
+		// and a ramp down behind, a low pyramid roof. Its materials: 0 wood, 1 paint, 2 glass, 3 roof.
+		ydr::Drawable LifeguardTower(const std::string& name, const std::array<ydr::Material, 4>& materials)
+		{
+			ydr::Drawable d;
+			d.name = name;
+			d.materials.assign(materials.begin(), materials.end());
+			std::array<ydr::Mesh, 4> m;
+			for (uint32_t k = 0; k < 4; ++k)
+				m[k].material = k;
+			using V3 = std::array<float, 3>;
+			// (a quad anticlockwise seen from the side it faces - its normal by that winding -, its texture a metre a repeat)
+			const auto quad = [](ydr::Mesh& mesh, const std::array<V3, 4>& q) {
+				const V3 e1{q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]}, e2{q[3][0] - q[0][0], q[3][1] - q[0][1], q[3][2] - q[0][2]};
+				V3 n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+				const float l = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+				const float l1 = std::sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]), l2 = std::sqrt(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]);
+				if (l < 1e-8f || l1 < 1e-6f)
+					return;
+				n = {n[0] / l, n[1] / l, n[2] / l};
+				const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+				const std::array<std::array<float, 2>, 4> uv{{{0, 0}, {l1, 0}, {l1, -l2}, {0, -l2}}};
+				for (int k = 0; k < 4; ++k)
+				{
+					ydr::Vertex v;
+					v.position = q[static_cast<size_t>(k)];
+					v.normal = n;
+					v.tangent = {e1[0] / l1, e1[1] / l1, e1[2] / l1, 1};
+					v.uv[0] = uv[static_cast<size_t>(k)];
+					mesh.vertices.push_back(v);
+				}
+				mesh.indices.insert(mesh.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+			};
+			const auto tri = [&](ydr::Mesh& mesh, const V3& a, const V3& b, const V3& c) { quad(mesh, {a, b, c, c}); };
+			// a box: its four sides, its top, its bottom when `under`
+			const auto box = [&](ydr::Mesh& mesh, float x0, float x1, float y0, float y1, float z0, float z1, bool under = false) {
+				quad(mesh, {V3{x0, y0, z0}, V3{x1, y0, z0}, V3{x1, y0, z1}, V3{x0, y0, z1}});
+				quad(mesh, {V3{x1, y1, z0}, V3{x0, y1, z0}, V3{x0, y1, z1}, V3{x1, y1, z1}});
+				quad(mesh, {V3{x1, y0, z0}, V3{x1, y1, z0}, V3{x1, y1, z1}, V3{x1, y0, z1}});
+				quad(mesh, {V3{x0, y1, z0}, V3{x0, y0, z0}, V3{x0, y0, z1}, V3{x0, y1, z1}});
+				quad(mesh, {V3{x0, y0, z1}, V3{x1, y0, z1}, V3{x1, y1, z1}, V3{x0, y1, z1}});
+				if (under)
+					quad(mesh, {V3{x0, y0, z0}, V3{x0, y1, z0}, V3{x1, y1, z0}, V3{x1, y0, z0}});
+			};
+			constexpr float deck = 2.25f, slab = 2.4f, eaves = 4.45f;
+			// the posts, the deck, the cabin's slab
+			for (const float x : {-1.5f, 1.5f})
+				for (const float y : {-1.5f, 1.7f})
+					box(m[0], x - 0.1f, x + 0.1f, y - 0.1f, y + 0.1f, -0.4f, deck);
+			// (a cross brace between each pair of side posts)
+			for (const float x : {-1.5f, 1.5f})
+			{
+				quad(m[0], {V3{x, -1.5f, 0.3f}, V3{x, 1.7f, 1.9f}, V3{x, 1.7f, 2.05f}, V3{x, -1.5f, 0.45f}});
+				quad(m[0], {V3{x, 1.7f, 1.9f}, V3{x, -1.5f, 0.3f}, V3{x, -1.5f, 0.45f}, V3{x, 1.7f, 2.05f}});
+			}
+			box(m[0], -1.7f, 1.7f, -1.7f, 1.95f, deck, slab, true);
+			// the cabin: painted walls, the windows round its front half, a door behind
+			box(m[1], -1.25f, 1.25f, -1.25f, 1.0f, slab, eaves);
+			quad(m[2], {V3{1.05f, 1.012f, 3.2f}, V3{-1.05f, 1.012f, 3.2f}, V3{-1.05f, 1.012f, 4.15f}, V3{1.05f, 1.012f, 4.15f}});
+			for (const float x : {-1.262f, 1.262f})
+			{
+				const float s = x > 0 ? 1.0f : -1.0f;
+				const float ya = s > 0 ? -0.35f : 0.8f, yb = s > 0 ? 0.8f : -0.35f;
+				quad(m[2], {V3{x, ya, 3.2f}, V3{x, yb, 3.2f}, V3{x, yb, 4.15f}, V3{x, ya, 4.15f}});
+			}
+			quad(m[2], {V3{-0.4f, -1.262f, slab + 0.02f}, V3{0.4f, -1.262f, slab + 0.02f}, V3{0.4f, -1.262f, 4.2f}, V3{-0.4f, -1.262f, 4.2f}});
+			// the roof: a low pyramid over the eaves 0.35 m out, its underside
+			const V3 apex{0, -0.125f, 5.25f};
+			const float rx0 = -1.6f, rx1 = 1.6f, ry0 = -1.6f, ry1 = 1.35f;
+			tri(m[3], V3{rx0, ry0, eaves}, V3{rx1, ry0, eaves}, apex);
+			tri(m[3], V3{rx1, ry0, eaves}, V3{rx1, ry1, eaves}, apex);
+			tri(m[3], V3{rx1, ry1, eaves}, V3{rx0, ry1, eaves}, apex);
+			tri(m[3], V3{rx0, ry1, eaves}, V3{rx0, ry0, eaves}, apex);
+			quad(m[1], {V3{rx0, ry0, eaves}, V3{rx0, ry1, eaves}, V3{rx1, ry1, eaves}, V3{rx1, ry0, eaves}});
+			// the porch's railing: posts at its corners, a top and a middle rail round its front and sides
+			for (const float x : {-1.65f, 1.65f})
+				box(m[0], x - 0.04f, x + 0.04f, 1.85f, 1.93f, slab, slab + 1.0f);
+			for (const float z : {slab + 0.5f, slab + 0.95f})
+			{
+				box(m[0], -1.68f, 1.68f, 1.87f, 1.92f, z, z + 0.06f);
+				for (const float x : {-1.66f, 1.66f})
+					box(m[0], x - 0.025f, x + 0.025f, 1.0f, 1.9f, z, z + 0.06f);
+			}
+			// the ramp behind, down to the sand 4.8 m back, its side rails
+			constexpr float rampEnd = -6.5f;
+			quad(m[0], {V3{-0.55f, rampEnd, 0.05f}, V3{0.55f, rampEnd, 0.05f}, V3{0.55f, -1.7f, slab}, V3{-0.55f, -1.7f, slab}});
+			quad(m[0], {V3{-0.55f, -1.7f, slab - 0.15f}, V3{0.55f, -1.7f, slab - 0.15f}, V3{0.55f, rampEnd, -0.1f}, V3{-0.55f, rampEnd, -0.1f}});
+			for (const float x : {-0.55f, 0.55f})
+			{
+				const float s = x > 0 ? 1.0f : -1.0f;
+				// (its edge, and a rail 0.9 m over it on posts)
+				const V3 a{x, s > 0 ? rampEnd : -1.7f, s > 0 ? -0.1f : slab - 0.15f}, b{x, s > 0 ? -1.7f : rampEnd, s > 0 ? slab - 0.15f : -0.1f};
+				quad(m[0], {a, b, V3{b[0], b[1], b[2] + 0.15f}, V3{a[0], a[1], a[2] + 0.15f}});
+				for (int side = 0; side < 2; ++side)
+				{
+					const V3 r0{x, rampEnd, 0.95f}, r1{x, -1.7f, slab + 0.9f};
+					const V3 lo0{r0[0], r0[1], r0[2] - 0.06f}, lo1{r1[0], r1[1], r1[2] - 0.06f};
+					if (side == 0)
+						quad(m[0], {lo0, lo1, r1, r0});
+					else
+						quad(m[0], {lo1, lo0, r0, r1});
+				}
+				for (int k = 0; k <= 3; ++k)
+				{
+					const float t = k / 3.0f, y = rampEnd + (-1.7f - rampEnd) * t, z = 0.05f + (slab - 0.05f) * t;
+					box(m[0], x - 0.035f, x + 0.035f, y - 0.035f, y + 0.035f, z - 0.3f, z + 0.92f);
+				}
+			}
+			for (auto& mesh : m)
+				if (!mesh.indices.empty())
+					d.lods[0].push_back(std::move(mesh));
+			d.lodDistances = {350, 9998, 9998, 9998};
+			return d;
+		}
+
 		// Value noise on a lattice of `cell` (smoothed), -1..1; `period` lattice cells: it repeats (0: never).
 		float Lattice(float x, float y, float cell, uint32_t seed, int period = 0)
 		{
@@ -2424,6 +2541,11 @@ namespace worldgen::build
 		// to the eye: artificial turf) in built-up land, parks and the rest; on land, lawns from 14 m off the water
 		enum : uint8_t { kLawn, kPaving, kBare, kSandy, kUnder };
 		raster::Grid<uint8_t> cover = land, lawnCapable = land, forestCapable = land;
+		// (the map's beaches' dunes: where the aerial pictures see plants on them - NDVI over 0.15; wet sand by the water is
+		// near 0 -: their ground dune grass and scrub, not bare sand)
+		raster::Grid<uint8_t> dune = land;
+		std::fill(dune.v.begin(), dune.v.end(), uint8_t{0});
+		size_t duneCells = 0;
 		{
 			elevation::Aerial photo;
 			const bool photographed = !o.aerial.empty() && photo.Open(o.aerial);
@@ -2438,7 +2560,22 @@ namespace worldgen::build
 					if (k == kWater || h < 0.2f)
 						what = kUnder;
 					else if (k == kBeach)
+					{
 						what = kSandy;
+						if (photographed)
+						{
+							float ndvi = 0;
+							int n = 0;
+							for (int s = 0; s < 9; ++s)
+							{
+								std::array<float, 4> px{};
+								if (photo.Sample(c[0] + (s % 3 - 1) * land.cell / 3, c[1] + (s / 3 - 1) * land.cell / 3, px))
+									ndvi += (px[3] - px[0]) / std::max(1.0f, px[3] + px[0]), ++n;
+							}
+							if (n && ndvi / n > 0.15f)
+								dune.At(i, j) = 1, ++duneCells;
+						}
+					}
 					else if (k == kPaved)
 						what = kPaving;
 					else if (landCoverAt && !photographed)
@@ -2497,8 +2634,8 @@ namespace worldgen::build
 						}
 					}
 			}
-			std::printf("ground cover: %zu lawn, %zu paving, %zu bare, %zu sand, %zu under water (4 m cells)%s\n", counts[0], counts[1], counts[2], counts[3],
-			    counts[4], photographed ? "" : " (no aerial pictures: built-up land as lawn)");
+			std::printf("ground cover: %zu lawn, %zu paving, %zu bare, %zu sand (%zu of it dunes' plants), %zu under water (4 m cells)%s\n", counts[0], counts[1],
+			    counts[2], counts[3], duneCells, counts[4], photographed ? "" : " (no aerial pictures: built-up land as lawn)");
 		}
 		// (how far into a lawn: from its edge)
 		const auto lawnDepth = raster::DistanceTo(lawnCapable, 1);
@@ -3659,7 +3796,7 @@ namespace worldgen::build
 							for (size_t i = first; i < std::min(all.size(), first + kRun); ++i)
 							{
 								const world::Building& b = *all[i];
-								if (b.footprint.size() < 3)
+								if (b.footprint.size() < 3 || b.kind == "lifeguard_tower") // (lifeguard towers: models of our own, below)
 									continue;
 								P2 c{0, 0};
 								for (const P2& q : b.footprint)
@@ -3993,11 +4130,52 @@ namespace worldgen::build
 				trees::Photo(kept, landCoverAt, latAt, open, ground, {bx0, by0, bx1, by1}, furniture, ts,
 				    std::all_of(ownTrees.begin(), ownTrees.end(), [](const auto& v) { return v.empty(); }) ? nullptr : &ownTrees);
 				std::printf("trees from the aerial pictures: %zu palms, %zu others\n", ts.palms, ts.broadleaf);
-				// (the woods' undergrowth where the streets see it: within 25 m of one, a metre and a half clear of its edge)
+				// (the woods' undergrowth where the streets see it: within 25 m of one, its bushes' middles 6.5 m clear of its
+				// edge - the mown verge and the sidewalk before the brush; 1.5 m off, the game's 5-6 m bushes had stood over the
+				// verge, "a huge dense bush right against the curb" in round 25's reviewers' views)
 				trees::Stats us;
-				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 1.5f && r < 25 && thicketAt(x, y) && !inCemetery(x, y); }, open, ground,
+				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 6.5f && r < 25 && thicketAt(x, y) && !inCemetery(x, y); }, open, ground,
 				    {bx0, by0, bx1, by1}, furniture, us);
 				std::printf("undergrowth: %zu shrubs in the woods by the streets\n", us.bushes);
+				// (the beaches' lifeguard towers: ours, one of six paints by the tower's place, at the footprint's middle, its
+				// front to the nearest sea within 300 m - the first water met going out every 11.25 degrees, 2 m a step)
+				{
+					size_t towers = 0;
+					for (const auto& b : w.buildings)
+					{
+						if (b.kind != "lifeguard_tower" || b.footprint.size() < 3)
+							continue;
+						P2 c{0, 0};
+						for (const P2& q : b.footprint)
+							c[0] += q[0] / b.footprint.size(), c[1] += q[1] / b.footprint.size();
+						if (c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1)
+							continue;
+						float best = 1e9f;
+						P2 toward{0, 1};
+						for (int a = 0; a < 32; ++a)
+						{
+							const P2 d{std::cos(a * 0.19635f), std::sin(a * 0.19635f)};
+							for (float r = 2; r < std::min(best, 300.0f); r += 2)
+							{
+								const auto lc = land.Cell({c[0] + d[0] * r, c[1] + d[1] * r});
+								if (land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) == kWater)
+								{
+									best = r, toward = d;
+									break;
+								}
+							}
+						}
+						props::Prop t;
+						t.archetype = loader::convert::Joaat(std::format("{}_lifeguard_{}", o.name, seeds::PlaceAt(seeds::Middle(b.footprint), 3, 23) % 6));
+						t.position = {c[0], c[1], ground(c[0], c[1])};
+						t.heading = std::atan2(-toward[0], toward[1]);
+						t.lodDist = 350;
+						furniture.push_back(t);
+						++towers;
+					}
+					if (towers)
+						std::printf("lifeguard towers: %zu of our own\n", towers);
+				}
 				// (the dunes behind the beaches: their sea grape and scrub - off the sand, within 45 m of it, where the aerial
 				// pictures see trees or green; round 24's reviewers saw "dense coastal scrub over hummocky dunes" where ours
 				// were bare smooth ground)
@@ -4014,6 +4192,9 @@ namespace worldgen::build
 						trees::Undergrowth(
 						    [&](float x, float y) {
 							    const auto c = land.Cell({x, y});
+							    // (and the dunes inside the map's beaches, where the pictures see plants)
+							    if (land.In(c[0], c[1]) && land.At(c[0], c[1]) == kBeach && dune.At(c[0], c[1]))
+								    return !inCemetery(x, y);
 							    if (!land.In(c[0], c[1]) || land.At(c[0], c[1]) == kBeach || land.At(c[0], c[1]) == kWater || toSand.At(c[0], c[1]) > 45)
 								    return false;
 							    const auto pc = photoClass.Cell({x, y});
@@ -5234,6 +5415,99 @@ namespace worldgen::build
 			};
 			std::vector<world::Barrier> list = w.barriers;
 			list.insert(list.end(), yards.begin(), yards.end());
+			// (the dunes' rope fences: along their seaward foot - each side between a dune's cell, the map's beach's plants,
+			// and a bare sand one nearer the water -, the sides joined into lines, smoothed, broken at the beach paths, 10 m
+			// long at least; Florida's beaches keep people off their dunes so - round 25's photo of Miami Beach: "a
+			// rope-and-post fence" along the sea-grape dune)
+			size_t duneFences = 0;
+			if (duneCells)
+			{
+				const auto key = [](int i, int j) { return static_cast<int64_t>(i) << 32 | static_cast<uint32_t>(j); };
+				const auto bare = [&](int i, int j) { return land.In(i, j) && land.At(i, j) == kBeach && !dune.At(i, j); };
+				std::unordered_map<int64_t, std::vector<int64_t>> joined; // (a lattice corner: the corners the foot joins it to)
+				for (int j = 0; j < land.ny; ++j)
+					for (int i = 0; i < land.nx; ++i)
+					{
+						if (land.At(i, j) != kBeach || !dune.At(i, j))
+							continue;
+						// (each side: the neighbour across it, the side's two corners)
+						const int sides[4][6] = {{1, 0, i + 1, j, i + 1, j + 1}, {-1, 0, i, j, i, j + 1}, {0, 1, i, j + 1, i + 1, j + 1}, {0, -1, i, j, i + 1, j}};
+						for (const auto& sd : sides)
+							if (bare(i + sd[0], j + sd[1]) && toWater.At(i + sd[0], j + sd[1]) < toWater.At(i, j))
+							{
+								const int64_t a = key(sd[2], sd[3]), b = key(sd[4], sd[5]);
+								joined[a].push_back(b), joined[b].push_back(a);
+							}
+					}
+				const auto edgeKey = [](int64_t a, int64_t b) { return std::make_pair(std::min(a, b), std::max(a, b)); };
+				std::set<std::pair<int64_t, int64_t>> walked;
+				const auto at = [&](int64_t k) {
+					return P2{land.x0 + static_cast<float>(k >> 32) * land.cell, land.y0 + static_cast<float>(static_cast<int32_t>(k & 0xffffffff)) * land.cell};
+				};
+				// (lines from their ends first - corners joined once -, then the closed ones)
+				std::vector<int64_t> starts;
+				for (const auto& [k, v] : joined)
+					if (v.size() == 1)
+						starts.push_back(k);
+				for (const auto& [k, v] : joined)
+					if (v.size() != 1)
+						starts.push_back(k);
+				for (const int64_t start : starts)
+				{
+					std::vector<P2> line{at(start)};
+					for (int64_t here = start;;)
+					{
+						int64_t step = -1;
+						for (const int64_t n : joined[here])
+							if (!walked.count(edgeKey(here, n)))
+							{
+								step = n;
+								break;
+							}
+						if (step < 0)
+							break;
+						walked.insert(edgeKey(here, step));
+						line.push_back(at(step));
+						here = step;
+					}
+					if (line.size() < 3)
+						continue;
+					// (the lattice's stairs smoothed: twice each point the mean of it and its neighbours)
+					for (int pass = 0; pass < 2; ++pass)
+					{
+						std::vector<P2> smooth = line;
+						for (size_t k = 1; k + 1 < line.size(); ++k)
+							smooth[k] = {(line[k - 1][0] + 2 * line[k][0] + line[k + 1][0]) / 4, (line[k - 1][1] + 2 * line[k][1] + line[k + 1][1]) / 4};
+						line = std::move(smooth);
+					}
+					// (broken at the beach paths: their gaps)
+					std::vector<P2> piece;
+					const auto flush = [&] {
+						float length = 0;
+						for (size_t k = 1; k < piece.size(); ++k)
+							length += Dist(piece[k - 1], piece[k]);
+						if (length >= 10)
+						{
+							world::Barrier b;
+							b.kind = "fence", b.material = "rope", b.height = 0.9f, b.points = piece;
+							list.push_back(std::move(b));
+							++duneFences;
+						}
+						piece.clear();
+					};
+					for (const P2& p : line)
+					{
+						if (inGrid(paths, p[0], p[1]))
+						{
+							flush();
+							continue;
+						}
+						piece.push_back(p);
+					}
+					flush();
+				}
+				std::printf("barriers: %zu rope fences along the dunes' foot\n", duneFences);
+			}
 			const auto enclosures = barriers::Enclosures(
 			    w.areas, w.barriers, [&](float x, float y) { return inGrid(streets, x, y); }, [&](float x, float y) { return inGrid(paths, x, y); });
 			list.insert(list.end(), enclosures.begin(), enclosures.end());
@@ -5402,6 +5676,8 @@ namespace worldgen::build
 		ydr::Material signBladeMaterial, signLetterMaterial; // (the street name signs')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
 		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal, dripDecal, gutterDecal;
+		// (our trees' pictures copied from the game's - flora::FromGame's -, and their normal maps: our names; empty, our own)
+		std::array<std::string, flora::kTextures> floraPictures, floraNormals;
 		{
 			std::map<std::pair<std::string, std::string>, std::string> copied; // (dictionary, texture) -> our name
 			// (treat: 1 a ground's texture, Flatten'ed - in the format it had; 2 also made Neutral, a tinted layer's)
@@ -5863,6 +6139,15 @@ namespace worldgen::build
 				if (!surfaces.gutters.indices.empty() && !make(gutterDecal, "ch2_roads_rd+hi.ytd", "dh_gutterleavesdh_gutterleaves_a", nullptr, nullptr))
 					return false;
 			}
+			if (!floraModels.empty())
+				for (int t = 0; t < flora::kTextures; ++t)
+					if (const flora::GamePicture* g = flora::FromGame(static_cast<flora::Texture>(t)))
+					{
+						floraNormals[static_cast<size_t>(t)] = o.name + "_flat_n";
+						if (!use(g->dictionary, g->diffuse, floraPictures[static_cast<size_t>(t)]) ||
+						    (g->normal && !use(g->normalDictionary, g->normal, floraNormals[static_cast<size_t>(t)])))
+							return false;
+					}
 		}
 		if (!shapes.empty())
 		{
@@ -5928,14 +6213,20 @@ namespace worldgen::build
 				if (!GameMaterial(files, "prop_tree_oak_01.ydr", 0, leaf, error))
 					return false;
 				std::array<ydr::Material, flora::kTextures> floraMaterials;
+				// (the game's photographed leaves, twigs, fans and barks where one fits - flora::FromGame -, copied above; our
+				// own drawn pictures for the rest)
 				for (int t = 0; t < flora::kTextures; ++t)
 				{
 					const auto tex = static_cast<flora::Texture>(t);
-					const std::string name = std::format("{}_flora_{}", o.name, t);
-					shared.push_back(texture::Make(name, flora::Picture(tex), flora::Cutout(tex) ? texture::Format::Bc3 : texture::Format::Bc1, flora::Cutout(tex)));
+					std::string name = floraPictures[static_cast<size_t>(t)], normal = floraNormals[static_cast<size_t>(t)];
+					if (name.empty())
+					{
+						name = std::format("{}_flora_{}", o.name, t), normal = o.name + "_flat_n";
+						shared.push_back(texture::Make(name, flora::Picture(tex), flora::Cutout(tex) ? texture::Format::Bc3 : texture::Format::Bc1, flora::Cutout(tex)));
+					}
 					ydr::Material m = flora::Cutout(tex) ? leaf : wallTemplate;
 					m.Texture(kDiffuseTex, name);
-					m.Texture(kBumpTex, o.name + "_flat_n");
+					m.Texture(kBumpTex, normal);
 					m.Texture(kSpecularTex, o.name + "_patch_s");
 					floraMaterials[static_cast<size_t>(t)] = m;
 				}
@@ -5987,6 +6278,37 @@ namespace worldgen::build
 					floraArchetypes.push_back(a);
 				}
 				std::printf("trees of our own: %zu models\n", floraModels.size());
+			}
+			// the lifeguard towers' models: six paints (coral, yellow, turquoise, lime, lilac, blue), white roofs, weathered
+			// grey wood, dark glass - the facades' shader, plain colours
+			if (std::any_of(w.buildings.begin(), w.buildings.end(), [](const world::Building& b) { return b.kind == "lifeguard_tower"; }))
+			{
+				static const std::array<std::array<uint8_t, 3>, 6> kPaints{{{226, 112, 108}, {242, 194, 70}, {70, 180, 188}, {150, 196, 92}, {160, 126, 196}, {74, 132, 204}}};
+				const auto plain = [&](const std::string& name, std::array<uint8_t, 3> c) {
+					shared.push_back(texture::Make(name, texture::Image(4, 4, {c[0], c[1], c[2], 255}), texture::Format::Bc1));
+					ydr::Material m = wallTemplate;
+					m.Texture(kDiffuseTex, name);
+					m.Texture(kBumpTex, o.name + "_flat_n");
+					m.Texture(kSpecularTex, o.name + "_patch_s");
+					return m;
+				};
+				const ydr::Material wood = plain(o.name + "_lg_wood", {132, 122, 106}), glass = plain(o.name + "_lg_glass", {38, 48, 54}),
+				                    roof = plain(o.name + "_lg_roof", {232, 230, 222});
+				for (size_t k = 0; k < kPaints.size(); ++k)
+				{
+					const std::string name = std::format("{}_lifeguard_{}", o.name, k);
+					const ydr::Drawable d = LifeguardTower(name, {wood, plain(name + "_paint", kPaints[k]), glass, roof});
+					Bytes file;
+					if (!ydr::Write(d, file, error))
+						return error = name + ": " + error, false;
+					WriteFile(o.out / (name + ".ydr"), file);
+					mapfiles::Archetype a;
+					a.name = name;
+					a.textureDictionary = loader::convert::Joaat(facadeDictionary);
+					a.lodDist = 350, a.hdTextureDist = 120;
+					ydr::Box(d, a.min, a.max);
+					floraArchetypes.push_back(a);
+				}
 			}
 			if (!o.aerial.empty() && !pictured)
 				std::printf("warning: no aerial pictures in %s (roofs get the gravel texture)\n", o.aerial.string().c_str());
@@ -6298,7 +6620,10 @@ namespace worldgen::build
 				};
 				const auto kindAt = [&](float x, float y) {
 					if (beachAt(x, y))
-						return 2;
+					{
+						const auto dc = dune.Cell({x, y});
+						return dune.In(dc[0], dc[1]) && dune.At(dc[0], dc[1]) ? 1 : 2; // (a dune's plants: dry grass)
+					}
 					const auto c = photoClass.Cell({x, y});
 					switch (photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : 0)
 					{

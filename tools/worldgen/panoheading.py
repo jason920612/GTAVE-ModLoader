@@ -6,9 +6,17 @@ the map, against how much of the picture's ground there (3-17 degrees under the 
 bright, not dark - the rotation that fits best. A car's camera faces along the street, ahead or back: a recorded heading
 across the axis is wrong; one along it right as far as the map can tell (half a turn off is not told apart).
 
+Where some of a creator's panoramas' middles have been measured (poses.json beside the sets' folders: {"poses": [{"id",
+"middle", "confidence"}, ...]} - read off the aerial pictures, the map and the sun), the creator's rule: the recorded
+heading turned (h + c) or mirrored (c - h: a camera counting its angle the other way round), fitted to them - kept when
+at least five were measured and four in five lie within 10 degrees of it. A car's camera in Orlando: all of twelve
+within 4 degrees of 90 - h (its middle its rear, its angle anticlockwise from east), every one across the street as
+recorded.
+
 As a library: verdicts(world, rows) -> {id: 'along' | 'across' | 'oblique' | 'weak' | 'no road'} and trusted(verdicts, rows)
 -> the ids whose heading to use: a creator's panoramas only when most of theirs the map could check are along (their
-camera's compass is the picture's), and of those not the ones across.
+camera's compass is the picture's), and of those not the ones across; heading(row) the heading to use - the creator's
+rule's where it has one (read_rows reads the rules with the rows).
 
 usage: python -I tools/worldgen/panoheading.py --world <world.json> --metadata <metadata.csv>[,...]  (each creator's tally)
 """
@@ -116,6 +124,55 @@ def verdict(streets, x, y, img, heading):
     return 'along' if e < 25 else 'across' if e > 65 else 'oblique'
 
 
+def rules(rows, poses):
+    """{creator: (sign, c, rear)} - the heading to use sign * h + c, and whether the middle looks back (most of the measured
+    ones a car's rear view) - for the creators with five measured middles or more of which four in five lie within 10
+    degrees of the best rule (h + c or c - h)."""
+    by = {}
+    back = {}
+    creator = {r['id']: r.get('creator', '') for r in rows}
+    for p in poses:
+        if p.get('id') in creator and p.get('confidence') in ('high', 'medium'):
+            r = next(r for r in rows if r['id'] == p['id'])
+            try:
+                by.setdefault(creator[p['id']], []).append((float(r['heading']), float(p['middle'])))
+                back.setdefault(creator[p['id']], []).append(p.get('rear') is True)
+            except (KeyError, ValueError):
+                continue
+    out = {}
+    for c, pairs in by.items():
+        if len(pairs) < 5:
+            continue
+        best = None
+        for sign in (1, -1):
+            # (c: the circular mean of middle - sign * h; then the share within 10 degrees of it)
+            d = np.radians([m - sign * h for h, m in pairs])
+            off = math.degrees(math.atan2(np.sin(d).mean(), np.cos(d).mean())) % 360
+            err = [abs((m - sign * h - off + 180) % 360 - 180) for h, m in pairs]
+            share = sum(e <= 10 for e in err) / len(err)
+            if best is None or share > best[0]:
+                best = (share, sign, off)
+        if best[0] >= 0.8:
+            out[c] = (best[1], best[2], sum(back[c]) > len(back[c]) / 2)
+    return out
+
+
+RULES = {}
+
+
+def heading(r):
+    """The heading to use for a row: its creator's rule's (rules()) where there is one, else the recorded."""
+    h = float(r['heading'])
+    rule = RULES.get(r.get('creator', ''))
+    return (rule[0] * h + rule[1]) % 360 if rule else h
+
+
+def looks_back(r):
+    """Whether the row's picture's middle looks back along the way its car went (its creator's rule says so)."""
+    rule = RULES.get(r.get('creator', ''))
+    return bool(rule and rule[2])
+
+
 def verdicts(world, rows):
     """{id: verdict} for the panoramas among rows (dicts with id, lat, lon, heading, pano, path) inside the world."""
     streets = Streets(world)
@@ -126,7 +183,7 @@ def verdicts(world, rows):
             continue
         try:
             x, y = streets.to_game(float(r['lat']), float(r['lon']))
-            h = float(r['heading'])
+            h = heading(r)
         except (KeyError, ValueError):
             continue
         if not (x0 <= x < x1 and y0 <= y < y1):
@@ -145,17 +202,25 @@ def trusted(found, rows):
             t = tally.setdefault(r.get('creator', ''), [0, 0])
             t[0] += v == 'along'
             t[1] += 1
-    good = {c for c, (a, n) in tally.items() if n >= 5 and a >= 0.7 * n}
+    good = {c for c, (a, n) in tally.items() if n >= 5 and a >= 0.7 * n} | set(RULES)
     return {r['id'] for r in rows if r['id'] in found and r.get('creator', '') in good and found[r['id']] not in ('across', 'oblique')}
 
 
 def read_rows(metadata):
+    """The sets' rows (with each picture's path), and the creators' rules (RULES) from the measured middles beside them."""
     rows = []
+    poses = []
     for meta in metadata.split(','):
         with open(meta, encoding='utf-8') as f:
             for r in csv.DictReader(f):
                 r['path'] = os.path.join(os.path.dirname(meta), r.get('file', ''))
                 rows.append(r)
+        measured = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(meta))), 'poses.json')
+        if os.path.exists(measured) and not poses:
+            with open(measured, encoding='utf-8') as f:
+                poses = json.load(f).get('poses', [])
+    RULES.clear()
+    RULES.update(rules(rows, poses))
     return rows
 
 
@@ -174,7 +239,8 @@ def main():
             tally.setdefault(r.get('creator', ''), {}).setdefault(found[r['id']], 0)
             tally[r.get('creator', '')][found[r['id']]] += 1
     for c, t in sorted(tally.items(), key=lambda kv: -sum(kv[1].values())):
-        print(f'{c:20s} {t}')
+        rule = RULES.get(c)
+        print(f'{c:20s} {t}' + (f'  (heading {"" if rule[0] > 0 else "-"}h + {rule[1]:.0f} by the measured middles)' if rule else ''))
     print(f'{len(ok)} of {len(found)} panoramas\' headings trusted')
 
 

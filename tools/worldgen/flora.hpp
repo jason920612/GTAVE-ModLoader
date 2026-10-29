@@ -41,6 +41,7 @@ namespace worldgen::flora
 		kMyrtle,
 		kMagnoliaLeaves,
 		kGumLeaves,
+		kHedgeLeaves, // (a clipped hedge's small leaves)
 		kPalmFrond, // (a feather frond along each cell: its base at the cell's foot)
 		kFanFrond,  // (a cabbage palm's fan: its hub at the cell's foot)
 		kBarkOak,
@@ -56,6 +57,20 @@ namespace worldgen::flora
 	texture::Image Picture(Texture t);
 	// a picture with an outline (alpha) or a bark (opaque)
 	constexpr bool Cutout(Texture t) { return t <= kFanFrond; }
+
+	// The game's photographed pictures our trees are drawn with where one fits: the reviewers saw ours, drawn here, as
+	// "leaf cards: oversized dark saturated leaves", "one generic broadleaf model". Its dictionary and name (a cut-out's
+	// outline in its alpha), its normal map's (null: flat), how it is cut - cells across and down -, whether its picture
+	// is a twig standing on its foot (its cards kept near upright; else any way up), and a bark's metres round and along a
+	// limb one picture covers. Null: our own drawn picture (a 2 x 2 atlas, a bark 1.6 m round and 3.2 m along).
+	struct GamePicture
+	{
+		const char *dictionary, *diffuse, *normalDictionary, *normal;
+		int across = 1, down = 1;
+		bool upright = false;
+		float round = 1.6f, along = 3.2f;
+	};
+	const GamePicture* FromGame(Texture t);
 
 	struct Model
 	{

@@ -39,6 +39,9 @@ import io, json, math, os, random, re, subprocess, sys, time, urllib.parse, urll
 import numpy as np
 from PIL import Image, ImageDraw
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import panoheading
+
 GAME = r'D:\SteamLibrary\steamapps\common\Grand Theft Auto V Enhanced'
 GTACTL = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'gtactl.py')
 NAIP = 'https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage'
@@ -245,12 +248,15 @@ def ground_z(x, y, land=None):
 
 
 def aerial_picture(land, x0, y0, x1, y1, width, height):
-    """NAIP over the game box (its pixels even in latitude and longitude, as the game's x and y are)."""
+    """NAIP over the game box (its pixels even in latitude and longitude, as the game's x and y are). (The service keeps its
+    pixels square in degrees: the picture asked for as wide over high as the box in degrees, then stretched to the size -
+    asked for at the game's proportions, it answered a box 12 % taller.)"""
     s, w = land.latlon(x0, y0)
     n, e = land.latlon(x1, y1)
-    q = urllib.parse.urlencode({'bbox': f'{w},{s},{e},{n}', 'bboxSR': 4326, 'imageSR': 4326, 'size': f'{width},{height}', 'format': 'jpg',
+    h = max(1, round(width * (n - s) / (e - w)))
+    q = urllib.parse.urlencode({'bbox': f'{w},{s},{e},{n}', 'bboxSR': 4326, 'imageSR': 4326, 'size': f'{width},{h}', 'format': 'jpg',
                                 'f': 'image'})
-    return Image.open(io.BytesIO(fetch(f'{NAIP}?{q}'))).convert('RGB')
+    return Image.open(io.BytesIO(fetch(f'{NAIP}?{q}'))).convert('RGB').resize((width, height), Image.BILINEAR)
 
 
 def shares(image):
@@ -629,10 +635,12 @@ def pano(o):
     reply = gtactl('raw:native 0xD80958FC74E988A6')
     m = re.match(r'ok (-?\d+)', reply)
     ped = int(m.group(1)) if m else None
+    panoheading.read_rows(o['metadata'])  # (the creators' rules from the measured middles)
     for k, (x, y, r) in enumerate(chosen):
-        compass = float(r['heading'])
-        # (the way the car went: the picture's middle's, or half a turn from it when it looks back - the lane it drove in)
-        travel = compass
+        # (the heading its creator's rule gives - panoheading.py -, else the recorded; the way the car went: the picture's
+        # middle's, or half a turn from it when it looks back - the lane it drove in)
+        compass = panoheading.heading(r)
+        travel = (compass + 180) % 360 if panoheading.looks_back(r) else compass
         if r['id'] in turns:
             compass = float(turns[r['id']]['bearing'])
             travel = (compass + 180) % 360 if turns[r['id']].get('rear') else compass

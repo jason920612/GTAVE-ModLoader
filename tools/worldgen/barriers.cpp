@@ -31,6 +31,7 @@ namespace worldgen::barriers
 			Hedge,     // clipped bushes in a row
 			GuardRail, // a W-beam on posts
 			Bars,      // wrought iron pickets between square posts (the cemeteries', the older houses')
+			Rope,      // a dune's: wooden posts with a rope sagging between their tops
 		};
 
 		Kind KindOf(const world::Barrier& b)
@@ -46,6 +47,8 @@ namespace worldgen::barriers
 			if (b.kind == "handrail")
 				return Kind::Railing;
 			const std::string& m = b.material;
+			if (m == "rope")
+				return Kind::Rope;
 			if (m == "wood" || m == "wooden" || m == "board" || m == "boards" || m == "privacy" || m == "panel")
 				return Kind::Boards;
 			if (m == "bars" || m == "metal_bars" || m == "wrought_iron" || m == "iron" || m == "aluminium")
@@ -78,6 +81,8 @@ namespace worldgen::barriers
 				return tagged >= 0.5f && tagged <= 4.0f ? tagged : 1.5f;
 			case Kind::GuardRail:
 				return 0.76f;
+			case Kind::Rope:
+				return tagged >= 0.5f && tagged <= 1.5f ? tagged : 0.9f;
 			}
 			return 1.8f;
 		}
@@ -95,6 +100,8 @@ namespace worldgen::barriers
 				return 2.44f;
 			case Kind::GuardRail:
 				return 1.905f;
+			case Kind::Rope:
+				return 3.0f;
 			case Kind::Hedge:
 				return 1.25f; // (the bushes 1.9 m long overlapping: 1.7 m apart they had read as "a row of identical rounded blobs")
 			default:
@@ -331,6 +338,36 @@ namespace worldgen::barriers
 					++stats.pieces;
 				}
 				posts([&](size_t k, const P2& d) { Writer::Box(out.steel, q[k], d, 0.035f, 0.035f, z[k] - 0.1f, z[k] + h + 0.03f, 1.0f, true); });
+				++stats.fences;
+				break;
+			}
+			case Kind::Rope:
+			{
+				// a rope 2.4 cm thick between the posts' tops, sagging 8 cm in its middle (in four lengths), on posts 10 cm
+				// square of weathered wood - the board fences' picture
+				for (size_t k = 0; k + 1 < q.size(); ++k)
+				{
+					if (!built[k])
+						continue;
+					const P2 d = dirOf(k);
+					P3 last{};
+					for (int part = 0; part <= 4; ++part)
+					{
+						const float t = part / 4.0f;
+						const P3 at{q[k][0] + (q[k + 1][0] - q[k][0]) * t, q[k][1] + (q[k + 1][1] - q[k][1]) * t,
+						    z[k] + (z[k + 1] - z[k]) * t + h - 0.06f - 0.08f * 4 * t * (1 - t)};
+						if (part)
+						{
+							const P2 m{(last[0] + at[0]) / 2, (last[1] + at[1]) / 2};
+							const float l = std::hypot(at[0] - last[0], at[1] - last[1]), zm = (last[2] + at[2]) / 2;
+							Writer::Box(out.boards, m, d, l / 2 + 0.01f, 0.012f, zm - 0.012f, zm + 0.012f, 0.5f, true);
+						}
+						last = at;
+					}
+					w.CollideFace(q[k], q[k + 1], z[k] + 0.1f, z[k + 1] + 0.1f, z[k] + h, z[k + 1] + h, kRailing, false);
+					++stats.pieces;
+				}
+				posts([&](size_t k, const P2& d) { Writer::Box(out.boards, q[k], d, 0.05f, 0.05f, z[k] - 0.3f, z[k] + h, 0.5f, true); });
 				++stats.fences;
 				break;
 			}

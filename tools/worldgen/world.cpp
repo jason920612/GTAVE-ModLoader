@@ -830,7 +830,15 @@ namespace worldgen::world
 				const bool home = b.kind == "house" || b.kind == "static_caravan" || b.kind == "detached" || b.kind == "residential" ||
 				                  b.kind == "bungalow" || b.kind == "semidetached_house" || b.kind == "terrace";
 				const int n = home ? std::min(storeys, 3) : std::min(storeys, 30);
-				const float h = home ? (n == 1 ? (b.kind == "static_caravan" ? 3.6f : 4.8f) : 3.0f * n + 2.5f) : 3.6f * n + 1.0f;
+				float h = home ? (n == 1 ? (b.kind == "static_caravan" ? 3.6f : 4.8f) : 3.0f * n + 2.5f) : 3.6f * n + 1.0f;
+				// (a works' or a shop's one storey by its size: the rolls count a warehouse's one floor, which stands 8-12 m -
+				// the reviewers' "a tall tilt-up warehouse becomes a low 4 m box" -, a strip of shops' its parapet over 5 m)
+				if (!home && n == 1)
+				{
+					const double area = areaOf(b.footprint);
+					const bool works = b.kind == "industrial" || b.kind == "warehouse" || b.kind == "manufacture" || (code >= 41 && code <= 49);
+					h = works ? (area < 500 ? 5.5f : area < 2000 ? 7.5f : area < 8000 ? 9.5f : 11.0f) : (area < 300 ? 4.6f : area < 1500 ? 5.5f : 6.5f);
+				}
 				if (h != b.height)
 					b.height = h, ++stats.raised;
 			}

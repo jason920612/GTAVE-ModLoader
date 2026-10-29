@@ -85,6 +85,38 @@ class Projection:
         return self.lat0 + (y - self.y0) / self.ky, self.lon0 + (x - self.x0) / self.kx
 
 
+def unsquash(a, w, s, e, n):
+    """The service's answer `a` (rows north to south) for the box w, s, e, n mapped back onto that box: the service keeps
+    its pixels square in degrees - a box wider in degrees than the picture asked for (Florida's: a degree of longitude
+    0.88 as long as one of latitude) it answers with its latitude widened about the middle, a narrower one with its
+    longitude; read as the box asked for, a 2 km block's rows had been 1.12 m, everything on it off by up to 125 m."""
+    ny, nx = a.shape[:2]
+    asked = (e - w) / (n - s)
+    if abs(asked - nx / ny) < 1e-6:
+        return a
+    src = a.astype(np.float32)
+    if asked > nx / ny:
+        # (the latitude widened: the answer's rows span (e - w) * ny / nx degrees about the middle)
+        h = (e - w) * ny / nx
+        top = (s + n) / 2 + h / 2
+        lat = n - (np.arange(ny) + 0.5) * (n - s) / ny
+        f = np.clip((top - lat) / h * ny - 0.5, 0, ny - 1)
+        i0 = np.floor(f).astype(np.int64)
+        i1 = np.minimum(i0 + 1, ny - 1)
+        t = (f - i0).reshape(-1, *([1] * (a.ndim - 1)))
+        out = src[i0] * (1 - t) + src[i1] * t
+    else:
+        wd = (n - s) * nx / ny
+        left = (w + e) / 2 - wd / 2
+        lon = w + (np.arange(nx) + 0.5) * (e - w) / nx
+        f = np.clip((lon - left) / wd * nx - 0.5, 0, nx - 1)
+        i0 = np.floor(f).astype(np.int64)
+        i1 = np.minimum(i0 + 1, nx - 1)
+        t = (f - i0).reshape(1, -1, *([1] * (a.ndim - 2)))
+        out = src[:, i0] * (1 - t) + src[:, i1] * t
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)
+
+
 def naip_block(pr, x0, y0, nx, ny, cache=None):
     """RGBN of the game box [x0, x0 + nx) x [y0, y0 + ny) at 1 m, rows north to south (as the picture's)."""
     s, w = pr.latlon(x0, y0)
@@ -97,7 +129,7 @@ def naip_block(pr, x0, y0, nx, ny, cache=None):
         a = np.asarray(im.convert('RGB' if bands != '3' else 'L'))
         if a.shape[:2] != (ny, nx):
             a = np.asarray(Image.fromarray(a).resize((nx, ny), Image.BILINEAR))
-        out[..., at] = a.reshape(ny, nx, -1)
+        out[..., at] = unsquash(a, w, s, e, n).reshape(ny, nx, -1)
     return out
 
 
@@ -327,7 +359,10 @@ def analyse(rgbn, chm, near_built=None):
     cls[(ndvi > 0.28)] = 3
     warm = (r > b + 14) | (sat >= 0.16)
     cls[(ndvi <= 0.12) & warm & (bright > 150)] = 5
-    cls[(ndvi <= 0.12) & ~warm] = 6
+    # (paving and roofs are grey with no more near infrared than red - NDVI -0.06 to 0.01 on Orlando's mapped roads and
+    # roofs -; a winter's dormant lawn is as grey but 0.06-0.15: up to 0.12 it had been paving, the reviewers' "flat grey
+    # gravel" verges, medians and industrial lawns)
+    cls[(ndvi <= 0.04) & ~warm] = 6
     cls[water] = 1
     cls[canopy] = 2
     # (other shade: the ground under it as the nearest ground in the open - a lawn's shade lawn, a car park's paving)

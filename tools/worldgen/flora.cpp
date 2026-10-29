@@ -42,8 +42,8 @@ namespace worldgen::flora
 			std::vector<float> r;
 		};
 
-		// A tube of bark along a limb: `sides` round, its texture once round every 1.6 m of girth and along every 3.2 m.
-		void Tube(roads::Mesh& m, const Limb& l, int sides)
+		// A tube of bark along a limb: `sides` round, its texture once round every `round` m of girth and along every `along`.
+		void Tube(roads::Mesh& m, const Limb& l, int sides, float round = 1.6f, float alongTile = 3.2f)
 		{
 			if (l.p.size() < 2)
 				return;
@@ -62,7 +62,7 @@ namespace worldgen::flora
 				const P3 up = Cross(t, side);
 				if (i)
 					along += std::sqrt(Dot(Sub(l.p[i], l.p[i - 1]), Sub(l.p[i], l.p[i - 1])));
-				const float around = std::max(1.0f, std::round(2 * kPi * l.r[0] / 1.6f));
+				const float around = std::max(1.0f, std::round(2 * kPi * l.r[0] / round));
 				for (int k = 0; k <= sides; ++k)
 				{
 					const float a = 2 * kPi * k / sides;
@@ -72,7 +72,7 @@ namespace worldgen::flora
 					v.normal = n;
 					v.tangent = {t[0], t[1], t[2], 1};
 					v.colour0 = {255, 255, 255, 255};
-					v.uv[0] = {around * k / sides, -along / 3.2f};
+					v.uv[0] = {around * k / sides, -along / alongTile};
 					m.vertices.push_back(v);
 				}
 			}
@@ -84,10 +84,11 @@ namespace worldgen::flora
 				}
 		}
 
-		// A card of a cluster picture (one of the atlas's four), `size` m square, centred at `c`, its face towards `facing`
-		// (turned `spin` about it), both faces; every vertex's normal `light` (out from the crown's middle: lit as the crown).
-		// `hanging`: its top edge at c (moss).
-		void Card(roads::Mesh& m, const P3& c, const P3& facing, float spin, float width, float height, const P3& light, int cell, bool hanging = false)
+		// A card of a cluster picture (one of the picture's cells - `across` by `down` -), `size` m square, centred at `c`, its
+		// face towards `facing` (turned `spin` about it), both faces; every vertex's normal `light` (out from the crown's
+		// middle: lit as the crown). `hanging`: its top edge at c (moss).
+		void Card(roads::Mesh& m, const P3& c, const P3& facing, float spin, float width, float height, const P3& light, int cell, bool hanging = false,
+		    int across = 2, int down = 2)
 		{
 			const P3 f = Unit3(facing);
 			P3 u = Cross(f, std::fabs(f[2]) < 0.95f ? P3{0, 0, 1} : P3{1, 0, 0});
@@ -99,9 +100,11 @@ namespace worldgen::flora
 			const P3 ru = Add(Mul(u, cs), Mul(v, sn)), rv = Add(Mul(v, cs), Mul(u, -sn));
 			const P3 hu = Mul(hanging ? u : ru, width / 2), hv = Mul(hanging ? v : rv, height / 2);
 			const P3 mid = hanging ? Sub(c, hv) : c;
-			const float u0 = (cell % 2) * 0.5f, v0 = (cell / 2) * 0.5f;
+			const float du = 1.0f / static_cast<float>(across), dv = 1.0f / static_cast<float>(down);
+			const float u0 = static_cast<float>(cell % across) * du, v0 = static_cast<float>((cell / across) % down) * dv;
 			const P3 corners[4] = {Sub(Sub(mid, hu), hv), Sub(Add(mid, hu), hv), Add(Add(mid, hu), hv), Add(Sub(mid, hu), hv)};
-			const std::array<float, 2> uvs[4] = {{u0 + 0.01f, v0 + 0.49f}, {u0 + 0.49f, v0 + 0.49f}, {u0 + 0.49f, v0 + 0.01f}, {u0 + 0.01f, v0 + 0.01f}};
+			const std::array<float, 2> uvs[4] = {{u0 + 0.02f * du, v0 + 0.98f * dv}, {u0 + 0.98f * du, v0 + 0.98f * dv}, {u0 + 0.98f * du, v0 + 0.02f * dv},
+			    {u0 + 0.02f * du, v0 + 0.02f * dv}};
 			const P3 n = Unit3(light);
 			// (the game's tree shader reads its vertices' colours - the oak's leaves: red 0-105, green 64-126, blue near 0, alpha
 			// 220-235; the second colour's blue 0-255, the rest 0 -: as those, a card's own within them)
@@ -136,10 +139,11 @@ namespace worldgen::flora
 		// `fold` of the half width under the rachis); the atlas cell's picture along it (its base at the cell's foot), both
 		// faces, lit out from the crown's middle, in `segments` along it.
 		void Frond(roads::Mesh& m, const P3& base, float azimuth, float rise, float droop, float length, float width, float fold, const P3& middle, int cell,
-		    int segments)
+		    int segments, int across = 2, int down = 2)
 		{
 			const P3 side{-std::sin(azimuth), std::cos(azimuth), 0};
-			const float u0 = (cell % 2) * 0.5f, v0 = (cell / 2) * 0.5f;
+			const float du = 1.0f / static_cast<float>(across), dv = 1.0f / static_cast<float>(down);
+			const float u0 = static_cast<float>(cell % across) * du, v0 = static_cast<float>((cell / across) % down) * dv;
 			std::vector<P3> centre{base};
 			for (int i = 0; i < segments; ++i)
 			{
@@ -151,7 +155,7 @@ namespace worldgen::flora
 			const uint32_t h = static_cast<uint32_t>(std::fabs(base[0] * 131 + base[1] * 71 + azimuth * 997));
 			const std::array<uint8_t, 4> c0{static_cast<uint8_t>(40 + h % 36), static_cast<uint8_t>(80 + (h >> 7) % 28), static_cast<uint8_t>((h >> 13) % 12), 228};
 			const std::array<uint8_t, 4> c1{0, 0, static_cast<uint8_t>(60 + (h >> 17) % 120), 0};
-			const float us[3] = {u0 + 0.01f, u0 + 0.25f, u0 + 0.49f};
+			const float us[3] = {u0 + 0.02f * du, u0 + 0.5f * du, u0 + 0.98f * du};
 			for (int face = 0; face < 2; ++face)
 			{
 				const uint32_t first = static_cast<uint32_t>(m.vertices.size());
@@ -174,7 +178,7 @@ namespace worldgen::flora
 						x.tangent = {tu[0], tu[1], tu[2], 1};
 						x.colour0 = c0;
 						x.colour1 = c1;
-						x.uv[0] = {us[k], v0 + 0.49f - 0.48f * t};
+						x.uv[0] = {us[k], v0 + dv * (0.98f - 0.96f * t)};
 						m.vertices.push_back(x);
 					}
 				}
@@ -241,7 +245,11 @@ namespace worldgen::flora
 			{
 				for (const auto& [l, tex] : limbs)
 					if (l.r[0] >= minRadius[lod])
-						Tube(out.lods[lod][tex], l, l.r[0] > 0.25f ? sides[lod] + (lod == 0 ? 2 : 0) : std::max(3, sides[lod] - 2));
+					{
+						const GamePicture* g = FromGame(tex);
+						Tube(out.lods[lod][tex], l, l.r[0] > 0.25f ? sides[lod] + (lod == 0 ? 2 : 0) : std::max(3, sides[lod] - 2), g ? g->round : 1.6f,
+						    g ? g->along : 3.2f);
+					}
 				const int every[4] = {1, 2, 4, 8};
 				const float grow[4] = {1.0f, 1.32f, 1.7f, 2.1f};
 				for (size_t k = 0; k < leaves.size(); k += every[lod])
@@ -249,8 +257,12 @@ namespace worldgen::flora
 					const Leaf& f = leaves[k];
 					if (lod >= 2 && f.hanging && (k / every[lod]) % 2)
 						continue;
-					Card(out.lods[lod][f.tex], f.c, f.facing, f.spin, f.w * grow[lod], f.h * (f.hanging ? std::sqrt(grow[lod]) : grow[lod]), f.light, f.cell,
-					    f.hanging);
+					// (a photographed twig's picture stands on its foot: its card turned at most 40 degrees off upright - turned
+					// any way, the twigs had hung upside down out of the crown)
+					const GamePicture* g = FromGame(f.tex);
+					const float spin = g && g->upright ? (f.spin / (2 * kPi) - 0.5f) * 1.4f : f.spin;
+					Card(out.lods[lod][f.tex], f.c, f.facing, spin, f.w * grow[lod], f.h * (f.hanging ? std::sqrt(grow[lod]) : grow[lod]), f.light, f.cell,
+					    f.hanging, g ? g->across : 2, g ? g->down : 2);
 				}
 			}
 		}
@@ -262,9 +274,11 @@ namespace worldgen::flora
 		{
 			Finish(out, limbs, fans);
 			const int segments[4] = {8, 5, 3, 2};
+			const GamePicture* g = FromGame(kPalmFrond);
 			for (int lod = 0; lod < 4; ++lod)
 				for (const auto& f : fronds)
-					Frond(out.lods[static_cast<size_t>(lod)][kPalmFrond], crown, f[0], f[1], f[2], f[3], f[4], fold, middle, static_cast<int>(f[5]), segments[lod]);
+					Frond(out.lods[static_cast<size_t>(lod)][kPalmFrond], crown, f[0], f[1], f[2], f[3], f[4], fold, middle, static_cast<int>(f[5]), segments[lod],
+					    g ? g->across : 2, g ? g->down : 2);
 		}
 
 		// cards round a point on a limb: their faces any way, lit out from the crown's middle
@@ -834,8 +848,40 @@ namespace worldgen::flora
 		}
 	}
 
+	const GamePicture* FromGame(Texture t)
+	{
+		// (the live and laurel oaks' and the shrubs': a fig's dense round spray of small glossy leaves - any way up -; the
+		// magnolia's: a fig's bigger glossy ones on a twig; the sweetgum's: the English oak's lobed ones on a twig; the pines':
+		// the game pine's tufts of long needles, a 2 x 2 atlas; the hedges': a clipped hedge's small leaves; the cabbage palm's
+		// fan: the game's fan palm leaf, its hub at the foot; the barks: an olive's grey furrows for the oaks and the
+		// sweetgum - 0.8 m square -, the game pine's red-brown plates - all round its 1.2 m girth, 0.6 m along)
+		static const GamePicture oak{"z_prop_tree_ficus_3b.ytd", "nxg_im_branches_29", "z_prop_tree_ficus_3b.ytd", "nxg_im_branches_29_n"};
+		static const GamePicture magnolia{"z_prop_tree_ficus_3a.ytd", "nxg_im_branches_36e", nullptr, nullptr, 1, 1, true};
+		static const GamePicture gum{"prop_tree_eng_oak_cr2.ytd", "nxg_im_branches_27c", nullptr, nullptr, 1, 1, true};
+		static const GamePicture pine{"z_prop_tree_pine.ytd", "nxg_prop_tree_pine_02_leaves1_dmnxg_prop_tree_pine_02_leaves1_am", nullptr, nullptr, 2, 2};
+		static const GamePicture hedge{"prop_plant_int_06c+hidr.ytd", "rsn_am_hedge_leaf_drsn_am_hedge_leaf2_a", "prop_plant_int_06c+hidr.ytd", "rsn_am_hedge_leaf2_n"};
+		static const GamePicture fan{"prop_veg_palmfan_1.ytd", "nxg_im_plam_05", "prop_veg_palmfan_1.ytd", "nxg_im_plam_05_n"};
+		static const GamePicture oakBark{"prop_bush_lrg_02+hidr.ytd", "prop_olive_bark_01", nullptr, nullptr, 1, 1, false, 0.8f, 0.8f};
+		static const GamePicture pineBark{"z_prop_tree_pine.ytd", "nxg_prop_tree_pine_02_trunk_dm", "z_prop_tree_pine.ytd", "nxg_prop_tree_pine_02_trunk_nm", 1, 1, false, 1.2f,
+		    0.6f};
+		switch (t)
+		{
+		case kOakLeaves: return &oak;
+		case kMagnoliaLeaves: return &magnolia;
+		case kGumLeaves: return &gum;
+		case kPineNeedles: return &pine;
+		case kHedgeLeaves: return &hedge;
+		case kFanFrond: return &fan;
+		case kBarkOak: return &oakBark;
+		case kBarkPine: return &pineBark;
+		default: return nullptr;
+		}
+	}
+
 	texture::Image Picture(Texture t)
 	{
+		if (t == kHedgeLeaves)
+			return Picture(kOakLeaves);
 		const bool atlas = Cutout(t) && t != kMoss;
 		texture::Image im(t == kMoss ? 256 : 512, 512, {0, 0, 0, 0});
 		if (!Cutout(t))
@@ -1188,6 +1234,7 @@ namespace worldgen::flora
 			}
 			Finish(out, limbs, {});
 			const int segments[4] = {6, 4, 3, 2};
+			const GamePicture* g = FromGame(kPalmFrond);
 			for (int lod = 0; lod < 4; ++lod)
 				for (size_t k = 0; k < crowns.size(); ++k)
 				{
@@ -1197,7 +1244,7 @@ namespace worldgen::flora
 						continue;
 					for (const auto& f : crowns[k].fronds)
 						Frond(out.lods[static_cast<size_t>(lod)][kPalmFrond], crowns[k].at, f[0], f[1], f[2], f[3], f[4], 0.3f, crowns[k].middle, static_cast<int>(f[5]),
-						    segments[lod]);
+						    segments[lod], g ? g->across : 2, g ? g->down : 2);
 				}
 			out.height = top, out.width = 2 * reach, out.trunk = clump + 0.05f;
 			return out;
@@ -1215,33 +1262,34 @@ namespace worldgen::flora
 			Model out;
 			constexpr float L = 2.6f, D = 0.9f, H = 2.0f;
 			std::vector<Leaf> leaves;
+			// (its cards 0.45-0.65 m: the clipped hedge's picture's leaves 6 cm across, as a ficus's or viburnum's)
 			const auto card = [&](const P3& c, const P3& out) {
-				const float s = rnd.Range(0.28f, 0.42f);
+				const float s = rnd.Range(0.45f, 0.65f);
 				const P3 facing{out[0] + rnd.Range(-0.4f, 0.4f), out[1] + rnd.Range(-0.4f, 0.4f), out[2] + rnd.Range(-0.3f, 0.5f)};
 				// (lit as the hedge's face it is on, a little up: the clipped wall shaded as one)
 				const P3 light{out[0], out[1], out[2] + 0.35f};
-				leaves.push_back({c, facing, light, rnd.Range(0, 2 * kPi), s, s, static_cast<int>(rnd.Next() % 4), kOakLeaves, false});
+				leaves.push_back({c, facing, light, rnd.Range(0, 2 * kPi), s, s, static_cast<int>(rnd.Next() % 4), kHedgeLeaves, false});
 			};
 			// (the clipping: a few centimetres in and out, the edges rounded off)
 			const auto bump = [&] { return rnd.Range(-0.06f, 0.05f); };
-			for (int k = 0; k < static_cast<int>(L * D * 46); ++k)
+			for (int k = 0; k < static_cast<int>(L * D * 18); ++k)
 			{
 				const float x = rnd.Range(-D / 2, D / 2), y = rnd.Range(-L / 2, L / 2);
 				const float edge = std::max(0.0f, std::fabs(x) - (D / 2 - 0.12f)) / 0.12f;
 				card({x, y, H - 0.08f * edge * edge + bump()}, {0, 0, 1});
 			}
 			for (const float side : {-1.0f, 1.0f})
-				for (int k = 0; k < static_cast<int>(L * H * 40); ++k)
+				for (int k = 0; k < static_cast<int>(L * H * 16); ++k)
 				{
 					const float y = rnd.Range(-L / 2, L / 2), z = rnd.Range(0.05f, H - 0.05f);
 					card({side * (D / 2 + bump()), y, z}, {side, 0, 0});
 				}
 			// (the ends: the next piece covers them, fewer)
 			for (const float end : {-1.0f, 1.0f})
-				for (int k = 0; k < static_cast<int>(D * H * 14); ++k)
+				for (int k = 0; k < static_cast<int>(D * H * 6); ++k)
 					card({rnd.Range(-D / 2, D / 2), end * (L / 2 + bump()), rnd.Range(0.05f, H - 0.05f)}, {0, end, 0});
 			// (and some inside: its leaves seen through the gaps)
-			for (int k = 0; k < 40; ++k)
+			for (int k = 0; k < 16; ++k)
 				card({rnd.Range(-D / 3, D / 3), rnd.Range(-L / 2, L / 2), rnd.Range(0.2f, H - 0.2f)}, {rnd.Range(-1, 1), 0, 0.3f});
 			Finish(out, {}, leaves);
 			out.height = H, out.width = L, out.trunk = 0;

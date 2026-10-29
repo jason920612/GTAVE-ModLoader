@@ -16,7 +16,7 @@ usage (in a Python with pyshp and pyproj; keep the data outside the repository):
 Out: {"attribution": ..., "buildings": [{"building": index in world.json, "use": "001", "year": 1962, "living": m2, "count": n,
       "units": n, "quality": 1-6, "class": 0-5, "storeys": n, "main": the parcel's biggest, "lot": [[x, y], ...]}, ...]}
      ("lot": a house's - single family, mobile home, small multi-family - parcel under 4000 m2, an apartment block's
-     (multi-family, condominium, cooperative, retirement home) under 2 ha, its outline in the world's
+     (multi-family, condominium, cooperative, retirement home) under 2 ha, a works' (industrial) under 5 ha, its outline in the world's
      metres to 0.1 m without its closing point and the points on a straight line; the main building's only)
 """
 import json, math, os, sys, time, urllib.parse, urllib.request, zipfile
@@ -234,10 +234,12 @@ def join(o):
             ratio = living / base if base > 0 else 0
             storeys = 0 if living <= 0 else 1 if ratio < 1.3 else 2 if ratio < 2.4 else max(3, round(ratio / 0.9))
             # (a house's lot, for its yard's fence: its outline - the first ring, the outer one -)
-            # (and an apartment block's - the multi-family homes, condominiums, cooperatives, retirement homes -: up to 2 ha)
+            # (and an apartment block's - the multi-family homes, condominiums, cooperatives, retirement homes -: up to 2 ha;
+            # and a works' - the industrial uses, 041-049 -, for the chain-link along its street side: up to 5 ha)
             house_lot = str(use) in ('001', '002', '007', '008') and area(rings[0]) < 4000
             block_lot = str(use) in ('003', '004', '005', '006') and area(rings[0]) < 20000
-            lot = simplify(rings[0]) if (house_lot or block_lot) and len(rings[0]) >= 4 else None
+            works_lot = str(use) in ('041', '042', '043', '044', '045', '046', '047', '048', '049') and area(rings[0]) < 50000
+            lot = simplify(rings[0]) if (house_lot or block_lot or works_lot) and len(rings[0]) >= 4 else None
             for k, bi in enumerate(members):
                 found[bi] = {'building': bi, 'use': str(use or ''), 'year': int(year or 0), 'living': round(living, 1), 'count': int(count or 0),
                              'units': int(units or 0), 'quality': int(quality) if str(quality).strip().isdigit() else 0, 'class': int(cls or 0),

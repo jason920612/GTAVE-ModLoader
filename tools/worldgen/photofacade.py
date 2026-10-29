@@ -108,7 +108,7 @@ def main():
             if r.get('pano') == 'True' and r.get('id') not in ok:
                 continue
             try:
-                lat, lon, heading = float(r['lat']), float(r['lon']), float(r['heading'])
+                lat, lon, heading = float(r['lat']), float(r['lon']), panoheading.heading(r)  # (its creator's rule's, where measured)
             except (KeyError, ValueError):
                 continue
             x, y = to_game(lat, lon)
