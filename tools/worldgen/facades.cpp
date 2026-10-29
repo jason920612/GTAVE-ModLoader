@@ -100,18 +100,19 @@ namespace worldgen::facades
 			return {a[0] * s, a[1] * s, a[2] * s};
 		}
 
-		// plaster or concrete: the colour with fine grain, broad stains and darker streaks running down
+		// plaster or concrete: the colour with a fine trowelled grain, mottling a metre or two across, broad stains and darker
+		// streaks running down (the grain at the pixels' own size had read as "TV static, sandpaper" to the reviewers)
 		void Wall(Canvas& c, Rgb colour, uint32_t seed, float grain, float stains)
 		{
 			for (int y = 0; y < c.h; ++y)
 				for (int x = 0; x < c.w; ++x)
 				{
 					const float u = (x + 0.5f) / c.w, v = (y + 0.5f) / c.h;
-					const float fine = Fbm(u, v, 64, seed, 3), broad = Fbm(u, v, 4, seed + 7, 3);
+					const float fine = Fbm(u, v, 40, seed, 2), mottle = Fbm(u, v, 10, seed + 3, 2), broad = Fbm(u, v, 4, seed + 7, 3);
 					const float streak = Fbm(u, v * 0.15f, 24, seed + 13, 2);
 					const size_t i = static_cast<size_t>(y) * c.w + x;
-					c.albedo[i] = Scale(colour, 1 + grain * fine + stains * broad - 0.05f * std::max(0.0f, streak));
-					c.height[i] = 0.5f + 0.04f * fine;
+					c.albedo[i] = Scale(colour, 1 + 0.5f * grain * fine + 0.3f * stains * mottle + stains * broad - 0.06f * std::max(0.0f, streak));
+					c.height[i] = 0.5f + 0.03f * fine;
 					c.spec[i] = 0.06f + 0.03f * fine;
 				}
 		}
@@ -174,19 +175,72 @@ namespace worldgen::facades
 			return Scale(sky, 0.85f + 0.3f * r);
 		}
 
+		// A window, each its own (the reviewers: "identical vertical-gradient glass, painted on, no depth" on every building):
+		// its frame and a sill standing out under it with its shadow; the glass the sky reflected in its upper part and the
+		// street's trees and the buildings across darker in its lower, the line between them and a slanting sheen pane to pane;
+		// behind it now and then blinds down part way, curtains drawn, or a dark room; the frame's shadow inside along its top
+		// and left; a rust and dirt streak running down from the sill's ends; a window unit air conditioner in some (Florida's
+		// walk-ups have them)
 		void Window(Canvas& c, float x0, float y0, float x1, float y1, float frame, Rgb frameColour, Rgb tint, uint32_t seed, bool crossbar)
 		{
+			const float r = Rand(seed, 17), horizon = 0.3f + 0.25f * Rand(seed, 19), sheen = Rand(seed, 41) * 1.2f - 0.1f;
+			const float behind = Rand(seed, 23), drop = 0.25f + 0.6f * Rand(seed, 29);
+			const Rgb street = Mix(Rgb{92, 100, 92}, Scale(tint, 0.7f), 0.3f + 0.4f * Rand(seed, 37));
+			const Rgb shade = Rand(seed, 43) < 0.5f ? Rgb{214, 206, 188} : Rand(seed, 47) < 0.5f ? Rgb{232, 230, 224} : Rgb{176, 150, 120};
+			// (the streaks first: the window and its sill go over their tops)
+			for (const float sx : {x0, x1 - 0.06f})
+				if (Rand(seed, sx > x0 ? 53u : 59u) < 0.55f)
+				{
+					const float length = 0.5f + 1.4f * Rand(seed, sx > x0 ? 61u : 67u);
+					c.Rect(sx - 0.03f, y0 - length, sx + 0.12f + 0.06f * r, y0, [&](size_t i, float u, float v) {
+						c.albedo[i] = Scale(c.albedo[i], 1 - 0.07f * v * (1 - std::fabs(u * 2 - 1)));
+					});
+				}
 			c.Fill(x0, y0, x1, y1, frameColour, 0.56f, 0.25f);
-			const float r = Rand(seed, 17);
-			c.Rect(x0 + frame, y0 + frame, x1 - frame, y1 - frame, [&](size_t i, float, float v) {
-				c.albedo[i] = Glass(tint, v, r);
+			const float gx0 = x0 + frame, gy0 = y0 + frame, gx1 = x1 - frame, gy1 = y1 - frame;
+			c.Rect(gx0, gy0, gx1, gy1, [&](size_t i, float u, float v) {
+				Rgb g;
+				if (behind < 0.12f)
+					g = Mix(Rgb{38, 42, 48}, Scale(tint, 0.5f), 0.3f * v); // (a dark room, little reflected)
+				else
+				{
+					// (the sky up, the street's dark band under the line - soft -, a slanting sheen)
+					const float t = std::clamp((v - horizon) / 0.12f, 0.0f, 1.0f);
+					g = Mix(Scale(street, 0.8f + 0.45f * Noise(u * 5 + r * 7, v * 2, 64, seed)), Glass(tint, v, r), t); // (the trees and walls across, uneven)
+					const float d = std::fabs(u * 0.6f + v - sheen);
+					if (d < 0.08f)
+						g = Mix(g, Rgb{226, 232, 238}, 0.35f * (1 - d / 0.08f));
+				}
+				// (behind the glass: blinds or curtains down from the top, part way)
+				if (behind >= 0.12f && behind < 0.42f && v > 1 - drop)
+				{
+					const bool slats = behind < 0.3f;
+					const float f = slats ? 0.86f + 0.14f * (std::fmod(v * (gy1 - gy0) / 0.1f, 1.0f) < 0.5f ? 1.0f : 0.0f)
+					                      : 0.82f + 0.18f * std::fabs(std::sin(u * (gx1 - gx0) / 0.09f));
+					g = Mix(g, Scale(shade, f), 0.82f);
+				}
+				c.albedo[i] = g;
 				c.height[i] = 0.38f;
-				c.spec[i] = 0.85f;
+				c.spec[i] = behind < 0.12f ? 0.6f : 0.85f;
 			});
+			// (the frame's shadow inside it, along its top and left)
+			c.Rect(gx0, gy1 - 0.07f, gx1, gy1, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.62f + 0.3f * (1 - v)); });
+			c.Rect(gx0, gy0, gx0 + 0.04f, gy1, [&](size_t i, float u, float) { c.albedo[i] = Scale(c.albedo[i], 0.7f + 0.3f * u); });
 			if (crossbar)
 				c.Fill(x0, (y0 + y1) / 2 - frame / 2, x1, (y0 + y1) / 2 + frame / 2, frameColour, 0.52f, 0.25f);
-			// (the sill's shadow under it)
-			c.Rect(x0 - frame, y0 - 0.12f, x1 + frame, y0, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.75f + 0.25f * (1 - v)); });
+			// (the sill: a little wider than the frame, standing out, and its shadow under it)
+			c.Fill(x0 - frame * 1.5f, y0 - 0.05f, x1 + frame * 1.5f, y0 + 0.01f, Mix(frameColour, Rgb{235, 233, 226}, 0.5f), 0.7f, 0.2f);
+			c.Rect(x0 - frame * 1.5f, y0 - 0.16f, x1 + frame * 1.5f, y0 - 0.05f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.7f + 0.3f * (1 - v)); });
+			// (a window unit air conditioner in the lower sash, one in nine: a beige box, its grille, its shadow on the wall under it)
+			if (crossbar && Rand(seed, 71) < 0.11f && x1 - x0 > 0.8f)
+			{
+				const float ax0 = x0 + (x1 - x0) * (0.2f + 0.3f * Rand(seed, 73)), ax1 = ax0 + 0.62f, ay0 = y0 + frame * 0.5f, ay1 = ay0 + 0.42f;
+				c.Rect(ax0, ay0 - 0.22f, ax1, ay0, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.72f + 0.28f * (1 - v)); });
+				c.Fill(ax0, ay0, ax1, ay1, Rgb{206, 200, 184}, 0.75f, 0.2f);
+				c.Rect(ax0 + 0.05f, ay0 + 0.06f, ax1 - 0.05f, ay1 - 0.12f, [&](size_t i, float u, float) {
+					c.albedo[i] = Scale(Rgb{150, 146, 136}, std::fmod(u * 12, 1.0f) < 0.5f ? 0.8f : 1.0f);
+				});
+			}
 		}
 
 		// the canvas as the three textures
@@ -234,7 +288,8 @@ namespace worldgen::facades
 			s.diffuse = prefix + name;
 			s.normal = prefix + family + "_n";
 			s.specular = prefix + family + "_s";
-			const int px = kind == Kind::Brick || kind == Kind::BrickCity ? size : size / 2; // (a siding board is 15 px even at half)
+			const int px = kind == Kind::Brick || kind == Kind::BrickCity ? std::min(size, 1024) : size / 2; // (a siding board is 15 px even at half; a window
+			// 1.6 m wide some 140 px: its frame, sill, blinds and reflection drawn - at half that, "painted-on gradient windows")
 			const int detail = std::max(64, px / 4);
 			Canvas c(px, px, w, h);
 			draw(c);

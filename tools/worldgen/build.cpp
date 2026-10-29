@@ -433,6 +433,8 @@ namespace worldgen::build
 		// colour the game draws it with - the pictures are brighter than the ground's albedo: at 0.65 the game's fields came
 		// out paler than the pictures beside them)
 		constexpr float kNeutralMean = 200, kPhotoGain = 0.5f;
+		// (paving where the pictures see none round it: their usual concrete, a little warm)
+		constexpr std::array<float, 3> kPavingSeen{168, 164, 154};
 		// Pitched roofs' coverings (the game's textures: dictionary, texture, metres one covers): clay tiles, mid grey
 		// shingles, light grey, dark (the mid grey's darker kin), brown; and standing-seam metal of our own drawing (no
 		// dictionary: its colour) - green and red, north Florida's metal roofs (the street pictures': a green one where the
@@ -1640,10 +1642,14 @@ namespace worldgen::build
 		};
 		// (the colour the ground is tinted with round a point, as a palette colour: the pictures' colour of the ground they see
 		// - grass, bare earth, paving: not the trees', not the water's - within 6 m, 10 m if none, times kPhotoGain over the
-		// neutral layers' mean; nothing seen there - the woods' floor under their canopy: false)
-		const auto groundColour = [&](float x, float y, std::array<float, 3>& out) {
+		// neutral layers' mean; nothing seen there - the woods' floor under their canopy: false. `kind`: the ground the point
+		// has (kindAt's: 0 grass, 1 dry grass, 2 bare earth or sand, 3 paving; -1 any) - only the pictures' cells of that kind:
+		// the paving layer tinted with the green of the verge beside it had been the reviewers' "teal-tinted sidewalk bands",
+		// a lawn greyed by the paving beside it their "grey-green lawns"; paving with none seen round it plain concrete)
+		const auto groundColour = [&](float x, float y, std::array<float, 3>& out, int kind = -1) {
 			if (photoCover.v.empty())
 				return false;
+			const auto wantedClass = [&](uint8_t k) { return kind == 3 ? k == 6 : kind == 0 || kind == 1 ? k == 3 || k == 4 : kind == 2 ? k == 5 || k == 4 : true; };
 			const auto c = photoCover.Cell({x, y});
 			for (int reach = 1; reach <= 2; ++reach)
 			{
@@ -1654,7 +1660,7 @@ namespace worldgen::build
 						if (!photoCover.In(c[0] + di, c[1] + dj))
 							continue;
 						const auto& p = photoCover.At(c[0] + di, c[1] + dj);
-						if (p[0] < 3 || !(p[1] | p[2] | p[3]))
+						if (p[0] < 3 || !(p[1] | p[2] | p[3]) || !wantedClass(p[0]))
 							continue;
 						const float weight = 1.0f / (1 + di * di + dj * dj);
 						for (int k = 0; k < 3; ++k)
@@ -1688,6 +1694,13 @@ namespace worldgen::build
 						}
 					return true;
 				}
+			}
+			if (kind == 3)
+			{
+				// (plain concrete, a little warm: the pictures' paving's usual colour)
+				for (int k = 0; k < 3; ++k)
+					out[k] = std::clamp(kPavingSeen[k] * kPhotoGain / kNeutralMean * 255.0f, 0.0f, 255.0f);
+				return true;
 			}
 			return false;
 		};
@@ -3209,7 +3222,7 @@ namespace worldgen::build
 					list << std::format("{:.1f} {:.1f} {:.0f} {:.1f}\n", c[0], c[1], std::fabs(polygon::Area(b.footprint)), b.height);
 				}
 			}
-			facadeSet = facades::Make(o.name + "_f_", 1024);
+			facadeSet = facades::Make(o.name + "_f_", 2048);
 			structures::Options so;
 			so.gableShareAt = [&](float, float y) {
 				const double lat = latAt(y);
@@ -4927,6 +4940,7 @@ namespace worldgen::build
 		// dictionary, only what is used.
 		std::array<ydr::Material, paving::kPavings> pavedMaterials;
 		pavedMaterials.fill(asphalt);
+		ydr::Material structureMaterial = asphalt; // (bridges and retaining walls: plain concrete, below)
 		ydr::Material railTrackMaterial = asphalt, railBedMaterial = asphalt, railSteelMaterial = asphalt, cableMaterial;
 		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial, aluminiumMaterial; // (the barriers')
 		ydr::Material signBladeMaterial, signLetterMaterial; // (the street name signs')
@@ -5227,8 +5241,9 @@ namespace worldgen::build
 					std::vector<std::array<float, 3>> wanted;
 					for (float y = by0; y < by1; y += 16)
 						for (float x = bx0; x < bx1; x += 16)
-							if (std::array<float, 3> c; groundColour(x, y, c))
-								wanted.push_back(c);
+							for (const int kind : {-1, 0, 3})
+								if (std::array<float, 3> c; groundColour(x, y, c, kind))
+									wanted.push_back(c);
 					for (int k = 0; k < 64; ++k)
 						wanted.push_back(kForestFloor), wanted.push_back(kTownShade);
 					photoPalette = Palette(wanted, photoNearest);
@@ -5277,6 +5292,18 @@ namespace worldgen::build
 				pavedMaterials[k].Texture(kDiffuseTex, diffuse);
 				pavedMaterials[k].Texture(kBumpTex, normal);
 				pavedMaterials[k].Texture(kSpecularTex, specular);
+			}
+			// (the bridges' decks, parapets and piers and the retaining walls: plain concrete slabs - the concrete roads' freeway
+			// picture has its lane lines painted on: under an overpass the reviewers saw "an asphalt texture with lane dashes" on
+			// its underside)
+			if (!surfaces.structure.indices.empty() || !fences.concrete.indices.empty())
+			{
+				std::string diffuse, normal;
+				if (!use("sp1_03_ground+hidr.ytd", "im_concrete25", diffuse) || !use("paletoroadtemp+hi.ytd", "im_concrete25_n", normal))
+					return false;
+				structureMaterial.Texture(kDiffuseTex, diffuse);
+				structureMaterial.Texture(kBumpTex, normal);
+				structureMaterial.Texture(kSpecularTex, o.name + "_asphalt_s");
 			}
 			if (!surfaces.patches.indices.empty() || !surfaces.potholes.indices.empty() || !surfaces.breakups.indices.empty() ||
 			    !surfaces.legends.indices.empty() || !surfaces.bikeSymbols.indices.empty())
@@ -5749,18 +5776,6 @@ namespace worldgen::build
 				// cover in 3 m round it (green grass, dry grass - in town paving -, sand or bare earth, leaf litter under the trees
 				// and in the water), its first and last texels' centres on the tile's edges (sampled between them the texture
 				// wraps: a line along every tile's edge)
-				f.tint.resize(f.height.size());
-				for (int j = 0; j <= per; ++j)
-					for (int i = 0; i <= per; ++i)
-					{
-						std::array<float, 3> c;
-						const float x = x0 + i * o.cell, y = y0 + j * o.cell;
-						const uint8_t lc = landCoverAt ? landCoverAt(x, y) : 0;
-						f.tint[f.V(i, j)] = groundColour(x, y, c)
-						                        ? photoNearest[(static_cast<int>(c[0]) >> 3) << 10 | (static_cast<int>(c[1]) >> 3) << 5 | (static_cast<int>(c[2]) >> 3)]
-						                    : lc >= 21 && lc <= 24 && !thicketAt(x, y) ? photoTown
-						                                                                   : photoUsual;
-					}
 				// (the kinds of ground: 0 grass, 1 dry grass, 2 bare earth or sand, 3 paving, 4 leaf litter - under the woods'
 				// trees and in the water, under a town's trees its lawns (NLCD's developed land): their leaf litter had shown as
 				// bare brown yards wherever the game's trees cover less than the pictures' canopy; each pictures' class's)
@@ -5825,6 +5840,20 @@ namespace worldgen::build
 					default: return 0;
 					}
 				};
+				// (each vertex's tint from the pictures' cells of its own kind of ground round it)
+				f.tint.resize(f.height.size());
+				for (int j = 0; j <= per; ++j)
+					for (int i = 0; i <= per; ++i)
+					{
+						std::array<float, 3> c;
+						const float x = x0 + i * o.cell, y = y0 + j * o.cell;
+						const uint8_t lc = landCoverAt ? landCoverAt(x, y) : 0;
+						const int kind = kindAt(x, y);
+						f.tint[f.V(i, j)] = groundColour(x, y, c, kind == 4 ? -1 : kind)
+						                        ? photoNearest[(static_cast<int>(c[0]) >> 3) << 10 | (static_cast<int>(c[1]) >> 3) << 5 | (static_cast<int>(c[2]) >> 3)]
+						                    : lc >= 21 && lc <= 24 && !thicketAt(x, y) ? photoTown
+						                                                               : photoUsual;
+					}
 				// the tile's four: the commonest kinds (every 2 m), in the slots where the kinds that meet most meet along the
 				// weight map's edges (slots 0 and 3, 1 and 2 meet only through the other two)
 				std::array<double, 5> count{};
@@ -6524,7 +6553,7 @@ namespace worldgen::build
 			add(wornMaterial, surfaces.worn);
 			add(sidewalk, surfaces.sidewalk);
 			add(kerb, surfaces.kerb);
-			add(pavedMaterials[static_cast<size_t>(paving::Paving::Concrete)], surfaces.structure); // (bridges' decks, parapets, piers)
+			add(structureMaterial, surfaces.structure); // (bridges' decks, parapets, piers)
 			add(railTrackMaterial, surfaces.railTrack);
 			add(railBedMaterial, surfaces.railBed);
 			add(railSteelMaterial, surfaces.railSteel);
@@ -6727,7 +6756,7 @@ namespace worldgen::build
 				addTo(guardRailMaterial, fences.rail);
 				addTo(boardsMaterial, fences.boards);
 				addTo(blockMaterial, fences.block);
-				addTo(pavedMaterials[static_cast<size_t>(paving::Paving::Concrete)], fences.concrete);
+				addTo(structureMaterial, fences.concrete);
 				addTo(chainLinkMaterial, fences.mesh);
 				addTo(ironMaterial, fences.iron);
 				addTo(aluminiumMaterial, fences.ironWhite);

@@ -1708,6 +1708,29 @@ int main(int argc, char** argv)
 			}
 		return 0;
 	}
+	if (command == "facades-test")
+	{
+		// the walls' textures (facades.hpp) as PNGs, decoded as the game reads them: --out <dir> [--size 2048] [--only <name part>]
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		const auto set = worldgen::facades::Make("t_", g_options.contains("size") ? std::stoi(g_options["size"]) : 2048);
+		for (const auto& t : set.textures)
+		{
+			if (t.name.ends_with("_n") || t.name.ends_with("_s") || (g_options.contains("only") && t.name.find(g_options["only"]) == std::string::npos))
+				continue;
+			auto format = t.format;
+			uint8_t mips = t.mips;
+			Bytes pixels(t.pixels.begin(), t.pixels.end());
+			loader::convert::MakeRenderTargetFormat(format, mips, t.width, t.height, pixels);
+			worldgen::texture::Image image(t.width, t.height);
+			for (size_t i = 0; i < image.pixels.size() && 4 * i + 3 < pixels.size(); ++i)
+				image.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], 255};
+			if (!worldgen::texture::WritePng(out / (t.name + ".png"), image, error))
+				return Fail(error);
+			std::printf("%s %ux%u\n", t.name.c_str(), t.width, t.height);
+		}
+		return 0;
+	}
 	if (command == "signs-test")
 	{
 		// the street name signs' glyph picture (its alpha as grey) as a PNG and some names as the signs abbreviate them: --out
