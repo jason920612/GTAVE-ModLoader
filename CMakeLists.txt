@@ -94,6 +94,7 @@ add_library(loader SHARED
     src/loader/debug/dred.cpp
     src/loader/debug/remote.cpp
     src/loader/debug/watchdog.cpp
+    src/loader/debug/filewatch.cpp
     src/loader/debug/profile.cpp
     src/loader/game/dlcpacks.cpp
     src/loader/game/pools.cpp

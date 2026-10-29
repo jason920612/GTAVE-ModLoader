@@ -3,6 +3,7 @@
 #include <d3d12.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -323,21 +324,27 @@ namespace loader::web
 
 		textures::Tick();
 
-		// Development aid: ModLoader\browser_open.txt holds a URL to open.
-		static uint64_t nextCheck = 0;
-		if (GetTickCount64() >= nextCheck)
+		// Development aid: ModLoader\browser_open.txt holds a URL to open. Looked for by a thread of its own once a second:
+		// asked for on the game's thread, it cost a frame 100 ms and more while the disk was busy.
+		static std::atomic<bool> triggered = false;
+		static const bool watching = [] {
+			std::thread([] {
+				const auto trigger = paths::Get().root / L"browser_open.txt";
+				for (;; std::this_thread::sleep_for(std::chrono::seconds(1)))
+					if (std::error_code ec; std::filesystem::exists(trigger, ec))
+						triggered = true;
+			}).detach();
+			return true;
+		}();
+		if (watching && triggered.exchange(false))
 		{
-			nextCheck = GetTickCount64() + 1000;
 			const auto trigger = paths::Get().root / L"browser_open.txt";
 			std::error_code ec;
-			if (std::filesystem::exists(trigger, ec))
-			{
-				std::string url;
-				std::getline(std::ifstream(trigger), url);
-				std::filesystem::remove(trigger, ec);
-				if (!url.empty())
-					Open(url);
-			}
+			std::string url;
+			std::getline(std::ifstream(trigger), url);
+			std::filesystem::remove(trigger, ec);
+			if (!url.empty())
+				Open(url);
 		}
 
 		std::deque<Query> queries;

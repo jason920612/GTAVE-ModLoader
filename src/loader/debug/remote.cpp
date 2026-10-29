@@ -35,8 +35,10 @@
 #include "../game/seamless.hpp"
 #include "../game/crossing.hpp"
 #include "../game/natives.hpp"
+#include "../game/script.hpp"
 #include "../game/sectors.hpp"
 #include "../graphics/bridge.hpp"
+#include "../graphics/gamememory.hpp"
 #include "../graphics/particles.hpp"
 #include "../log.hpp"
 #include "../mods.hpp"
@@ -44,6 +46,7 @@
 #include "../state.hpp"
 #include "../ui/overlay.hpp"
 #include "../ui/recorder.hpp"
+#include "filewatch.hpp"
 #include "profile.hpp"
 #include "watchdog.hpp"
 
@@ -118,6 +121,13 @@ namespace loader::debug::remote
 		std::string g_weather;         // "weather": that type, kept
 		float g_spinRate = 0;          // "spin": the gameplay camera turned this fast (degrees a second) until then
 		ULONGLONG g_spinUntil = 0, g_spinLast = 0;
+		// "quiet" (test runs, gtactl launch): the story's phone calls and texts - its own, friends', booty calls - kept out of
+		// the pictures and the drives: the scripts that make them ended as soon as they run (the story's controllers start
+		// them again; nothing is saved in a test run).
+		constexpr uint64_t kTerminateThread = 0xC8B189ED9138BCD4;
+		constexpr uint32_t kQuietScripts[] = {game::script::Joaat("comms_controller"), game::script::Joaat("friends_controller"),
+		    game::script::Joaat("bootycallhandler")};
+		std::atomic<bool> g_quiet = false;
 
 		// "native": a call the game thread makes for the tester (arguments: integers, floats with a '.', s:text).
 		struct NativeCall
@@ -897,6 +907,40 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "filewatch")
+			{
+				// filewatch start | stop: the files the game's thread opens or asks about meanwhile, and the time it waits
+				// for them (debug/filewatch.hpp)
+				std::string what;
+				in >> what;
+				if (what == "stop")
+					return filewatch::Stop();
+				auto job = std::make_shared<Job>();
+				job->run = [] { return filewatch::Start(GetCurrentThreadId()) ? std::string("watching the game's thread") : std::string("could not hook"); };
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
+			if (cmd == "quiet")
+			{
+				// quiet on|off: the story's phone calls and texts kept out of a test run (see kQuietScripts)
+				std::string how;
+				in >> how;
+				g_quiet = how != "off";
+				return g_quiet ? "ok quiet" : "ok story as it is";
+			}
+			if (cmd == "vram")
+			{
+				// vram: what Windows gives the game, what it is told, what it uses; vram share <percent>: the game told that
+				// share of the card's memory from now on (0: what Windows gives it)
+				std::string what;
+				int percent = 0;
+				if (in >> what && what == "share" && in >> percent)
+					graphics::gamememory::SetShare(percent);
+				return graphics::gamememory::Report();
+			}
 			if (cmd == "threads")
 			{
 				// threads: the game's threads - id, name (GetThreadDescription), CPU time (ms) - busiest first (research: which
@@ -1445,6 +1489,10 @@ namespace loader::debug::remote
 			call->done = true;
 			g_callDone.notify_all();
 		}
+		if (g_quiet)
+			for (const uint32_t name : kQuietScripts)
+				if (game::scrThread* thread = game::script::FindThread(name))
+					game::natives::Invoke<void>(kTerminateThread, *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(thread) + 8)); // (+8: its id)
 		std::erase_if(g_repeats, [&](const auto& r) { return now >= r.second; });
 		for (const auto& [call, until] : g_repeats)
 		{

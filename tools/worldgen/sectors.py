@@ -107,7 +107,19 @@ def run(cmd, log):
     with open(log, 'a', encoding='utf-8') as out:
         out.write('> ' + ' '.join(cmd) + '\n')
         out.flush()
-        return subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT).returncode
+        # (at idle priority, worldgen in background mode too: see background())
+        return subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, 'IDLE_PRIORITY_CLASS', 0),
+                              env=dict(os.environ, WG_BACKGROUND='1')).returncode
+
+
+def background():
+    """This process in Windows' background mode (idle CPU, very low I/O and memory priority), its steps at idle priority:
+    the game reads its files from the disk the batch writes, and played meanwhile at normal priority its streaming waited
+    for the disk (frames of 100 ms to 2.7 s) and the batch's jobs took the CPU from its threads."""
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00100000)  # PROCESS_MODE_BACKGROUND_BEGIN
 
 
 g_full = threading.Event()
@@ -237,6 +249,7 @@ def main():
         survey(sys.argv[2])
         return
     flags = options(sys.argv[1:])
+    background()
     named = {}
     for item in filter(None, O['names'].split(';')):
         cell, name = item.split('=')

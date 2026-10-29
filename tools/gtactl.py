@@ -3,7 +3,8 @@ in front: the person at the computer keeps using it.
 
 usage:
   gtactl.py launch [online]        test settings on (windowed, no pause on focus loss, debugRemote), start the game,
-                                   continue story mode; the window stays out of view and silent. The Rockstar launcher
+                                   continue story mode, the story's phone calls and texts kept out (quiet); the window
+                                   stays out of view and silent. The Rockstar launcher
                                    runs in offline mode (-scOfflineOnly, passed on by Steam): story mode needs no
                                    sign-in, and Rockstar's sign-in has been failing. "online": signed in - once the
                                    offline activation has run out (the game shows "activation required" and waits)
@@ -24,7 +25,7 @@ usage:
                                    Runs while the steps after it wait, so: video:a.mp4,10 raw:spin 60 8 wait:11
       wait:<seconds>
       log:<regex>[,<timeout s>]    waits for a line in the police mod's log (newer than this run's start)
-      raw:<command line>           any pipe command (ping, story, window offscreen|restore, mute on|off, release,
+      raw:<command line>           any pipe command (ping, story, window offscreen|restore, mute on|off, quiet on|off, release,
                                    fakefocus <ms>: GetForegroundWindow reports the game for that long,
                                    cam x y z heading pitch [fov [keep]] | cam off: a fixed scripted camera at noon,
                                    clear sky ("keep": the clock and weather left as they are; while a scripted camera
@@ -200,6 +201,8 @@ def launch(online=False):
             print("story:", p.send("story"))
         elif state == "ok story":
             print("story mode is running")
+            # (the story's phone calls and texts kept out of the test run)
+            print("quiet:", p.send("quiet on"))
             return p
         time.sleep(2)
     sys.exit("story mode did not start")

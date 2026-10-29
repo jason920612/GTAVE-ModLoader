@@ -5072,3 +5072,26 @@ frames 錄影 + 每幀的「筆記」seamless::Note：預載、停放車、物�
   animlab、basketball 每 0.5 秒一次。平常幾十微秒，全州批次把 D: 寫滿時每次幾毫秒到幾十毫秒。
 - → 觸發檔改由模組自己的執行緒每秒（0.5 秒）找，遊戲執行緒只看旗標。驗證：同樣批次在跑，陸地上開車 30 s 1802 幀中位 16.7 ms、
   最長 32 ms；跨區錄影 60 fps、沒有超過 33 ms 的幀。剩下的長幀是 GPU（66.4）。
+
+## 67. 顯示記憶體壓到顯示卡的一半、畫面不變（2026-10-29，使用者：「讓 vram 佔用可以只到系統的 50% 附近」「且保持畫面品質是照片級」）
+
+- 量法：debug pipe `vram`（graphics/gamememory：自己的 DXGI 轉接器 QueryVideoMemoryInfo，原函式——hook 之前的——回報遊戲這個行程
+  的用量；`vram share <百分比>` 執行中改上限）。RTX 4060 8 GB（DedicatedVideoMemory 7956 MB），Windows 給遊戲 7188 MB 的預算。
+- 不壓：佛州陸地上開車遊戲 3.9–4.4 GB（卡的 51–55%）＋系統記憶體 0.9 GB；其他程式（Explorer、Chrome、Wallpaper Engine、Epic、
+  Discord、Steam、TradingView…，效能計數器 GPU Process Memory）合計約 2 GB → 整張卡 6.0–6.5 GB。
+- 遊戲每格問 DXGI 預算（§60.26），把「預算 − 已配置」當串流的空間，留到大約預算的 80%。原本只在 UE5 模式掛的 QueryVideoMemoryInfo
+  hook 改成一直掛：gameVideoMemory（loader.json，卡的百分比，預設 50；UE5 模式取兩者較小）。50% = 3977 MB → 遊戲停在 3.18–3.26 GB、
+  峰值 3.6 GB（卡的 40–45%），整張卡約 5.2 GB。
+- 畫質（主角隱形、車流與行人密度每格 0、清場、晴天正午、路面乾了以後；相機 1.8 m 高，沿路、橫向看建築、回頭、往下看路面，
+  再轉身 180° 後馬上轉回）：邁阿密兩處，四個視角清晰度（Laplacian 變異數）差 0–4.5%，像素差來自風吹動的樹冠與光線，貼圖細節相同；
+  轉回後 0.4 s 的畫面也一樣（沒有重新載入的模糊）。同一條路 AI 開 20 m/s 錄 20 秒，兩邊 60 fps、99% < 19.2 ms，各時刻的畫面細節相同。
+  它丟掉的是看不到的快取（身後、遠處），看得到的都在；§60.26 量到的底（看得到的世界）約 3.2 GB，所以 50% 剛好在底之上。
+- 量 VRAM 時找到的長幀（都不是 VRAM）：
+  - 主執行緒每秒開檔：瀏覽器的開發用 browser_open.txt（每秒）、skelhook 的 debug_skelbend.txt（每 0.5 秒）——全州批次寫 D: 時一次
+    8–260 ms。改成各自的執行緒找檔、遊戲執行緒只看旗標。新的 pipe 指令 `filewatch start|stop`：掛 ntdll 的 NtCreateFile /
+    NtQueryFullAttributesFile，只記遊戲執行緒開的檔、次數、總時間與最長（這次就是用它找到的）。取樣器的呼叫者鏈改為 6 層
+    （靜態連結的 C runtime 常佔前 3–5 層），模組在彙整時才查。
+  - 全州批次（3 個 worldgen 吃滿 CPU、寫 D:）：遊戲的串流等磁碟（100 ms–2.7 s 的幀）。執行中的批次改成閒置 CPU、很低的 I/O 與記憶體
+    優先權（scratchpad lowprio.py）；sectors.py 以後自己進背景模式、步驟以閒置優先權執行，worldgen 看到 WG_BACKGROUND=1 也進背景模式。
+- 測試時的劇情干擾（使用者建議）：pipe `quiet on`（gtactl launch 自動開）：comms_controller、friends_controller、bootycallhandler
+  一出現就 TERMINATE_THREAD（主控腳本會再啟動它們，所以每格檢查）——測試中不再有劇情來電、簡訊。測試不存檔。

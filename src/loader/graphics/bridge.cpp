@@ -1051,7 +1051,7 @@ namespace loader::graphics::bridge
 		}
 		streamline::SetAfterDlss(&AfterDlss);
 		streamline::SetOnCamera(&OnCamera);
-		gamememory::Start();
+		gamememory::SetUe5(true);
 		if (config::Get().ue5Particles)
 			particles::Start();
 		else

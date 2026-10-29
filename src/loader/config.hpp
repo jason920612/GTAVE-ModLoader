@@ -78,6 +78,10 @@ namespace loader::config
 		// The GPU memory (MB) the game is told it may use meanwhile, the rest left to the renderer (graphics/
 		// gamememory.cpp): 0 = 42% of the card's, -1 = what Windows gives it. Takes effect when the game starts.
 		int ue5GameMemory = 0;
+		// The GPU memory the game is told it may use at all times, in percent of the card's own (graphics/gamememory.cpp):
+		// 0 = what Windows gives it (5-7 GB of an 8 GB card). At 50 it keeps 3.2-3.6 GB of an 8 GB card on the world
+		// builder's lands (4.0-4.4 untold), the picture the same (research/phase0.md §67). Takes effect when the game starts.
+		int gameVideoMemory = 50;
 
 		// World builder: the road network's regions get origins of their own, so roads (and their AI traffic) can lie
 		// beyond +-8192 m (game/pathregions.cpp). Takes effect when the game starts.

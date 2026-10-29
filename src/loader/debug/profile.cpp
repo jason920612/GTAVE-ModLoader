@@ -113,9 +113,9 @@ namespace loader::debug::profile
 				std::chrono::steady_clock::time_point at;
 				uintptr_t leaf = 0, leafBase = 0; // (the innermost function's start and its module)
 				// (the first functions on the way out that are neither the game's nor the system's - a DLL of ours or someone's
-				// -, with their modules: what called the system when the game's code is not on the stack; three, the C
-				// runtime's own often first)
-				std::array<uintptr_t, 3> callers{}, callerBases{};
+				// -, with their modules: what called the system when the game's code is not on the stack; six, the C
+				// runtime's own - linked into the DLL - often the first three)
+				std::array<uintptr_t, 6> callers{}; // (their modules found when summed up)
 				std::array<uint32_t, 6> through{};
 				uint8_t thread = 0; // (which of the threads: 0 the game's)
 			};
@@ -201,7 +201,7 @@ namespace loader::debug::profile
 					else if (image == base && f)
 						s.through[n++] = f->BeginAddress;
 					if (i > 0 && callers < s.callers.size() && image && image != base && !SystemModule(image))
-						s.callers[callers] = f ? image + f->BeginAddress : c.Rip, s.callerBases[callers++] = image;
+						s.callers[callers++] = f ? image + f->BeginAddress : c.Rip;
 					if (f)
 					{
 						void* data = nullptr;
@@ -317,7 +317,12 @@ namespace loader::debug::profile
 				++leaves[named(s.leaf, s.leafBase)];
 				std::string via;
 				for (size_t k = 0; k < s.callers.size() && s.callers[k]; ++k)
-					via += (via.empty() ? "" : "<") + named(s.callers[k], s.callerBases[k]);
+				{
+					HMODULE module = nullptr;
+					GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+					    reinterpret_cast<LPCWSTR>(s.callers[k]), &module);
+					via += (via.empty() ? "" : "<") + named(s.callers[k], reinterpret_cast<uintptr_t>(module));
+				}
 				if (!via.empty())
 					++callers[via];
 				std::string chain;

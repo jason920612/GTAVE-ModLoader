@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <format>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 #include <MinHook.h>
 
@@ -135,10 +137,20 @@ namespace loader::debug::skelhook
 
 	void Poll()
 	{
-		static uint64_t next = 0;
-		if (GetTickCount64() < next)
+		// (the file looked for by a thread of its own: asked for on the game's thread twice a second, it cost frames while
+		// the disk was busy)
+		static std::atomic<bool> triggered = false;
+		static const bool watching = [] {
+			std::thread([] {
+				const auto file = paths::Get().root / L"debug_skelbend.txt";
+				for (;; std::this_thread::sleep_for(std::chrono::milliseconds(500)))
+					if (std::error_code ec; std::filesystem::exists(file, ec))
+						triggered = true;
+			}).detach();
+			return true;
+		}();
+		if (!watching || !triggered.exchange(false))
 			return;
-		next = GetTickCount64() + 500;
 		std::ifstream in(paths::Get().root / L"debug_skelbend.txt");
 		std::string skeleton;
 		int bone = -1;

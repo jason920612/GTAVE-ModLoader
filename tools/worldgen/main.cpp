@@ -902,6 +902,10 @@ int main(int argc, char** argv)
 	_setmaxstdio(8192);
 	// (unbuffered: a long build's progress shows as it happens, also into a log)
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
+	// A batch's steps (sectors.py sets WG_BACKGROUND) in Windows' background mode - idle CPU, very low I/O and memory
+	// priority: the game played meanwhile reads from the disk the batch writes.
+	if (const char* background = std::getenv("WG_BACKGROUND"); background && *background == '1')
+		SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
 	if (argc < 2)
 		return Fail("usage: worldgen roundtrip|extract-ynd|regrid|testroad --game <dir> --keys <ng.bin> [--out <dir>]");
 	for (int i = 2; i + 1 < argc; i += 2)
