@@ -245,9 +245,11 @@ namespace worldgen::trees
 	}
 
 	void Undergrowth(const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
-	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats)
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats,
+	    float step, uint32_t share, float smallest, float largest)
 	{
-		constexpr float kPi = 3.14159265f, kStep = 6.0f;
+		constexpr float kPi = 3.14159265f;
+		const float kStep = step;
 		// (the big ones - lrg_01, 01b, 03: 2.6-3.6 m tall, 6 m across - and a smaller one between)
 		constexpr Model kUnder[] = {{"prop_bush_lrg_01", 2.6f, 6.1f}, {"prop_bush_lrg_01b", 3.2f, 5.7f}, {"prop_bush_lrg_03", 3.6f, 5.7f},
 		    {"prop_bush_med_03", 2.5f, 3.1f}};
@@ -258,14 +260,15 @@ namespace worldgen::trees
 			{
 				const float x = static_cast<float>(gx + ox), y = static_cast<float>(gy + oy);
 				const uint32_t seed = seeds::Place(x, y, 1, 12);
-				if (seed % 10 >= 7)
+				if (seed % 10 >= share)
 					continue;
-				const float px = x + ((seed >> 4) % 1000 / 1000.0f - 0.5f) * 4, py = y + ((seed >> 14) % 1000 / 1000.0f - 0.5f) * 4;
+				const float jitter = kStep * 0.67f;
+				const float px = x + ((seed >> 4) % 1000 / 1000.0f - 0.5f) * jitter, py = y + ((seed >> 14) % 1000 / 1000.0f - 0.5f) * jitter;
 				if (px < box[0] || px >= box[2] || py < box[1] || py >= box[3] || !where(px, py) || !open(px, py))
 					continue;
 				const Model& m = kUnder[(seed >> 24) % std::size(kUnder)];
 				out.push_back({loader::convert::Joaat(m.name), {px, py, ground(px, py) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,
-				    0.8f + 0.6f * ((seed >> 20) % 16) / 15.0f});
+				    smallest + (largest - smallest) * ((seed >> 20) % 16) / 15.0f});
 				++stats.bushes;
 			}
 	}

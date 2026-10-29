@@ -4314,7 +4314,7 @@ namespace worldgen::build
 							    const uint8_t cl = photoClass.In(pc[0], pc[1]) ? photoClass.At(pc[0], pc[1]) : 0;
 							    return (cl == 2 || cl == 3) && !inCemetery(x, y);
 						    },
-						    open, ground, {bx0, by0, bx1, by1}, furniture, ds);
+						    open, ground, {bx0, by0, bx1, by1}, furniture, ds, 3.5f, 9, 0.45f, 0.75f); // (dense and low: sea grape mounds 2.7-4.5 m across)
 						std::printf("dunes: %zu shrubs behind the beaches\n", ds.bushes);
 					}
 				}

@@ -64,8 +64,10 @@ namespace worldgen::trees
 	// Undergrowth (the street pictures' wooded lots: a wall of shrubs and vines under the trees, nothing seen through):
 	// large shrubs on a 6 m lattice (jittered, seven in ten) where `where(x, y)` - the woods by the streets: every entity
 	// counts against the game's pools, and only there is it seen.
+	// (`step`: the lattice, `share`: of ten the points with a bush, its size `smallest` to `largest` of the model's)
 	void Undergrowth(const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
-	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats);
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats,
+	    float step = 6.0f, uint32_t share = 7, float smallest = 0.8f, float largest = 1.4f);
 
 	// The scan's low growth (hedges, shrubs: 2-3.5 m over the ground - a 2020 scan that classes no vegetation shows nothing
 	// lower) where `where(x, y)`: a shrub 3 m across on a 3 m lattice, scaled to the height.
