@@ -53,6 +53,7 @@ namespace worldgen::world
 		std::string kind; // OSM building value
 		std::string name;
 		bool planned = false; // the world editor's: not there yet (its height as given, not measured)
+		bool traced = false;  // Microsoft's footprint (world.json "source": "ms"), not the map's
 	};
 
 	struct Point

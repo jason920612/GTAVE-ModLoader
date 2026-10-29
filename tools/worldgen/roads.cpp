@@ -1500,6 +1500,7 @@ namespace worldgen::roads
 			float laneWidth = 3.5f, parking = 0;
 			bool sidewalks = false;
 			int other = -1;
+			float length = 0; // (the other road's, between its junctions' trims)
 		};
 		const auto nextAt = [&](size_t ei, bool atA) {
 			Next x;
@@ -1525,6 +1526,7 @@ namespace worldgen::roads
 			x.parking = o.Side();
 			x.sidewalks = o.sidewalks;
 			x.centre = o.centre;
+			x.length = Length(o.points) - trimA[static_cast<size_t>(other)] - trimB[static_cast<size_t>(other)];
 			// traffic going our way: at our start it comes out of the other; at our end it goes into it
 			const bool otherPointsHere = o.b == v;
 			if (atA)
@@ -1619,8 +1621,16 @@ namespace worldgen::roads
 			const auto centreOf = [](float h, int lanesF, float lw, float park) { return -h + 0.3f + park + lanesF * lw; };
 			// tapers: where this road changes into a narrower one, its last metres narrow to it and its centre line
 			// moves over to the next road's (of two alike wide, the first in the list moves); a sidewalk the next road
-			// has not narrows to nothing
-			const auto owns = [&](const Next& x) { return x.half < half - 1e-3f || (std::fabs(x.half - half) <= 1e-3f && static_cast<int>(ei) < x.other); };
+			// has not narrows to nothing. A wider road too short for the taper - a few metres between the change and a
+			// driveway - keeps its width, and the narrower one widens to it over its own last metres (the change had been
+			// squeezed into 4 m: the reviewers' centre line jogging in a Z, edge lines in sharp notches)
+			const float room = 0.45f * (s0.back() - s0.front());
+			const auto owns = [&](const Next& x) {
+				const bool wider = x.half < half - 1e-3f || (std::fabs(x.half - half) <= 1e-3f && static_cast<int>(ei) < x.other);
+				const float shift = std::max(std::fabs(half - x.half), std::fabs(centreOf(half, e.forward, w, e.Side()) - centreOf(x.half, x.lanesF, x.laneWidth, x.parking)));
+				const float want = std::clamp(shift * 12.0f, 10.0f, 40.0f), theirs = 0.45f * x.length;
+				return wider ? !(room < want && theirs > room) : theirs < want && room > theirs;
+			};
 			const auto taperOf = [&](const Next& x) {
 				if (!x.any)
 					return 0.0f;
@@ -1673,8 +1683,8 @@ namespace worldgen::roads
 				{
 					if (t <= 0)
 						continue;
-					// (the narrower of the two keeps its width: only the wider narrows)
-					if (x->half < half)
+					// (the one that tapers takes the other's width: the wider narrows, or the narrower widens to a short wider one)
+					if (owns(*x))
 						h = h + (x->half - half) * t, pk = pk + (x->parking - e.Side()) * t;
 					if (owns(*x))
 						c = c + (centreOf(x->half, x->lanesF, x->laneWidth, x->parking) - centreOf(half, e.forward, w, e.Side())) * t;
@@ -2218,15 +2228,40 @@ namespace worldgen::roads
 						decal(out.bikeSymbols, atB ? sv + 3 : sv - 3, sv, o, 0.45f, atB);
 					}
 				}
+			// (a line 0.3 m wide across the whole carriageway, sl along it)
+			const auto across = [&](bool atB, float sl) {
+				const size_t i = atB ? p.size() - 1 : 0;
+				const float h = halfAt[i];
+				P2 q{}, d{};
+				float qz = z[i];
+				for (size_t k = 0; k + 1 < p.size(); ++k)
+					if (s[k + 1] >= sl || k + 2 == p.size())
+					{
+						const float t = std::clamp((sl - s[k]) / std::max(1e-3f, s[k + 1] - s[k]), 0.0f, 1.0f);
+						q = {p[k][0] + (p[k + 1][0] - p[k][0]) * t, p[k][1] + (p[k + 1][1] - p[k][1]) * t};
+						d = Dir(p[k], p[k + 1]);
+						qz = z[k] + (z[k + 1] - z[k]) * t;
+						break;
+					}
+				const P2 l = Left(d);
+				const std::vector<P2> pts{{q[0] - l[0] * h, q[1] - l[1] * h}, {q[0] + l[0] * h, q[1] + l[1] * h}};
+				if (painted)
+					b.Marking(pts, {qz, qz}, {0, 2 * h}, std::vector<float>(2, 0.0f), 0.3f, kStripeU0, kStripeU1, 2.0f);
+			};
 			const auto crossing = [&](bool atB) {
 				const size_t i = atB ? p.size() - 1 : 0;
 				const float h = halfAt[i];
-				// (Florida's continental bars: 0.8 m wide, 0.8 m apart - the street pictures' are wider than the 0.55 m ones had been)
-				for (float o = -h + 0.8f; o <= h - 0.7f; o += 1.6f)
-				{
-					const std::vector<float> oo(p.size(), o);
-					line(oo, 0.8f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
-				}
+				// (the arterials' - the state highway system's - continental bars: 0.8 m wide, 0.8 m apart - the street pictures'
+				// are wider than the 0.55 m ones had been; the local streets' two plain lines 3 m apart, Florida's standard
+				// crosswalk: the reviewers of Miami's views saw zebra bars where the photos have two lines on 6 of 36 views)
+				if (e.kind.starts_with("primary") || e.kind.starts_with("secondary") || e.kind.starts_with("trunk"))
+					for (float o = -h + 0.8f; o <= h - 0.7f; o += 1.6f)
+					{
+						const std::vector<float> oo(p.size(), o);
+						line(oo, 0.8f, kStripeU0, kStripeU1, 2.0f, atB ? sEnd - 3.2f : sStart + 0.2f, atB ? sEnd - 0.2f : sStart + 3.2f);
+					}
+				else
+					across(atB, atB ? sEnd - 0.35f : sStart + 0.35f), across(atB, atB ? sEnd - 3.05f : sStart + 3.05f);
 				stopLine(atB);
 			};
 			// (crossings where people walk: streets with sidewalks, at junctions of three streets or more - not where a
@@ -2792,6 +2827,8 @@ namespace worldgen::roads
 			node.speed = speedOf(first);
 			node.density = densityOf(first);
 			node.street = loader::convert::Joaat(first.name);
+			// (switched off where only unnamed service roads meet: a street's end of one stays on)
+			node.off = std::all_of(list.begin(), list.end(), [&](int ei) { return n.edges[ei].kind == "service" && n.edges[ei].name.empty(); });
 			vertexNode[v] = static_cast<int>(nodes.size());
 			if (members[r] > 1)
 				vertexNode[r] = vertexNode[v];
@@ -2840,6 +2877,7 @@ namespace worldgen::roads
 				node.density = densityOf(e);
 				node.street = loader::convert::Joaat(e.name);
 				node.light = light;
+				node.off = e.kind == "service" && e.name.empty();
 				nodes.push_back(node);
 				const int here = static_cast<int>(nodes.size() - 1);
 				links.push_back({previous, here, e.forward, e.backward, e.LanesHalf() * 2, e.centre * e.laneWidth});

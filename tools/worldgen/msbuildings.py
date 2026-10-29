@@ -7,7 +7,8 @@ usage: python -I tools/worldgen/msbuildings.py split --zip <Florida.geojson.zip>
   split: each footprint (its outer ring) into the sectors' grid (tools/worldgen/sectors.py: 0.121 x 0.117 degrees from
          25.745 N, -80.232 E) by its middle: <cells dir>/<column>_<row>.jsonl, a ring of [lon, lat] a line
   merge: the cell's footprints (by the world's box, its neighbours' too where they reach in) in game coordinates, those
-         that overlap none of the world's buildings, as buildings of kind "yes" (a house's height under 350 m², else 7 m);
+         that overlap none of the world's buildings, as buildings of kind "yes" (a house's height under 350 m², else 7 m) with
+         "source": "ms" (worldgen: traced, not the map's);
          world.json written again (its "attribution" told)
 """
 import io, json, math, os, sys, zipfile
@@ -131,7 +132,8 @@ def merge(o):
                 # (anticlockwise, as the world's footprints are)
                 if sum(ring[i][0] * ring[i - 1][1] - ring[i - 1][0] * ring[i][1] for i in range(len(ring))) > 0:
                     ring.reverse()
-                w['buildings'].append({'kind': 'yes', 'name': '', 'height': 4.5 if a < 350 else 7.0, 'footprint': [[q[0], q[1]] for q in ring]})
+                w['buildings'].append({'kind': 'yes', 'name': '', 'height': 4.5 if a < 350 else 7.0, 'footprint': [[q[0], q[1]] for q in ring],
+                                       'source': 'ms'})
                 added += 1
     note = 'Building footprints: Microsoft US Building Footprints (ODbL)'
     if note not in w.get('attribution', ''):

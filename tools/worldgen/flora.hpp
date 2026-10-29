@@ -23,8 +23,11 @@ namespace worldgen::flora
 		Shrub,   // a yard's or a wood's shrub: a dense dark green mound (ligustrum, holly, wax myrtle), no trunk to see
 		Magnolia, // southern magnolia: a straight trunk, a dense dark egg of a crown pointed at the top, big glossy leaves
 		Sweetgum, // a central leader up the whole tree, loose whorls of level branches - a pyramid, an oval later; star leaves
+		RoyalPalm,   // a smooth pale grey column swollen a third of the way up, a green crownshaft, feather fronds arching
+		CoconutPalm, // a ringed grey-brown trunk leaning out and curving up, a crown of drooping feather fronds
+		SabalPalm,   // the cabbage palm: a trunk in criss-cross boots, a round head of fan leaves on long stalks
 	};
-	constexpr int kSpecies = 7;
+	constexpr int kSpecies = 10;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.
@@ -36,15 +39,21 @@ namespace worldgen::flora
 		kMyrtle,
 		kMagnoliaLeaves,
 		kGumLeaves,
+		kPalmFrond, // (a feather frond along each cell: its base at the cell's foot)
+		kFanFrond,  // (a cabbage palm's fan: its hub at the cell's foot)
 		kBarkOak,
 		kBarkPine,
 		kBarkMyrtle,
 		kBarkSmooth, // (a magnolia's: smooth grey, lenticels)
+		kBarkRoyal,   // (a royal palm's: pale grey, faint rings)
+		kBarkCoconut, // (grey-brown, ringed)
+		kBarkSabal,   // (the boots' criss-cross)
+		kCrownshaft,  // (a royal palm's glossy green crownshaft)
 		kTextures,
 	};
 	texture::Image Picture(Texture t);
 	// a picture with an outline (alpha) or a bark (opaque)
-	constexpr bool Cutout(Texture t) { return t <= kGumLeaves; }
+	constexpr bool Cutout(Texture t) { return t <= kFanFrond; }
 
 	struct Model
 	{

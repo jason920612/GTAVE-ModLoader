@@ -581,7 +581,8 @@ namespace worldgen::structures
 		const bool houseKind = b.kind == "house" || b.kind == "detached" || b.kind == "residential" || b.kind == "semidetached_house" ||
 		                       b.kind == "bungalow" || b.kind == "terrace" || b.kind == "cabin" || b.kind == "farm" || b.kind == "static_caravan" ||
 		                       ((b.kind == "yes" || b.kind.empty()) && area >= 50 && area <= 350 && !(o.attached && o.attached->contains(&b)));
-		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000;
+		const bool lowRise = (b.kind == "apartments" || b.kind == "dormitory") && b.height <= 15 && area <= 3000 &&
+		                     !(o.flatWalkUpsAt && o.flatWalkUpsAt(ring[0][0] + origin[0], ring[0][1] + origin[1]));
 		bool hip = !measure && !b.planned && !site && ((houseKind && area <= 700 && b.height <= 12) || lowRise) && nx * ny < 400000;
 		// (a house the scan measured gets the same clean roof, at the eaves and ridge it measured: its lumpy surface with the
 		// aerial picture on it was a white blanket in the street pictures' comparison, not a roof)

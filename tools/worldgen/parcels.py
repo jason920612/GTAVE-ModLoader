@@ -14,7 +14,9 @@ usage (in a Python with pyshp and pyproj; keep the data outside the repository):
   parcels.py join  --world <world.json> --out <parcels.json> (--parcels <shapefile without .shp>[,...] | --index <index.json>:
                    the counties whose box meets the world's)
 Out: {"attribution": ..., "buildings": [{"building": index in world.json, "use": "001", "year": 1962, "living": m2, "count": n,
-      "units": n, "quality": 1-6, "class": 0-5, "storeys": n, "main": the parcel's biggest}, ...]}
+      "units": n, "quality": 1-6, "class": 0-5, "storeys": n, "main": the parcel's biggest, "lot": [[x, y], ...]}, ...]}
+     ("lot": a house's - single family, mobile home, small multi-family - parcel under 4000 m2, its outline in the world's
+     metres to 0.1 m without its closing point and the points on a straight line; the main building's only)
 """
 import json, math, os, sys, time, urllib.parse, urllib.request, zipfile
 
@@ -52,6 +54,44 @@ def area(ring):
         x1, y1 = ring[(i + 1) % len(ring)]
         s += x0 * y1 - x1 * y0
     return abs(s) / 2
+
+
+def simplify(ring, tolerance=0.15):
+    """A ring without its closing point and the points within tolerance of the line through their neighbours, to 0.1 m."""
+    pts = [tuple(q) for q in ring]
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    changed = True
+    while changed and len(pts) > 3:
+        changed = False
+        for i in range(len(pts)):
+            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+            dx, dy = c[0] - a[0], c[1] - a[1]
+            l = math.hypot(dx, dy)
+            if l < 1e-6 or abs((b[0] - a[0]) * dy - (b[1] - a[1]) * dx) / l < tolerance:
+                del pts[i]
+                changed = True
+                break
+    return [[round(q[0], 1), round(q[1], 1)] for q in pts]
+
+
+def simplify(ring, tolerance=0.15):
+    """A ring without its closing point and the points within tolerance of the line through their neighbours, to 0.1 m."""
+    pts = [tuple(q) for q in ring]
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    changed = True
+    while changed and len(pts) > 3:
+        changed = False
+        for i in range(len(pts)):
+            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+            dx, dy = c[0] - a[0], c[1] - a[1]
+            l = math.hypot(dx, dy)
+            if l < 1e-6 or abs((b[0] - a[0]) * dy - (b[1] - a[1]) * dx) / l < tolerance:
+                del pts[i]
+                changed = True
+                break
+    return [[round(q[0], 1), round(q[1], 1)] for q in pts]
 
 
 def get(url, tries=4):
@@ -192,10 +232,14 @@ def join(o):
             base = sum(mids[bi][2] for bi in members) if spread else main_area
             ratio = living / base if base > 0 else 0
             storeys = 0 if living <= 0 else 1 if ratio < 1.3 else 2 if ratio < 2.4 else max(3, round(ratio / 0.9))
+            # (a house's lot, for its yard's fence: its outline - the first ring, the outer one -)
+            lot = simplify(rings[0]) if str(use) in ('001', '002', '007', '008') and len(rings[0]) >= 4 and area(rings[0]) < 4000 else None
             for k, bi in enumerate(members):
                 found[bi] = {'building': bi, 'use': str(use or ''), 'year': int(year or 0), 'living': round(living, 1), 'count': int(count or 0),
                              'units': int(units or 0), 'quality': int(quality) if str(quality).strip().isdigit() else 0, 'class': int(cls or 0),
                              'storeys': storeys if (k == 0 or spread) else 1, 'main': k == 0}
+                if k == 0 and lot and len(lot) >= 3:
+                    found[bi]['lot'] = lot
         r.close()
     out = sorted(found.values(), key=lambda e: e['building'])
     with open(o['out'], 'w', encoding='utf-8') as f:

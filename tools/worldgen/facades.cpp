@@ -619,7 +619,8 @@ namespace worldgen::facades
 			// (a mobile home: lap siding, the light vinyl of a single- or double-wide)
 			if (kind == "static_caravan")
 				return among(Kind::Siding);
-			float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
+			// (Miami's none: block and stucco - lap siding's boards, far off, had read as "horizontal stripe bands" to the reviewers)
+			float siding = north ? 0.45f : latitude >= 27.0 ? 0.2f : miami ? 0.0f : 0.06f, brick = north ? 0.3f : latitude >= 27.0 ? 0.1f : 0.03f;
 			// (by its era, where the rolls say when it was built: north Florida's old frame houses, its post-war brick ranches)
 			if (north && year > 0)
 			{
@@ -638,13 +639,19 @@ namespace worldgen::facades
 		// (a third of the low shops with glass fronts all round: the street pictures' are painted block with a storefront)
 		if (retail && height <= 6.5f)
 			return among(r < 0.35f ? Kind::Shop : Kind::Concrete);
+		// (south Florida's residential towers white with balconies: glass curtain walls on 17 of 36 of the reviewers' Miami
+		// views where the photos have white stucco condominiums; glass only on a quarter of the tall ones there, none under
+		// 40 m, and on a tenth of the other tall buildings that are not offices)
+		const bool homes = apartments || kind == "residential" || kind == "hotel";
 		if (height >= 40)
-			return among(r < (office ? 0.75f : 0.45f) ? Kind::Glass : Kind::Balcony);
+			return among(r < (office ? 0.75f : miami && homes ? 0.25f : miami ? 0.3f : 0.45f) ? Kind::Glass : Kind::Balcony);
 		if (height >= 16)
 		{
 			if (north)
 				return among(r < 0.35f ? Kind::BrickCity : r < 0.75f ? Kind::Concrete : Kind::Glass);
-			return among(office ? (r < 0.6f ? Kind::Glass : Kind::Concrete) : (r < 0.55f ? Kind::Balcony : r < 0.8f ? Kind::Concrete : Kind::Glass));
+			if (miami && homes)
+				return among(r < 0.75f ? Kind::Balcony : Kind::Concrete);
+			return among(office ? (r < 0.6f ? Kind::Glass : Kind::Concrete) : (r < 0.6f ? Kind::Balcony : r < (miami ? 0.9f : 0.8f) ? Kind::Concrete : Kind::Glass));
 		}
 		// (low and middling: red brick in the north's downtowns and campuses, Art Deco walk-ups only in Miami)
 		// (a third red brick: the street pictures' institutional blocks are as often white or grey)

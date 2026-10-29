@@ -990,7 +990,10 @@ namespace worldgen::build
 			float eaves = 1e30f;
 			for (const auto& e : s.outline)
 				eaves = std::min(eaves, static_cast<float>(s.vertices[e[0]][2]));
-			const float foot = fromEaves && eaves < 1e29f ? eaves - 3.0f : s.base;
+			// (as many floors of windows as the house has, one or two - the texture's two floors of 3 m: a two-storey house
+			// had one floor of windows over 3 m of foundation, the reviewers' "horizontal stripe bands")
+			const float storeys = eaves < 1e29f && eaves - s.base >= 5.2f ? 2.0f : 1.0f;
+			const float foot = fromEaves && eaves < 1e29f ? eaves - 3.0f * storeys : s.base;
 			const auto wallV = [&](float z) { return -(std::max(z, foot) - foot) / wall.height - (fromEaves ? 0.01f : 0.0f); };
 			const float split = std::max(sink, foot);
 			std::set<uint32_t> done;
@@ -1050,11 +1053,12 @@ namespace worldgen::build
 						collide(a0, pb, pa);
 						continue;
 					}
-					// (below a house's floor of windows: the foundation - the texture's bottom 0.5 m again every 0.5 m down; one row
-					// stretched down the wall was a fence of stripes)
+					// (below a house's floors of windows: the foundation - the texture's plain plaster over its base, 0.4-0.9 m up,
+					// again every 0.5 m down: the base's dark row repeated had made stripes, one row stretched down the wall a fence
+					// of them)
 					for (float zt = split; zt > sink + 0.01f; zt -= 0.5f)
 					{
-						const float zb = std::max(sink, zt - 0.5f), vb = -0.01f, vt = -0.01f - (zt - zb) / wall.height;
+						const float zb = std::max(sink, zt - 0.5f), vb = -0.4f / wall.height, vt = vb - (zt - zb) / wall.height;
 						const P3 at0{pa[0], pa[1], zt}, bt0{pb[0], pb[1], zt}, ab0{pa[0], pa[1], zb}, bb0{pb[0], pb[1], zb};
 						const uint32_t j0 = add(wm, ab0, n, t, u0, vb), j1 = add(wm, bb0, n, t, u1, vb), j2 = add(wm, bt0, n, t, u1, vt), j3 = add(wm, at0, n, t, u0, vt);
 						wm.indices.insert(wm.indices.end(), {j0, j1, j2, j0, j2, j3});
@@ -2325,6 +2329,92 @@ namespace worldgen::build
 			}
 			near.roads = std::move(stretches);
 		}
+		// kerbside parking (OpenStreetMap's Florida has no parking lanes mapped): a lane 2.4 m wide each side of the streets
+		// of one or two lanes - decided before their sidewalks: a sidewalk by the kerb is past the parking lane. Where
+		// - the street pictures' downtown streets have cars along both kerbs: through high intensity development (NLCD 24 at
+		//   six in ten of their samples) with buildings along them - one within 22 m of the street's line at half its samples
+		//   or more: not the commercial strips', their buildings behind car parks -; in the south's towns (south of 26.8
+		//   degrees: Miami, Miami Beach) through medium intensity development too (NLCD 23), its homes along them - the
+		//   reviewers of Miami Beach's streets saw cars along both kerbs on 7 of 36 views, the sidewalk at the kerb behind them;
+		// - the aerial pictures see paving past the traffic lanes on both sides - 0.6 to 2.2 m out at two in three of the
+		//   places they see the ground there, on 3 to 4.2 m out at half, and not on 6 to 7.5 m out at most (a car park, not
+		//   a parking lane): a parking lane and the sidewalk behind it, not a sidewalk alone. Miami Beach's residential
+		//   streets: the reviewers saw wide grass verges and sidewalks set back where the photos have cars along both kerbs
+		//   and the sidewalk at the kerb behind them.
+		if (landCoverAt || !photoClass.v.empty())
+		{
+			raster::Grid<uint8_t> builtOn;
+			builtOn.Init(w.min[0], w.min[1], w.max[0], w.max[1], 4.0f, 0);
+			for (const auto& b : w.buildings)
+				if (b.footprint.size() >= 3)
+					raster::FillPolygon(builtOn, {b.footprint}, uint8_t{1});
+			const auto builtAt = [&](float x, float y) {
+				const auto c = builtOn.Cell({x, y});
+				return builtOn.In(c[0], c[1]) && builtOn.At(c[0], c[1]) != 0;
+			};
+			const auto classOf = [&](float x, float y) {
+				const auto c = photoClass.Cell({x, y});
+				return photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : uint8_t{0};
+			};
+			size_t parkingLanes = 0, byAerial = 0;
+			for (auto& r : near.roads)
+			{
+				const bool street = r.kind == "residential" || r.kind == "unclassified" || r.kind == "living_street" || r.kind == "tertiary" ||
+				                    r.kind == "secondary" || r.kind == "primary";
+				if (!street || r.forward + r.backward > 2 || r.bridge || r.tunnel || r.points.size() < 2)
+					continue;
+				const float half = (r.forward + r.backward) * r.laneWidth / 2 + 0.3f;
+				size_t dense = 0, fronted = 0, samples = 0;
+				size_t seen[3][2]{}, paved[3][2]{}; // (the three bands out, each side: the places the ground is seen, paved)
+				float carry = 5;
+				for (size_t k = 0; k + 1 < r.points.size(); ++k)
+				{
+					const P2 &a = r.points[k], &q = r.points[k + 1];
+					const float l = Dist(a, q);
+					if (l < 1e-3f)
+						continue;
+					const P2 d{(q[0] - a[0]) / l, (q[1] - a[1]) / l}, n{-d[1], d[0]};
+					for (; carry < l; carry += 10)
+					{
+						const float x = a[0] + d[0] * carry, y = a[1] + d[1] * carry;
+						if (landCoverAt)
+						{
+							const uint8_t lc = landCoverAt(x, y);
+							dense += lc == 24 || (lc == 23 && latAt(y) < 26.8);
+						}
+						bool front = false;
+						for (float o = half + 2; o <= 22 && !front; o += 2)
+							front = builtAt(x + n[0] * o, y + n[1] * o) || builtAt(x - n[0] * o, y - n[1] * o);
+						fronted += front;
+						++samples;
+						if (!photoClass.v.empty())
+						{
+							static constexpr float kBands[3][3] = {{0.6f, 1.4f, 2.2f}, {3.0f, 3.6f, 4.2f}, {6.0f, 6.75f, 7.5f}};
+							for (int side = 0; side < 2; ++side)
+								for (int band = 0; band < 3; ++band)
+									for (const float o : kBands[band])
+									{
+										const float out = (half + o) * (side == 0 ? 1.0f : -1.0f);
+										const uint8_t c = classOf(x + n[0] * out, y + n[1] * out);
+										if (c == 0 || c == 1 || c == 2)
+											continue; // (not seen, water, under a crown)
+										++seen[band][side];
+										paved[band][side] += c == 6;
+									}
+						}
+					}
+					carry -= l;
+				}
+				const bool downtown = landCoverAt && samples >= 4 && dense * 10 >= samples * 6 && fronted * 2 >= samples;
+				bool aerial = !photoClass.v.empty() && samples >= 4;
+				for (int side = 0; side < 2; ++side)
+					aerial = aerial && seen[0][side] >= 6 && paved[0][side] * 3 >= seen[0][side] * 2 && seen[1][side] >= 4 &&
+					         paved[1][side] * 2 >= seen[1][side] && (seen[2][side] < 3 || paved[2][side] * 5 < seen[2][side] * 3);
+				if (downtown || aerial)
+					r.parking = 2.4f, ++parkingLanes, byAerial += !downtown;
+			}
+			std::printf("roads: %zu with kerbside parking lanes (%zu by the aerial pictures' paving past the traffic lanes)\n", parkingLanes, byAerial);
+		}
 		// sidewalks the map draws on their own (OpenStreetMap footway=sidewalk beside a street: Tallahassee has 6000): each
 		// street's sides by them. One by the kerb (its middle within 1.95 m of the carriageway's edge) the street draws itself,
 		// raised behind its kerb (that piece of the map's left out); one farther out - past a verge, as the street pictures'
@@ -2371,7 +2461,7 @@ namespace worldgen::build
 				world::Road& r = near.roads[ri];
 				if (r.sidewalkTagged || !r.sidewalks || r.points.size() < 2)
 					continue;
-				const float half = (r.forward + r.backward) * r.laneWidth / 2 + 0.3f;
+				const float half = (r.forward + r.backward) * r.laneWidth / 2 + 0.3f + r.parking;
 				// every 5 m along it: the nearest mapped sidewalk each side (roughly parallel, from half a metre inside the
 				// kerb to 15 m out)
 				size_t samples = 0, found[2]{};
@@ -2617,52 +2707,6 @@ namespace worldgen::build
 					r.sidewalkWidth = 3.0f;
 			}
 			std::printf("roads: %zu without sidewalks (the land along them not built up)\n", without);
-			// kerbside parking (the street pictures' downtown streets: cars along both kerbs; OpenStreetMap's Florida has no
-			// parking lanes mapped): a lane 2.4 m wide each side of the streets of one or two lanes through high intensity
-			// development (NLCD 24 at six in ten of their samples) with buildings along them - one within 22 m of the
-			// street's line at half its samples or more: not the commercial strips', their buildings behind car parks
-			raster::Grid<uint8_t> builtOn;
-			builtOn.Init(w.min[0], w.min[1], w.max[0], w.max[1], 4.0f, 0);
-			for (const auto& b : w.buildings)
-				if (b.footprint.size() >= 3)
-					raster::FillPolygon(builtOn, {b.footprint}, uint8_t{1});
-			const auto builtAt = [&](float x, float y) {
-				const auto c = builtOn.Cell({x, y});
-				return builtOn.In(c[0], c[1]) && builtOn.At(c[0], c[1]) != 0;
-			};
-			size_t parkingLanes = 0;
-			for (auto& r : near.roads)
-			{
-				const bool street = r.kind == "residential" || r.kind == "unclassified" || r.kind == "living_street" || r.kind == "tertiary" ||
-				                    r.kind == "secondary" || r.kind == "primary";
-				if (!street || r.forward + r.backward > 2 || r.bridge || r.tunnel || r.points.size() < 2)
-					continue;
-				const float half = (r.forward + r.backward) * r.laneWidth / 2 + 0.3f;
-				size_t dense = 0, fronted = 0, samples = 0;
-				float carry = 5;
-				for (size_t k = 0; k + 1 < r.points.size(); ++k)
-				{
-					const P2 &a = r.points[k], &q = r.points[k + 1];
-					const float l = Dist(a, q);
-					if (l < 1e-3f)
-						continue;
-					const P2 d{(q[0] - a[0]) / l, (q[1] - a[1]) / l}, n{-d[1], d[0]};
-					for (; carry < l; carry += 10)
-					{
-						const float x = a[0] + d[0] * carry, y = a[1] + d[1] * carry;
-						dense += landCoverAt(x, y) == 24;
-						bool front = false;
-						for (float o = half + 2; o <= 22 && !front; o += 2)
-							front = builtAt(x + n[0] * o, y + n[1] * o) || builtAt(x - n[0] * o, y - n[1] * o);
-						fronted += front;
-						++samples;
-					}
-					carry -= l;
-				}
-				if (samples >= 4 && dense * 10 >= samples * 6 && fronted * 2 >= samples)
-					r.parking = 2.4f, ++parkingLanes;
-			}
-			std::printf("roads: %zu with kerbside parking lanes (downtown)\n", parkingLanes);
 		}
 		roads::Network network = roads::Build(near);
 		{
@@ -2861,23 +2905,34 @@ namespace worldgen::build
 		std::vector<std::pair<std::string, flora::Model>> floraModels;
 		std::unordered_map<uint32_t, std::pair<float, float>> floraTrunk; // (by archetype: the trunk's radius, its collision's height)
 		std::vector<trees::Own> ownShrubs;
-		// (as far south as 27 N - central Florida's live oaks and pines; the south's palms, figs and mahoganies stay the game's)
-		if (photographed && latAt(w.max[1]) >= 27.0)
+		// (as far south as 27 N - central Florida's live oaks and pines; the south's figs and mahoganies stay the game's -; and
+		// palms of our own where they grow: cabbage palms everywhere, royal and coconut palms south of 27.5 N - the game's are
+		// California's fan and date palms, the reviewers of Miami's views wanted royal, coconut and cabbage palms on nearly all)
+		if (photographed)
 			for (int s = 0; s < flora::kSpecies; ++s)
 				for (int k = 0; k < 8; ++k)
 				{
 					const auto species = static_cast<flora::Species>(s);
+					const bool palm = species == flora::Species::RoyalPalm || species == flora::Species::CoconutPalm || species == flora::Species::SabalPalm;
+					if (palm ? species != flora::Species::SabalPalm && latAt(w.min[1]) >= 27.5 : latAt(w.max[1]) < 27.0)
+						continue;
 					const std::string name = std::format("{}_tree_{}_{}", o.name, s, k);
 					flora::Model m = flora::Make(species, static_cast<uint32_t>(s * 101 + k * 7 + 1));
 					// (the kind trees::Photo picks by: 0 live oak, 1 pine, 2 oak, 3 crape myrtle, 4 magnolia, 5 sweetgum)
-					const int kind = species == flora::Species::Magnolia ? 4 : species == flora::Species::Sweetgum ? 5 : species == flora::Species::Shrub ? -1 : s;
+					const int kind = species == flora::Species::Magnolia     ? 4
+					                 : species == flora::Species::Sweetgum    ? 5
+					                 : species == flora::Species::Shrub       ? -1
+					                 : species == flora::Species::RoyalPalm   ? 6
+					                 : species == flora::Species::CoconutPalm ? 7
+					                 : species == flora::Species::SabalPalm   ? 8
+					                                                          : s;
 					if (kind >= 0)
 						ownTrees[static_cast<size_t>(kind)].push_back({name, m.height, m.width});
 					else
 						ownShrubs.push_back({name, m.height, m.width});
 					// (the trunk up to the first limbs: a live oak's 3 m, a pine's 6, an oak's 4, a sweetgum's 4, a magnolia's 2, a
 					// crape myrtle's stems 2; a shrub none)
-					const float trunkHeight = kind == 0 ? 3.0f : kind == 1 ? 6.0f : kind == 2 || kind == 5 ? 4.0f : 2.0f;
+					const float trunkHeight = kind >= 6 ? m.height * 0.6f : kind == 0 ? 3.0f : kind == 1 ? 6.0f : kind == 2 || kind == 5 ? 4.0f : 2.0f;
 					if (kind >= 0)
 						floraTrunk[loader::convert::Joaat(name)] = {kind == 3 ? 0.25f : m.trunk, trunkHeight};
 					floraModels.push_back({name, std::move(m)});
@@ -2903,8 +2958,10 @@ namespace worldgen::build
 			if (!roads::Minor(e))
 				for (size_t k = 0; k + 1 < e.points.size(); ++k)
 					streetCells[StreetKey((e.points[k][0] + e.points[k + 1][0]) / 2, (e.points[k][1] + e.points[k + 1][1]) / 2)].push_back({e.points[k], e.points[k + 1]});
-		// (the year each was built, the property rolls': by the building's place in the world's list)
+		// (the year each was built, the property rolls': by the building's place in the world's list; a house's lot - its
+		// parcel's outline - where the rolls give one)
 		std::map<size_t, int> builtYear;
+		std::unordered_map<size_t, std::vector<P2>> lotOf;
 		if (!o.parcels.empty())
 		{
 			std::ifstream in(o.parcels);
@@ -2912,8 +2969,18 @@ namespace worldgen::build
 			if (j.is_discarded() || !j.contains("buildings"))
 				return error = "cannot read " + o.parcels.string(), false;
 			for (const auto& e : j["buildings"])
+			{
+				const size_t bi = e.value("building", static_cast<size_t>(0));
 				if (const int year = e.value("year", 0); year > 1700)
-					builtYear[e.value("building", static_cast<size_t>(0))] = year;
+					builtYear[bi] = year;
+				if (const auto lot = e.find("lot"); lot != e.end() && lot->is_array() && lot->size() >= 3)
+				{
+					auto& ring = lotOf[bi];
+					for (const auto& q : *lot)
+						if (q.is_array() && q.size() >= 2)
+							ring.push_back({q[0].get<float>(), q[1].get<float>()});
+				}
+			}
 		}
 		// (the walls the street panoramas show - tools/worldgen/phototex.py -, by 16 m cell along them; their pictures in walls.bin)
 		std::vector<PhotoWall> photoWalls;
@@ -3071,6 +3138,7 @@ namespace worldgen::build
 				const double lat = latAt(y);
 				return lat >= 28.8 ? 0.5f : lat >= 27.0 ? 0.3f : 0.1f;
 			};
+			so.flatWalkUpsAt = [&](float, float y) { return latAt(y) < 27.0; };
 			structures::Stats ss;
 			std::vector<const world::Building*> all;
 			if (scanned)
@@ -3207,13 +3275,15 @@ namespace worldgen::build
 							const auto& px = photoCover.At(pc[0], pc[1]);
 							const float r = px[1], g = px[2], bl = px[3], lum = (r + g + bl) / 3;
 							// (green - seen as a roof or as grass, which a roof is not: not the leaves over it - green metal; red:
-							// north Florida's red metal, the south's clay tiles)
-							const bool north = latAt(c[1]) >= 28.8;
-							roof = (px[0] == 6 || px[0] == 3 || px[0] == 4) && g > r + 6 && g > bl + 10 ? 5
+							// north Florida's red metal, the south's clay tiles. South of 27 degrees no green metal: a green roof
+							// in Miami's pictures is a tree over it - the reviewers' "bright green metal roofs" on 7 of 36 views -,
+							// the roof under it as likely tiled as anything)
+							const bool north = latAt(c[1]) >= 28.8, south = latAt(c[1]) < 27.0;
+							roof = (px[0] == 6 || px[0] == 3 || px[0] == 4) && g > r + 6 && g > bl + 10 ? (south ? 0 : 5)
 							     : r > g + 18 && r > bl + 35          ? (north ? 6 : 0)
 							     : lum > 165                          ? 2
 							     : lum < 95                           ? 3
-							     : r > bl + 22                        ? 4
+							     : r > bl + 22                        ? (south ? 0 : 4) // (the south's weathered barrel tiles brown from above: the reviewers' grey and brown shingles where the photos have tiles)
 							                                          : 1;
 						}
 				}
@@ -3280,6 +3350,7 @@ namespace worldgen::build
 		std::vector<props::Prop> furniture;
 		roads::Mesh wires; // (the power lines', powerlines.hpp)
 		std::vector<mapfiles::CarGen> parked; // (parked cars: the game's car generators)
+		std::vector<world::Barrier> yards;    // (south Florida's front yards' fences and hedges: built with the barriers)
 		{
 			raster::Grid<uint8_t> blocked;
 			blocked.Init(gx0, gy0, gx1, gy1, 2.0f, 0);
@@ -3476,7 +3547,8 @@ namespace worldgen::build
 				}
 				std::printf("trees from the aerial pictures: %zu moved off roads and roofs, %zu kept off big buildings' walls\n", moved, trimmed);
 				trees::Stats ts;
-				trees::Photo(kept, landCoverAt, latAt, open, ground, {bx0, by0, bx1, by1}, furniture, ts, ownTrees.front().empty() ? nullptr : &ownTrees);
+				trees::Photo(kept, landCoverAt, latAt, open, ground, {bx0, by0, bx1, by1}, furniture, ts,
+				    std::all_of(ownTrees.begin(), ownTrees.end(), [](const auto& v) { return v.empty(); }) ? nullptr : &ownTrees);
 				std::printf("trees from the aerial pictures: %zu palms, %zu others\n", ts.palms, ts.broadleaf);
 				// (the woods' undergrowth where the streets see it: within 25 m of one, a metre and a half clear of its edge)
 				trees::Stats us;
@@ -3734,10 +3806,21 @@ namespace worldgen::build
 					if (!(e.kind == "residential" || e.kind == "living_street" || e.kind == "unclassified" || e.kind == "tertiary" || e.kind == "service" ||
 					        e.kind == "secondary"))
 						continue;
+					// (in each cell it passes through - by its middle alone a long straight street's houses, more than a cell
+					// from it, found none: no driveway, car, mailbox there)
 					for (size_t k = 0; k + 1 < e.points.size(); ++k)
 					{
-						const P2 m{(e.points[k][0] + e.points[k + 1][0]) / 2, (e.points[k][1] + e.points[k + 1][1]) / 2};
-						segments[key50(m[0], m[1])].push_back({static_cast<int>(ei), static_cast<int>(k)});
+						const P2 &a = e.points[k], &q = e.points[k + 1];
+						const int steps = std::max(1, static_cast<int>(std::ceil(Dist(a, q) / 10.0f)));
+						int64_t last = 0;
+						for (int s = 0; s <= steps; ++s)
+						{
+							const float t = static_cast<float>(s) / steps;
+							const int64_t key = key50(a[0] + (q[0] - a[0]) * t, a[1] + (q[1] - a[1]) * t);
+							if (s == 0 || key != last)
+								segments[key].push_back({static_cast<int>(ei), static_cast<int>(k)});
+							last = key;
+						}
 					}
 				}
 				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0, mappedDrives = 0;
@@ -3757,6 +3840,278 @@ namespace worldgen::build
 				static const char* kShrubs[] = {"prop_bush_med_01", "prop_bush_med_02", "prop_bush_med_05", "prop_bush_neat_02", "prop_bush_neat_04",
 				    "prop_bush_med_07"};
 				static const char* kMailboxes[] = {"prop_letterbox_01", "prop_letterbox_02", "prop_letterbox_03", "prop_letterbox_04"};
+				// (a front yard's fence: the lot's edges along a street - their middle within the street's carriageway,
+				// sidewalk and 6 m more of one of the streets above, within 25 degrees of it, the street outside - moved in to
+				// stand 0.7 m behind its sidewalk, 2.5 m from the asphalt where it has none, and at least 0.35 m inside the lot;
+				// the lot's sides on from them back to 2 m past the house, 0.15 m inside. Each run of them one line, broken where
+				// the driveway or one of the map's crosses it, and for a hedge at the house's front walk)
+				size_t yardsFenced = 0, yardsLots = 0, yardsChosen = 0, yardsNoStreet = 0, housesSeen = 0;
+				std::unordered_map<int64_t, std::vector<P2>> sideFenced; // (the sides fenced so far: points every metre, by 4 m cell)
+				// (the buildings' outlines by 25 m cell: no fence through one - a garage or a shed on the lot's line)
+				std::unordered_map<int64_t, std::vector<const std::vector<P2>*>> outlineCells;
+				const auto key25 = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 25)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 25))); };
+				for (const std::vector<world::Building>* list : {&w.buildings, static_cast<const std::vector<world::Building>*>(&found)})
+					for (const auto& b : *list)
+					{
+						if (b.footprint.size() < 3)
+							continue;
+						float lx = 1e30f, ly = 1e30f, hx = -1e30f, hy = -1e30f;
+						for (const P2& p : b.footprint)
+							lx = std::min(lx, p[0]), ly = std::min(ly, p[1]), hx = std::max(hx, p[0]), hy = std::max(hy, p[1]);
+						if (hx < bx0 - 60 || lx > bx1 + 60 || hy < by0 - 60 || ly > by1 + 60 || hx - lx > 500 || hy - ly > 500)
+							continue;
+						for (int j = static_cast<int>(std::floor(ly / 25)); j <= static_cast<int>(std::floor(hy / 25)); ++j)
+							for (int i = static_cast<int>(std::floor(lx / 25)); i <= static_cast<int>(std::floor(hx / 25)); ++i)
+								outlineCells[key25(i * 25.0f + 1, j * 25.0f + 1)].push_back(&b.footprint);
+					}
+				const auto key4 = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 4)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 4))); };
+				const auto fenceYard = [&](std::vector<P2> lot, const std::vector<P2>& house, const P2& centre, const P2& streetDir, uint32_t ys, int year,
+				                           size_t ownDrive, const auto& onLane) {
+					if (lot.size() < 3)
+						return;
+					if (polygon::Area(lot) < 0) // (anticlockwise: the lot's inside on each edge's left)
+						std::reverse(lot.begin(), lot.end());
+					const size_t n = lot.size();
+					std::vector<float> inset(n, -1); // (each edge on a street: how far in its fence stands; -1 not on one)
+					for (size_t k = 0; k < n; ++k)
+					{
+						const P2 &p = lot[k], &q = lot[(k + 1) % n];
+						const float l = Dist(p, q);
+						if (l < 1.0f)
+							continue;
+						const P2 m{(p[0] + q[0]) / 2, (p[1] + q[1]) / 2}, d{(q[0] - p[0]) / l, (q[1] - p[1]) / l}, out{d[1], -d[0]};
+						for (int dj = -1; dj <= 1; ++dj)
+							for (int di = -1; di <= 1; ++di)
+								if (const auto it = segments.find(key50(m[0] + di * 50.0f, m[1] + dj * 50.0f)); it != segments.end())
+									for (const auto& [ei, sk] : it->second)
+									{
+										const auto& e = network.edges[ei];
+										const P2 &a = e.points[sk], &z = e.points[sk + 1];
+										const float sl = Dist(a, z);
+										if (sl < 0.5f)
+											continue;
+										const P2 sd{(z[0] - a[0]) / sl, (z[1] - a[1]) / sl};
+										if (std::fabs(sd[0] * d[0] + sd[1] * d[1]) < 0.9f)
+											continue;
+										const float reach = e.HalfWidth() + (e.sidewalks ? e.Walk() + 0.7f : 2.5f);
+										const float t = std::clamp(((m[0] - a[0]) * sd[0] + (m[1] - a[1]) * sd[1]) / sl, 0.0f, 1.0f);
+										const P2 foot{a[0] + (z[0] - a[0]) * t, a[1] + (z[1] - a[1]) * t};
+										// (the street outside the lot, its line within reach and 6 m of the edge's middle)
+										const float away = (foot[0] - m[0]) * out[0] + (foot[1] - m[1]) * out[1];
+										if (away <= 0)
+											continue;
+										const float dist = std::min({Dist(m, foot), polygon::DistanceToSegment(p, a, z), polygon::DistanceToSegment(q, a, z)});
+										if (dist < reach + 6.0f)
+											inset[k] = std::max({inset[k], 0.35f, reach - dist + 0.1f});
+									}
+					}
+					if (std::none_of(inset.begin(), inset.end(), [](float v) { return v >= 0; }) ||
+					    std::all_of(inset.begin(), inset.end(), [](float v) { return v >= 0; }))
+					{
+						++yardsNoStreet;
+						return;
+					}
+					// (how far the house reaches back from a front edge's line)
+					const auto depthBehind = [&](size_t k) {
+						const P2 &p = lot[k], &q = lot[(k + 1) % n];
+						const float l = std::max(1e-3f, Dist(p, q));
+						const P2 inward{-(q[1] - p[1]) / l, (q[0] - p[0]) / l};
+						float deepest = 0;
+						for (const P2& v : house)
+							deepest = std::max(deepest, (v[0] - p[0]) * inward[0] + (v[1] - p[1]) * inward[1]);
+						return deepest + 2.0f;
+					};
+					// the kind: the older the house the more wire and pickets, the newer the more hedges and walls
+					world::Barrier fence;
+					{
+						const uint32_t pick = (ys >> 8) % 100;
+						const bool older = year > 0 && year < 1970;
+						const float tall = static_cast<float>((ys >> 16) % 100) / 100.0f;
+						if (pick < (older ? 20u : 40u))
+							fence.kind = "hedge", fence.height = 1.3f + 1.1f * tall;
+						else if (pick < (older ? 35u : 55u))
+							fence.kind = "wall", fence.height = tall < 0.5f ? 1.0f : 1.5f;
+						else if (pick < (older ? 70u : 88u))
+							fence.kind = "fence", fence.material = "bars", fence.height = tall < 0.6f ? 1.2f : 1.5f;
+						else
+							fence.kind = "fence", fence.material = "chain_link", fence.height = 1.2f;
+					}
+					const bool hedge = fence.kind == "hedge";
+					// each run of edges on a street, from the first edge after one not on a street
+					size_t first = 0;
+					while (inset[first] >= 0 || inset[(first + n - 1) % n] < 0)
+						first = (first + 1) % n;
+					for (size_t k0 = first, seen = 0; seen < n;)
+					{
+						if (inset[k0] < 0)
+						{
+							k0 = (k0 + 1) % n, ++seen;
+							continue;
+						}
+						size_t k1 = k0, count = 0;
+						while (inset[k1] >= 0 && count < n)
+							k1 = (k1 + 1) % n, ++count;
+						seen += count;
+						// the line: the side before (back to front), the street's edges, the side after (front to back); each
+						// piece's inset, a side's 0.15 m (P2 pairs: from, to)
+						std::vector<std::pair<P2, P2>> pieces;
+						std::vector<float> in, isSide;
+						const size_t before = (k0 + n - 1) % n;
+						{
+							const P2 &p = lot[before], &q = lot[k0];
+							const float l = Dist(p, q), keep = std::min(l, depthBehind(k0));
+							if (keep > 0.5f)
+								pieces.push_back({{q[0] + (p[0] - q[0]) / l * keep, q[1] + (p[1] - q[1]) / l * keep}, q}), in.push_back(0.15f), isSide.push_back(1);
+						}
+						for (size_t k = k0, c2 = 0; c2 < count; k = (k + 1) % n, ++c2)
+							pieces.push_back({lot[k], lot[(k + 1) % n]}), in.push_back(inset[k]), isSide.push_back(0);
+						{
+							const size_t last = (k0 + count - 1) % n;
+							const P2 &p = lot[(last + 1) % n], &q = lot[(last + 2) % n];
+							const float l = Dist(p, q), keep = std::min(l, depthBehind(last));
+							if (keep > 0.5f)
+								pieces.push_back({p, {p[0] + (q[0] - p[0]) / l * keep, p[1] + (q[1] - p[1]) / l * keep}}), in.push_back(0.15f), isSide.push_back(1);
+						}
+						// (each piece's line moved in - its left -, the corners where the moved lines meet: at most 3 m out)
+						const size_t m = pieces.size();
+						std::vector<P2> line(m + 1);
+						std::vector<P2> dirs(m);
+						for (size_t i = 0; i < m; ++i)
+						{
+							const float l = std::max(1e-3f, Dist(pieces[i].first, pieces[i].second));
+							dirs[i] = {(pieces[i].second[0] - pieces[i].first[0]) / l, (pieces[i].second[1] - pieces[i].first[1]) / l};
+						}
+						const auto moved = [&](size_t i, const P2& p) { return P2{p[0] - dirs[i][1] * in[i], p[1] + dirs[i][0] * in[i]}; };
+						line[0] = moved(0, pieces[0].first);
+						line[m] = moved(m - 1, pieces[m - 1].second);
+						for (size_t i = 1; i < m; ++i)
+						{
+							const P2 a = moved(i - 1, pieces[i - 1].second), b2 = moved(i, pieces[i].first);
+							const float den = dirs[i - 1][0] * dirs[i][1] - dirs[i - 1][1] * dirs[i][0];
+							P2 meet{(a[0] + b2[0]) / 2, (a[1] + b2[1]) / 2};
+							if (std::fabs(den) > 0.05f)
+							{
+								const float t = ((b2[0] - a[0]) * dirs[i][1] - (b2[1] - a[1]) * dirs[i][0]) / den;
+								const P2 x{a[0] + dirs[i - 1][0] * t, a[1] + dirs[i - 1][1] * t};
+								if (Dist(x, pieces[i].first) < 3.0f)
+									meet = x;
+							}
+							line[i] = meet;
+						}
+						// (where it is open: every 0.25 m along it - the driveway's lane, one of the map's driveways within 1.9 m,
+						// for a hedge the front walk 0.6 m either side of the house's middle on the street's side; a side already
+						// fenced by the neighbour - its points within 0.8 m of ours over most of its length - left out)
+						std::vector<float> at(m + 1, 0.0f);
+						for (size_t i = 1; i <= m; ++i)
+							at[i] = at[i - 1] + Dist(line[i - 1], line[i]);
+						const auto pointAt = [&](float s, size_t& i) {
+							while (i + 1 < m && at[i + 1] < s)
+								++i;
+							const float l = std::max(1e-4f, at[i + 1] - at[i]);
+							const float t = std::clamp((s - at[i]) / l, 0.0f, 1.0f);
+							return P2{line[i][0] + (line[i + 1][0] - line[i][0]) * t, line[i][1] + (line[i + 1][1] - line[i][1]) * t};
+						};
+						std::vector<bool> sideTaken(m, false);
+						for (size_t i = 0; i < m; ++i)
+						{
+							if (!isSide[i])
+								continue;
+							size_t close2 = 0, all = 0;
+							for (float s = at[i] + 0.5f; s < at[i + 1] - 0.5f; s += 1.0f, ++all)
+							{
+								size_t j = i;
+								const P2 p = pointAt(s, j);
+								bool close = false;
+								for (int dj = -1; dj <= 1 && !close; ++dj)
+									for (int di = -1; di <= 1 && !close; ++di)
+										if (const auto it = sideFenced.find(key4(p[0] + di * 4.0f, p[1] + dj * 4.0f)); it != sideFenced.end())
+											for (const P2& o2 : it->second)
+												if (Dist(o2, p) < 0.8f)
+												{
+													close = true;
+													break;
+												}
+								close2 += close;
+							}
+							sideTaken[i] = all > 0 && close2 * 2 > all;
+						}
+						const auto openAt = [&](const P2& p, size_t i) {
+							if (sideTaken[i])
+								return true;
+							if (onLane(p[0], p[1]))
+								return true;
+							if (const auto it = outlineCells.find(key25(p[0], p[1])); it != outlineCells.end())
+								for (const auto* outline : it->second)
+									if (polygon::Inside(*outline, p))
+										return true;
+							if (hedge && !isSide[i] && std::fabs((p[0] - centre[0]) * streetDir[0] + (p[1] - centre[1]) * streetDir[1]) < 0.6f)
+								return true;
+							if (const auto it = drivewayCells.find(key50(p[0], p[1])); it != drivewayCells.end())
+								for (const size_t wi : it->second)
+								{
+									const auto& pts = w.walks[wi].points;
+									for (size_t k = 0; k + 1 < pts.size(); ++k)
+										if (polygon::DistanceToSegment(p, pts[k], pts[k + 1]) < (wi == ownDrive ? 1.9f : 1.7f))
+											return true;
+								}
+							return false;
+						};
+						// (the runs left standing, each a barrier: its ends and the corners between, a run at least 1.2 m)
+						size_t i = 0;
+						float runFrom = -1;
+						const float total = at[m];
+						const auto finish = [&](float s0, float s1) {
+							if (s1 - s0 < 1.2f)
+								return;
+							world::Barrier b = fence;
+							size_t j = 0;
+							b.points.push_back(pointAt(s0, j));
+							for (size_t v = 1; v < m; ++v)
+								if (at[v] > s0 + 0.05f && at[v] < s1 - 0.05f)
+									b.points.push_back(line[v]);
+							j = 0;
+							b.points.push_back(pointAt(s1, j));
+							yards.push_back(std::move(b));
+						};
+						for (float s = 0; s <= total + 1e-3f; s += 0.25f)
+						{
+							const float sc = std::min(s, total);
+							const P2 p = pointAt(sc, i);
+							const bool isOpen = openAt(p, std::min(i, m - 1));
+							if (!isOpen && runFrom < 0)
+								runFrom = sc;
+							else if (isOpen && runFrom >= 0)
+								finish(runFrom, sc - 0.25f), runFrom = -1;
+						}
+						if (runFrom >= 0)
+							finish(runFrom, total);
+						// (the sides now fenced, for the neighbours)
+						for (size_t v = 0; v < m; ++v)
+							if (isSide[v] && !sideTaken[v])
+								for (float s = at[v]; s <= at[v + 1]; s += 1.0f)
+								{
+									size_t j = v;
+									const P2 p = pointAt(s, j);
+									sideFenced[key4(p[0], p[1])].push_back(p);
+								}
+						k0 = k1;
+					}
+					++yardsFenced;
+				};
+				// (which yards: south Florida's houses on a lot of the rolls; the older the house the likelier)
+				const auto yard = [&](size_t bi, const std::vector<P2>& footprint, const P2& centre, const P2& streetDir, size_t ownDrive, const auto& onLane) {
+					const auto lotIt = lotOf.find(bi);
+					++housesSeen;
+					if (lotIt == lotOf.end() || latAt(centre[1]) >= 27.0)
+						return;
+					++yardsLots;
+					const auto yearOf = builtYear.find(bi);
+					const int year = yearOf != builtYear.end() ? yearOf->second : 0;
+					const uint32_t ys = seeds::PlaceAt(seeds::Middle(footprint), 7, 13);
+					const uint32_t share = year == 0 ? 50 : year < 1970 ? 75 : year < 1995 ? 50 : 30;
+					if (ys % 100 < share)
+						++yardsChosen, fenceYard(lotIt->second, footprint, centre, streetDir, ys, year, ownDrive, onLane);
+				};
 				for (size_t bi = 0; bi < w.buildings.size(); ++bi)
 				{
 					const auto& b = w.buildings[bi];
@@ -3772,8 +4127,10 @@ namespace worldgen::build
 					}
 					c[0] /= b.footprint.size(), c[1] /= b.footprint.size();
 					const float area = static_cast<float>(std::fabs(area2) / 2);
+					// (and the rolls' small multi-family homes - duplexes, triplexes: "apartments" by their use, 008 -, a house's
+					// size: a third of Little Havana's homes, their own driveways and yards)
 					const bool house = b.kind == "house" || b.kind == "detached" || b.kind == "semidetached_house" || b.kind == "bungalow" ||
-					                   b.kind == "static_caravan" || ((b.kind == "yes" || b.kind == "residential") && area > 60 && area < 350);
+					                   b.kind == "static_caravan" || ((b.kind == "yes" || b.kind == "residential" || b.kind == "apartments") && area > 60 && area < 350);
 					if (!house || area < 40 || area > 600 || c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1)
 						continue;
 					const uint32_t seed = seeds::PlaceAt(seeds::Middle(b.footprint), 7, 2);
@@ -3808,7 +4165,11 @@ namespace worldgen::build
 					const float radius = std::sqrt(area / 3.14159f);
 					const float room = best - half - 0.8f * radius;
 					if (room < 8.5f)
+					{
+						// (no room for a car before the house: its yard fenced all the same, the map's driveways left open)
+						yard(bi, b.footprint, c, along, SIZE_MAX, [](float, float) { return false; });
 						continue;
+					}
 					// (past the sidewalk and verge: the car's middle 2.5 + 2.8 m from the carriageway's edge, to one side)
 					const float inward = half + 5.3f + std::min(room - 8.5f, 3.0f) * ((seed >> 8) % 100) / 100.0f;
 					const float side = (((seed >> 16) & 1) ? 1.0f : -1.0f) * radius * (0.35f + 0.25f * ((seed >> 20) % 100) / 100.0f);
@@ -3818,6 +4179,7 @@ namespace worldgen::build
 					// on it, 4.5 m short of that end, the garage door where it leads; nothing paved by the rule)
 					bool mapped = false;
 					P2 mo{}, mu{};
+					size_t mw = SIZE_MAX; // (the map's driveway: its walk)
 					{
 						float bestEnd = 6;
 						for (int dj = -1; dj <= 1; ++dj)
@@ -3838,7 +4200,7 @@ namespace worldgen::build
 											}
 											const float l = Dist(endPt, prev);
 											if (dmin < bestEnd && l > 0.5f)
-												bestEnd = dmin, mapped = true, mo = endPt, mu = {(endPt[0] - prev[0]) / l, (endPt[1] - prev[1]) / l};
+												bestEnd = dmin, mapped = true, mo = endPt, mu = {(endPt[0] - prev[0]) / l, (endPt[1] - prev[1]) / l}, mw = wi;
 										}
 									}
 					}
@@ -3978,6 +4340,13 @@ namespace worldgen::build
 							}
 						}
 					}
+					// the front yard's fence (south Florida's - the reviewers of Miami's street panoramas missed fences on 22 of
+					// 36 views, hedges on 24 -): along the lot's street side - the rolls' parcel, its edges along a street -
+					// behind the sidewalk, and its sides back past the house: chain link, aluminium or iron pickets, a low block
+					// wall or a clipped hedge. The older the house the likelier - Little Havana's and Hialeah's streets all fenced,
+					// the newer suburbs' yards more often open -, older ones more often wire and pickets. The driveway's way left
+					// open - the map's driveways too -, a hedge's front walk; a side the neighbour has fenced not again.
+					yard(bi, b.footprint, c, along, mapped ? mw : SIZE_MAX, onLane);
 					// (the mailbox: on the driveway's side, 1.1 m from the asphalt, facing the street - a letterbox's door is its
 					// -y: towards the road)
 					if (!walks && (seed >> 12) % 100 < 85)
@@ -4102,8 +4471,22 @@ namespace worldgen::build
 					}
 				}
 				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved (%zu houses on the map's own), %zu shrubs "
-				            "by houses, %zu mailboxes\n",
-				    driveways, stalls, kerbside, paved, mappedDrives, shrubs, mailboxes);
+				            "by houses, %zu mailboxes; %zu front yards fenced (%zu lines; of %zu houses %zu on a lot of the rolls, %zu chosen, %zu with no street "
+				            "edge)\n",
+				    driveways, stalls, kerbside, paved, mappedDrives, shrubs, mailboxes, yardsFenced, yards.size(), housesSeen, yardsLots, yardsChosen,
+				    yardsNoStreet);
+				if (!yards.empty())
+				{
+					// (the yards' fences, for checking: kind, material, height, then each point's x and y)
+					std::ofstream list(o.out.parent_path() / (o.name + "_yards.txt"));
+					for (const auto& y : yards)
+					{
+						list << std::format("{} {} {:.1f}", y.kind, y.material.empty() ? "-" : y.material, y.height);
+						for (const P2& p : y.points)
+							list << std::format(" {:.2f} {:.2f}", p[0], p[1]);
+						list << '\n';
+					}
+				}
 			}
 			// the cemeteries' graves (props.hpp), clear of the trees and bushes already there
 			{
@@ -4211,6 +4594,7 @@ namespace worldgen::build
 				return g.In(c[0], c[1]) && g.At(c[0], c[1]) != 0;
 			};
 			std::vector<world::Barrier> list = w.barriers;
+			list.insert(list.end(), yards.begin(), yards.end());
 			const auto enclosures = barriers::Enclosures(
 			    w.areas, w.barriers, [&](float x, float y) { return inGrid(streets, x, y); }, [&](float x, float y) { return inGrid(paths, x, y); });
 			list.insert(list.end(), enclosures.begin(), enclosures.end());
@@ -4338,13 +4722,17 @@ namespace worldgen::build
 					for (int x = 0; x < road.width; ++x)
 						for (int c = 0; c < 3; ++c)
 							column[static_cast<size_t>(x)][c] += road.At(x, y)[c] / static_cast<double>(road.height);
+				// (south Florida's - Miami's - sun-bleached: paler and smoother, the reviewers there saw "dark, coarse asphalt"
+				// where the photos have pale grey, faded pavement)
+				const bool bleached = latAt(0.5f * (w.min[1] + w.max[1])) < 27.0;
+				const double gain = bleached ? 0.92 : 0.75, grain = bleached ? 0.55 : 0.7;
 				for (int y = 0; y < road.height; ++y)
 					for (int x = 0; x < road.width; ++x)
 						for (int c = 0; c < 3; ++c)
 						{
 							auto& p = road.At(x, y);
 							const double even = p[c] - 0.9 * (column[static_cast<size_t>(x)][c] - mean[c]);
-							p[c] = static_cast<uint8_t>(std::clamp((mean[c] + (even - mean[c]) * 0.7) * 0.75, 0.0, 255.0));
+							p[c] = static_cast<uint8_t>(std::clamp((mean[c] + (even - mean[c]) * grain) * gain, 0.0, 255.0));
 						}
 			}
 			shared.push_back(texture::Make(o.name + "_asphalt", road, texture::Format::Bc1));
@@ -5198,8 +5586,47 @@ namespace worldgen::build
 							if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
 								return 0;
 						return 1;
-					case 5: return 2;
-					case 6: return 3;
+					case 5:
+					{
+						// (bare earth or sand - but in town a lone patch of it is a lawn the winter's pictures see dry, a worn
+						// verge: the reviewers of Miami's views saw sand where the photos have lawns on 11 of 12; a sandy lot - most
+						// of the 9 m round it bare - keeps it)
+						if (landCoverAt)
+							if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
+							{
+								int bare = 0;
+								for (int dj = -1; dj <= 1; ++dj)
+									for (int di = -1; di <= 1; ++di)
+									{
+										const auto n = photoClass.Cell({x + di * 3.0f, y + dj * 3.0f});
+										bare += photoClass.In(n[0], n[1]) && photoClass.At(n[0], n[1]) == 5;
+									}
+								if (bare < 7)
+									return 0;
+							}
+						return 2;
+					}
+					case 6:
+					{
+						// (paving - but in town a patch of it smaller than a car park is a lawn the winter's pictures see grey, the
+						// roofs' edges: drawn as the paving layer's concrete slabs, tinted green, it had been the reviewers' "grey-green
+						// streaky lawn" with "dark diagonal seam lines" on 8 of 36 views; a car park, a plaza - most of the 13 m round
+						// it paved - keeps it)
+						if (landCoverAt)
+							if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
+							{
+								int paved = 0;
+								for (int dj = -2; dj <= 2; ++dj)
+									for (int di = -2; di <= 2; ++di)
+									{
+										const auto n = photoClass.Cell({x + di * 3.0f, y + dj * 3.0f});
+										paved += photoClass.In(n[0], n[1]) && photoClass.At(n[0], n[1]) == 6;
+									}
+								if (paved < 15)
+									return 0;
+							}
+						return 3;
+					}
 					default: return 0;
 					}
 				};

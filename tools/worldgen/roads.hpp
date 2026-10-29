@@ -200,6 +200,8 @@ namespace worldgen::roads
 		float speed = 0;
 		uint32_t street = 0; // name hash
 		int density = 3;     // vehicles spawned near it (0-15)
+		bool off = false;    // switched off: an unnamed service road's (car parks' aisles, an airport's service roads) - no traffic
+		                     // made there, the route search keeps to the streets (the game's own car parks and alleys are so)
 	};
 	struct PathLink
 	{

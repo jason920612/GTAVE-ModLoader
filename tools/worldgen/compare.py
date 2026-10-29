@@ -246,6 +246,13 @@ def shares(image):
     return out
 
 
+def game_picture(path):
+    """A game picture with the overlay's badge - the player's name and picture, top left - covered: not in the sheets."""
+    image = Image.open(path).convert('RGB')
+    image.paste((0, 0, 0), (0, 0, round(image.width * 0.11), round(image.height * 0.065)))
+    return image
+
+
 def label(image, text):
     d = ImageDraw.Draw(image)
     d.rectangle((0, 0, 8 + 7 * len(text), 18), fill=(0, 0, 0))
@@ -276,7 +283,7 @@ def aerial(o):
         height = size / 2 / math.tan(math.radians(FOV / 2))
         shot = os.path.join(out, f'game_{cx:.0f}_{cy:.0f}.png')
         gtactl(f'raw:cam {cx:.1f} {cy:.1f} {gz + height:.1f} 0 -89.9 {FOV}', 'wait:8', f'shot:{shot}')
-        game = Image.open(shot).convert('RGB')
+        game = game_picture(shot)
         gw, gh = game.size
         real = aerial_picture(land, cx - width_m / 2, cy - size / 2, cx + width_m / 2, cy + size / 2, gw, gh)
         real.save(os.path.join(out, f'naip_{cx:.0f}_{cy:.0f}.jpg'), quality=92)
@@ -355,7 +362,7 @@ def photos(o):
         for c in compass:
             shot = os.path.join(out, f'game_{k}_{int(c)}.png')
             gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 1.7:.1f} {(360 - c) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
-            views.append(label(Image.open(shot).convert('RGB'), f'game, facing {int(c)} deg'))
+            views.append(label(game_picture(shot), f'game, facing {int(c)} deg'))
         vw, vh = 640, 360
         cols = 1 if len(views) == 1 else 2
         rows_ = (len(views) + cols - 1) // cols
@@ -403,7 +410,7 @@ def mapillary(o):
         gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + 2.0:.1f} {(360 - compass) % 360:.1f} 0 {EYE_FOV}', 'wait:7', f'shot:{shot}')
         real = Image.open(os.path.join(folder, r['file'])).convert('RGB')
         real.thumbnail((960, 720))
-        game = Image.open(shot).convert('RGB')
+        game = game_picture(shot)
         game = game.resize((960, round(960 * game.height / game.width)))
         sheet = Image.new('RGB', (max(real.width, game.width), real.height + 8 + game.height), (255, 255, 255))
         sheet.paste(label(real, f'Mapillary {r["id"]} {r["date"]} by {r["creator"]} (CC BY-SA 4.0), facing {compass:.0f}'), (0, 0))
@@ -569,7 +576,7 @@ def pano(o):
             # turned yet or the screen was still fading in, the game lagging under the batch's load)
             for attempt in range(3):
                 gtactl(f'raw:cam {x:.1f} {y:.1f} {gz + cam_up:.2f} {(360 - yaw) % 360:.1f} 0 {EYE_FOV}', 'wait:6', f'shot:{shot}')
-                game = Image.open(shot).convert('RGB').resize((960, 540))
+                game = game_picture(shot).resize((960, 540))
                 grey = np.asarray(game.resize((96, 54)).convert('L'), np.float32)
                 if attempt == 2 or (grey.mean() > 12 and (last is None or np.abs(grey - last).mean() > 4)):
                     break

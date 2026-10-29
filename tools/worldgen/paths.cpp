@@ -122,7 +122,7 @@ namespace worldgen::paths
 			g.raw = *tn;
 			g.x = n.p[0], g.y = n.p[1];
 			std::memset(g.raw.raw + 0x14, 0, 4); // (no street name)
-			g.raw.raw[0x24] &= 0x7F;           // switched on
+			g.raw.raw[0x24] = static_cast<uint8_t>(n.off ? g.raw.raw[0x24] | 0x80 : g.raw.raw[0x24] & 0x7F); // (switched on, or off)
 			// a junction (+0x24 bit 2) and a traffic light's stopping place (+0x21 bits 3-7: 15), as the game's own nodes
 			// have them (research/phase0.md §61.27)
 			g.raw.raw[0x24] = static_cast<uint8_t>(n.junction ? g.raw.raw[0x24] | 0x04 : g.raw.raw[0x24] & ~0x04);

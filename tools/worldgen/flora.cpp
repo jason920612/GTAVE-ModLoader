@@ -131,6 +131,64 @@ namespace worldgen::flora
 			}
 		}
 
+		// A palm's frond: a strip from `base` along an arc - leaving it `rise` (radians) over level towards `azimuth`, bending
+		// down `droop` more by its tip -, `length` m long, `width` across at its widest, its leaflets an inverted V (the edges
+		// `fold` of the half width under the rachis); the atlas cell's picture along it (its base at the cell's foot), both
+		// faces, lit out from the crown's middle, in `segments` along it.
+		void Frond(roads::Mesh& m, const P3& base, float azimuth, float rise, float droop, float length, float width, float fold, const P3& middle, int cell,
+		    int segments)
+		{
+			const P3 side{-std::sin(azimuth), std::cos(azimuth), 0};
+			const float u0 = (cell % 2) * 0.5f, v0 = (cell / 2) * 0.5f;
+			std::vector<P3> centre{base};
+			for (int i = 0; i < segments; ++i)
+			{
+				const float t = (i + 0.5f) / segments, a = rise - droop * t * t;
+				const P3 dir{std::cos(azimuth) * std::cos(a), std::sin(azimuth) * std::cos(a), std::sin(a)};
+				centre.push_back(Add(centre.back(), Mul(dir, length / segments)));
+			}
+			// (the game's tree shader's colours, as a card's)
+			const uint32_t h = static_cast<uint32_t>(std::fabs(base[0] * 131 + base[1] * 71 + azimuth * 997));
+			const std::array<uint8_t, 4> c0{static_cast<uint8_t>(40 + h % 36), static_cast<uint8_t>(80 + (h >> 7) % 28), static_cast<uint8_t>((h >> 13) % 12), 228};
+			const std::array<uint8_t, 4> c1{0, 0, static_cast<uint8_t>(60 + (h >> 17) % 120), 0};
+			const float us[3] = {u0 + 0.01f, u0 + 0.25f, u0 + 0.49f};
+			for (int face = 0; face < 2; ++face)
+			{
+				const uint32_t first = static_cast<uint32_t>(m.vertices.size());
+				for (int i = 0; i <= segments; ++i)
+				{
+					const float t = static_cast<float>(i) / segments;
+					// (narrow at its base and tip, widest past its middle)
+					const float half = width / 2 * std::max(0.06f, std::sin(kPi * std::min(1.0f, 0.12f + 0.92f * t)));
+					const P3& c = centre[static_cast<size_t>(i)];
+					P3 light = Sub(c, middle);
+					light[2] = light[2] * 0.6f + 0.5f * std::sqrt(Dot(light, light));
+					const P3 n = Unit3(light);
+					const P3 edges[3] = {Add(Sub(c, Mul(side, half)), P3{0, 0, -fold * half}), c, Add(Add(c, Mul(side, half)), P3{0, 0, -fold * half})};
+					const P3 tu = face ? Mul(side, -1) : side;
+					for (int k = 0; k < 3; ++k)
+					{
+						ydr::Vertex x;
+						x.position = edges[k];
+						x.normal = n;
+						x.tangent = {tu[0], tu[1], tu[2], 1};
+						x.colour0 = c0;
+						x.colour1 = c1;
+						x.uv[0] = {us[k], v0 + 0.49f - 0.48f * t};
+						m.vertices.push_back(x);
+					}
+				}
+				for (int i = 0; i < segments; ++i)
+				{
+					const uint32_t a = first + static_cast<uint32_t>(i) * 3, b = a + 3; // (this station's left, middle, right; the next one's)
+					if (face == 0)
+						m.indices.insert(m.indices.end(), {a, b, b + 1, a, b + 1, a + 1, a + 1, b + 1, b + 2, a + 1, b + 2, a + 2});
+					else
+						m.indices.insert(m.indices.end(), {a, b + 1, b, a, a + 1, b + 1, a + 1, b + 2, b + 1, a + 1, a + 2, b + 2});
+				}
+			}
+		}
+
 		// a limb from `from` heading `dir` (curving by `bend` each step towards `pull`), `length` m in `steps`, its radius
 		// from r0 to r1
 		Limb Grow(const P3& from, P3 dir, const P3& pull, float bend, float length, int steps, float r0, float r1, Random& rnd, float wiggle = 0.15f)
@@ -195,6 +253,18 @@ namespace worldgen::flora
 					    f.hanging);
 				}
 			}
+		}
+
+		// a palm's levels of detail: its trunk and stalks (and a cabbage palm's fans) as Finish's limbs and cards, its fronds
+		// in fewer segments further off (8, 5, 3, 2) - each frond: azimuth, rise, droop, length, width, cell
+		void FinishPalm(Model& out, const std::vector<std::pair<Limb, Texture>>& limbs, const std::vector<std::array<float, 6>>& fronds, const P3& crown,
+		    const P3& middle, float fold, const std::vector<Leaf>& fans)
+		{
+			Finish(out, limbs, fans);
+			const int segments[4] = {8, 5, 3, 2};
+			for (int lod = 0; lod < 4; ++lod)
+				for (const auto& f : fronds)
+					Frond(out.lods[static_cast<size_t>(lod)][kPalmFrond], crown, f[0], f[1], f[2], f[3], f[4], fold, middle, static_cast<int>(f[5]), segments[lod]);
 		}
 
 		// cards round a point on a limb: their faces any way, lit out from the crown's middle
@@ -554,6 +624,104 @@ namespace worldgen::flora
 			return out;
 		}
 
+		// A royal palm (Miami's avenues' and yards'): a smooth pale grey trunk like a concrete column, flared at its foot and
+		// swollen a little a third of the way up, a glossy green crownshaft 2-2.6 m long on it, and thirteen to seventeen
+		// feather fronds 3.6-4.6 m long arching out of its top - the young ones up, the old hanging.
+		Model RoyalPalm(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const float H = rnd.Range(14, 22), shaft = rnd.Range(2.0f, 2.6f), frond = rnd.Range(3.6f, 4.6f);
+			const float column = H - shaft - frond * 0.35f; // (the grey trunk's height: the crownshaft on it, the upright fronds over that)
+			std::vector<std::pair<Limb, Texture>> limbs;
+			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.03f, 0.03f), rnd.Range(-0.03f, 0.03f), 1}, {0, 0, 1}, 0.01f, column + 0.3f, 10, 0.32f, 0.24f, rnd, 0.01f);
+			const float r0 = rnd.Range(0.3f, 0.36f);
+			for (size_t i = 0; i < trunk.r.size(); ++i)
+			{
+				const float t = static_cast<float>(i) / static_cast<float>(trunk.r.size() - 1);
+				trunk.r[i] = r0 * (1 + 0.25f * std::max(0.0f, 1 - t * 8) + 0.15f * std::exp(-std::pow((t - 0.38f) / 0.18f, 2.0f)) - 0.3f * t);
+			}
+			limbs.push_back({trunk, kBarkRoyal});
+			const P3 top = trunk.p.back();
+			const Limb crownshaft = Grow(top, Sub(top, trunk.p[trunk.p.size() - 2]), {0, 0, 1}, 0.0f, shaft, 3, trunk.r.back() * 1.05f, trunk.r.back() * 0.8f, rnd, 0.005f);
+			limbs.push_back({crownshaft, kCrownshaft});
+			const P3 crown = crownshaft.p.back(), middle{crown[0], crown[1], crown[2] + 0.5f};
+			std::vector<std::array<float, 6>> fronds;
+			const int n = 13 + static_cast<int>(rnd.Next() % 5);
+			for (int k = 0; k < n; ++k)
+			{
+				const float age = static_cast<float>(k) / static_cast<float>(n - 1); // (0 the youngest - upright -, 1 the oldest - hanging)
+				const float az = k * 2.39996f + rnd.Range(-0.2f, 0.2f);
+				const float rise = 1.25f - 1.9f * age + rnd.Range(-0.1f, 0.1f), droop = 0.6f + 0.9f * age;
+				fronds.push_back({az, rise, droop, frond * rnd.Range(0.85f, 1.05f) * (age < 0.15f ? 0.75f : 1.0f), rnd.Range(1.5f, 1.9f), static_cast<float>(rnd.Next() % 4)});
+			}
+			FinishPalm(out, limbs, fronds, crown, middle, 0.35f, {});
+			out.height = crown[2] + frond * 0.45f, out.width = 2 * frond * 0.9f, out.trunk = trunk.r[0];
+			return out;
+		}
+
+		// A coconut palm (the beaches' and the older yards'): a grey-brown ringed trunk leaning out 10-25 degrees and curving
+		// back up, swollen at its foot, a crown of twenty-odd feather fronds 3.8-5 m long, most of them drooping.
+		Model CoconutPalm(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const float H = rnd.Range(9, 16), frond = rnd.Range(3.8f, 5.0f), lean = rnd.Range(0.18f, 0.45f), az = rnd.Range(0, 2 * kPi);
+			std::vector<std::pair<Limb, Texture>> limbs;
+			Limb trunk = Grow({0, 0, -0.3f}, {std::cos(az) * lean, std::sin(az) * lean, 1}, {-std::cos(az) * 0.3f, -std::sin(az) * 0.3f, 1}, 0.035f,
+			    (H - frond * 0.2f) / std::cos(lean * 0.6f), 12, 0.3f, 0.17f, rnd, 0.01f);
+			for (size_t i = 0; i < trunk.r.size(); ++i)
+			{
+				const float t = static_cast<float>(i) / static_cast<float>(trunk.r.size() - 1);
+				trunk.r[i] = 0.3f * (1 + 0.35f * std::max(0.0f, 1 - t * 6)) * (1 - 0.42f * t);
+			}
+			limbs.push_back({trunk, kBarkCoconut});
+			const P3 crown = trunk.p.back(), middle{crown[0], crown[1], crown[2] + 0.3f};
+			std::vector<std::array<float, 6>> fronds;
+			const int n = 20 + static_cast<int>(rnd.Next() % 7);
+			for (int k = 0; k < n; ++k)
+			{
+				const float age = static_cast<float>(k) / static_cast<float>(n - 1);
+				const float a = k * 2.39996f + rnd.Range(-0.25f, 0.25f);
+				const float rise = 0.9f - 1.6f * age + rnd.Range(-0.15f, 0.15f), droop = 1.0f + 0.9f * age;
+				fronds.push_back({a, rise, droop, frond * rnd.Range(0.8f, 1.05f), rnd.Range(1.6f, 2.1f), static_cast<float>(rnd.Next() % 4)});
+			}
+			FinishPalm(out, limbs, fronds, crown, middle, 0.25f, {});
+			out.height = crown[2] + frond * 0.35f, out.width = 2 * frond * 0.85f + std::hypot(crown[0], crown[1]), out.trunk = trunk.r[0];
+			return out;
+		}
+
+		// A cabbage palm (the sabal, Florida's own): a straight trunk in the criss-cross boots of old leaf bases, a dense round
+		// head of thirty-odd fan leaves on stalks 1.1-1.7 m long out every way, the lower ones hanging.
+		Model SabalPalm(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const float H = rnd.Range(8, 14), head = rnd.Range(2.0f, 2.6f);
+			std::vector<std::pair<Limb, Texture>> limbs;
+			std::vector<Leaf> fans;
+			const Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.05f, 0.05f), rnd.Range(-0.05f, 0.05f), 1}, {0, 0, 1}, 0.02f, H - head + 0.3f, 8, rnd.Range(0.22f, 0.28f),
+			    0.22f, rnd, 0.015f);
+			limbs.push_back({trunk, kBarkSabal});
+			const P3 crown = trunk.p.back(), middle{crown[0], crown[1], crown[2] + 0.4f};
+			const int n = 34 + static_cast<int>(rnd.Next() % 10);
+			for (int k = 0; k < n; ++k)
+			{
+				// (the stalks' directions spread over a sphere, from straight up to well down - none straight down)
+				const float a = k * 2.39996f, z = 1 - 1.6f * (k + 0.5f) / n, rr = std::sqrt(std::max(0.0f, 1 - z * z));
+				const P3 dir{std::cos(a) * rr, std::sin(a) * rr, z};
+				const Limb stalk = Grow(crown, dir, {0, 0, -1}, 0.05f, rnd.Range(1.1f, 1.7f), 2, 0.035f, 0.02f, rnd, 0.05f);
+				limbs.push_back({stalk, kBarkSabal});
+				const P3 end = stalk.p.back(), outward = Unit3(Sub(end, crown));
+				const float size = rnd.Range(1.4f, 1.9f);
+				fans.push_back({Add(end, Mul(outward, size * 0.3f)), outward, Sub(end, middle), rnd.Range(-0.4f, 0.4f), size, size, static_cast<int>(rnd.Next() % 4), kFanFrond,
+				    false});
+			}
+			FinishPalm(out, limbs, {}, crown, middle, 0, fans);
+			out.height = crown[2] + 2.2f, out.width = 5.0f, out.trunk = trunk.r[0];
+			return out;
+		}
+
 		// pictures: a pixel's colour scaled
 		std::array<uint8_t, 4> Shade(std::array<float, 3> c, float k, uint8_t a = 255)
 		{
@@ -638,6 +806,32 @@ namespace worldgen::flora
 						// (a magnolia's: smooth dark grey-brown, faint blotches - a paler one had read as white-washed)
 						const float k = 0.85f + 0.2f * Noise(x, y * 0.6f, 30, 14);
 						p = Shade({86, 80, 72}, k);
+					}
+					else if (t == kBarkRoyal)
+					{
+						// (a royal palm's: smooth pale grey, like concrete - faint rings of old leaf scars every 9 cm or so, faint
+						// streaks up and down)
+						const float ring = std::fabs(std::sin((y + 3 * Noise(x, y, 40, 21)) * 2 * kPi / 14));
+						const float k = (ring < 0.12f ? 0.86f : 1.0f) * (0.9f + 0.12f * Noise(x * 0.4f, y, 24, 22));
+						p = Shade({178, 176, 168}, k);
+					}
+					else if (t == kBarkCoconut)
+					{
+						// (a coconut palm's: grey-brown, rough, ringed every 14 cm with darker leaf scars, fine cracks up and down)
+						const float ring = std::fabs(std::sin((y + 5 * Noise(x, y, 30, 23)) * 2 * kPi / 22));
+						const float crack = Noise(x, y * 0.15f, 5, 24) > 0.72f ? 0.8f : 1.0f;
+						p = Shade({128, 116, 98}, (ring < 0.18f ? 0.72f : 0.95f + 0.1f * Noise(x, y, 6, 25)) * crack);
+					}
+					else if (t == kBarkSabal)
+					{
+						// (a cabbage palm's boots: the old leaf bases split into a criss-cross lattice, dark between them)
+						const float d1 = std::fabs(std::sin((x + y * 0.8f) * 2 * kPi / 46)), d2 = std::fabs(std::sin((x - y * 0.8f) * 2 * kPi / 46));
+						p = Shade({116, 100, 80}, (std::max(d1, d2) > 0.55f ? 0.95f : 0.5f) * (0.85f + 0.25f * Noise(x, y, 8, 26)));
+					}
+					else if (t == kCrownshaft)
+					{
+						// (a royal palm's crownshaft: smooth glossy green, faint lines up and down)
+						p = Shade({86, 120, 70}, 0.9f + 0.12f * Noise(x * 3.0f, y * 0.1f, 8, 27));
 					}
 					else
 					{
@@ -762,6 +956,47 @@ namespace worldgen::flora
 					}
 				}
 			}
+			else if (t == kPalmFrond)
+			{
+				// a feather frond: its rachis from the cell's foot to its top, leaflets out of it on both sides - longest past its
+				// middle, slanting towards the tip, long narrow blades; the last cell an older, yellower frond
+				const bool old = cell == 3;
+				const float bx = cx + rnd.Range(-6, 6);
+				Line(im, bx, y1 - 4.0f, cx, y0 + 6.0f, 3.0f, {120, 120, 72, 255}, x0, y0, x1, y1);
+				// (apart, the sky between them - packed close they had made one oval leaf -, each slanting towards the tip and
+				// its outer third drooping)
+				for (float s = 0.03f; s < 0.98f; s += 0.02f)
+				{
+					const float py = y1 - 4 - (y1 - y0 - 10) * s, px = bx + (cx - bx) * s;
+					const float len = 118 * std::sin(kPi * std::min(1.0f, 0.08f + 0.95f * s)) * rnd.Range(0.85f, 1.05f);
+					for (const float sideSign : {-1.0f, 1.0f})
+					{
+						const float ang = 0.6f + rnd.Range(-0.12f, 0.12f);
+						const std::array<float, 3> base = old ? std::array<float, 3>{rnd.Range(120, 150), rnd.Range(118, 140), rnd.Range(52, 66)}
+						                                     : std::array<float, 3>{rnd.Range(52, 72), rnd.Range(88, 112), rnd.Range(30, 44)};
+						const auto colour = Shade(base, rnd.Range(0.85f, 1.15f));
+						const float width = rnd.Range(2.0f, 2.8f);
+						const float mx = px + sideSign * len * 0.65f * std::cos(ang), my = py - len * 0.65f * std::sin(ang) * 0.6f;
+						Line(im, px, py, mx, my, width, colour, x0, y0, x1, y1);
+						Line(im, mx, my, mx + sideSign * len * 0.35f * std::cos(ang * 0.3f), my + len * 0.12f, width * 0.8f, colour, x0, y0, x1, y1);
+					}
+				}
+			}
+			else if (t == kFanFrond)
+			{
+				// a cabbage palm's fan: forty-odd narrow segments out of a hub near the cell's foot over a little more than a half
+				// circle, their split tips drooping
+				const float hx = cx, hy = y1 - 30.0f;
+				for (int k = 0; k < 44; ++k)
+				{
+					const float a = kPi * (-0.1f + 1.2f * k / 43.0f) + rnd.Range(-0.03f, 0.03f);
+					const float len = rnd.Range(150, 200) * (0.75f + 0.25f * std::sin(kPi * k / 43.0f));
+					const float ex = hx + std::cos(a) * len * 0.62f, ey = hy - std::sin(a) * len * 0.95f;
+					const std::array<float, 3> base{rnd.Range(50, 66), rnd.Range(86, 104), rnd.Range(40, 54)};
+					Line(im, hx, hy, ex, ey, rnd.Range(4.0f, 6.0f), Shade(base, rnd.Range(0.85f, 1.1f)), x0, y0, x1, y1);
+					Line(im, ex, ey, ex + rnd.Range(-10, 10), ey + rnd.Range(8, 22), 2.0f, Shade(base, 0.9f), x0, y0, x1, y1);
+				}
+			}
 			else
 			{
 				// Spanish moss: grey-green strands hanging from the top edge, waving, thinning out downwards (55 thin dark ones had
@@ -830,6 +1065,9 @@ namespace worldgen::flora
 		case Species::Myrtle: return Myrtle(seed);
 		case Species::Magnolia: return Magnolia(seed);
 		case Species::Sweetgum: return Sweetgum(seed);
+		case Species::RoyalPalm: return RoyalPalm(seed);
+		case Species::CoconutPalm: return CoconutPalm(seed);
+		case Species::SabalPalm: return SabalPalm(seed);
 		default: return Shrub(seed);
 		}
 	}

@@ -551,7 +551,11 @@ namespace worldgen::world
 		}
 		auto& buildings = j["buildings"] = nlohmann::json::array();
 		for (const Building& b : w.buildings)
+		{
 			buildings.push_back({{"kind", b.kind}, {"name", b.name}, {"height", b.height}, {"footprint", Line(b.footprint)}});
+			if (b.traced)
+				buildings.back()["source"] = "ms";
+		}
 		auto& points = j["points"] = nlohmann::json::array();
 		for (const Point& p : w.points)
 			if (p.name.empty())
@@ -636,7 +640,8 @@ namespace worldgen::world
 				w.walks.push_back({o["id"].get<int64_t>(), Line(o["points"]), o["kind"].get<std::string>(), o.value("surface", ""), o.value("width", 0.0f),
 				    o.value("bridge", false), o.value("tunnel", false), o.value("layer", 0)});
 		for (const auto& o : j["buildings"])
-			w.buildings.push_back({Line(o["footprint"]), o["height"].get<float>(), o["kind"].get<std::string>(), o["name"].get<std::string>()});
+			w.buildings.push_back({Line(o["footprint"]), o["height"].get<float>(), o["kind"].get<std::string>(), o["name"].get<std::string>(), false,
+			    o.value("source", "") == "ms"});
 		for (const auto& o : j["points"])
 			w.points.push_back({o["kind"].get<std::string>(), {o["at"][0].get<float>(), o["at"][1].get<float>()}, o.value("name", "")});
 		return true;
@@ -782,8 +787,17 @@ namespace worldgen::world
 			const int storeys = e.value("storeys", 0);
 			const bool main = e.value("main", true);
 			const int code = use.empty() ? -1 : std::atoi(use.c_str());
-			// (vacant land: nothing there now)
-			if ((code == 0 || code == 10 || code == 40 || code == 70 || code == 80) && living <= 0 && !b.footprint.empty())
+			// (vacant land: nothing there now - where one of Microsoft's traced footprints of a house's size stands, its house
+			// demolished since the pictures it was traced from; the map's buildings stay: a condominium's land is rolled as
+			// common land with no living area, and Miami Beach's apartment blocks - a tenth of a land's buildings - had gone)
+			const auto areaOf = [](const std::vector<P2>& ring) {
+				double a = 0;
+				for (size_t i = 0, k = ring.size() - 1; i < ring.size(); k = i++)
+					a += static_cast<double>(ring[k][0]) * ring[i][1] - static_cast<double>(ring[i][0]) * ring[k][1];
+				return std::fabs(a) / 2;
+			};
+			if ((code == 0 || code == 10 || code == 40 || code == 70 || code == 80) && living <= 0 && b.traced && !b.footprint.empty() &&
+			    areaOf(b.footprint) < 250)
 			{
 				// (its footprint emptied - it keeps its place in the list, which the street pictures' walls and the rolls are
 				// keyed by -, the outline demolished: the scan's own building there left out too)

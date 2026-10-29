@@ -52,6 +52,10 @@ namespace worldgen::structures
 		// the south's hurricane country mostly hip) - by the house's place (x, y), where given
 		float gableShare = 0;
 		std::function<float(float, float)> gableShareAt;
+		// where apartment blocks of a few storeys are flat-roofed (south Florida's Art Deco and MiMo walk-ups - the reviewers
+		// of Miami Beach's street panoramas saw hip-roofed houses in their place), else hip-roofed (north Florida's garden
+		// apartments) - by the block's place (x, y)
+		std::function<bool(float, float)> flatWalkUpsAt;
 		// buildings joined to a big one (its wings, the map's "yes" parts of it): no house roof of their own
 		const std::unordered_set<const world::Building*>* attached = nullptr;
 	};

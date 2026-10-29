@@ -485,9 +485,45 @@ namespace worldgen::trees
 			// (cabbage palms: what the pictures take for one; in the south a quarter of the narrow evergreen crowns, in the
 			// north's towns - Tallahassee's yards and medians - one in ten of them)
 			const bool town = nlcd >= 21 && nlcd <= 24;
-			if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (latitudeAt(t.y) < 27.5 ? (seed & 3) == 0 : town && seed % 10 == 0)))
+			// (south Florida's towns - Miami, Fort Lauderdale - are palms' places: their royal and coconut palms tall narrow crowns
+			// in the canopy heights - by height alone pines -, their crowns 6-8 m across - by width alone live oaks -; the
+			// reviewers of Miami's street panoramas found no palms on 27 of 36 views and pines where the photos have none. There
+			// the tall narrow crowns and half the other evergreen ones - not the widest - are palms of the town's kinds, and no
+			// crape myrtles - "pink-blossom trees" on 7 views)
+			const bool tropicalTown = town && latitudeAt(t.y) < 26.8;
+			// (a palm of our own of a kind, where the land has them: its foot at the ground, scaled to the tree's height, its
+			// crown not squeezed - a palm's spread is its fronds')
+			const auto ownPalm = [&](int kind) {
+				const Own* o = ownOf(kind, h, seed);
+				if (!o)
+					return false;
+				props::Prop p;
+				p.archetype = loader::convert::Joaat(o->name);
+				p.position = {t.x, t.y, ground(t.x, t.y) - 0.2f};
+				p.heading = static_cast<float>((seed >> 8) % 360) * kPi / 180;
+				p.lodDist = 600;
+				p.scaleZ = std::clamp(h / o->height, 0.5f, 1.5f);
+				p.scale = std::clamp(width / o->width, p.scaleZ * 0.8f, p.scaleZ * 1.25f);
+				out.push_back(p);
+				++stats.palms;
+				return true;
+			};
+			if (tropicalTown && t.kind != 1 && ((h >= 14 && width < 0.6f * h) || (width < 1.1f * h && seed % 2 == 0) || t.kind == 2))
+			{
+				// (the south's towns' palms ours: royal palms, coconut palms and cabbage palms - the game's fan and date palms are
+				// California's)
+				const uint32_t which = (seed >> 11) % 100;
+				if (ownPalm(which < 45 ? 6 : which < 75 ? 7 : 8))
+					continue;
+				m = &Choose(kPalms, h, width, 0.0f, seed), palm = true;
+			}
+			else if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (latitudeAt(t.y) < 27.5 ? (seed & 3) == 0 : town && seed % 10 == 0)))
+			{
+				if (ownPalm(8))
+					continue;
 				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
-			else if (own)
+			}
+			else if (own && !(*own)[0].empty())
 			{
 				// (ours: an evergreen a live oak unless it is a pine's height - over 21 m, or over 14 m and narrow -, a leafless
 				// one a laurel or water oak, a small one in town a crape myrtle. The pictures' tree finder cuts a live oak's
@@ -502,11 +538,11 @@ namespace worldgen::trees
 				// oak squeezed to it: the live oaks, as wide as 1.3-1.8 times their height, squeezed to 0.6 of their spread had
 				// stood as "small identical Y-trunk trees" in the reviewers' eyes, the pictures' crowns 0.9-1.1 times the
 				// height across)
-				const bool pine = h >= 21 || (h >= 14 && width < 0.4f * h);
+				const bool pine = !tropicalTown && (h >= 21 || (h >= 14 && width < 0.4f * h));
 				const bool magnolia = town && h >= 7 && h <= 16 && width < 0.8f * h && seed % 10 == 0;
-				const int kind = town && h < 8 ? (t.kind == 1 && seed % 2 == 0 ? 3 : 2)
+				const int kind = town && h < 8 ? (t.kind == 1 && seed % 2 == 0 && !tropicalTown ? 3 : 2)
 				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : width >= 1.1f * h ? 0 : 2)
-				                               : (town && h <= 9 && seed % 5 == 0 ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
+				                               : (town && h <= 9 && seed % 5 == 0 && !tropicalTown ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))
 				{
 					props::Prop p;
@@ -527,11 +563,13 @@ namespace worldgen::trees
 					continue;
 				}
 			}
+			else if (tropicalTown)
+				m = &Choose(kBroadleaf, h, width, 0.6f, seed); // (the south's towns' figs, black olives and live oaks: no pines, no maples)
 			else if (t.kind == 0 && width >= 0.6f * h && h >= 8)
 				m = &Choose(kLiveOaks, h, width, 0.7f, seed);
 			else if (t.kind == 0)
 				m = &Choose(kPines, h, width, 0.3f, seed);
-			else if (town && h <= 9 && seed % 5 < 2)
+			else if (town && h <= 9 && seed % 5 < 2 && !tropicalTown)
 				m = &Choose(kFlowering, h, width, 0.6f, seed); // (a town's small trees in flower: its crape myrtles)
 			else
 				m = &Choose(kDeciduous, h, width, nlcd == 90 ? 0.3f : 0.6f, seed);
