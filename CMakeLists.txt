@@ -95,8 +95,10 @@ add_library(loader SHARED
     src/loader/debug/remote.cpp
     src/loader/debug/watchdog.cpp
     src/loader/debug/filewatch.cpp
+    src/loader/debug/iowatch.cpp
     src/loader/debug/profile.cpp
     src/loader/game/dlcpacks.cpp
+    src/loader/game/diskcache.cpp
     src/loader/game/pools.cpp
     src/loader/convert/resource.cpp
     src/loader/convert/archive.cpp

@@ -450,7 +450,7 @@ namespace loader::game::seamless
 
 		std::filesystem::path PackOf(const std::string& land)
 		{
-			return paths::Get().mods / land / L"dlc.rpf";
+			return paths::LandDir(land) / L"dlc.rpf";
 		}
 
 		// a land's change sets of a group, each with its data files (the list as 0xC39B00 makes it: to switch on, `on`, or

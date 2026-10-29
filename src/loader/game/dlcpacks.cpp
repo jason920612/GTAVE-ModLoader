@@ -5,6 +5,7 @@
 #include "../convert/resource.hpp"
 #include "char4.hpp"
 #include "datafiles.hpp"
+#include "diskcache.hpp"
 #include "sectors.hpp"
 
 #include <Windows.h>
@@ -377,17 +378,23 @@ namespace loader::game::dlcpacks
 			std::vector<Pack> packs{CorePack()};
 			const auto& disabled = config::Get().disabledAssets;
 			std::error_code ec;
+			// (ModLoader\mods' folders, then the lands in the folders of config landFolders - another drive's)
+			std::vector<std::filesystem::path> folders;
 			for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))
+				if (entry.is_directory(ec))
+					folders.push_back(entry.path());
+			for (const auto& dir : paths::LandFolders())
+				if (dir.parent_path() != paths::Get().mods)
+					folders.push_back(dir);
+			for (const auto& folder : folders)
 			{
-				if (!entry.is_directory())
-					continue;
 				// A world builder's sector that came after the start (one being built while the game runs) waits for the next
 				// one: the lands are read once, before the packs, and mounted as a pack of its own its road network's files
 				// took the place of the land's there - links to nodes that are not there stopped the game (research/phase0.md
 				// §63.10).
-				if (std::filesystem::is_regular_file(entry.path() / L"land.json", ec))
+				if (std::filesystem::is_regular_file(folder / L"land.json", ec))
 				{
-					const std::string name = Utf8(entry.path().filename().u8string());
+					const std::string name = Utf8(folder.filename().u8string());
 					const auto lands = sectors::Lands();
 					if (std::find(lands.begin(), lands.end(), name) == lands.end())
 					{
@@ -397,25 +404,25 @@ namespace loader::game::dlcpacks
 				}
 				// A pack rebuilt while the game ran (it holds dlc.rpf open: the world editor writes dlc.rpf.new) takes the
 				// old one's place now.
-				if (const auto fresh = entry.path() / L"dlc.rpf.new"; std::filesystem::is_regular_file(fresh, ec))
+				if (const auto fresh = folder / L"dlc.rpf.new"; std::filesystem::is_regular_file(fresh, ec))
 				{
-					if (MoveFileExW(fresh.c_str(), (entry.path() / L"dlc.rpf").c_str(), MOVEFILE_REPLACE_EXISTING))
-						log::Info("dlc pack {}: dlc.rpf.new replaced dlc.rpf", Utf8(entry.path().filename().u8string()));
+					if (MoveFileExW(fresh.c_str(), (folder / L"dlc.rpf").c_str(), MOVEFILE_REPLACE_EXISTING))
+						log::Info("dlc pack {}: dlc.rpf.new replaced dlc.rpf", Utf8(folder.filename().u8string()));
 					else
-						log::Error("dlc pack {}: cannot replace dlc.rpf with dlc.rpf.new (error {})", Utf8(entry.path().filename().u8string()), GetLastError());
+						log::Error("dlc pack {}: cannot replace dlc.rpf with dlc.rpf.new (error {})", Utf8(folder.filename().u8string()), GetLastError());
 				}
 				Pack pack;
-				if (!std::filesystem::is_regular_file(entry.path() / L"dlc.rpf", ec))
+				if (!std::filesystem::is_regular_file(folder / L"dlc.rpf", ec))
 				{
 					// A code mod's own folder (mods\<name>.dll next to it) is never a replacement mod.
-					auto dll = entry.path();
+					auto dll = folder;
 					dll += L".dll";
-					if (std::filesystem::exists(dll, ec) || !convert::LooksLikeReplacementMod(entry.path()))
+					if (std::filesystem::exists(dll, ec) || !convert::LooksLikeReplacementMod(folder))
 						continue;
 					pack.replacement = true;
 					// DLC packs that .oiv packages install are packs of their own.
 					std::vector<std::string> warnings;
-					for (auto& oiv : convert::ExtractOivPacks(Utf8(entry.path().filename().u8string()), entry.path(), warnings))
+					for (auto& oiv : convert::ExtractOivPacks(Utf8(folder.filename().u8string()), folder, warnings))
 					{
 						Pack added;
 						added.name = std::move(oiv.name);
@@ -425,11 +432,11 @@ namespace loader::game::dlcpacks
 						packs.push_back(std::move(added));
 					}
 					for (const auto& w : warnings)
-						log::Warn("dlc pack {}: {}", Utf8(entry.path().filename().u8string()), w);
+						log::Warn("dlc pack {}: {}", Utf8(folder.filename().u8string()), w);
 				}
-				pack.name = Utf8(entry.path().filename().u8string());
-				pack.source = entry.path();
-				pack.dir = entry.path();
+				pack.name = Utf8(folder.filename().u8string());
+				pack.source = folder;
+				pack.dir = folder;
 				pack.enabled = !disabled.contains(pack.name);
 				packs.push_back(std::move(pack));
 			}
@@ -744,6 +751,13 @@ namespace loader::game::dlcpacks
 			g_manager = manager;
 			const auto t0 = std::chrono::steady_clock::now();
 			auto packs = Discover();
+			// (the land the game starts on read into memory from now on if it lies on a hard disk - game/diskcache -: once
+			// the packs rebuilt have taken their places, none of them held open before)
+			static std::once_flag cached;
+			std::call_once(cached, [] {
+				if (const std::string active = sectors::Active(); !active.empty())
+					diskcache::Want({paths::LandDir(active) / L"dlc.rpf"});
+			});
 			static std::once_flag renames;
 			std::call_once(renames, [&] { FindRenames(packs); });
 			size_t heldBack = 0;

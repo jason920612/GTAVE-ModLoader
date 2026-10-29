@@ -232,12 +232,10 @@ namespace loader::game::sea
 		{
 			const auto& disabled = config::Get().disabledAssets;
 			std::error_code ec;
-			for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))
+			for (const auto& dir : paths::LandFolders())
 			{
-				if (!entry.is_directory())
-					continue;
-				const std::string name = entry.path().filename().string();
-				std::ifstream in(entry.path() / L"land.json");
+				const std::string name = dir.filename().string();
+				std::ifstream in(dir / L"land.json");
 				if (!in || disabled.contains(name))
 					continue;
 				try
@@ -252,7 +250,7 @@ namespace loader::game::sea
 					log::Info("sea: land {} ({:.0f}, {:.0f})..({:.0f}, {:.0f}), swell {:.2f} of the open ocean's", land.name, land.box[0], land.box[1],
 					    land.box[2], land.box[3], land.waves);
 					if (j.contains("water"))
-						land.waterFile = entry.path() / j["water"].get<std::string>();
+						land.waterFile = dir / j["water"].get<std::string>();
 					g_lands.push_back(std::move(land));
 				}
 				catch (const std::exception& e)

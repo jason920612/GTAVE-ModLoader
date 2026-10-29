@@ -66,6 +66,9 @@ namespace loader::config
 			c.worldPlayArea = j.value("worldPlayArea", c.worldPlayArea);
 			c.worldSector = j.value("worldSector", c.worldSector);
 			c.worldSeamless = j.value("worldSeamless", c.worldSeamless);
+			c.landFolders = j.value("landFolders", c.landFolders);
+			c.diskCacheGB = j.value("diskCacheGB", c.diskCacheGB);
+			c.bufferedIo = j.value("bufferedIo", c.bufferedIo);
 		}
 
 		nlohmann::json ToJson(const Config& c)
@@ -110,6 +113,9 @@ namespace loader::config
 				{"worldPlayArea", c.worldPlayArea},
 				{"worldSector", c.worldSector},
 				{"worldSeamless", c.worldSeamless},
+				{"landFolders", c.landFolders},
+				{"diskCacheGB", c.diskCacheGB},
+				{"bufferedIo", c.bufferedIo},
 			};
 		}
 	}

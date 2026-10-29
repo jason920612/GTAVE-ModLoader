@@ -1,6 +1,7 @@
 #pragma once
 #include <set>
 #include <string>
+#include <vector>
 
 #include "log.hpp"
 
@@ -104,6 +105,17 @@ namespace loader::config
 		// as the player nears its edge, everything round them moved into it in one frame) - else (or when that cannot be
 		// done) the screen fades and the player waits while the lands change.
 		bool worldSeamless = true;
+		// World builder: more folders with lands in them (each land's folder as in ModLoader\mods: land.json, dlc.rpf...) -
+		// another drive's, the lands too many for the game's. A land in ModLoader\mods too is taken from there. Takes effect
+		// when the game starts.
+		std::vector<std::string> landFolders;
+		// The memory (GB) the packs of lands on a hard disk are held in, read in ahead - the land the player is on and the
+		// ones they near (game/diskcache.hpp): -1 = an eighth of the computer's memory (at most 32), 0 = none.
+		int diskCacheGB = -1;
+		// DirectStorage - which the game links but has not used on these drives (it reads its files through Windows' file cache
+		// itself, research §69) - told to read through the cache too, should the game use it: "auto" (when the game or a land
+		// lies on a hard disk), "on", "off" (past the cache, as DirectStorage has it). Takes effect when the game starts.
+		std::string bufferedIo = "auto";
 	};
 
 	// Loads loader.json, writing a default one if it is missing or unreadable.

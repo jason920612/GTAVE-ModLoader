@@ -5111,3 +5111,46 @@ frames 錄影 + 每幀的「筆記」seamless::Note：預載、停放車、物�
 - 第一版用登記函式回傳的索引當槽位 → 交接後當機（那不是倉庫的本地槽位）；改成照遊戲的查法用名字找。第二版 Arriving 在陸地的
   資料檔還沒開始登記時呼叫（它的條目還不存在）→ 沒有預載、仍空白 2 幀；改成先建立陸地的記錄。驗證：東向、西向跨區錄影，跨區前後
   0.45 s 每一幀雷達都有地圖。
+
+## 68. 橋頭的陡坡：AI 停在坡上（2026-10-29，浸泡測試）
+
+- 浸泡測試（8 段、AI 開過邊界）第 0 段 AI 停在 fl_095_019 (10470, 7200–7280) 的陸橋坡上。ynd 節點高度（ynd-dump 加印 z，節點
+  +0x22，1/32 m）：10.5 → 19.5 → 14.3 m，54 m 內；全區 >20% 的連線 7 條，最陡 89%（15.0 → 2.8 m，13.8 m 內）。
+- 原因一：只有橋相接的頂點在空中（地面 + 6.5 m × 層），地面路接上它們的頂點在地面——地圖上的橋從橋面開始，前面的填土坡道
+  是一般道路，量到的地面卻沒有那麼高 → 6–50 m 的橋爬 6.5–13 m（24%，撞牆般）。原因二：長橋每 500 m 格線的錨點取「空中」高度
+  （§65.7，讓兩塊陸地的帶子一樣），短橋跨過格線就在中間鼓起。原因三：量到的地面把結構當地面（邁阿密機場航廈的高架：路 19 m 內
+  2.5 → 9 m、37 m 內 12 → 3.3 m）。
+- 做法（worldgen roads.cpp Heights）：
+  - 空中路口的引道：從空中頂點沿路網以 kGrade（7%）每公尺往下傳（最大值優先的佇列），地面頂點升到所求；升起的頂點接出的地面路
+    從它以 7% 降回地面。橋的格線錨點不高於兩端以 7% 可達的高度。
+  - 全路網坡度上限 kSteepest（12%）：所有路（含橋）的每個點至少是沿路任何其他點高度減 12% × 距離——懸崖的低端升成坡，什麼都不
+    降低。影響範圍＝落差 / 0.12（12 m → 100 m），在兩塊陸地共用的帶子內，兩邊算出一樣。被它升起端點的橋，以新端點重算橋線（不
+    出現凹陷）。12% 而不是 7%：佛州真的路都在 12% 以下，丘陵的路照地面走；7% 會把 10% 的坡底墊高成數公尺的路堤。
+  - 幾何：路高出地面時，每一側各自看：高出 0.4 m 起有混凝土擋土牆（到地下 0.3 m），1.5 m 起加護欄（寬 0.3、高 0.95 m）；
+    橫越斜坡的路只有低的那側有牆（原本兩側都畫，高的那側是倒過來的面）。
+- 結果（同一測試區 10100–10900 × 6900–7700，nodes762 區內 508 條連線）：>12.5% 26 → 0、>20% 7 → 0、最陡 89% → 12.2%；AI 停的
+  陸橋坡 9.1、10.5、11.8、13.0、14.3 m（每 18–20 m）。提交 331487b5；全州批次 10:54 起改用新版（之前建好的約 30 塊之後重建）。
+
+## 69. 陸地放在外接機械硬碟、記憶體當快取（2026-10-29，使用者：「還是用開啟時自動拿一部分記憶體來當硬碟快取的方式」）
+
+- 新硬碟 F:：WD My Passport 2627，USB，Windows 回報 IncursSeekPenalty = 1（IOCTL_STORAGE_QUERY_PROPERTY 的
+  StorageDeviceSeekPenaltyProperty，USB 也拿得到；D: 的 Crucial X9 Pro、C:、E: 都是 0）。無緩衝實測：循序寫 112、讀 115 MB/s，
+  4 KB 隨機讀 111 次/秒（8.9 ms）；D:（USB SSD）循序 875/978 MB/s、4 KB 5428 次/秒。遊戲本體留在 D:，陸地（全州 1–2 TB）放 F:。
+- 遊戲怎麼讀陸地的包（新的 pipe 指令 `iowatch start <路徑片段> | stop`，debug/iowatch：掛 NtCreateFile / NtOpenFile / NtReadFile /
+  NtClose，記開檔選項與每次讀取）：dlc.rpf 以 options 0x60（FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE）開——經過
+  Windows 檔案快取、同步讀；開進一塊陸地的一段 26255 次讀、585 MB，一半 ≤ 4 KB、≤ 1 MB。遊戲匯入 DSTORAGE.dll 的
+  DStorageGetFactory，但整場沒呼叫（dstoragecore.dll 沒載入）：這些磁碟上它不用 DirectStorage。
+- → game/diskcache：玩家所在的陸地、跨區登記的陸地、以及玩家離它的開放邊 3.5 km 內的鄰居（每 2 秒，近的先），它們的包若在會
+  尋軌的磁碟上就整個讀進記憶體並鎖住：檔案對應成一個 view，每 32 MB 先 PrefetchVirtualMemory（磁碟連續讀）再 VirtualLock
+  （工作集最小值隨鎖住的量調高，QUOTA_LIMITS_HARDWS_*_DISABLE），第一個以遊戲的優先權讀、其他的在背景模式（I/O 最低）；
+  檔案快取的頁面與 view 的頁面是同一份，所以遊戲經快取的讀取都從記憶體拿。上限 diskCacheGB（預設 -1 = 記憶體的 1/8，最多
+  32 GB；這台 128 GB → 16 GB）；不再需要的放開（解鎖、留在 standby）。遊戲啟動時（dlcpacks 換完 dlc.rpf.new 之後）先要起始陸地。
+  DirectStorage 若被遊戲使用（例如裝在 NVMe 上），DStorageGetFactory 第一次呼叫前以 DStorageSetConfiguration1 設
+  ForceFileBuffering + DisableBypassIO（bufferedIo "auto"：遊戲或陸地在會尋軌的磁碟上時）。pipe `diskcache` 回報狀態。
+- 陸地的資料夾：loader.json landFolders（例如 F:\GTAV-Lands，每塊陸地一個資料夾，內容同 ModLoader\mods\<陸地>）；
+  paths::LandFolders / LandDir（ModLoader\mods 優先），列舉陸地的地方（sectors、sea、landfiles、minimap、dlcpacks）與陸地檔案的
+  路徑都改用它。D: 是 exFAT，不能用 junction。worldgen sectors.py --lands：新陸地的包寫到那裡（已在 mods 的留在 mods）。
+- 實測（fl_095_018 0.9 GB 在 F:，以 robocopy /J 無緩衝複製——不在快取裡；全州建置暫停）：預讀 8.4 s（107 MB/s）。A：從
+  fl_095_019 開進去 交接 86 ms、99% 20.6 ms、長幀 3；開回 81 ms、長幀 1。C：直接從 F: 的陸地開始遊戲：75 s 進入遊戲（D: 的 76–77 s），
+  預讀在載入畫面中完成，跨區 81 ms、長幀 3。與在 D: 時一樣（> 200 ms 的幀是「跨邊處先備好」那一步，D: 上也有，另案）。
+  全州建置同時跑時（5 個工作）長幀多很多——那是 D: 與 CPU 的競爭，不是 F:。

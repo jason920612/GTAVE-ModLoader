@@ -419,12 +419,10 @@ namespace loader::game::minimap
 		{
 			const auto& disabled = config::Get().disabledAssets;
 			std::error_code ec;
-			for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))
+			for (const auto& dir : paths::LandFolders())
 			{
-				if (!entry.is_directory())
-					continue;
-				const std::string folder = entry.path().filename().string();
-				std::ifstream in(entry.path() / L"land.json");
+				const std::string folder = dir.filename().string();
+				std::ifstream in(dir / L"land.json");
 				if (!in || disabled.contains(folder))
 					continue;
 				try

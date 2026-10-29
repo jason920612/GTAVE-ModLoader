@@ -23,6 +23,7 @@
 #include "../pattern.hpp"
 #include "../ui/notify.hpp"
 #include "content.hpp"
+#include "diskcache.hpp"
 #include "dlcpacks.hpp"
 #include "landfiles.hpp"
 #include "minimap.hpp"
@@ -265,7 +266,7 @@ namespace loader::game::sectors
 		void ReadParked(const Land& l, ParkedLand& pl)
 		{
 			pl.read = true;
-			std::ifstream in(paths::Get().mods / l.name / L"parked.bin", std::ios::binary);
+			std::ifstream in(paths::LandDir(l.name) / L"parked.bin", std::ios::binary);
 			char magic[4]{};
 			uint32_t version = 0, count = 0;
 			in.read(magic, 4);
@@ -799,7 +800,7 @@ namespace loader::game::sectors
 		{
 			if (land.files.empty())
 			{
-				const auto path = paths::Get().mods / land.name / L"dlc.rpf";
+				const auto path = paths::LandDir(land.name) / L"dlc.rpf";
 				std::error_code ec;
 				auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
 				convert::Archive archive;
@@ -902,12 +903,10 @@ namespace loader::game::sectors
 	{
 		const auto& disabled = config::Get().disabledAssets;
 		std::error_code ec;
-		for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))
+		for (const auto& dir : paths::LandFolders())
 		{
-			if (!entry.is_directory())
-				continue;
-			const std::string name = entry.path().filename().string();
-			std::ifstream in(entry.path() / L"land.json");
+			const std::string name = dir.filename().string();
+			std::ifstream in(dir / L"land.json");
 			if (!in || disabled.contains(name))
 				continue;
 			try
@@ -1292,6 +1291,52 @@ namespace loader::game::sectors
 			g_cross = {};
 		}
 
+		// The lands' packs on a hard disk read into memory ahead (game/diskcache), every 2 s: the land the player is on, the one
+		// a crossing has registered, then those past the open edges they are within kAhead of, the nearest first - a 2 GB
+		// pack is read in at the disk's 115 MB/s in 18 s, before the crossing registers it at kPrepare (2 km at 110 km/h).
+		constexpr float kAhead = 3500;
+		ULONGLONG g_lastWant = 0;
+		void WatchPacks()
+		{
+			const ULONGLONG now = GetTickCount64();
+			if (now - g_lastWant < 2000)
+				return;
+			g_lastWant = now;
+			const Land* here = nullptr;
+			for (const Land& l : g_lands)
+				if (!l.dormant && l.projected)
+				{
+					here = &l;
+					break;
+				}
+			if (!here)
+				return;
+			std::vector<std::filesystem::path> packs{paths::LandDir(here->name) / L"dlc.rpf"};
+			if (!g_cross.to.empty() && g_cross.to != here->name)
+				packs.push_back(paths::LandDir(g_cross.to) / L"dlc.rpf");
+			const int32_t player = natives::Invoke<int32_t>(kPlayerPedId);
+			const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, player, 1);
+			std::vector<std::pair<float, std::string>> ahead;
+			for (const char side : here->open)
+			{
+				const float d = Inside(*here, side, p.x, p.y);
+				if (d > kAhead)
+					continue;
+				const float over[2] = {side == 'e' ? here->core[2] + 1 : side == 'w' ? here->core[0] - 1 : p.x,
+				    side == 'n' ? here->core[3] + 1 : side == 's' ? here->core[1] - 1 : p.y};
+				double lat, lon;
+				here->ToWorld(over[0], over[1], lat, lon);
+				for (const Land& o : g_lands)
+					if (&o != here && CoreCovers(o, lat, lon))
+						ahead.push_back({d, o.name});
+			}
+			std::sort(ahead.begin(), ahead.end());
+			for (const auto& [d, name] : ahead)
+				if (const auto pack = paths::LandDir(name) / L"dlc.rpf"; std::find(packs.begin(), packs.end(), pack) == packs.end())
+					packs.push_back(pack);
+			diskcache::Want(packs);
+		}
+
 		// Each frame: the crossing under way, or the next one begun.
 		void WatchCrossing()
 		{
@@ -1503,6 +1548,7 @@ namespace loader::game::sectors
 			if (!seamlessOn || (g_cross.state == Cross::State::None && !seamless::Busy() && g_afterShift.empty()))
 				WatchEdges(seamlessOn);
 			WatchParked();
+			WatchPacks();
 			// (a look over the million slots now and then: the state it is for comes of land changes, each checked by
 			// its own steps)
 			if (const ULONGLONG now = GetTickCount64(); now - g_lastAudit > 60000)
@@ -1569,7 +1615,7 @@ namespace loader::game::sectors
 			std::string held;
 			const bool tell = spent > 2000 && !g_switch.toldPictures;
 			for (const std::string& name : g_switch.leaving)
-				done = landfiles::LetPicturesGo(name, paths::Get().mods / name / L"dlc.rpf", tell ? &held : nullptr) && done;
+				done = landfiles::LetPicturesGo(name, paths::LandDir(name) / L"dlc.rpf", tell ? &held : nullptr) && done;
 			if (tell && !done)
 			{
 				g_switch.toldPictures = true;
@@ -1631,7 +1677,7 @@ namespace loader::game::sectors
 				if (!g_switch.released[i])
 					if (Land* l = Find(g_switch.leaving[i]))
 					{
-						if (landfiles::Release(l->name, paths::Get().mods / l->name / L"dlc.rpf", spent > 30000).done)
+						if (landfiles::Release(l->name, paths::LandDir(l->name) / L"dlc.rpf", spent > 30000).done)
 						{
 							g_switch.released[i] = true, l->registered = false;
 							// (its map caches read again when it comes back: its maps' boxes from them, not from each map

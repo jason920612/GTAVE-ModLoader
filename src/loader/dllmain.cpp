@@ -7,6 +7,7 @@
 #include "config.hpp"
 #include "core.hpp"
 #include "debug/dred.hpp"
+#include "game/diskcache.hpp"
 #include "game/dlss.hpp"
 #include "graphics/bridge.hpp"
 #include "graphics/gamememory.hpp"
@@ -68,6 +69,7 @@ namespace
 		core::StartBackgroundTasks();
 		bootstrap::Install(&core::OnGameUnpacked);
 		game::dlss::Start(); // after MinHook is initialised (bootstrap)
+		game::diskcache::Start();
 		graphics::gamememory::Start();
 		graphics::bridge::Start();
 	}

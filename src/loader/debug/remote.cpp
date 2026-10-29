@@ -30,6 +30,7 @@
 #include "../config.hpp"
 #include "../convert/resource.hpp"
 #include "../game/content.hpp"
+#include "../game/diskcache.hpp"
 #include "../game/dlcpacks.hpp"
 #include "../game/landfiles.hpp"
 #include "../game/seamless.hpp"
@@ -47,6 +48,7 @@
 #include "../ui/overlay.hpp"
 #include "../ui/recorder.hpp"
 #include "filewatch.hpp"
+#include "iowatch.hpp"
 #include "profile.hpp"
 #include "watchdog.hpp"
 
@@ -923,6 +925,26 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "iowatch")
+			{
+				// iowatch start <part of a path> | stop: every thread's opens of the files with it in their path - past the
+				// file cache or not - and their reads (debug/iowatch.hpp)
+				std::string what, filter;
+				in >> what;
+				if (what == "stop")
+					return iowatch::Stop();
+				std::getline(in >> std::ws, filter);
+				auto job = std::make_shared<Job>();
+				job->run = [filter] {
+					return iowatch::Start(std::wstring(filter.begin(), filter.end()), GetCurrentThreadId()) ? std::string("watching the opens of *") + filter + "*"
+					                                                                                         : std::string("could not hook");
+				};
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
 			if (cmd == "quiet")
 			{
 				// quiet on|off: the story's phone calls and texts kept out of a test run (see kQuietScripts)
@@ -931,6 +953,8 @@ namespace loader::debug::remote
 				g_quiet = how != "off";
 				return g_quiet ? "ok quiet" : "ok story as it is";
 			}
+			if (cmd == "diskcache")
+				return game::diskcache::Report(); // (DirectStorage through the file cache or not, the lands' packs held in memory)
 			if (cmd == "vram")
 			{
 				// vram: what Windows gives the game, what it is told, what it uses; vram share <percent>: the game told that
@@ -1231,7 +1255,7 @@ namespace loader::debug::remote
 				std::string land;
 				in >> land;
 				auto job = std::make_shared<Job>();
-				job->run = [land] { return game::landfiles::Boxes(land, paths::Get().mods / land / L"dlc.rpf"); };
+				job->run = [land] { return game::landfiles::Boxes(land, paths::LandDir(land) / L"dlc.rpf"); };
 				std::unique_lock lock(g_mutex);
 				g_jobs.push_back(job);
 				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))

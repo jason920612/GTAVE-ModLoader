@@ -305,16 +305,16 @@ namespace loader::game::landfiles
 		{
 			g_allRead = true;
 			std::error_code ec;
-			for (const auto& entry : std::filesystem::directory_iterator(paths::Get().mods, ec))
+			for (const auto& dir : paths::LandFolders())
 			{
-				const auto pack = entry.path() / L"dlc.rpf";
-				if (!entry.is_directory() || !std::filesystem::exists(entry.path() / L"land.json", ec) || !std::filesystem::exists(pack, ec))
+				const auto pack = dir / L"dlc.rpf";
+				if (!std::filesystem::exists(pack, ec))
 					continue;
 				auto in = std::make_shared<std::ifstream>(pack, std::ios::binary);
 				convert::Archive archive;
 				std::string error;
 				if (*in && archive.Open(in, 0, std::filesystem::file_size(pack, ec), "dlc.rpf", dlcpacks::Decryptor(), error))
-					CollectAll(archive, entry.path().filename().string(), true);
+					CollectAll(archive, dir.filename().string(), true);
 			}
 		}
 
