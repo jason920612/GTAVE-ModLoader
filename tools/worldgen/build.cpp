@@ -3998,6 +3998,32 @@ namespace worldgen::build
 				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 1.5f && r < 25 && thicketAt(x, y) && !inCemetery(x, y); }, open, ground,
 				    {bx0, by0, bx1, by1}, furniture, us);
 				std::printf("undergrowth: %zu shrubs in the woods by the streets\n", us.bushes);
+				// (the dunes behind the beaches: their sea grape and scrub - off the sand, within 45 m of it, where the aerial
+				// pictures see trees or green; round 24's reviewers saw "dense coastal scrub over hummocky dunes" where ours
+				// were bare smooth ground)
+				if (!photoClass.v.empty())
+				{
+					raster::Grid<uint8_t> notSand = land;
+					bool anySand = false;
+					for (size_t k = 0; k < land.v.size(); ++k)
+						notSand.v[k] = land.v[k] != kBeach, anySand |= land.v[k] == kBeach;
+					if (anySand)
+					{
+						const auto toSand = raster::DistanceTo(notSand, 1);
+						trees::Stats ds;
+						trees::Undergrowth(
+						    [&](float x, float y) {
+							    const auto c = land.Cell({x, y});
+							    if (!land.In(c[0], c[1]) || land.At(c[0], c[1]) == kBeach || land.At(c[0], c[1]) == kWater || toSand.At(c[0], c[1]) > 45)
+								    return false;
+							    const auto pc = photoClass.Cell({x, y});
+							    const uint8_t cl = photoClass.In(pc[0], pc[1]) ? photoClass.At(pc[0], pc[1]) : 0;
+							    return (cl == 2 || cl == 3) && !inCemetery(x, y);
+						    },
+						    open, ground, {bx0, by0, bx1, by1}, furniture, ds);
+						std::printf("dunes: %zu shrubs behind the beaches\n", ds.bushes);
+					}
+				}
 				if (scanned)
 				{
 					// (and the hedges and shrubs the scan measured, where the streets see them: within 30 m - where the aerial
@@ -4107,6 +4133,51 @@ namespace worldgen::build
 				for (const auto& a : w.areas)
 					if (a.kind == "campus" && !a.outer.empty())
 						raster::FillPolygon(tall, a.outer, uint8_t{1});
+				// (and where no scan shows the poles, the newer subdivisions' streets: a residential street whose houses within 40 m
+				// are mostly - two to one - built 1975 or later (the property rolls) has its lines underground, as Florida's
+				// subdivisions have had since: the reviewers found our poles along Orlando's streets where the photos have none)
+				size_t newerStreets = 0;
+				if (!scanned && !builtYear.empty())
+				{
+					raster::Grid<int16_t> newer, older;
+					newer.Init(gx0, gy0, gx1, gy1, 20.0f, 0), older.Init(gx0, gy0, gx1, gy1, 20.0f, 0);
+					for (const auto& [bi, year] : builtYear)
+					{
+						if (bi >= w.buildings.size() || year <= 0 || w.buildings[bi].footprint.size() < 3)
+							continue;
+						const auto& b = w.buildings[bi];
+						if (b.kind != "house" && b.kind != "detached" && b.kind != "bungalow" && b.kind != "semidetached_house" && b.kind != "yes" &&
+						    b.kind != "residential")
+							continue;
+						P2 c{0, 0};
+						for (const P2& q : b.footprint)
+							c[0] += q[0] / b.footprint.size(), c[1] += q[1] / b.footprint.size();
+						auto& g = year >= 1975 ? newer : older;
+						for (int dj = -2; dj <= 2; ++dj)
+							for (int di = -2; di <= 2; ++di)
+							{
+								const auto cc = g.Cell({c[0] + di * 20.0f, c[1] + dj * 20.0f});
+								if (g.In(cc[0], cc[1]) && std::hypot(di * 20.0f, dj * 20.0f) <= 40.0f)
+									++g.At(cc[0], cc[1]);
+							}
+					}
+					for (const auto& e : network.edges)
+					{
+						if ((e.kind != "residential" && e.kind != "living_street" && e.kind != "unclassified") || e.points.size() < 2)
+							continue;
+						int n = 0, o = 0;
+						for (const P2& q : e.points)
+						{
+							const auto cc = newer.Cell(q);
+							if (newer.In(cc[0], cc[1]))
+								n += newer.At(cc[0], cc[1]), o += older.At(cc[0], cc[1]);
+						}
+						if (n >= 3 && n >= 2 * o)
+							raster::DrawLine(tall, e.points, 12.0f, uint8_t{1}), ++newerStreets;
+					}
+				}
+				if (newerStreets)
+					std::printf("power lines: %zu residential streets of newer homes (1975 on) with their lines underground\n", newerStreets);
 				const auto buried = [&](float x, float y) {
 					const auto cc = tall.Cell({x, y});
 					return tall.In(cc[0], cc[1]) && tall.At(cc[0], cc[1]) != 0;

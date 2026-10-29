@@ -570,9 +570,13 @@ namespace worldgen::trees
 					continue;
 				m = &Choose(kPalms, h, width, 0.0f, seed), palm = true;
 			}
-			else if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (latitudeAt(t.y) < 27.5 ? (seed & 3) == 0 : town && seed % 10 == 0)))
+			else if (t.kind == 2 || (t.kind == 0 && width < 0.45f * h && (latitudeAt(t.y) < 27.5 ? (seed & 3) == 0 : town && seed % 10 == 0)) ||
+			         (town && t.kind == 0 && latitudeAt(t.y) >= 27.0 && latitudeAt(t.y) < 29.5 && h >= 6 && h <= 16 && width < h && (seed >> 7) % 4 == 0))
 			{
-				if (ownPalm(8))
+				// (and central Florida's towns - Orlando's yards, medians, car parks' islands -: a quarter of the evergreen crowns
+				// 6-16 m high and not wide cabbage palms, some Washingtonias - the reviewers found no palm in any of our Orlando
+				// views, and cabbage and queen palms in most of the photos)
+				if ((seed >> 9) % 5 != 0 && ownPalm(8))
 					continue;
 				m = &Choose(kCabbagePalms, h, width, 0.0f, seed), palm = true;
 			}
