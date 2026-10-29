@@ -36,6 +36,8 @@ namespace worldgen::facades
 		Kind kind = Kind::House;
 		std::string diffuse, normal, specular; // texture names (a kind's styles share the last two)
 		float width = 8, height = 6;           // metres one texture covers
+		float bay = 0, clear = 0;              // its windows' bay (m, from a bay's edge: the wall between two windows at the
+		                                       // edges; 0 none) and the plain wall's width round a bay's edge (0: none)
 		std::array<uint8_t, 3> average{};      // the texture's mean colour (the LOD models' walls)
 	};
 

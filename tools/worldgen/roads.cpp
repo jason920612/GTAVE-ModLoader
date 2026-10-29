@@ -79,6 +79,10 @@ namespace worldgen::roads
 	{
 		constexpr float kPi = 3.14159265f;
 		constexpr float kTexture = 6.0f; // metres a road / sidewalk texture repeats (the game's own tiles: about 6 m)
+		// the kerb picture's (im_kerbs03) plain concrete: its light grey band, 0.812-0.884 down it, a little darker at its foot -
+		// the band under it, to the picture's bottom, a dark grime: the kerbs' faces from 0.81 to 0.995 had been two thirds
+		// near black, the reviewers' "black rubbery kerb strips"
+		constexpr float kKerbRow = 0.812f, kKerbBand = 0.072f;
 		// materials.dat rows
 		constexpr uint8_t kTarmac = 4, kConcrete = 1, kPavement = 174;
 		// the marking atlas (IM_RoadMarkings02): u ranges of its columns
@@ -221,8 +225,8 @@ namespace worldgen::roads
 				}
 			}
 			// A vertical face from `bottom` up `height`, facing to the left of the line's direction when `faceLeft`.
-			// `row`: where in the kerb picture its strip starts (kPlainRow the plain concrete; kYellowRow the yellow paint)
-			void Wall(Mesh& m, const std::vector<P3>& bottom, float height, bool faceLeft, uint8_t material, float row = 0.81f)
+			// `row`: where in the picture its strip starts (a kerb's: kKerbRow), `band` how far down it the strip reaches at most
+			void Wall(Mesh& m, const std::vector<P3>& bottom, float height, bool faceLeft, uint8_t material, float row = 0.81f, float band = 0.185f)
 			{
 				float s = 0;
 				for (size_t i = 0; i + 1 < bottom.size(); ++i)
@@ -237,7 +241,7 @@ namespace worldgen::roads
 					const float kPlain = row; // (the light grey strip: the one above it is a darker grey)
 					// (a taller wall - the sidewalk's outer edge over the verge, 0.4 m - squeezed into that strip: past its end
 					// the picture wraps round to the red rows, every sidewalk's back painted as LS's no-stopping kerbs)
-					const float vb = kPlain + std::min(height / 0.625f, 0.185f);
+					const float vb = kPlain + std::min(height / 0.625f, band);
 					const uint32_t i0 = Add(m, b0, normal, {s / kTexture, vb}), i1 = Add(m, b1, normal, {(s + l) / kTexture, vb}),
 					               i2 = Add(m, t1, normal, {(s + l) / kTexture, kPlain}), i3 = Add(m, t0, normal, {s / kTexture, kPlain});
 					if (faceLeft)
@@ -406,9 +410,13 @@ namespace worldgen::roads
 		// edge to its left (closer over the features), zipped together; its mesh and its collision from the same
 		// vertices, the collision broken (the game's pothole materials) where a pothole or a broken edge is; the
 		// features' decals on the surface over them.
+		// `lanes`: the lanes' middles (offsets, left of the centre line positive), `w0`..`w1` the stretch clear of the junctions'
+		// crossings, `gutters` whether the right and left edges are kerbed: the wear that is only seen - the lanes' oil drips,
+		// the gutters' leaves - between them
 		void Carriageway(Builder& b, Surfaces& out, paving::Paving pv, const std::vector<paving::Feature>& features, uint32_t seed, const std::vector<P2>& p,
 		    const std::vector<float>& z, const std::vector<float>& s, const std::vector<P2>& nrm, const std::vector<float>& scale,
-		    const std::vector<float>& halfAt, bool worn, bool ground)
+		    const std::vector<float>& halfAt, bool worn, bool ground, const std::vector<float>& lanes = {}, float w0 = 0, float w1 = 0,
+		    std::array<bool, 2> gutters = {})
 		{
 			using Kind = paving::Feature::Kind;
 			struct Row
@@ -578,6 +586,69 @@ namespace worldgen::roads
 						const uint32_t q00 = first + a * (no + 1) + c, q10 = q00 + no + 1;
 						b.Tri(dm, q00, q10, q10 + 1);
 						b.Tri(dm, q00, q10 + 1, q00 + 1);
+					}
+			}
+			// the wear that is only seen (the reviewers: "the asphalt evenly clean", "no oil stains"): a band of oil drips down
+			// each lane's middle, 1.1 m wide, and the leaves and grit in each kerbed gutter, 0.6 m out from the kerb, in
+			// patches - decal strips a row a metre from w0 to w1, lifted 10 mm, broken over the potholes and broken edges,
+			// faded in and out over their first and last 4 m
+			if ((pv == paving::Paving::Asphalt || pv == paving::Paving::Concrete) && w1 - w0 > 8)
+			{
+				// (smooth noise along the road, 0..1)
+				const auto along = [&](float x, uint32_t salt) {
+					const float fl = std::floor(x), t = x - fl, e = t * t * (3 - 2 * t);
+					const auto at = [&](float i) { return static_cast<float>(seeds::Mix(seed ^ salt ^ static_cast<uint32_t>(static_cast<int32_t>(i)) * 0x9E3779B9u) >> 8) / 16777216.0f; };
+					return at(fl) + (at(fl + 1) - at(fl)) * e;
+				};
+				// (`acrossU`: the picture's u across the band, v along it every `metres`; else u along, v across)
+				const auto band = [&](Mesh& dm, const auto& offsetAt, float width, float uFrom, float uTo, float metres, bool acrossU, const auto& alphaAt) {
+					const int n = static_cast<int>(std::ceil(w1 - w0));
+					bool open = false;
+					uint32_t prev = 0;
+					for (int k = 0; k <= n; ++k)
+					{
+						const float si = w0 + (w1 - w0) * k / n;
+						const Row r = rowAt(si);
+						const float oc = offsetAt(r), oa = oc - width / 2, ob = oc + width / 2;
+						if (std::fabs(oc) + width / 2 > r.h + 0.01f || paving::BrokenAt(features, si, oa) || paving::BrokenAt(features, si, oc) ||
+						    paving::BrokenAt(features, si, ob))
+						{
+							open = false;
+							continue;
+						}
+						const float fade = std::clamp(std::min(si - w0, w1 - si) / 4.0f, 0.0f, 1.0f);
+						auto colour = kDecalColour;
+						colour[3] = static_cast<uint8_t>(std::lround(255 * std::clamp(fade * alphaAt(si), 0.0f, 1.0f)));
+						const uint32_t first = static_cast<uint32_t>(dm.vertices.size());
+						for (const float o : {oa, ob}) // (its right edge, its left)
+							b.Add(dm, {r.p[0] + r.v[0] * o, r.p[1] + r.v[1] * o, r.z + relief(si, o, r.h) + 0.01f}, normalAt(r, o),
+							    acrossU ? std::array<float, 2>{o == oa ? uFrom : uTo, si / metres} : std::array<float, 2>{si / metres, o == oa ? uFrom : uTo}, colour);
+						if (open)
+						{
+							// (anticlockwise from above: s along, o to the left)
+							b.Tri(dm, prev + 1, prev, first);
+							b.Tri(dm, prev + 1, first, first + 1);
+						}
+						open = true;
+						prev = first;
+					}
+				};
+				// (the drips: thicker on some roads than others, uneven along them)
+				const float heavy = 0.55f + 0.45f * along(0.5f, 0x51);
+				for (size_t l = 0; l < lanes.size(); ++l)
+				{
+					const float oc = lanes[l];
+					band(out.drips, [&](const Row&) { return oc; }, 1.1f, 0.0f, 1.0f, 8.0f, true,
+					    [&](float si) { return heavy * (0.6f + 0.4f * along(si / 7.0f, 0x100 + static_cast<uint32_t>(l))); });
+				}
+				// (the gutters: the picture's leaves along it every 3 m, across from the kerb; in patches, a third of the gutter
+				// or so)
+				for (int side = 0; side < 2; ++side)
+					if (gutters[static_cast<size_t>(side)])
+					{
+						const float sign = side ? 1.0f : -1.0f;
+						band(out.gutters, [&](const Row& r) { return sign * (r.h - 0.31f); }, 0.6f, side ? 1.0f : 0.0f, side ? 0.0f : 1.0f, 3.0f, false,
+						    [&](float si) { return std::clamp((along(si / 9.0f, 0x200 + static_cast<uint32_t>(side)) - 0.5f) * 3.2f, 0.0f, 1.0f); });
 					}
 			}
 		}
@@ -1367,6 +1438,50 @@ namespace worldgen::roads
 		return im;
 	}
 
+	texture::Image DripPicture()
+	{
+		// (64 x 512: 1.1 m across, 8 m along - a texel 1.7 by 1.6 cm)
+		texture::Image im(64, 512, {28, 26, 24, 0});
+		const auto hash = [](uint32_t i) { return static_cast<float>(seeds::Mix(i * 0x9E3779B9u + 0x7F4A7C15u) >> 8) / 16777216.0f; };
+		std::vector<float> alpha(static_cast<size_t>(im.width) * im.height, 0.0f);
+		// a faint smear, thickest in the middle, uneven along (wrapping: the picture repeats down the lane)
+		for (int y = 0; y < im.height; ++y)
+		{
+			const float f = static_cast<float>(y) / im.height * 16, fl = std::floor(f), t = f - fl, e = t * t * (3 - 2 * t);
+			const float along = hash(static_cast<uint32_t>(fl) % 16) + (hash(static_cast<uint32_t>(fl + 1) % 16) - hash(static_cast<uint32_t>(fl) % 16)) * e;
+			for (int x = 0; x < im.width; ++x)
+			{
+				const float u = (x + 0.5f) / im.width - 0.5f;
+				alpha[static_cast<size_t>(y) * im.width + x] = (0.1f + 0.12f * along) * std::exp(-u * u / (2 * 0.17f * 0.17f));
+			}
+		}
+		// the drips: blotches 1-8 cm, most near the middle, a few big old stains
+		for (uint32_t k = 0; k < 900; ++k)
+		{
+			const float g = (hash(k * 5 + 1) + hash(k * 5 + 2) + hash(k * 5 + 3)) / 3 - 0.5f; // (bunched in the middle)
+			const float cx = (0.5f + g * 1.6f) * im.width, cy = hash(k * 5 + 4) * im.height;
+			const bool big = k % 60 == 0;
+			const float r = big ? 8 + 10 * hash(k * 5 + 5) : 0.7f + 2.6f * hash(k * 5 + 5) * hash(k * 5 + 6);
+			const float a = big ? 0.22f : 0.25f + 0.35f * hash(k * 5 + 7);
+			for (int dy = -static_cast<int>(r) - 1; dy <= static_cast<int>(r) + 1; ++dy)
+				for (int dx = -static_cast<int>(r) - 1; dx <= static_cast<int>(r) + 1; ++dx)
+				{
+					const int x = static_cast<int>(cx) + dx, y = ((static_cast<int>(cy) + dy) % im.height + im.height) % im.height;
+					if (x < 0 || x >= im.width)
+						continue;
+					const float d = std::hypot(static_cast<float>(dx), static_cast<float>(dy) * 1.3f) / r;
+					if (d < 1)
+					{
+						float& q = alpha[static_cast<size_t>(y) * im.width + x];
+						q = std::max(q, a * (1 - d * d));
+					}
+				}
+		}
+		for (size_t i = 0; i < alpha.size(); ++i)
+			im.pixels[i][3] = static_cast<uint8_t>(std::lround(255 * std::clamp(alpha[i], 0.0f, 0.75f)));
+		return im;
+	}
+
 	texture::Image StopPicture()
 	{
 		// (512 across, 512 along: four cells across with gaps, the letters filling their height; white everywhere, so that
@@ -1772,7 +1887,15 @@ namespace worldgen::roads
 				const float f0 = sStart + std::max({clearA + 1.0f, tapA, 1.5f}), f1 = sEnd - std::max({clearB + 1.0f, tapB, 1.5f});
 				const float wear = paving::Wear(e.kind, e.smoothness, e.id);
 				const auto features = f1 - f0 > 3 ? paving::Features(pv, wear, seed, f0, f1, half, lines, major) : std::vector<paving::Feature>{};
-				Carriageway(b, out, pv, features, seed, p, z, s, nrm, scale, halfAt, wear >= 0.5f, !e.bridge);
+				// (the lanes' middles: the drips down them; a kerbed edge's gutter)
+				std::vector<float> laneMiddles;
+				for (int j = 0; j < e.forward; ++j)
+					laneMiddles.push_back(c0 - (j + 0.5f) * w);
+				for (int j = 0; j < e.backward; ++j)
+					laneMiddles.push_back(c0 + t0 + (j + 0.5f) * w);
+				const bool kerbed = e.sidewalks || e.curb;
+				Carriageway(b, out, pv, features, seed, p, z, s, nrm, scale, halfAt, wear >= 0.5f, !e.bridge, laneMiddles, sStart + clearA + 1.0f,
+				    sEnd - clearB - 1.0f, {kerbed && !e.bridge, kerbed && !e.bridge});
 				// the median paving: from the carriageway's edge out to the line between the carriageways (rows at its points
 				// and every 2 m between them), the same surface, its picture from the middle of the lanes'
 				if (!md.left.empty())
@@ -1851,11 +1974,10 @@ namespace worldgen::roads
 					}
 				};
 				const auto slice = [](const auto& v, size_t i0, size_t i1) { return std::decay_t<decltype(v)>(v.begin() + i0, v.begin() + i1); };
-				// the kerb's face: plain concrete (the kerb picture's plain row; its yellow paint, put at every corner by a rule,
+				// the kerb's face: plain concrete (the kerb picture's plain band; its yellow paint, put at every corner by a rule,
 				// was where the street pictures have none - which kerbs are painted the map does not say)
-				constexpr float kPlainRow = 0.81f;
 				const auto kerb = [&](const std::vector<P3>& line, size_t i0, size_t i1, bool faceLeft) {
-					b.Wall(out.kerb, slice(line, i0, i1), kKerb, faceLeft, kConcrete, kPlainRow);
+					b.Wall(out.kerb, slice(line, i0, i1), kKerb, faceLeft, kConcrete, kKerbRow, kKerbBand);
 				};
 				stretches(fillL, [&](size_t i0, size_t i1) {
 					b.Strip(out.sidewalk, slice(walkLi, i0, i1), slice(walkLo, i0, i1), slice(uvWi, i0, i1), slice(uvWoL, i0, i1), kPavement, !e.bridge,
@@ -1865,7 +1987,7 @@ namespace worldgen::roads
 					auto lo = slice(walkLo, i0, i1);
 					for (P3& q : lo)
 						q[2] -= kKerb + 0.25f;
-					b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0);
+					b.Wall(out.kerb, lo, kKerb + 0.25f, true, 0, kKerbRow, kKerbBand);
 				});
 				stretches(fillR, [&](size_t i0, size_t i1) {
 					b.Strip(out.sidewalk, slice(walkRo, i0, i1), slice(walkRi, i0, i1), slice(uvWoR, i0, i1), slice(uvWi, i0, i1), kPavement, !e.bridge, 2);
@@ -1873,7 +1995,7 @@ namespace worldgen::roads
 					auto ro = slice(walkRo, i0, i1);
 					for (P3& q : ro)
 						q[2] -= kKerb + 0.25f;
-					b.Wall(out.kerb, ro, kKerb + 0.25f, false, 0);
+					b.Wall(out.kerb, ro, kKerb + 0.25f, false, 0, kKerbRow, kKerbBand);
 				});
 			}
 			// a bridge's structure (concrete): its parapets past the sidewalks or the carriageway's edges (0.4 m wide, 0.95 m
@@ -2438,11 +2560,11 @@ namespace worldgen::roads
 				std::vector<P3> foot;
 				for (size_t q = 0; q < cr.kerb.size(); ++q)
 					foot.push_back({cr.kerb[q][0], cr.kerb[q][1], inner[q][2] - kKerb});
-				b.Wall(out.kerb, foot, kKerb, true, kConcrete);
+				b.Wall(out.kerb, foot, kKerb, true, kConcrete, kKerbRow, kKerbBand);
 				std::vector<P3> outerFoot = outer;
 				for (P3& q : outerFoot)
 					q[2] -= kKerb + 0.25f;
-				b.Wall(out.kerb, outerFoot, kKerb + 0.25f, false, 0);
+				b.Wall(out.kerb, outerFoot, kKerb + 0.25f, false, 0, kKerbRow, kKerbBand);
 			}
 		}
 		// 5. traffic signals at the signalled junctions: for each road coming in, a mast at the right corner of the far side
@@ -2729,8 +2851,8 @@ namespace worldgen::roads
 					q[2] -= 0.12f;
 				for (P3& q : ro)
 					q[2] -= 0.12f;
-				b.Wall(out.kerb, lo, 0.12f, true, 0);
-				b.Wall(out.kerb, ro, 0.12f, false, 0);
+				b.Wall(out.kerb, lo, 0.12f, true, 0, kKerbRow, kKerbBand);
+				b.Wall(out.kerb, ro, 0.12f, false, 0, kKerbRow, kKerbBand);
 				any = true;
 				i = j;
 			}

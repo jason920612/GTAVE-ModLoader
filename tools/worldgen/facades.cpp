@@ -281,10 +281,11 @@ namespace worldgen::facades
 	{
 		Set set;
 		const auto add = [&](Kind kind, const std::string& family, const std::string& name, float w, float h, const std::function<void(Canvas&)>& draw,
-		                     bool first, float bump) {
+		                     bool first, float bump, float bay = 0, float clear = 0) {
 			Style s;
 			s.kind = kind;
 			s.width = w, s.height = h;
+			s.bay = bay, s.clear = clear;
 			s.diffuse = prefix + name;
 			s.normal = prefix + family + "_n";
 			s.specular = prefix + family + "_s";
@@ -318,7 +319,7 @@ namespace worldgen::facades
 					}
 				// (a base of darker plaster)
 				c.Rect(0, 0, c.mw, 0.35f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.8f); });
-			}, k == 0, 6);
+			}, k == 0, 6, 4.0f, 2.8f);
 		// Art Deco walk-ups: floors of 3.2 m, bays of 3 m, an "eyebrow" ledge over each window, a band at each floor
 		const std::pair<const char*, Rgb> deco[] = {{"mint", {178, 224, 204}}, {"pink", {240, 188, 198}}, {"lemon", {245, 230, 160}},
 		    {"aqua", {160, 214, 220}}, {"white", {238, 236, 228}}, {"lilac", {205, 195, 230}}};
@@ -338,7 +339,7 @@ namespace worldgen::facades
 						c.Rect(x - 0.25f, y + 1.3f, x + 1.85f, y + 1.62f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.7f + 0.3f * (1 - v)); });
 					}
 				}
-			}, k == 0, 6);
+			}, k == 0, 6, 3.0f, 0.9f);
 		// concrete mid-rises: floors of 3.1 m, a ribbon of windows along each
 		const std::pair<const char*, Rgb> concrete[] = {{"grey", {198, 198, 192}}, {"beige", {214, 204, 184}}, {"white", {228, 228, 222}}};
 		for (size_t k = 0; k < std::size(concrete); ++k)
@@ -350,7 +351,7 @@ namespace worldgen::facades
 						const float x = b * 1.5f, y = f * 3.1f + 1.0f;
 						Window(c, x + 0.04f, y, x + 1.5f - 0.04f, y + 1.55f, 0.05f, {150, 155, 160}, {75, 95, 115}, seed * 37 + f * 8 + b, false);
 					}
-			}, k == 0, 5);
+			}, k == 0, 5, 1.5f);
 		// stucco and block offices, schools, clinics: floors of 3.4 m, a window 1.2 m wide every 3 m with a sill under it and a
 		// shallow band at each floor line (the reviewers: "every office, shop and government building one template of cream
 		// walls with continuous blue ribbon windows" - most of the street pictures' low ones have windows of their own)
@@ -373,7 +374,7 @@ namespace worldgen::facades
 						c.Rect(x - 0.1f, wy - 0.3f, x + 1.3f, wy - 0.12f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.82f + 0.18f * v); });
 					}
 				}
-			}, k == 0, 5);
+			}, k == 0, 5, 3.0f, 1.6f);
 		// parking garages: decks of 3 m - a concrete spandrel 1.1 m high, the open deck over it dark to the next slab with a
 		// ceiling light every 3 m -, columns every 6 m (the street pictures' garages had come out as offices with ribbon
 		// windows)
@@ -399,7 +400,7 @@ namespace worldgen::facades
 					c.height[i] = 0.62f;
 					c.spec[i] = 0.06f;
 				});
-		}, true, 5);
+		}, true, 5, 6.0f);
 		// glass towers: floors of 3.4 m: 2.5 m of clear glass, 0.9 m of dark spandrel, mullions every 1.5 m
 		const std::pair<const char*, Rgb> glass[] = {{"blue", {70, 108, 142}}, {"green", {72, 118, 112}}, {"grey", {66, 76, 88}}, {"silver", {122, 138, 154}}};
 		for (size_t k = 0; k < std::size(glass); ++k)
@@ -427,7 +428,7 @@ namespace worldgen::facades
 				}
 				for (int b = 0; b < 6; ++b)
 					c.Fill(b * 1.5f - 0.04f, 0, b * 1.5f + 0.04f, c.mh, {195, 200, 205}, 0.58f, 0.5f);
-			}, k == 0, 4);
+			}, k == 0, 4, 1.5f);
 		// white towers with balconies: slab edges, glass railings in front of glass doors
 		const std::pair<const char*, Rgb> balcony[] = {{"white", {236, 236, 232}}, {"grey", {205, 207, 205}}};
 		for (size_t k = 0; k < std::size(balcony); ++k)
@@ -459,7 +460,7 @@ namespace worldgen::facades
 						c.spec[i] = 0.1f;
 					});
 				}
-			}, k == 0, 5);
+			}, k == 0, 5, 3.0f, 0.24f);
 		// metal sheds: ribbed cladding
 		const std::pair<const char*, Rgb> sheds[] = {{"grey", {188, 190, 188}}, {"beige", {210, 200, 175}}, {"blue", {150, 170, 185}}};
 		for (size_t k = 0; k < std::size(sheds); ++k)
@@ -475,14 +476,14 @@ namespace worldgen::facades
 						c.height[i] = 0.4f + 0.2f * rib;
 						c.spec[i] = 0.25f;
 					}
-			}, k == 0, 3);
+			}, k == 0, 3, 0.25f);
 		// shop fronts: 4.5 m: tall panes in aluminium, a fascia for the signs
 		add(Kind::Shop, "shop", "shop", 12, 4.5f, [&](Canvas& c) {
 			Wall(c, {70, 72, 76}, ++seed, 0.05f, 0.05f);
 			for (int b = 0; b < 4; ++b)
 				Window(c, b * 3.0f + 0.1f, 0.35f, b * 3.0f + 2.9f, 3.3f, 0.08f, {175, 178, 182}, {70, 85, 95}, seed * 41 + b, false);
 			c.Fill(0, 3.45f, c.mw, 4.3f, {225, 222, 214}, 0.6f, 0.1f);
-		}, true, 4);
+		}, true, 4, 3.0f, 0.2f);
 		// flat roofs: gravel, patches of membrane
 		add(Kind::Roof, "roof", "roof", 16, 16, [&](Canvas& c) {
 			Wall(c, {168, 166, 160}, ++seed, 0.25f, 0.2f);
@@ -526,7 +527,7 @@ namespace worldgen::facades
 					c.height[i] = 0.7f;
 					c.spec[i] = 0.05f;
 				});
-			}, k == 0, 5);
+			}, k == 0, 5, 4.0f, 1.6f);
 		// brick houses: the same floors, white-framed windows on a stone sill, a soldier course over them
 		const std::pair<const char*, Rgb> bricks[] = {{"red", {150, 72, 56}}, {"brown", {128, 84, 64}}, {"orange", {172, 98, 70}}, {"buff", {190, 156, 120}}};
 		for (size_t k = 0; k < std::size(bricks); ++k)
@@ -540,7 +541,7 @@ namespace worldgen::facades
 						c.Fill(x - 0.1f, y - 0.1f, x + 1.3f, y - 0.01f, {205, 200, 188}, 0.7f, 0.08f); // (the sill)
 						c.Rect(x - 0.08f, y + 1.4f, x + 1.28f, y + 1.62f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.9f); });
 					}
-			}, k == 0, 6);
+			}, k == 0, 6, 4.05f, 2.7f);
 		// red brick walk-ups and offices: floors of 3.075 m, tall windows every 2.43 m on stone sills, a band at each floor
 		const std::pair<const char*, Rgb> brickCity[] = {{"red", {146, 66, 52}}, {"brown", {124, 80, 62}}, {"buff", {186, 152, 116}}};
 		for (size_t k = 0; k < std::size(brickCity); ++k)
@@ -557,7 +558,7 @@ namespace worldgen::facades
 						c.Fill(x - 0.12f, y + 0.72f, x + 1.22f, y + 0.84f, {205, 200, 188}, 0.7f, 0.08f);
 					}
 				}
-			}, k == 0, 6);
+			}, k == 0, 6, 2.43f, 1.2f);
 		// the palette for the LOD models' walls
 		set.palette = prefix + "lod";
 		texture::Image pal(128, 8 * static_cast<int>((set.styles.size() + 15) / 16));

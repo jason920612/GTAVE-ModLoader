@@ -793,6 +793,34 @@ namespace worldgen::flora
 				Ellipse(im, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, width / 2 + 0.3f, width / 2 + 0.3f, 0, colour, bx0, by0, bx1, by1);
 			}
 		}
+
+		// A palm's leaflet: a blade from `a` through the bend `b` to its tip `c`, `width` at its widest a little way out,
+		// tapering to its point; darker at the rachis, paler and yellower towards the tip, the tip's last fifth brown when
+		// `dry`.
+		void Blade(texture::Image& im, std::array<float, 2> a, std::array<float, 2> b, std::array<float, 2> c, float width, std::array<float, 3> base,
+		    bool dry, int bx0, int by0, int bx1, int by1)
+		{
+			const float l1 = std::hypot(b[0] - a[0], b[1] - a[1]), l2 = std::hypot(c[0] - b[0], c[1] - b[1]), len = l1 + l2;
+			const int steps = std::max(2, static_cast<int>(len * 2));
+			for (int i = 0; i <= steps; ++i)
+			{
+				const float t = static_cast<float>(i) / steps, d = t * len;
+				const float x = d < l1 ? a[0] + (b[0] - a[0]) * d / l1 : b[0] + (c[0] - b[0]) * (d - l1) / std::max(1e-3f, l2);
+				const float y = d < l1 ? a[1] + (b[1] - a[1]) * d / l1 : b[1] + (c[1] - b[1]) * (d - l1) / std::max(1e-3f, l2);
+				const float w = width * (t < 0.12f ? 0.55f + 3.75f * t : 1 - 0.8f * std::pow((t - 0.12f) / 0.88f, 1.4f));
+				std::array<float, 3> k{};
+				for (int q = 0; q < 3; ++q)
+					k[q] = base[q] * (0.8f + 0.32f * t) + (q < 2 ? 10.0f : 0.0f) * t; // (paler, a touch yellower, out to the tip)
+				if (dry && t > 0.8f)
+				{
+					const float m = std::min(1.0f, (t - 0.8f) / 0.1f);
+					const std::array<float, 3> brown{142, 118, 76};
+					for (int q = 0; q < 3; ++q)
+						k[q] += (brown[q] - k[q]) * m;
+				}
+				Ellipse(im, x, y, w / 2 + 0.3f, w / 2 + 0.3f, 0, Shade(k, 1.0f), bx0, by0, bx1, by1);
+			}
+		}
 	}
 
 	texture::Image Picture(Texture t)
@@ -832,18 +860,29 @@ namespace worldgen::flora
 					}
 					else if (t == kBarkRoyal)
 					{
-						// (a royal palm's: smooth pale grey, like concrete - faint rings of old leaf scars every 9 cm or so, faint
-						// streaks up and down)
+						// (a royal palm's: smooth grey, like concrete - faint rings of old leaf scars every 9 cm or so, streaks up
+						// and down where the rain runs, darker blotches and a green-grey film here and there: one even pale grey
+						// had read as "paper-like")
 						const float ring = std::fabs(std::sin((y + 3 * Noise(x, y, 40, 21)) * 2 * kPi / 14));
-						const float k = (ring < 0.12f ? 0.86f : 1.0f) * (0.9f + 0.12f * Noise(x * 0.4f, y, 24, 22));
-						p = Shade({178, 176, 168}, k);
+						const float streak = Noise(x, y * 0.08f, 9, 22), blotch = Noise(x, y, 70, 31), film = Noise(x, y, 110, 32);
+						const float k = (ring < 0.12f ? 0.91f : 1.0f) * (0.86f + 0.16f * streak) * (blotch > 0.6f ? 0.88f : 1.0f);
+						const std::array<float, 3> grey = film > 0.62f ? std::array<float, 3>{150, 156, 140} : std::array<float, 3>{166, 164, 158};
+						p = Shade(grey, k);
 					}
 					else if (t == kBarkCoconut)
 					{
-						// (a coconut palm's: grey-brown, rough, ringed every 14 cm with darker leaf scars, fine cracks up and down)
-						const float ring = std::fabs(std::sin((y + 5 * Noise(x, y, 30, 23)) * 2 * kPi / 22));
-						const float crack = Noise(x, y * 0.15f, 5, 24) > 0.72f ? 0.8f : 1.0f;
-						p = Shade({128, 116, 98}, (ring < 0.18f ? 0.72f : 0.95f + 0.1f * Noise(x, y, 6, 25)) * crack);
+						// (a coconut palm's: grey-brown, the leaf scars' rings every 12-16 cm faint and uneven, broken here and
+						// there, weathered paler patches and darker ones - sharp rings and fine cracks up and down at full
+						// contrast had read as a woven grid, "a fine square grid texture")
+						const float ring = std::fabs(std::sin((y + 9 * Noise(x * 0.5f, y * 0.3f, 50, 23)) * 2 * kPi / 22));
+						const bool scar = ring < 0.16f && Noise(x, y, 18, 29) > 0.3f;
+						const float patch = Noise(x, y, 80, 30), grain = Noise(x, y * 0.4f, 7, 25);
+						std::array<float, 3> c{136, 126, 110};
+						if (patch > 0.62f) // (weathered pale grey)
+							c = {158, 154, 144};
+						else if (patch < 0.3f)
+							c = {116, 106, 92};
+						p = Shade(c, (scar ? 0.86f : 1.0f) * (0.94f + 0.1f * grain));
 					}
 					else if (t == kBarkSabal)
 					{
@@ -982,10 +1021,12 @@ namespace worldgen::flora
 			else if (t == kPalmFrond)
 			{
 				// a feather frond: its rachis from the cell's foot to its top, leaflets out of it on both sides - longest past its
-				// middle, slanting towards the tip, long narrow blades; the last cell an older, yellower frond
+				// middle, slanting towards the tip, long narrow blades tapering to their points, paler towards them; olive, one
+				// in fifteen torn off, some tips dry (each blade one flat colour, 0.85-1.15 apart, a saturated yellow-green: the
+				// reviewers' "bright yellow-green striped frond cards"); the last cell an older, yellower frond
 				const bool old = cell == 3;
 				const float bx = cx + rnd.Range(-6, 6);
-				Line(im, bx, y1 - 4.0f, cx, y0 + 6.0f, 3.0f, {120, 120, 72, 255}, x0, y0, x1, y1);
+				Line(im, bx, y1 - 4.0f, cx, y0 + 6.0f, 3.0f, {112, 110, 74, 255}, x0, y0, x1, y1);
 				// (apart, the sky between them - packed close they had made one oval leaf -, each slanting towards the tip and
 				// its outer third drooping)
 				for (float s = 0.03f; s < 0.98f; s += 0.02f)
@@ -995,13 +1036,14 @@ namespace worldgen::flora
 					for (const float sideSign : {-1.0f, 1.0f})
 					{
 						const float ang = 0.6f + rnd.Range(-0.12f, 0.12f);
-						const std::array<float, 3> base = old ? std::array<float, 3>{rnd.Range(120, 150), rnd.Range(118, 140), rnd.Range(52, 66)}
-						                                     : std::array<float, 3>{rnd.Range(52, 72), rnd.Range(88, 112), rnd.Range(30, 44)};
-						const auto colour = Shade(base, rnd.Range(0.85f, 1.15f));
-						const float width = rnd.Range(2.0f, 2.8f);
+						const float lit = rnd.Range(0.93f, 1.07f);
+						const std::array<float, 3> base = old ? std::array<float, 3>{rnd.Range(126, 146) * lit, rnd.Range(118, 134) * lit, rnd.Range(60, 72) * lit}
+						                                     : std::array<float, 3>{rnd.Range(66, 78) * lit, rnd.Range(86, 98) * lit, rnd.Range(42, 50) * lit};
+						const bool torn = rnd.Unit() < 0.07f, dry = rnd.Unit() < (old ? 0.5f : 0.1f);
+						const float width = rnd.Range(2.3f, 3.1f);
 						const float mx = px + sideSign * len * 0.65f * std::cos(ang), my = py - len * 0.65f * std::sin(ang) * 0.6f;
-						Line(im, px, py, mx, my, width, colour, x0, y0, x1, y1);
-						Line(im, mx, my, mx + sideSign * len * 0.35f * std::cos(ang * 0.3f), my + len * 0.12f, width * 0.8f, colour, x0, y0, x1, y1);
+						if (!torn)
+							Blade(im, {px, py}, {mx, my}, {mx + sideSign * len * 0.35f * std::cos(ang * 0.3f), my + len * 0.12f}, width, base, dry, x0, y0, x1, y1);
 					}
 				}
 			}

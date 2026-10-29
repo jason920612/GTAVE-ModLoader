@@ -1783,6 +1783,15 @@ int main(int argc, char** argv)
 				image.pixels[i] = {pixels[4 * i + 2], pixels[4 * i + 1], pixels[4 * i], pixels[4 * i + 3]};
 			if (!worldgen::texture::WritePng(g_options["out"], image, error))
 				return Fail(error);
+			// (--alpha <file.png>: its alpha too, as grey)
+			if (g_options.contains("alpha"))
+			{
+				worldgen::texture::Image alpha = image;
+				for (auto& p : alpha.pixels)
+					p = {p[3], p[3], p[3], 255};
+				if (!worldgen::texture::WritePng(g_options["alpha"], alpha, error))
+					return Fail(error);
+			}
 			std::printf("%s: %ux%u format %u -> %s\n", t.name.c_str(), t.width, t.height, t.dxgi, g_options["out"].c_str());
 			return 0;
 		}
@@ -2884,12 +2893,13 @@ int main(int argc, char** argv)
 			const auto v = root.Get<std::array<float, 4>>(Hash(field));
 			std::printf("%s %.1f %.1f %.1f\n", field, v[0], v[1], v[2]);
 		}
-		// (--archetype a: every entity of that archetype, else the first 12)
+		// (--archetype a: every entity of that archetype, --flags f: every one with any of those flags, else the first 12)
 		const uint32_t only = g_options.contains("archetype") ? Hash(g_options["archetype"].c_str()) : 0;
+		const uint32_t flagged = g_options.contains("flags") ? static_cast<uint32_t>(std::stoul(g_options["flags"], nullptr, 0)) : 0;
 		int shown = 0;
 		for (const ue5export::meta::Ref& e : root.Array(Hash("entities")))
 		{
-			if (!e || (only ? e.Get<uint32_t>(Hash("archetypeName")) != only : shown++ >= 12))
+			if (!e || (only ? e.Get<uint32_t>(Hash("archetypeName")) != only : flagged ? !(e.Get<uint32_t>(Hash("flags")) & flagged) : shown++ >= 12))
 				continue;
 			const auto p = e.Get<std::array<float, 4>>(Hash("position"));
 			const auto q = e.Get<std::array<float, 4>>(Hash("rotation"));

@@ -435,6 +435,8 @@ namespace worldgen::build
 		constexpr float kNeutralMean = 200, kPhotoGain = 0.5f;
 		// (paving where the pictures see none round it: their usual concrete, a little warm)
 		constexpr std::array<float, 3> kPavingSeen{168, 164, 154};
+		// (the lawns' tint: their brightness beside the paving as the street pictures see it - groundColour)
+		constexpr float kLawnShade = 0.65f;
 		// Pitched roofs' coverings (the game's textures: dictionary, texture, metres one covers): clay tiles, mid grey
 		// shingles, light grey, dark (the mid grey's darker kin), brown; and standing-seam metal of our own drawing (no
 		// dictionary: its colour) - green and red, north Florida's metal roofs (the street pictures': a green one where the
@@ -545,6 +547,83 @@ namespace worldgen::build
 			uint8_t kind = 0, colour = 0;
 		};
 		constexpr std::array<std::array<uint8_t, 3>, 6> kDoorColours{{{236, 234, 228}, {34, 34, 36}, {118, 30, 28}, {36, 66, 46}, {34, 44, 70}, {104, 70, 44}}};
+
+		// The ground's darkening round a building's foot (the reviewers: "the building bases meet the lawn with almost no
+		// contact shadow - they look pasted onto the grass"): a decal strip from the walls out 1.2 m, the outline's closed
+		// loops offset with mitred corners, each edge in pieces of at most 3 m, 5 cm over the ground; the decal's alpha 110 at
+		// the wall, 50 at 0.35 m out, nothing at its edge (the shade under the eaves and the light the wall keeps off fall off
+		// fast), its picture plain dark.
+		void AddContactShade(const structures::Shape& s, float cx, float cy, roads::Mesh& m, const std::function<float(float, float)>& groundAt)
+		{
+			constexpr float kOut = 1.2f, kMid = 0.35f, kLift = 0.05f;
+			std::map<uint32_t, uint32_t> next;
+			for (const auto& e : s.outline)
+				next[e[0]] = e[1];
+			std::set<uint32_t> seen;
+			const auto vertex = [&](const P2& q, uint8_t alpha) {
+				ydr::Vertex x;
+				x.position = {q[0] - cx, q[1] - cy, groundAt(q[0], q[1]) + kLift};
+				x.normal = {0, 0, 1};
+				x.tangent = {1, 0, 0, 1};
+				x.colour0 = {255, 253, 0, alpha};
+				x.uv[0] = {0.5f, 0.5f};
+				m.vertices.push_back(x);
+				return static_cast<uint32_t>(m.vertices.size() - 1);
+			};
+			for (const auto& [first, unused] : next)
+			{
+				if (seen.contains(first))
+					continue;
+				std::vector<uint32_t> loop;
+				for (uint32_t a = first; !seen.contains(a) && next.contains(a); a = next[a])
+					seen.insert(a), loop.push_back(a);
+				const size_t n = loop.size();
+				if (n < 3 || next[loop.back()] != loop.front())
+					continue;
+				std::vector<P2> at(n), out(n);
+				for (size_t k = 0; k < n; ++k)
+					at[k] = {static_cast<float>(s.vertices[loop[k]][0]), static_cast<float>(s.vertices[loop[k]][1])};
+				// (each edge's outward normal - the outline anticlockwise: outside on the right -, each corner's mitred offset)
+				std::vector<P2> normal(n);
+				for (size_t k = 0; k < n; ++k)
+				{
+					const P2 &a = at[k], &b = at[(k + 1) % n];
+					const float l = std::max(1e-4f, std::hypot(b[0] - a[0], b[1] - a[1]));
+					normal[k] = {(b[1] - a[1]) / l, -(b[0] - a[0]) / l};
+				}
+				for (size_t k = 0; k < n; ++k)
+				{
+					const P2 &n1 = normal[(k + n - 1) % n], &n2 = normal[k];
+					const float d = std::max(0.5f, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
+					out[k] = {(n1[0] + n2[0]) / d, (n1[1] + n2[1]) / d};
+				}
+				for (size_t k = 0; k < n; ++k)
+				{
+					const size_t q = (k + 1) % n;
+					const float len = std::hypot(at[q][0] - at[k][0], at[q][1] - at[k][1]);
+					if (len < 0.05f)
+						continue;
+					const int pieces = std::max(1, static_cast<int>(std::ceil(len / 3.0f)));
+					std::array<uint32_t, 3> prev{};
+					for (int i = 0; i <= pieces; ++i)
+					{
+						const float t = static_cast<float>(i) / pieces;
+						const P2 wall{at[k][0] + (at[q][0] - at[k][0]) * t, at[k][1] + (at[q][1] - at[k][1]) * t};
+						const P2 dir{out[k][0] + (out[q][0] - out[k][0]) * t, out[k][1] + (out[q][1] - out[k][1]) * t};
+						const std::array<uint32_t, 3> row{vertex(wall, 110), vertex({wall[0] + dir[0] * kMid, wall[1] + dir[1] * kMid}, 50),
+						    vertex({wall[0] + dir[0] * kOut, wall[1] + dir[1] * kOut}, 0)};
+						if (i)
+							for (int r = 0; r < 2; ++r)
+							{
+								// (anticlockwise from above: along the wall, out to its right)
+								m.indices.insert(m.indices.end(), {prev[r], prev[r + 1], row[r + 1]});
+								m.indices.insert(m.indices.end(), {prev[r], row[r + 1], row[r]});
+							}
+						prev = row;
+					}
+				}
+			}
+		}
 
 		void AddDoors(const std::vector<Door>& doors, uint32_t doorBase, float cx, float cy, std::map<uint32_t, roads::Mesh>& meshes)
 		{
@@ -999,8 +1078,80 @@ namespace worldgen::build
 			const float foot = fromEaves && eaves < 1e29f ? eaves - 3.0f * storeys : s.base;
 			const auto wallV = [&](float z) { return -(std::max(z, foot) - foot) / wall.height - (fromEaves ? 0.01f : 0.0f); };
 			const float split = std::max(sink, foot);
+			// each wall's u: the outline's loops split into facets at their corners (a turn of over 30 degrees; a loop with
+			// none - a round tower - one facet all round), each showing a whole number of the style's bays from a bay's edge,
+			// stretched to fit - the bays' edges, the wall between two windows, at the corners; a facet narrower than half a
+			// bay the plain wall round a bay's edge (u had run on round the corners: the reviewers' "windows wrapping around
+			// the building corner, single windows split across the edge")
+			std::map<uint32_t, std::array<float, 2>> edgeU;
+			{
+				const float bay = wall.bay > 0 ? wall.bay : wall.width;
+				const uint32_t bays = static_cast<uint32_t>(std::max(1L, std::lround(wall.width / bay)));
+				uint32_t pick = seed;
+				std::set<uint32_t> seen;
+				for (const auto& [first, unused] : next)
+				{
+					if (seen.contains(first))
+						continue;
+					std::vector<uint32_t> loop;
+					for (uint32_t a = first; !seen.contains(a) && next.contains(a); a = next[a])
+						seen.insert(a), loop.push_back(a);
+					const size_t m = loop.size();
+					const bool closed = next[loop.back()] == loop.front();
+					std::vector<float> len(m);
+					std::vector<P2> dir(m);
+					for (size_t k = 0; k < m; ++k)
+					{
+						const P3 pa = at(loop[k]), pb = at(next[loop[k]]);
+						len[k] = std::hypot(pb[0] - pa[0], pb[1] - pa[1]);
+						dir[k] = len[k] > 1e-3f ? P2{(pb[0] - pa[0]) / len[k], (pb[1] - pa[1]) / len[k]} : P2{0, 0};
+					}
+					// (a corner: an edge turned from the last edge of some length before it; an open run's first edge)
+					std::vector<bool> corner(m, false);
+					for (size_t k = 0; k < m; ++k)
+					{
+						if (len[k] <= 1e-3f)
+							continue;
+						corner[k] = true;
+						for (size_t step = 1; step < m && (closed || step <= k); ++step)
+							if (const size_t q = (k + m - step) % m; len[q] > 1e-3f)
+							{
+								corner[k] = dir[q][0] * dir[k][0] + dir[q][1] * dir[k][1] < 0.866f;
+								break;
+							}
+					}
+					size_t s0 = 0;
+					while (closed && s0 < m && !corner[s0])
+						++s0;
+					if (s0 == m)
+						s0 = 0;
+					for (size_t i = 0; i < m;)
+					{
+						// (the facet: from this corner on to the next)
+						size_t j = i + 1;
+						while (j < m && !corner[(s0 + j) % m])
+							++j;
+						float total = 0;
+						for (size_t q = i; q < j; ++q)
+							total += len[(s0 + q) % m];
+						const int nb = static_cast<int>(std::lround(total / bay));
+						pick = pick * 1664525u + 1013904223u;
+						const float edge = static_cast<float>((pick >> 8) % bays) * bay;
+						const float shown = nb > 0 ? nb * bay : wall.clear > 0 ? std::min(total, wall.clear) : total;
+						const float start = nb > 0 ? edge : edge - shown / 2;
+						float along = 0;
+						for (size_t q = i; q < j; ++q)
+						{
+							const size_t e = (s0 + q) % m;
+							const float f0 = total > 1e-3f ? along / total : 0, f1 = total > 1e-3f ? (along + len[e]) / total : 0;
+							edgeU[loop[e]] = {(start + f0 * shown) / wall.width, (start + f1 * shown) / wall.width};
+							along += len[e];
+						}
+						i = j;
+					}
+				}
+			}
 			std::set<uint32_t> done;
-			float run = static_cast<float>(seed % 1000) / 1000.0f * wall.width;
 			roads::Mesh& wm = meshes[wallKey];
 			for (const auto& [first, unused] : next)
 			{
@@ -1015,8 +1166,7 @@ namespace worldgen::build
 					if (len < 1e-3f)
 						continue;
 					const P3 n{dy / len, -dx / len, 0}, t{dx / len, dy / len, 0};
-					const float u0 = run / wall.width, u1 = (run + len) / wall.width;
-					run += len;
+					const float u0 = edgeU[a][0], u1 = edgeU[a][1];
 					const P3 a0{pa[0], pa[1], sink}, b0{pb[0], pb[1], sink}, am{pa[0], pa[1], split}, bm{pb[0], pb[1], split};
 					// (a wall the street panoramas show: where a photo wall lies along it, one face from under the ground to the
 					// roof's edge with the picture on it; the rest of it plain faces in its style)
@@ -1077,7 +1227,8 @@ namespace worldgen::build
 					if (wall.kind == facades::Kind::Deco && trimKey >= 0 && inset == 0)
 					{
 						roads::Mesh& tm = meshes[static_cast<uint32_t>(trimKey)];
-						const float r0 = u0 * wall.width, top = std::min(pa[2], pb[2]);
+						// (texture metres per metre along the wall: its bays stretched to fit)
+						const float r0 = u0 * wall.width, r1 = u1 * wall.width, scale = std::max(1e-3f, (r1 - r0) / len), top = std::min(pa[2], pb[2]);
 						const P3 up{0, 0, 1}, down{0, 0, -1}, back{-t[0], -t[1], 0};
 						const auto plainUv = [](int k) { return std::array<float, 2>{k == 1 || k == 2 ? 0.14f : 0.03f, k >= 2 ? -0.6f : -0.45f}; };
 						const auto face = [&](const P3& q0, const P3& q1, const P3& q2, const P3& q3, const P3& fn, const P3& ft) {
@@ -1087,9 +1238,10 @@ namespace worldgen::build
 						};
 						const auto p = [&](float along, float out, float z) { return P3{pa[0] + t[0] * along + n[0] * out, pa[1] + t[1] * along + n[1] * out, z}; };
 						for (float zt = s.base + 2.73f; zt < top - 0.3f; zt += 3.2f)
-							for (float bay = std::floor((r0 - 0.45f) / 3.0f) * 3.0f + 0.45f; bay < r0 + len; bay += 3.0f)
+							for (float bay = std::floor((r0 - 0.45f) / 3.0f) * 3.0f + 0.45f; bay < r1; bay += 3.0f)
 							{
-								const float s0 = std::max(bay - r0, 0.1f), s1 = std::min(bay + 2.1f - r0, len - 0.1f), zb = zt - 0.12f, d = 0.4f;
+								const float s0 = std::max((bay - r0) / scale, 0.1f), s1 = std::min((bay + 2.1f - r0) / scale, len - 0.1f), zb = zt - 0.12f,
+								            d = 0.4f;
 								if (s1 - s0 < 0.5f)
 									continue;
 								face(p(s0, d, zb), p(s1, d, zb), p(s1, d, zt), p(s0, d, zt), n, t);    // (its front)
@@ -1692,6 +1844,11 @@ namespace worldgen::build
 							for (int k = 0; k < 3; ++k)
 								out[k] = std::clamp(out[k] + (lawn[k] - out[k]) * share, 0.0f, 255.0f);
 						}
+					// (grass 0.65 as bright: the street pictures' lawns are 0.75 as bright as their paving - a mown lawn's
+					// blades shade each other -, ours had come out 1.14-1.29 as bright, the reviewers' "bright green carpet")
+					if (kind == 0 || kind == 1)
+						for (int k = 0; k < 3; ++k)
+							out[k] *= kLawnShade;
 					return true;
 				}
 			}
@@ -4877,6 +5034,7 @@ namespace worldgen::build
 		ydr::Material photoMaterial; // (the photo walls': the walls' shader, flat, dull; the diffuse the tile's atlas)
 		uint32_t coveringBase = 0; // (wallMaterials' index of the first pitched roof covering)
 		uint32_t doorBase = 0;     // (and of the doors': kDoorColours' front doors, then the garage doors)
+		uint32_t shadeKey = 0;     // (and of the darkening round the buildings' feet: AddContactShade's decal)
 		std::vector<mapfiles::Archetype> floraArchetypes; // (our own trees': added to the archetypes below)
 		std::array<std::string, std::size(kRoofCoverings)> coveringTextures; // (their textures' names in our dictionary)
 		elevation::Aerial aerial;
@@ -4945,7 +5103,7 @@ namespace worldgen::build
 		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial, aluminiumMaterial; // (the barriers')
 		ydr::Material signBladeMaterial, signLetterMaterial; // (the street name signs')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
-		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal;
+		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal, dripDecal, gutterDecal;
 		{
 			std::map<std::pair<std::string, std::string>, std::string> copied; // (dictionary, texture) -> our name
 			// (treat: 1 a ground's texture, Flatten'ed - in the format it had; 2 also made Neutral, a tinted layer's)
@@ -5306,7 +5464,7 @@ namespace worldgen::build
 				structureMaterial.Texture(kSpecularTex, o.name + "_asphalt_s");
 			}
 			if (!surfaces.patches.indices.empty() || !surfaces.potholes.indices.empty() || !surfaces.breakups.indices.empty() ||
-			    !surfaces.legends.indices.empty() || !surfaces.bikeSymbols.indices.empty())
+			    !surfaces.legends.indices.empty() || !surfaces.bikeSymbols.indices.empty() || !surfaces.drips.indices.empty() || !surfaces.gutters.indices.empty())
 			{
 				ydr::Material decal;
 				if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, decal, error))
@@ -5368,6 +5526,17 @@ namespace worldgen::build
 					bikeDecal.Texture(kBumpTex, o.name + "_flat_n");
 					bikeDecal.Texture(kSpecularTex, o.name + "_patch_s");
 				}
+				// (the lanes' oil drips: our picture; the gutters' leaves and grit: the game's own gutter decal's)
+				if (!surfaces.drips.indices.empty())
+				{
+					shared.push_back(texture::Make(o.name + "_drips", roads::DripPicture(), texture::Format::Bc3, true));
+					dripDecal = decal;
+					dripDecal.Texture(kDiffuseTex, o.name + "_drips");
+					dripDecal.Texture(kBumpTex, o.name + "_flat_n");
+					dripDecal.Texture(kSpecularTex, o.name + "_asphalt_s");
+				}
+				if (!surfaces.gutters.indices.empty() && !make(gutterDecal, "ch2_roads_rd+hi.ytd", "dh_gutterleavesdh_gutterleaves_a", nullptr, nullptr))
+					return false;
 			}
 		}
 		if (!shapes.empty())
@@ -5409,6 +5578,19 @@ namespace worldgen::build
 				m.Texture(kBumpTex, o.name + "_flat_n");
 				m.Texture(kSpecularTex, o.name + "_patch_s");
 				wallMaterials.push_back(m);
+			}
+			// (the darkening round the buildings' feet: the roads' decal shader, a plain dark picture - its alpha the vertices')
+			{
+				ydr::Material shade;
+				if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, shade, error))
+					return false;
+				shared.push_back(texture::Make(o.name + "_footshade", texture::Image(4, 4, {18, 17, 16, 255}), texture::Format::Bc1));
+				shared.push_back(texture::Make(o.name + "_footshade_s", texture::Image(4, 4, {8, 8, 8, 255}), texture::Format::Bc1));
+				shade.Texture(kDiffuseTex, o.name + "_footshade");
+				shade.Texture(kBumpTex, o.name + "_flat_n");
+				shade.Texture(kSpecularTex, o.name + "_footshade_s");
+				shadeKey = static_cast<uint32_t>(wallMaterials.size());
+				wallMaterials.push_back(shade);
 			}
 			shared.insert(shared.end(), facadeSet.textures.begin(), facadeSet.textures.end());
 			// our own trees: their pictures (cut-outs with their alpha), the leaves' material the chain-link fence's cut-out
@@ -5572,7 +5754,7 @@ namespace worldgen::build
 			toWays = raster::DistanceTo(off, 1);
 		}
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
-		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
+		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.drips, &surfaces.gutters, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
 		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite, &nameSigns.blades, &nameSigns.letters, &nameSigns.posts})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -6191,6 +6373,7 @@ namespace worldgen::build
 					    facadeSet.styles[gravelStyle], cx, cy, x0, y1, o.tile, ShapeSeed(s), meshes, cv, ct,
 					    shapeRoof[k] >= 0 ? static_cast<int>(coveringBase) + shapeRoof[k] : -1, shapeRoof[k] >= 0 ? kRoofCoverings[shapeRoof[k]].metres : 3.0f,
 					    photoPlaces.empty() ? nullptr : &photoSet, 0.0f, facades::Find(facadeSet, facades::Kind::House));
+					AddContactShade(s, cx, cy, meshes[shadeKey], ground);
 					if (shapePorch[k].has && !onPhoto(shapePorch[k].a, shapePorch[k].b))
 					{
 						const int whiteStyle = facades::Find(facadeSet, facades::Kind::House);
@@ -6560,6 +6743,8 @@ namespace worldgen::build
 			add(patchDecal, surfaces.patches);
 			add(potholeDecal, surfaces.potholes);
 			add(breakupDecal, surfaces.breakups);
+			add(dripDecal, surfaces.drips);
+			add(gutterDecal, surfaces.gutters);
 			add(legendDecal, surfaces.legends);
 			add(bikeDecal, surfaces.bikeSymbols);
 			// (where the street panoramas see the ground - their blocks' alpha over 0 -: their paint, not ours - our markings'
@@ -6737,6 +6922,10 @@ namespace worldgen::build
 					pe.position = {cx, cy, 0};
 					pe.lodDist = 500;
 					pe.radius = o.tile * 0.75f;
+					// (left out of the sun's shadows - the flag the game's own bollards, litter and wall lamps carry: a wire's
+					// shadow drawn the shadow map's texel wide and black, parallel lines across every lawn, had been the
+					// reviewers' "dark seam lines"; a real wire's, under the sun's half degree, all but blurs away)
+					pe.flags = 1u << 22;
 					r.entities.push_back(pe);
 				}
 			}

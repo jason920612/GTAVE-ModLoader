@@ -147,6 +147,8 @@ namespace worldgen::roads
 		Mesh structure;                           // bridges' decks, parapets and piers (concrete)
 		Mesh railTrack, railBed, railSteel;       // railways: the track (sleepers on ballast), the bed's shoulders, the rails
 		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
+		Mesh drips;                               // the lanes' oil drips down their middles (a decal: DripPicture)
+		Mesh gutters;                             // leaves and grit in the kerbs' gutters (a decal: the game's gutter picture)
 		Mesh legends;                             // STOP painted before a stop sign's stop line (StopPicture, a decal)
 		Mesh bikeSymbols;                         // a bicycle and an arrow in the bike lanes (BikePicture, a decal)
 		std::vector<std::pair<paving::Feature::Kind, P3>> wear; // where each feature is (for checking)
@@ -166,6 +168,9 @@ namespace worldgen::roads
 	// shapes; drawn 1.5 times as tall as on paper (the decal stretches it a little more). u across the lane, v from the
 	// arrow's tip (away from the rider).
 	texture::Image BikePicture();
+	// The lanes' oil drips: a band down a lane's middle (u across its 1.1 m, v along 8 m), dark brown-black; alpha a faint
+	// smear thickest in the middle and the drips' blotches on it.
+	texture::Image DripPicture();
 
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).

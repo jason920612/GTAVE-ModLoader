@@ -874,11 +874,26 @@ namespace worldgen::structures
 				const float len = std::hypot(q[0] - p[0], q[1] - p[1]);
 				const float nx2 = -(q[1] - p[1]) / len, ny2 = (q[0] - p[0]) / len;
 				const int steps = static_cast<int>(len / 0.5f);
+				// (their heights the median of the 7 round each, 3 m along the edge: one at a time the scan's mixed returns along
+				// a roof's edge - its parapet's, the ground's - had made the edge zigzag, steep slivers drawn as walls with
+				// windows on them, the reviewers' "jagged white fins along the roof edge")
+				std::vector<double> along;
 				for (int s = 1; s < steps; ++s)
 				{
 					const float t = static_cast<float>(s) / steps;
 					const float x = p[0] + (q[0] - p[0]) * t, y = p[1] + (q[1] - p[1]) * t;
-					tin.cands.push_back({x, y, heightAt(x + nx2 * 0.35f, y + ny2 * 0.35f)});
+					along.push_back(heightAt(x + nx2 * 0.35f, y + ny2 * 0.35f));
+				}
+				for (int s = 1; s < steps; ++s)
+				{
+					const float t = static_cast<float>(s) / steps;
+					const float x = p[0] + (q[0] - p[0]) * t, y = p[1] + (q[1] - p[1]) * t;
+					std::vector<double> w;
+					for (int d = -3; d <= 3; ++d)
+						if (const int k = s - 1 + d; k >= 0 && k < static_cast<int>(along.size()))
+							w.push_back(along[static_cast<size_t>(k)]);
+					std::nth_element(w.begin(), w.begin() + static_cast<ptrdiff_t>(w.size() / 2), w.end());
+					tin.cands.push_back({x, y, w[w.size() / 2]});
 				}
 			}
 			tin.Distribute();
