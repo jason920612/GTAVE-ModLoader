@@ -53,6 +53,19 @@ namespace loader::game::sea
 		constexpr uintptr_t kWaves = 0x358B50;
 		constexpr uint8_t kWavesBytes[] = {0x41, 0x57, 0x41, 0x56, 0x41, 0x55};
 		constexpr uintptr_t kDefaultLevel = 0x2FAA758;
+		// The water's colour (research/phase0.md §70): the water drawing takes it from a texture over a box - the texture's
+		// address at kFogCurrent (the main one's, kFogMain, or Cayo Perico's, put there by 0x351a70: mov rax,[main]; mov
+		// [current],rax at kFogSwitch), the box watertune.xml's FogMin and FogMax (in MainWaterTune, read into .data from
+		// kTune: found by its values), the island's switch kWaterMode (0 the main water, 1 Cayo Perico's). The game's covers
+		// Los Santos only: our lands took its edge's deep ocean - an opaque navy sea, the ponds the same.
+		constexpr uintptr_t kFogMain = 0x2FA9888, kFogCurrent = 0x2FA9890, kFogSwitch = 0x351B42, kWaterMode = 0x2FA6D7C, kTune = 0x2FA6A24;
+		constexpr uint8_t kFogSwitchBytes[] = {0x48, 0x8B, 0x05, 0x3F, 0x7D, 0xC5, 0x02, 0x48, 0x89, 0x05, 0x40, 0x7D, 0xC5, 0x02};
+		// The texture store: its names' hash map (the buckets, how many, the entries - hash, slot, next: 3 dwords), each
+		// slot's flags (bit 7: none there), the slots and their size; a dictionary: +0x20 its names' hashes, +0x28 how many
+		// (u16), +0x30 its textures (as 0x354500 finds "waterfog" in graphics.ytd).
+		constexpr uintptr_t kTxdBuckets = 0x3ED6248, kTxdBucketCount = 0x3ED6250, kTxdEntries = 0x3ED6240, kTxdFlags = 0x3ED6210, kTxdSlots = 0x3ED6208,
+		                    kTxdSlotSize = 0x3ED621C;
+		constexpr uint64_t kRequestTxd = 0xDFA2EF8E04127DD5ULL, kTxdLoaded = 0x0145F696AAAAD2E4ULL, kTxdNotNeeded = 0xBE2CACCF5A8AA805ULL;
 		// where the water is drawn in detail this frame (round the camera): min x, max x, min y, max y
 		constexpr uintptr_t kDetailRegion = 0x2FAA770;
 
@@ -671,6 +684,135 @@ namespace loader::game::sea
 		constexpr uint64_t kIsGameplayCamRendering = 0x39B5D1B10383F0C8;
 		const char* g_weather = nullptr; // what the climate set last (nullptr: the game's own)
 
+		// The water's colour: the land whose map is in use (nullptr: the game's), what the game had - its texture, its box -,
+		// the dictionary asked for, the box's place once found.
+		bool g_fogChecked = false, g_fogOk = false;
+		float* g_fogBox = nullptr;
+		float g_gameBox[4]{};
+		void* g_gameFog = nullptr;
+		const Land* g_fogLand = nullptr;
+		std::string g_fogAsked;
+		bool g_fogWarned = false;
+
+		uint32_t Joaat(const std::string& s)
+		{
+			uint32_t h = 0;
+			for (const char c : s)
+			{
+				h += static_cast<uint8_t>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+				h += h << 10;
+				h ^= h >> 6;
+			}
+			h += h << 3;
+			h ^= h >> 11;
+			h += h << 15;
+			return h;
+		}
+
+		// A texture of a dictionary in the texture store (loaded), or nullptr.
+		void* FindTexture(const std::string& dictionary, const std::string& name)
+		{
+			const auto at = [](uintptr_t rva) { return reinterpret_cast<uint8_t*>(g_base + rva); };
+			const auto* buckets = *reinterpret_cast<const uint32_t* const*>(at(kTxdBuckets));
+			const uint32_t count = *reinterpret_cast<const uint32_t*>(at(kTxdBucketCount));
+			const auto* entries = *reinterpret_cast<const uint32_t* const*>(at(kTxdEntries));
+			if (!buckets || !entries || !count)
+				return nullptr;
+			const uint32_t h = Joaat(dictionary);
+			int64_t slot = -1;
+			for (uint32_t e = buckets[h % count], guard = 0; e != 0xFFFFFFFF && guard < 100000; e = entries[static_cast<size_t>(e) * 3 + 2], ++guard)
+				if (entries[static_cast<size_t>(e) * 3] == h)
+				{
+					slot = static_cast<int32_t>(entries[static_cast<size_t>(e) * 3 + 1]);
+					break;
+				}
+			const auto* flags = *reinterpret_cast<const uint8_t* const*>(at(kTxdFlags));
+			const auto* slots = *reinterpret_cast<uint8_t* const*>(at(kTxdSlots));
+			if (slot < 0 || !flags || !slots || (flags[slot] & 0x80))
+				return nullptr;
+			const int32_t size = *reinterpret_cast<const int32_t*>(at(kTxdSlotSize));
+			const uint8_t* dict = *reinterpret_cast<uint8_t* const*>(slots + slot * size);
+			if (!dict)
+				return nullptr;
+			const uint32_t th = Joaat(name);
+			const auto* hashes = *reinterpret_cast<const uint32_t* const*>(dict + 0x20);
+			const uint16_t n = *reinterpret_cast<const uint16_t*>(dict + 0x28);
+			auto* const* items = *reinterpret_cast<void* const* const*>(dict + 0x30);
+			if (!hashes || !items)
+				return nullptr;
+			for (uint16_t i = 0; i < n; ++i)
+				if (hashes[i] == th)
+					return items[i];
+			return nullptr;
+		}
+
+		// The game's colour again (and its box).
+		void FogRestore()
+		{
+			if (!g_fogLand)
+				return;
+			if (*reinterpret_cast<const int32_t*>(g_base + kWaterMode) == 0)
+			{
+				std::memcpy(g_fogBox, g_gameBox, sizeof(g_gameBox));
+				*reinterpret_cast<void**>(g_base + kFogCurrent) = g_gameFog ? g_gameFog : *reinterpret_cast<void**>(g_base + kFogMain);
+			}
+			log::Info("sea: {}'s water colour put back to the game's", g_fogLand->name);
+			g_fogLand = nullptr;
+		}
+
+		// Game thread, Tick: the land the camera is over - its colour map in use while it is, the game's otherwise.
+		void Fog(const Land* on)
+		{
+			if (!g_fogChecked)
+			{
+				g_fogChecked = true;
+				g_fogOk = g_base && std::memcmp(reinterpret_cast<const void*>(g_base + kFogSwitch), kFogSwitchBytes, sizeof(kFogSwitchBytes)) == 0;
+				if (!g_fogOk)
+					log::Warn("sea: the water colour's code differs from the build this was made for; the game's colour stays");
+			}
+			if (!g_fogOk)
+				return;
+			const bool main = *reinterpret_cast<const int32_t*>(g_base + kWaterMode) == 0;
+			const Land* want = on && on->water && main ? on : nullptr;
+			if (g_fogLand && (g_fogLand != want || !g_fogLand->there))
+				FogRestore();
+			if (!want || g_fogLand)
+				return;
+			const std::string dict = want->name + "_waterfog";
+			if (g_fogAsked != dict)
+			{
+				if (!g_fogAsked.empty())
+					natives::Invoke<void>(kTxdNotNeeded, g_fogAsked.c_str());
+				natives::Invoke<void>(kRequestTxd, dict.c_str(), 0);
+				g_fogAsked = dict;
+				return;
+			}
+			if (!natives::Invoke<int32_t>(kTxdLoaded, dict.c_str()))
+				return;
+			void* texture = FindTexture(dict, dict);
+			if (!g_fogBox)
+			{
+				// (FogMin, FogMax: -4000, -4000, 4500, 8000 in the main water's tune)
+				auto* p = reinterpret_cast<float*>(g_base + kTune);
+				for (int k = 0; k + 3 < 0x200 / 4 && !g_fogBox; ++k)
+					if (p[k] == -4000.0f && p[k + 1] == -4000.0f && p[k + 2] == 4500.0f && p[k + 3] == 8000.0f)
+						g_fogBox = p + k;
+			}
+			if (!texture || !g_fogBox)
+			{
+				if (!g_fogWarned)
+					log::Warn("sea: {}: {}; the game's water colour stays", want->name, !texture ? "its colour map not found in " + dict : std::string("the water's box not found"));
+				g_fogWarned = true;
+				return;
+			}
+			std::memcpy(g_gameBox, g_fogBox, sizeof(g_gameBox));
+			g_gameFog = *reinterpret_cast<void**>(g_base + kFogCurrent);
+			g_fogBox[0] = want->x0, g_fogBox[1] = want->y0, g_fogBox[2] = want->x0 + want->nx * want->cell, g_fogBox[3] = want->y0 + want->ny * want->cell;
+			*reinterpret_cast<void**>(g_base + kFogCurrent) = texture;
+			g_fogLand = want;
+			log::Info("sea: {}'s water colour in use ({:.0f}, {:.0f} - {:.0f}, {:.0f})", want->name, g_fogBox[0], g_fogBox[1], g_fogBox[2], g_fogBox[3]);
+		}
+
 		bool g_ours = false; // the deep ocean's scaler is ours (set while near a land)
 		std::chrono::steady_clock::time_point g_next{};
 	}
@@ -707,6 +849,9 @@ namespace loader::game::sea
 	{
 		for (Land& land : g_lands)
 			land.there = !sectors::Dormant(land.name);
+		// (a land put away: its colour map goes with its pack)
+		if (g_fogLand && !g_fogLand->there)
+			FogRestore();
 		g_next = {};
 	}
 
@@ -754,6 +899,7 @@ namespace loader::game::sea
 			natives::Invoke<void>(kClearWeatherTypePersist);
 			g_weather = nullptr;
 		}
+		Fog(on);
 		if (want >= 0.999f)
 		{
 			// (away from every land: the game's own again, once)

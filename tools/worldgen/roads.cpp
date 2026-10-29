@@ -2819,13 +2819,45 @@ namespace worldgen::roads
 			Mesh& mesh = pv == paving::Paving::Concrete ? out.sidewalk : out.paved[static_cast<size_t>(pv)];
 			const uint8_t material = pv == paving::Paving::Concrete ? kPavement : paving::Material(pv);
 			const float tm = pv == paving::Paving::Concrete ? kTexture : paving::TextureMetres(pv);
+			// (a path's corners rounded: an arc from up to 5 m before each corner turning more than 10 degrees to as far after
+			// it - a sidewalk follows its street's line, a skipped piece keeps its points)
+			std::vector<P2> line = wk.points;
+			const bool anySkipped = wi < skip.size() && std::find(skip[wi].begin(), skip[wi].end(), true) != skip[wi].end();
+			if (wk.kind != "sidewalk" && wk.kind != "driveway" && wk.kind != "steps" && !anySkipped && line.size() >= 3)
+			{
+				std::vector<P2> round{line.front()};
+				for (size_t k = 1; k + 1 < line.size(); ++k)
+				{
+					const P2 &a = line[k - 1], &v = line[k], &c = line[k + 1];
+					const float la = Dist(a, v), lc = Dist(v, c);
+					if (la < 0.05f || lc < 0.05f)
+						continue;
+					const float cosTurn = ((v[0] - a[0]) * (c[0] - v[0]) + (v[1] - a[1]) * (c[1] - v[1])) / (la * lc);
+					if (cosTurn > std::cos(10.0f * 3.14159265f / 180.0f))
+					{
+						round.push_back(v);
+						continue;
+					}
+					const float cut = std::min({5.0f, 0.4f * la, 0.4f * lc});
+					const P2 p0{v[0] + (a[0] - v[0]) * cut / la, v[1] + (a[1] - v[1]) * cut / la};
+					const P2 p2{v[0] + (c[0] - v[0]) * cut / lc, v[1] + (c[1] - v[1]) * cut / lc};
+					const int steps = std::max(2, static_cast<int>(std::ceil(cut * 2)));
+					for (int q = 0; q <= steps; ++q)
+					{
+						const float t = static_cast<float>(q) / static_cast<float>(steps), u = 1 - t;
+						round.push_back({u * u * p0[0] + 2 * u * t * v[0] + t * t * p2[0], u * u * p0[1] + 2 * u * t * v[1] + t * t * p2[1]});
+					}
+				}
+				round.push_back(line.back());
+				line = std::move(round);
+			}
 			// the line a point every metre (the ground's relief under it), its stretches over the roads and the skipped
 			// pieces (a street's sidewalk the street draws itself) left out
 			std::vector<P2> p;
 			std::vector<bool> keep;
-			for (size_t k = 0; k + 1 < wk.points.size(); ++k)
+			for (size_t k = 0; k + 1 < line.size(); ++k)
 			{
-				const P2 &a = wk.points[k], &c = wk.points[k + 1];
+				const P2 &a = line[k], &c = line[k + 1];
 				const bool skipped = wi < skip.size() && k < skip[wi].size() && skip[wi][k];
 				const int pieces = std::max(1, static_cast<int>(std::ceil(Dist(a, c))));
 				for (int q = 0; q < pieces; ++q)
@@ -2835,7 +2867,7 @@ namespace worldgen::roads
 					keep.push_back(!skipped);
 				}
 			}
-			p.push_back(wk.points.back());
+			p.push_back(line.back());
 			keep.push_back(keep.back());
 			std::vector<float> s(p.size(), 0.0f);
 			for (size_t i = 1; i < p.size(); ++i)

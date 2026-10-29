@@ -2339,6 +2339,84 @@ namespace worldgen::build
 			const float a = height.At(i, j), b = height.At(i + 1, j), c = height.At(i, j + 1), d = height.At(i + 1, j + 1);
 			return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
 		};
+		// The water's colour for the loader (research/phase0.md §70): the game's water takes it from a picture over a box
+		// (watertune.xml's FogMin, FogMax: Los Santos's; ours were its edge's deep ocean - an opaque navy sea, the ponds the
+		// same). One over the water mask's box, 512 x 512, north at the top as the game's: the sea by its depth - Los Santos's
+		// shallows (49, 80, 82) to its open ocean (0, 25, 29); south Florida's clear water over white sand turquoise in the
+		// shallows -, lakes and ponds dark tea, the land the nearest water's (the picture's filtering at the shores).
+		if (maskNx && maskNy && !seaBody.empty())
+		{
+			constexpr int kFog = 512;
+			const float fw = maskNx * land.cell, fh = maskNy * land.cell;
+			std::vector<std::array<float, 3>> colour(static_cast<size_t>(kFog) * kFog);
+			std::vector<uint8_t> has(colour.size(), 0);
+			const auto mix = [](std::array<float, 3> a, std::array<float, 3> b, float t) {
+				t = std::clamp(t, 0.0f, 1.0f);
+				return std::array<float, 3>{a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
+			};
+			size_t seaPixels = 0, inland = 0;
+			for (int j = 0; j < kFog; ++j)
+				for (int i = 0; i < kFog; ++i)
+				{
+					const float x = maskX0 + (i + 0.5f) / kFog * fw, y = maskY0 + fh - (j + 0.5f) / kFog * fh;
+					const auto c = land.Cell({x, y});
+					if (!land.In(c[0], c[1]) || land.At(c[0], c[1]) != kWater)
+						continue;
+					const size_t at = static_cast<size_t>(j) * kFog + i, k = static_cast<size_t>(c[1]) * land.nx + c[0];
+					if (seaBody[k])
+					{
+						const float d = std::max(0.0f, -ground(x, y));
+						const bool south = latAt(y) < 27.5;
+						const std::array<float, 3> shallow = south ? std::array<float, 3>{82, 146, 132} : std::array<float, 3>{70, 104, 92},
+						                                 mid = south ? std::array<float, 3>{38, 116, 118} : std::array<float, 3>{34, 82, 80},
+						                                 deep = south ? std::array<float, 3>{12, 70, 80} : std::array<float, 3>{12, 56, 62},
+						                                 ocean{0, 28, 34};
+						colour[at] = d < 3 ? mix(shallow, mid, (d - 0.5f) / 2.5f) : d < 9 ? mix(mid, deep, (d - 3) / 6) : mix(deep, ocean, (d - 9) / 16);
+						++seaPixels;
+					}
+					else
+						colour[at] = {30, 32, 20}, ++inland;
+					has[at] = 1;
+				}
+			// (the land: the nearest water's, spread out a pixel at a time; past 24 pixels the open ocean's)
+			for (int pass = 0; pass < 24; ++pass)
+			{
+				std::vector<uint8_t> next = has;
+				for (int j = 0; j < kFog; ++j)
+					for (int i = 0; i < kFog; ++i)
+					{
+						const size_t at = static_cast<size_t>(j) * kFog + i;
+						if (has[at])
+							continue;
+						std::array<float, 3> sum{};
+						int n = 0;
+						for (int dj = -1; dj <= 1; ++dj)
+							for (int di = -1; di <= 1; ++di)
+							{
+								const int ii = i + di, jj = j + dj;
+								if (ii < 0 || jj < 0 || ii >= kFog || jj >= kFog || !has[static_cast<size_t>(jj) * kFog + ii])
+									continue;
+								for (int ch = 0; ch < 3; ++ch)
+									sum[ch] += colour[static_cast<size_t>(jj) * kFog + ii][ch];
+								++n;
+							}
+						if (n)
+							colour[at] = {sum[0] / n, sum[1] / n, sum[2] / n}, next[at] = 1;
+					}
+				has = std::move(next);
+			}
+			texture::Image fog(kFog, kFog);
+			for (size_t at = 0; at < colour.size(); ++at)
+			{
+				const auto& c = has[at] ? colour[at] : std::array<float, 3>{0, 28, 34};
+				fog.pixels[at] = {static_cast<uint8_t>(std::lround(c[0])), static_cast<uint8_t>(std::lround(c[1])), static_cast<uint8_t>(std::lround(c[2])), 255};
+			}
+			Bytes ytd;
+			if (!loader::convert::WriteTextureDictionary({texture::Make(o.name + "_waterfog", fog, texture::Format::Bc1)}, ytd, error))
+				return error = "waterfog: " + error, false;
+			WriteFile(o.out / (o.name + "_waterfog.ytd"), ytd);
+			std::printf("water: its colour over %.0f x %.0f m (%zu sea pixels, %zu inland of %d)\n", fw, fh, seaPixels, inland, kFog * kFog);
+		}
 
 		took("heights");
 		// what covers the ground (research/phase0.md §61.25): lawn, paving, sand or bare earth, from the map's classes and,
@@ -2918,12 +2996,52 @@ namespace worldgen::build
 		// Without its sidewalks (either side) a street of a town - any development along half of it - keeps its kerb and gutter.
 		if (landCoverAt)
 		{
-			size_t without = 0;
+			size_t without = 0, verged = 0;
+			// (a street's sidewalks set back past a verge outside the towns' middles - high intensity development along half
+			// of it - and without a kerbside parking lane: the street its kerb and gutter, a walk of its own each side 2.2 m
+			// out from the kerb, 1.5 m wide, as the aerial pictures' set-back sidewalks are drawn; round 24's reviewers on 13
+			// of 54 Orlando views: "the photos show a 2-3 m grass strip and a set-back sidewalk", an arterial's too)
+			const auto setBack = [&](world::Road& r) {
+				if (r.parking > 0 || r.bridge || r.tunnel || r.kind == "service" || r.kind == "track" || r.kind.starts_with("motorway") ||
+				    r.kind.ends_with("_link"))
+					return false;
+				size_t dense = 0, samples = 0;
+				for (size_t k = 0; k < r.points.size(); k += std::max<size_t>(1, r.points.size() / 8), ++samples)
+					dense += landCoverAt(r.points[k][0], r.points[k][1]) == 24;
+				if (dense * 2 >= samples)
+					return false;
+				const float out = (r.forward + r.backward) * r.laneWidth / 2 + 0.3f + 2.2f + 0.75f;
+				for (const float sign : {1.0f, -1.0f})
+				{
+					if (!(sign > 0 ? r.sidewalkLeft : r.sidewalkRight))
+						continue;
+					world::Walk wk;
+					wk.kind = "sidewalk";
+					wk.surface = "concrete";
+					wk.width = 1.5f;
+					for (size_t k = 0; k < r.points.size(); ++k)
+					{
+						const P2& p = r.points[k];
+						const P2& a = r.points[k > 0 ? k - 1 : k];
+						const P2& c = r.points[k + 1 < r.points.size() ? k + 1 : k];
+						const float l = std::max(1e-3f, Dist(a, c));
+						wk.points.push_back({p[0] - (c[1] - a[1]) / l * sign * out, p[1] + (c[0] - a[0]) / l * sign * out});
+					}
+					aerialWalks.push_back(std::move(wk));
+				}
+				r.sidewalks = false, r.curb = true;
+				return true;
+			};
 			for (size_t ri = 0; ri < near.roads.size(); ++ri)
 			{
 				auto& r = near.roads[ri];
 				if (r.points.size() < 2)
 					continue;
+				if (r.sidewalkTagged && !walksDecided[ri] && r.sidewalks && r.sidewalkLeft && r.sidewalkRight)
+				{
+					verged += setBack(r);
+					continue;
+				}
 				if (r.sidewalkTagged || walksDecided[ri])
 				{
 					if (!r.sidewalks || !r.sidewalkLeft || !r.sidewalkRight)
@@ -2988,8 +3106,10 @@ namespace worldgen::build
 				}
 				else if (dense * 2 >= samples)
 					r.sidewalkWidth = 3.0f;
+				else
+					verged += setBack(r);
 			}
-			std::printf("roads: %zu without sidewalks (the land along them not built up)\n", without);
+			std::printf("roads: %zu without sidewalks (the land along them not built up), %zu with theirs set back past a verge\n", without, verged);
 		}
 		roads::Network network = roads::Build(near);
 		{
@@ -3206,7 +3326,7 @@ namespace worldgen::build
 		trees::OwnTrees ownTrees;
 		std::vector<std::pair<std::string, flora::Model>> floraModels;
 		std::unordered_map<uint32_t, std::pair<float, float>> floraTrunk; // (by archetype: the trunk's radius, its collision's height)
-		std::vector<trees::Own> ownShrubs;
+		std::vector<trees::Own> ownShrubs, ownHedges;
 		// (as far south as 27 N - central Florida's live oaks and pines; the south's figs and mahoganies stay the game's -; and
 		// palms of our own where they grow: cabbage palms everywhere, royal and coconut palms south of 27.5 N - the game's are
 		// California's fan and date palms, the reviewers of Miami's views wanted royal, coconut and cabbage palms on nearly all)
@@ -3217,7 +3337,9 @@ namespace worldgen::build
 					const auto species = static_cast<flora::Species>(s);
 					const bool palm = species == flora::Species::RoyalPalm || species == flora::Species::CoconutPalm || species == flora::Species::SabalPalm ||
 					                  species == flora::Species::ArecaPalm;
-					if (palm ? species != flora::Species::SabalPalm && latAt(w.min[1]) >= 27.5 : latAt(w.max[1]) < 27.0)
+					// (shrubs and clipped hedges everywhere)
+					const bool everywhere = species == flora::Species::Shrub || species == flora::Species::Hedge;
+					if (!everywhere && (palm ? species != flora::Species::SabalPalm && latAt(w.min[1]) >= 27.5 : latAt(w.max[1]) < 27.0))
 						continue;
 					const std::string name = std::format("{}_tree_{}_{}", o.name, s, k);
 					flora::Model m = flora::Make(species, static_cast<uint32_t>(s * 101 + k * 7 + 1));
@@ -3229,9 +3351,12 @@ namespace worldgen::build
 					                 : species == flora::Species::CoconutPalm ? 7
 					                 : species == flora::Species::SabalPalm   ? 8
 					                 : species == flora::Species::ArecaPalm   ? 9
+					                 : species == flora::Species::Hedge       ? -2
 					                                                          : s;
 					if (kind >= 0)
 						ownTrees[static_cast<size_t>(kind)].push_back({name, m.height, m.width});
+					else if (kind == -2)
+						ownHedges.push_back({name, m.height, m.width});
 					else
 						ownShrubs.push_back({name, m.height, m.width});
 					// (the trunk up to the first limbs: a live oak's 3 m, a pine's 6, an oak's 4, a sweetgum's 4, a magnolia's 2, a
@@ -3887,7 +4012,7 @@ namespace worldgen::build
 						    const auto pc = photoClass.Cell({x, y});
 						    return !photoClass.In(pc[0], pc[1]) || photoClass.At(pc[0], pc[1]) == 2;
 					    },
-					    open, ground, {bx0, by0, bx1, by1}, furniture, ls);
+					    open, ground, {bx0, by0, bx1, by1}, furniture, ls, &ownHedges);
 					std::printf("low growth: %zu shrubs and hedges the scan measured by the streets\n", ls.bushes);
 				}
 			}
@@ -4214,7 +4339,7 @@ namespace worldgen::build
 					}
 				const auto key4 = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 4)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 4))); };
 				const auto fenceYard = [&](std::vector<P2> lot, const std::vector<P2>& house, const P2& centre, const P2& streetDir, uint32_t ys, int year,
-				                           size_t ownDrive, const auto& onLane, bool block = false) {
+				                           size_t ownDrive, const auto& onLane, bool block = false, bool works = false) {
 					if (lot.size() < 3)
 						return;
 					if (polygon::Area(lot) < 0) // (anticlockwise: the lot's inside on each edge's left)
@@ -4278,7 +4403,10 @@ namespace worldgen::build
 						// (hedges waist to head high: 2-2.4 m ones had walled the reviewers' views off where the photos have a
 						// lawn open to the street; an apartment block's mostly a hedge, head high or more - Miami Beach's walk-ups -,
 						// else a low wall or railings)
-						if (block)
+						const bool central = latAt(centre[1]) >= 27.0;
+						if (works)
+							fence.kind = "fence", fence.material = "chain_link", fence.height = 1.8f;
+						else if (block)
 						{
 							if (pick < 50)
 								fence.kind = "hedge", fence.height = 1.4f + 0.9f * tall;
@@ -4288,6 +4416,18 @@ namespace worldgen::build
 								fence.kind = "fence", fence.material = (ys >> 24) % 10 < 5 ? "aluminium" : "bars", fence.height = 1.2f;
 							else
 								fence.kind = "fence", fence.material = "chain_link", fence.height = 1.5f;
+						}
+						else if (central)
+						{
+							// (central Florida's: chain-link most, then aluminium or iron pickets, hedges, a few low walls)
+							if (pick < 45)
+								fence.kind = "fence", fence.material = "chain_link", fence.height = 1.2f;
+							else if (pick < 65)
+								fence.kind = "fence", fence.material = (ys >> 24) % 10 < 5 ? "aluminium" : "bars", fence.height = 1.2f;
+							else if (pick < 88)
+								fence.kind = "hedge", fence.height = 1.0f + 0.7f * tall;
+							else
+								fence.kind = "wall", fence.height = 1.0f;
 						}
 						else if (pick < (older ? 15u : 30u))
 							fence.kind = "hedge", fence.height = 1.0f + 0.7f * tall;
@@ -4472,13 +4612,16 @@ namespace worldgen::build
 				const auto yard = [&](size_t bi, const std::vector<P2>& footprint, const P2& centre, const P2& streetDir, size_t ownDrive, const auto& onLane) {
 					const auto lotIt = lotOf.find(bi);
 					++housesSeen;
-					if (lotIt == lotOf.end() || latAt(centre[1]) >= 27.0)
+					const double lat = latAt(centre[1]);
+					if (lotIt == lotOf.end() || lat >= 29.5)
 						return;
 					++yardsLots;
 					const auto yearOf = builtYear.find(bi);
 					const int year = yearOf != builtYear.end() ? yearOf->second : 0;
 					const uint32_t ys = seeds::PlaceAt(seeds::Middle(footprint), 7, 13);
-					const uint32_t share = year == 0 ? 50 : year < 1970 ? 75 : year < 1995 ? 50 : 30;
+					// (south Florida's most; central Florida's - Orlando's older streets - fewer)
+					const uint32_t share = lat >= 27.0 ? (year == 0 ? 20 : year < 1970 ? 45 : year < 1995 ? 25 : 10)
+					                                   : (year == 0 ? 50 : year < 1970 ? 75 : year < 1995 ? 50 : 30);
 					if (ys % 100 < share)
 						++yardsChosen, fenceYard(lotIt->second, footprint, centre, streetDir, ys, year, ownDrive, onLane);
 				};
@@ -4864,7 +5007,30 @@ namespace worldgen::build
 					fenceYard(lotIt->second, b.footprint, c, P2{0, 0}, ys, 0, SIZE_MAX, [](float, float) { return false; }, true);
 					blockYards += yards.size() > before;
 				}
-				std::printf("yards: %zu apartment blocks' lots fenced\n", blockYards);
+				// (the works: six in ten industrial buildings' lots their street side in chain-link)
+				size_t worksYards = 0;
+				for (size_t bi = 0; bi < w.buildings.size(); ++bi)
+				{
+					const auto& b = w.buildings[bi];
+					if ((b.kind != "industrial" && b.kind != "warehouse" && b.kind != "manufacture") || b.footprint.size() < 3)
+						continue;
+					const auto lotIt = lotOf.find(bi);
+					if (lotIt == lotOf.end())
+						continue;
+					P2 c{0, 0};
+					for (const P2& q : b.footprint)
+						c[0] += q[0], c[1] += q[1];
+					c[0] /= static_cast<float>(b.footprint.size()), c[1] /= static_cast<float>(b.footprint.size());
+					if (c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1 || std::fabs(polygon::Area(b.footprint)) < 500)
+						continue;
+					const uint32_t ys = seeds::PlaceAt(seeds::Middle(b.footprint), 7, 19);
+					if (ys % 100 >= 60)
+						continue;
+					const size_t before = yards.size();
+					fenceYard(lotIt->second, b.footprint, c, P2{0, 0}, ys, 0, SIZE_MAX, [](float, float) { return false; }, false, true);
+					worksYards += yards.size() > before;
+				}
+				std::printf("yards: %zu apartment blocks' lots fenced, %zu works' street sides in chain-link\n", blockYards, worksYards);
 				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved (%zu houses on the map's own), %zu shrubs "
 				            "by houses, %zu mailboxes; %zu front yards fenced (%zu lines; of %zu houses %zu on a lot of the rolls, %zu chosen, %zu with no street "
 				            "edge)\n",
@@ -5003,7 +5169,10 @@ namespace worldgen::build
 			if (!enclosures.empty())
 				std::printf("barriers: %zu cemetery and building site fences of our own\n", enclosures.size());
 			barriers::Stats bs;
-			barriers::Build(list, ground, onRoad, {bx0, by0, bx1, by1}, fences, surfaces.collision, furniture, bs);
+			std::vector<std::string> hedgeNames;
+			for (const auto& h : ownHedges)
+				hedgeNames.push_back(h.name);
+			barriers::Build(list, ground, onRoad, {bx0, by0, bx1, by1}, fences, surfaces.collision, furniture, bs, &hedgeNames);
 			std::printf("barriers: %zu fences, %zu walls, %zu hedges, %zu guard rails (%.1f km in %zu pieces; %zu pieces over roads left out)\n", bs.fences,
 			    bs.walls, bs.hedges, bs.rails, bs.metres / 1000, bs.pieces, bs.crossing);
 		}
@@ -5459,9 +5628,11 @@ namespace worldgen::build
 					const PhotoLayer kinds[5] = {{"ch1_06e_land+hi.ytd", "im_grass10b", "ch1_09_arc007+hidr.ytd", "im_grass07_n", 2, 1.0f},
 					    {"ch1_05_terrain+hi.ytd", "cs_tf_rsn_redgrass1", "ch1_05_terrain+hi.ytd", "cs_tf_rsn_redgrass1_n", 2, 1.0f},
 					    {"venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints", "venicebeachground+hi.ytd", "nxg_rsn_os_beachsoftprints_n", 2, 1.0f},
-					    // (paving: the roads' asphalt - im_concrete25's cracks under a car park's pale grey from above had made the
-					    // reviewers' "dry cracked mud")
-					    {"cityeastrd+hi.ytd", "im_road_019", "paletoroadtemp+hi.ytd", "im_concrete25_n", 2, 1.0f},
+					    // (paving: a car park's even asphalt - im_concrete25's cracks under a car park's pale grey from above had made
+					    // the reviewers' "dry cracked mud"; the roads' im_road_019 after it has wheel tracks and a dark joint down one
+					    // edge, the same way round on every tile: "straight parallel dark lines repeating across the lawns" where the
+					    // pictures' paving reaches into them, "seam lines converging to the vanishing point" across the lots)
+					    {"ap1_01_b_gm_grnd017e+hidr.ytd", "dc_parking_tarmac_02", "ap1_01_b_gm_grnd017e+hidr.ytd", "dc_parking_tarmac_02_n", 2, 1.0f},
 					    {"bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter", "bh1_36_terrain+hi.ytd", "rsn_am_ground_dirt_leaflitter_n", 2, 1.0f}};
 					for (int k = 0; k < 5; ++k)
 					{
@@ -5886,13 +6057,18 @@ namespace worldgen::build
 					// the mesh's grid)
 					float grass = 0, paving = 0, soft = 0, wetSand = 0;
 					const float lw = h < 0.2f ? 1.0f : 0.0f;
+					// (the sea's floor near the shore: the beach's pale dry sand - the shallow water turquoise over it, as Miami's is -,
+					// to 3.5 m deep; deeper, and the lakes' and the rivers' floors, the dark wet sand)
+					const bool shallowSea = lw > 0 && h > -3.5f && k == kWater && land.In(lc[0], lc[1]) && seaBody[static_cast<size_t>(lc[1]) * land.nx + lc[0]];
 					for (int sample = 0; sample < 5; ++sample)
 					{
 						const float a = sample * 1.2566f + PlaceLattice(x, y, 23, 5) * 3.0f,
 						            rr = sample ? o.cell * (0.45f + 0.35f * PlaceLattice(x, y, 17, 9 + sample)) : 0;
 						const float sx = x + rr * std::cos(a) + 3.0f * PlaceLattice(x, y, 11, 13), sy = y + rr * std::sin(a) + 3.0f * PlaceLattice(x, y, 13, 17);
 						const uint8_t what = lw > 0 ? uint8_t{kUnder} : coverAt(sx, sy);
-						if (what == kUnder)
+						if (what == kUnder && shallowSea)
+							soft += 0.2f;
+						else if (what == kUnder)
 							wetSand += 0.2f;
 						else if (what == kSandy || what == kBare)
 							soft += 0.2f;

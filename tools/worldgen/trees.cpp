@@ -271,22 +271,69 @@ namespace worldgen::trees
 	}
 
 	void LowGrowth(elevation::Scan& scan, const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
-	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats)
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats,
+	    const std::vector<Own>* hedges)
 	{
 		constexpr float kPi = 3.14159265f;
 		// (the medium ones, 3 m across: a hedge's run of them closes up)
 		constexpr Model kHedge[] = {{"prop_bush_med_06", 2.0f, 3.1f}, {"prop_bush_med_03", 2.5f, 3.1f}};
+		struct Low
+		{
+			float x, y, h;
+			uint32_t seed;
+		};
+		std::vector<Low> lows;
 		Peaks(
 		    scan, open, ground, box, [](float, float, float, float, uint32_t) {},
 		    [&](float x, float y, float h, uint32_t seed) {
-			    if (!where(x, y))
-				    return;
-			    const Model& m = kHedge[(seed >> 1) % std::size(kHedge)];
-			    out.push_back({loader::convert::Joaat(m.name), {x, y, ground(x, y) - 0.1f}, static_cast<float>((seed >> 8) % 360) * kPi / 180, 150,
-			        std::clamp(h / m.height, 0.6f, 1.4f)});
-			    ++stats.bushes;
+			    if (where(x, y))
+				    lows.push_back({x, y, h, seed});
 		    },
 		    3.0f, false);
+		// (by 6 m cell, for their neighbours)
+		std::unordered_map<int64_t, std::vector<size_t>> near;
+		const auto cellOf = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 6)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 6))); };
+		for (size_t k = 0; k < lows.size(); ++k)
+			near[cellOf(lows[k].x, lows[k].y)].push_back(k);
+		for (size_t k = 0; k < lows.size(); ++k)
+		{
+			const Low& l = lows[k];
+			// a hedge's run: the low growth round it on the 3 m lattice - one neighbour, or two on either side of it, and no more
+			// (a mass of shrubs has more): a clipped piece along the line through them
+			std::vector<std::array<float, 3>> around; // (direction x, y, distance)
+			for (int dj = -1; dj <= 1; ++dj)
+				for (int di = -1; di <= 1; ++di)
+					if (const auto it = near.find(cellOf(l.x + di * 6.0f, l.y + dj * 6.0f)); it != near.end())
+						for (const size_t o : it->second)
+							if (const float d = std::hypot(lows[o].x - l.x, lows[o].y - l.y); o != k && d > 1.0f && d < 4.5f)
+								around.push_back({(lows[o].x - l.x) / d, (lows[o].y - l.y) / d, d});
+			std::array<float, 3> dir{};
+			bool line = false;
+			if (hedges && !hedges->empty() && around.size() == 1)
+				dir = around[0], line = true;
+			else if (hedges && !hedges->empty() && around.size() == 2 && around[0][0] * around[1][0] + around[0][1] * around[1][1] < -0.85f)
+				dir = {around[1][0] - around[0][0], around[1][1] - around[0][1], (around[0][2] + around[1][2]) / 2}, line = true;
+			if (line)
+			{
+				const float dl = std::max(1e-3f, std::hypot(dir[0], dir[1]));
+				const Own& m = (*hedges)[l.seed % hedges->size()];
+				props::Prop p;
+				p.archetype = loader::convert::Joaat(m.name);
+				p.position = {l.x, l.y, ground(l.x, l.y) - 0.1f};
+				// (its long side - the model's y - along the line)
+				p.heading = std::atan2(-dir[0] / dl, dir[1] / dl);
+				p.lodDist = 150;
+				p.scale = std::clamp(dir[2] / 2.4f, 0.9f, 1.6f);
+				p.scaleZ = std::clamp(l.h / m.height, 0.6f, 1.8f);
+				out.push_back(p);
+				++stats.bushes;
+				continue;
+			}
+			const Model& m = kHedge[(l.seed >> 1) % std::size(kHedge)];
+			out.push_back({loader::convert::Joaat(m.name), {l.x, l.y, ground(l.x, l.y) - 0.1f}, static_cast<float>((l.seed >> 8) % 360) * kPi / 180, 150,
+			    std::clamp(l.h / m.height, 0.6f, 1.4f)});
+			++stats.bushes;
+		}
 	}
 
 	std::vector<Seen> Detect(elevation::Scan& scan, const std::function<float(float, float)>& ground, const std::array<float, 4>& box)

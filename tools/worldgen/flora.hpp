@@ -27,8 +27,9 @@ namespace worldgen::flora
 		CoconutPalm, // a ringed grey-brown trunk leaning out and curving up, a crown of drooping feather fronds
 		SabalPalm,   // the cabbage palm: a trunk in criss-cross boots, a round head of fan leaves on long stalks
 		ArecaPalm,   // a clump of thin ringed yellow-green stems, each with a few arching feather fronds (yards, hedges)
+		Hedge,       // a clipped hedge's piece: a box of small leaves 2.6 m long (along y), 0.9 m deep, 2 m tall, end to end in a line
 	};
-	constexpr int kSpecies = 11;
+	constexpr int kSpecies = 12;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.

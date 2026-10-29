@@ -194,7 +194,7 @@ namespace worldgen::barriers
 
 	void Build(const std::vector<world::Barrier>& list, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& onRoad, const std::array<float, 4>& box, Meshes& out, roads::Collision& collision,
-	    std::vector<props::Prop>& props, Stats& stats)
+	    std::vector<props::Prop>& props, Stats& stats, const std::vector<std::string>* hedges)
 	{
 		Writer w{collision};
 		const uint32_t hedgeBush = loader::convert::Joaat("prop_bush_neat_04"); // (3.2 m long along its y, 2.0 wide, 1.5 high)
@@ -398,8 +398,30 @@ namespace worldgen::barriers
 			}
 			case Kind::Hedge:
 			{
-				// the game's clipped bush (prop_bush_neat_04) a little apart along the line, its long side along it, 1.2 m
-				// wide, as high as the hedge
+				// our own clipped pieces (2.6 m long) end to end on every other piece of the line, as high as the hedge; else
+				// the game's clipped bush (prop_bush_neat_04) a little apart along it, its long side along it, 1.2 m wide
+				if (hedges && !hedges->empty())
+				{
+					for (size_t k = 0; k + 1 < q.size(); k += 2)
+					{
+						if (!built[k])
+							continue;
+						const size_t e = std::min(k + 2, q.size() - 1);
+						const P2 d = dirOf(k), m{(q[k][0] + q[e][0]) / 2, (q[k][1] + q[e][1]) / 2};
+						const float len = std::hypot(q[e][0] - q[k][0], q[e][1] - q[k][1]);
+						props::Prop p;
+						p.archetype = loader::convert::Joaat((*hedges)[seeds::PlaceAt(seeds::Between(q[k], q[e]), 2, 23) % hedges->size()]);
+						p.position = {m[0], m[1], ground(m[0], m[1]) - 0.1f};
+						p.heading = std::atan2(-d[0], d[1]);
+						p.lodDist = 150;
+						p.scale = std::clamp((len + 0.2f) / 2.6f, 0.4f, 1.2f);
+						p.scaleZ = h / 2.0f;
+						props.push_back(p);
+						++stats.pieces;
+					}
+					++stats.hedges;
+					break;
+				}
 				for (size_t k = 0; k + 1 < q.size(); ++k)
 				{
 					if (!built[k])

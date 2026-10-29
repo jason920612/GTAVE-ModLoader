@@ -69,8 +69,11 @@ namespace worldgen::trees
 
 	// The scan's low growth (hedges, shrubs: 2-3.5 m over the ground - a 2020 scan that classes no vegetation shows nothing
 	// lower) where `where(x, y)`: a shrub 3 m across on a 3 m lattice, scaled to the height.
+	// `hedges`: clipped hedge pieces of our own (flora Hedge, 2.6 m long along their y, 2 m tall): where the low growth runs
+	// in a line - each with a neighbour on either side of it, or one - a piece along the line, scaled to the height.
 	void LowGrowth(elevation::Scan& scan, const std::function<bool(float, float)>& where, const std::function<bool(float, float)>& open,
-	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats);
+	    const std::function<float(float, float)>& ground, const std::array<float, 4>& box, std::vector<props::Prop>& out, Stats& stats,
+	    const std::vector<Own>* hedges = nullptr);
 
 	// The trees the scan saw in the box (its canopy's peaks, as Place finds them): where they stand, how tall, their crowns'
 	// radii; their kind left 0 (the caller's to set - the pictures', which tell a pine from a palm).

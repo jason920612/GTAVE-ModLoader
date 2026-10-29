@@ -24,7 +24,15 @@ usage: python -I tools/worldgen/compare.py aerial --land <name> --out <dir> [--a
           skylines agree - a fit worse than 0.06 of the height: the place or the scene does not match). --poses: phototex.py's
           fits (place, heading, camera height and tilt against the laser scan's skyline) where they are good (--agree 0.35,
           --miss 6), and only the pictures with one (--any 1: all, the others at their own place snapped to a lane and the
-          skyline fit against the game's)
+          skyline fit against the game's). --turns <json>: which way each panorama's middle really faces (below), only
+          those with one; the views and the lane the camera is put in from it
+       python -I tools/worldgen/compare.py poses --land <name> --metadata <metadata.csv>[,...] --out <dir> [the pano options]
+  poses: the panoramas pano would take (the same options, the same ones), each unrolled over the aerial picture of its place
+          (NAIP, 140 m across, north up): <dir>/pose_<k>_<id>.png and <dir>/poses.json - Mapillary's heading of a panorama is
+          the camera's own compass (compass_angle), on some cameras a quarter or half a turn off its picture's middle (a
+          car's camera mounted across, or looking back): whoever reads the sheets writes, per picture, the compass bearing
+          its middle faces and whether it looks back from the car - {"<id>": {"bearing": 91, "rear": true}, ...}, null for
+          one whose place is wrong - for pano --turns
 """
 import io, json, math, os, random, re, subprocess, sys, time, urllib.parse, urllib.request
 
@@ -108,7 +116,9 @@ def hud_off():
     # (clear weather, the roads dry by the first place: a game started in the rain had mirror-like puddles in every street,
     # each one a difference to the reviewers)
     gtactl('raw:weather CLEAR')
-    gtactl('wait:10')
+    # (and no rain left (SET_RAIN 0), the streets given 40 s to dry: ten had left round 24's first places with "mirror
+    # puddles on an otherwise dry, sunny road")
+    gtactl('raw:native 0x643E26EA6E024D92 0.0', 'wait:40')
     gtactl('raw:native 0xA0EBB943C300E693 0', 'raw:native 0xA6294919E56FF02A 0')
 
 
@@ -178,6 +188,9 @@ def land_roads(land):
     built)."""
     folder = 'miami' if land.name == 'wbmia' else land.name
     path = os.path.join(r'D:\GTAV-UE5\world', folder, 'world.json')
+    if not os.path.exists(path):
+        # (the batch's lands' work folders: on E:)
+        path = os.path.join(r'E:\GTAV-World', folder, 'world.json')
     if not os.path.exists(path):
         return []
     with open(path, encoding='utf-8') as f:
@@ -501,11 +514,8 @@ def fit_view(pano, heading, yaw, game_small):
     return dy, pitch, score
 
 
-def pano(o):
-    """Mapillary panoramas (CC BY-SA 4.0) beside the game's exact view at their places (see the usage)."""
-    land = Land(o['land'])
-    out = o['out']
-    os.makedirs(out, exist_ok=True)
+def pano_pictures(o, land):
+    """The panoramas pano takes (see the usage): [(x, y, row)], phototex.py's fits by id, the --turns by id."""
     import csv
     rows = []
     for meta in o['metadata'].split(','):
@@ -527,6 +537,13 @@ def pano(o):
     if 'ids' in o:
         wanted = o['ids'].split(',')
         rows = [r for r in rows if r['id'] in wanted]
+    turns = {}
+    if 'turns' in o:
+        # (which way each one's middle really faces - read off the aerial picture (poses): only those, the others' compass
+        # as likely as not a quarter turn off; null: its place is wrong)
+        with open(o['turns'], encoding='utf-8') as f:
+            turns = {k: v for k, v in json.load(f).items() if v}
+        rows = [r for r in rows if r['id'] in turns]
     fits = {}
     if 'poses' in o:
         with open(o['poses'], encoding='utf-8') as f:
@@ -545,6 +562,65 @@ def pano(o):
             chosen.append((x, y, r))
         if len(chosen) >= int(o.get('limit', 12)):
             break
+    return chosen, fits, turns
+
+
+def poses(o):
+    """Each panorama pano would take unrolled over the aerial picture of its place, for reading off which way it faces (see
+    the usage)."""
+    land = Land(o['land'])
+    out = o['out']
+    os.makedirs(out, exist_ok=True)
+    chosen, _, _ = pano_pictures(o, land)
+    listed = []
+    span = 140.0
+    for k, (x, y, r) in enumerate(chosen):
+        picture = np.asarray(Image.open(r['path']).convert('RGB').resize((1440, 720)), np.float32)
+        # (the panorama from 35 degrees up to 30 down, 4 pixels a degree, its middle in the middle)
+        top = Image.fromarray(np.clip(picture[int(720 * (0.5 - 35 / 180)):int(720 * (0.5 + 30 / 180))], 0, 255).astype(np.uint8))
+        aer = aerial_picture(land, x - span / 2, y - span / 2, x + span / 2, y + span / 2, 720, 720)
+        sheet = Image.new('RGB', (1440, 34 + top.height + 12 + 720), (255, 255, 255))
+        d = ImageDraw.Draw(sheet)
+        for a in range(-180, 181, 10):
+            px = round((a + 180) / 360 * 1439)
+            d.line((px, 26 if a % 30 else 18, px, 33), fill=(0, 0, 0), width=2 if a % 90 == 0 else 1)
+            if a % 30 == 0:
+                text = 'middle 0' if a == 0 else f'{a:+d}'
+                d.text((min(max(px - 3 * len(text), 0), 1440 - 7 * len(text)), 4), text, fill=(200, 0, 0) if a == 0 else (0, 0, 0))
+        sheet.paste(top, (0, 34))
+        ay = 34 + top.height + 12
+        sheet.paste(aer, (360, ay))
+        cx, cy = 360 + 360, ay + 360
+        d.ellipse((cx - 7, cy - 7, cx + 7, cy + 7), outline=(255, 0, 0), width=3)
+        for a, t in ((0, 'N'), (90, 'E'), (180, 'S'), (270, 'W')):
+            ex, ey = cx + 372 * math.sin(math.radians(a)), cy - 372 * math.cos(math.radians(a))
+            d.text((ex - 4, ey - 6), t, fill=(0, 0, 0))
+        h = float(r['heading'])
+        hx, hy = math.sin(math.radians(h)), -math.cos(math.radians(h))
+        for t0 in range(12, 300, 24):
+            d.line((cx + hx * t0, cy + hy * t0, cx + hx * (t0 + 12), cy + hy * (t0 + 12)), fill=(255, 255, 0), width=2)
+        d.text((8, ay + 8), f'aerial (NAIP), {span:.0f} m across, north up', fill=(0, 0, 0))
+        d.text((8, ay + 24), 'red ring: where the panorama', fill=(0, 0, 0))
+        d.text((8, ay + 38), 'says it was taken', fill=(0, 0, 0))
+        d.text((8, ay + 60), f'yellow dashes: its recorded', fill=(0, 0, 0))
+        d.text((8, ay + 74), f'heading {h:.0f} (often wrong)', fill=(0, 0, 0))
+        d.text((8, ay + 96), f'Mapillary {r["id"]} {r["date"]}', fill=(0, 0, 0))
+        d.text((8, ay + 110), f'by {r["creator"]} (CC BY-SA 4.0)', fill=(0, 0, 0))
+        name = f'pose_{k:02d}_{r["id"]}.png'
+        sheet.save(os.path.join(out, name))
+        listed.append({'sheet': name, 'id': r['id'], 'x': round(x, 1), 'y': round(y, 1), 'heading': round(h, 1), 'date': r['date'],
+                       'creator': r['creator']})
+        print(f'{k}: {r["id"]} at {x:.0f},{y:.0f}, recorded heading {h:.0f}', flush=True)
+    with open(os.path.join(out, 'poses.json'), 'w', encoding='utf-8') as f:
+        json.dump(listed, f, ensure_ascii=False, indent=1)
+
+
+def pano(o):
+    """Mapillary panoramas (CC BY-SA 4.0) beside the game's exact view at their places (see the usage)."""
+    land = Land(o['land'])
+    out = o['out']
+    os.makedirs(out, exist_ok=True)
+    chosen, fits, turns = pano_pictures(o, land)
     views = [float(v) for v in o.get('views', '0,90,-90').split(',')]
     listed = []
     hud_off()
@@ -555,6 +631,11 @@ def pano(o):
     ped = int(m.group(1)) if m else None
     for k, (x, y, r) in enumerate(chosen):
         compass = float(r['heading'])
+        # (the way the car went: the picture's middle's, or half a turn from it when it looks back - the lane it drove in)
+        travel = compass
+        if r['id'] in turns:
+            compass = float(turns[r['id']]['bearing'])
+            travel = (compass + 180) % 360 if turns[r['id']].get('rear') else compass
         # (no traffic or people while the pictures are taken - SET_VEHICLE_DENSITY_ and SET_PED_DENSITY_MULTIPLIER_THIS_FRAME 0:
         # they are not the place, a car had stopped on the camera; the parked cars stay. The phone hidden (SET_MOBILE_PHONE_SCALE 0): a call came up over a view. Each place anew: an
         # "every" lasts at most 600 s)
@@ -578,7 +659,7 @@ def pano(o):
             gz = ground_z(x, y, land) or gz
             cam_up = max(1.2, fit['zc'] - gz)
         else:
-            snapped = road_along(roads, x, y, compass, 12.0, carriageway=True) if roads else None
+            snapped = road_along(roads, x, y, travel, 12.0, carriageway=True) if roads else None
             if snapped:
                 x, y = snapped
                 gz = ground_z(x, y, land) or gz
@@ -632,11 +713,11 @@ def pano(o):
 
 
 def main():
-    commands = {'aerial': aerial, 'photos': photos, 'mapillary': mapillary, 'pano': pano}
+    commands = {'aerial': aerial, 'photos': photos, 'mapillary': mapillary, 'pano': pano, 'poses': poses}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         sys.exit(__doc__)
     o = options(sys.argv[2:])
-    if 'land' not in o or 'out' not in o or (sys.argv[1] in ('mapillary', 'pano') and 'metadata' not in o):
+    if 'land' not in o or 'out' not in o or (sys.argv[1] in ('mapillary', 'pano', 'poses') and 'metadata' not in o):
         sys.exit(__doc__)
     commands[sys.argv[1]](o)
 

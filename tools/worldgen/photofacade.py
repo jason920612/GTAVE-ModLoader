@@ -4,7 +4,9 @@ phone's field of view or a panorama's whole round -, each column of the picture 
 buildings it meets, the wall's band from above the cars and the bushes to under the eaves sampled; leaves, sky and deep
 shadow left out. Each building seen: the median colour of its wall and how much of it looks like brick (red to orange,
 well saturated, middling bright), from every picture that saw it - worldgen build --facades picks its walls' style and
-colour by them.
+colour by them. A panorama only when the map backs its recorded heading (panoheading.py: its creator's mostly along the
+streets they were taken in, and not this one across): Mapillary's is the camera's own compass, on some 360-degree cameras
+a quarter turn off the picture's middle.
 
 usage: python -I tools/worldgen/photofacade.py --world <world.json> --metadata <metadata.csv>[,<metadata.csv>...] --out <facades.json>
        [--fov 50] [--reach 45] [--eye 1.8] [--sheet <dir>]
@@ -17,6 +19,9 @@ import csv, json, math, os, sys
 
 import numpy as np
 from PIL import Image, ImageDraw
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import panoheading
 
 
 def options(argv):
@@ -88,11 +93,20 @@ def main():
     seen = {}  # building -> list of (rgb pixels, picture id)
     creators = {}
     pictures = 0
+    # (the panoramas whose recorded heading the map backs)
+    every = panoheading.read_rows(o['metadata'])
+    found = panoheading.verdicts(w, every)
+    ok = panoheading.trusted(found, every)
+    if found:
+        print(f'panoramas: {len(ok)} of {len(found)} here with a heading the streets back; {len(found) - len(ok)} left out '
+              f'(their camera\'s compass across the street, or their creator\'s mostly)')
     for meta in o['metadata'].split(','):
         folder = os.path.dirname(meta)
         with open(meta, encoding='utf-8') as f:
             rows = list(csv.DictReader(f))
         for r in rows:
+            if r.get('pano') == 'True' and r.get('id') not in ok:
+                continue
             try:
                 lat, lon, heading = float(r['lat']), float(r['lon']), float(r['heading'])
             except (KeyError, ValueError):

@@ -50,7 +50,9 @@ namespace worldgen::barriers
 	// `ground(x, y)`: the terrain's height; `onRoad(x, y)`: a road's asphalt or sidewalk there (a barrier's piece over it is
 	// left out: the map's fences across driveways and gates, along a street drawn wider than it is). The pieces whose
 	// middles lie in `box`; the hedges' bushes into `props`, the collision's triangles into `collision`.
+	// `hedges`: clipped hedge pieces of our own (their archetypes' names: 2.6 m long along their y, 2 m tall) for the hedges,
+	// end to end along them - else the game's clipped bush.
 	void Build(const std::vector<world::Barrier>& list, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& onRoad, const std::array<float, 4>& box, Meshes& out, roads::Collision& collision,
-	    std::vector<props::Prop>& props, Stats& stats);
+	    std::vector<props::Prop>& props, Stats& stats, const std::vector<std::string>* hedges = nullptr);
 }

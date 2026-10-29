@@ -518,9 +518,20 @@ namespace worldgen::flora
 			{
 				const float az = 2 * kPi * i / n + rnd.Range(-0.4f, 0.4f);
 				const P3 dir{std::cos(az) * 0.22f, std::sin(az) * 0.22f, 1};
-				Limb stem = Grow({std::cos(az) * 0.12f, std::sin(az) * 0.12f, -0.2f}, dir, {std::cos(az), std::sin(az), 0.4f}, 0.07f, H * rnd.Range(0.8f, 0.95f), 5,
-				    rnd.Range(0.09f, 0.13f), 0.035f, rnd, 0.08f);
+				// (sinuous, bending out into a vase, and branching in its upper half: straight bare stems had read as "wooden
+				// dowels", "straight sticks fanning out from one point")
+				Limb stem = Grow({std::cos(az) * 0.12f, std::sin(az) * 0.12f, -0.2f}, dir, {std::cos(az), std::sin(az), 0.4f}, 0.12f, H * rnd.Range(0.8f, 0.95f), 8,
+				    rnd.Range(0.09f, 0.13f), 0.03f, rnd, 0.18f);
 				limbs.push_back({stem, kBarkMyrtle});
+				for (int k = 0, side = 2 + static_cast<int>(rnd.Next() % 2); k < side; ++k)
+				{
+					const float t = rnd.Range(0.45f, 0.8f), turn = rnd.Range(-1.2f, 1.2f);
+					const P3 d2{std::cos(az + turn), std::sin(az + turn), rnd.Range(0.6f, 1.2f)};
+					Limb br = Grow(At(stem, t), d2, {d2[0], d2[1], 0.5f}, 0.1f, H * rnd.Range(0.2f, 0.35f), 4, RadiusAt(stem, t) * 0.6f, 0.02f, rnd, 0.15f);
+					limbs.push_back({br, kBarkMyrtle});
+					for (float s2 = 0.5f; s2 <= 1.0f; s2 += 0.25f)
+						Cluster(leaves, At(br, s2), middle, flowering ? 3 : 4, 0.8f, rnd.Range(0.55f, 0.8f), kOakLeaves, rnd, 0.2f);
+				}
 				for (float t = 0.5f; t <= 1.0f; t += 0.1f)
 				{
 					// (many small cards, not a few big ones: the reviewers' "giant leaf cards on sticks")
@@ -934,7 +945,9 @@ namespace worldgen::flora
 					const float a = rnd.Range(0, 2 * kPi), d = lobe[2] * std::sqrt(rnd.Unit());
 					const float x = lobe[0] + std::cos(a) * d, y = lobe[1] + std::sin(a) * d * 0.9f;
 					const float lit = 0.65f + 0.4f * (1 - (y - y0) / 256.0f) * rnd.Range(0.6f, 1.0f);
-					const std::array<float, 3> base = t == kOakLeaves ? std::array<float, 3>{rnd.Range(26, 40), rnd.Range(38, 54), rnd.Range(22, 32)}
+					// (an oak's leaves as the game's own oak's are bright, its highlights some (80, 100, 60): ours half that had
+					// made the reviewers' "near-black shrub blobs", "oversized dark saturated leaves")
+					const std::array<float, 3> base = t == kOakLeaves ? std::array<float, 3>{rnd.Range(45, 68), rnd.Range(62, 90), rnd.Range(32, 48)}
 					                                                  : std::array<float, 3>{rnd.Range(46, 62), rnd.Range(70, 88), rnd.Range(34, 46)};
 					Ellipse(im, x, y, rnd.Range(5.5f, 9.5f), rnd.Range(3.0f, 4.6f), rnd.Range(0, kPi), Shade(base, lit), x0, y0, x1, y1);
 				}
@@ -1191,6 +1204,51 @@ namespace worldgen::flora
 		}
 	}
 
+	namespace
+	{
+		// A clipped hedge's piece (ficus, viburnum: the yards' and the apartments' hedges): a box of small leaf cards 2.6 m long
+		// along y, 0.9 m deep, 2 m tall - over its flat top and its faces, a few inside -, the clipping's surface a little
+		// uneven, its edges a little rounded; the pieces end to end along a line make one green wall, scaled to its height
+		Model Hedge(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			constexpr float L = 2.6f, D = 0.9f, H = 2.0f;
+			std::vector<Leaf> leaves;
+			const auto card = [&](const P3& c, const P3& out) {
+				const float s = rnd.Range(0.28f, 0.42f);
+				const P3 facing{out[0] + rnd.Range(-0.4f, 0.4f), out[1] + rnd.Range(-0.4f, 0.4f), out[2] + rnd.Range(-0.3f, 0.5f)};
+				// (lit as the hedge's face it is on, a little up: the clipped wall shaded as one)
+				const P3 light{out[0], out[1], out[2] + 0.35f};
+				leaves.push_back({c, facing, light, rnd.Range(0, 2 * kPi), s, s, static_cast<int>(rnd.Next() % 4), kOakLeaves, false});
+			};
+			// (the clipping: a few centimetres in and out, the edges rounded off)
+			const auto bump = [&] { return rnd.Range(-0.06f, 0.05f); };
+			for (int k = 0; k < static_cast<int>(L * D * 46); ++k)
+			{
+				const float x = rnd.Range(-D / 2, D / 2), y = rnd.Range(-L / 2, L / 2);
+				const float edge = std::max(0.0f, std::fabs(x) - (D / 2 - 0.12f)) / 0.12f;
+				card({x, y, H - 0.08f * edge * edge + bump()}, {0, 0, 1});
+			}
+			for (const float side : {-1.0f, 1.0f})
+				for (int k = 0; k < static_cast<int>(L * H * 40); ++k)
+				{
+					const float y = rnd.Range(-L / 2, L / 2), z = rnd.Range(0.05f, H - 0.05f);
+					card({side * (D / 2 + bump()), y, z}, {side, 0, 0});
+				}
+			// (the ends: the next piece covers them, fewer)
+			for (const float end : {-1.0f, 1.0f})
+				for (int k = 0; k < static_cast<int>(D * H * 14); ++k)
+					card({rnd.Range(-D / 2, D / 2), end * (L / 2 + bump()), rnd.Range(0.05f, H - 0.05f)}, {0, end, 0});
+			// (and some inside: its leaves seen through the gaps)
+			for (int k = 0; k < 40; ++k)
+				card({rnd.Range(-D / 3, D / 3), rnd.Range(-L / 2, L / 2), rnd.Range(0.2f, H - 0.2f)}, {rnd.Range(-1, 1), 0, 0.3f});
+			Finish(out, {}, leaves);
+			out.height = H, out.width = L, out.trunk = 0;
+			return out;
+		}
+	}
+
 	Model Make(Species s, uint32_t seed)
 	{
 		switch (s)
@@ -1205,6 +1263,7 @@ namespace worldgen::flora
 		case Species::CoconutPalm: return CoconutPalm(seed);
 		case Species::SabalPalm: return SabalPalm(seed);
 		case Species::ArecaPalm: return ArecaPalm(seed);
+		case Species::Hedge: return Hedge(seed);
 		default: return Shrub(seed);
 		}
 	}

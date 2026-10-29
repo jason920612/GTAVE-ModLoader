@@ -553,6 +553,63 @@ namespace worldgen::facades
 						c.spec[i] = 0.25f;
 					}
 			}, k == 0, 3, 0.25f);
+		// warehouses' tilt-up concrete: 15 x 12 m - two panels of 7.5 m, their joints caulked dark (3 cm, a hairline of light
+		// on one lip), the wall a smooth painted concrete with faint form marks; a reveal pair across at 4.2 m and one at
+		// 7.4 m, the band over it a second tone on most; the foot splashed darker; on a third of them a roll-up door on one
+		// panel of the two (3.6 x 4.3 m, slats every 7.6 cm, a steel jamb, a dark bottom bar)
+		const std::array<std::array<Rgb, 2>, 5> tilts{{{Rgb{200, 200, 194}, Rgb{168, 170, 168}}, {Rgb{228, 224, 214}, Rgb{196, 200, 204}},
+		    {Rgb{216, 204, 182}, Rgb{186, 170, 146}}, {Rgb{204, 188, 162}, Rgb{226, 220, 206}}, {Rgb{186, 194, 200}, Rgb{150, 162, 172}}}};
+		for (size_t k = 0; k < tilts.size(); ++k)
+			for (int doors = 0; doors < 2; ++doors)
+				add(Kind::TiltUp, "tilt", std::string("tilt_") + std::to_string(k) + (doors ? "_doors" : ""), 15, 12, [&](Canvas& c) {
+					const Rgb body = tilts[k][0], band = k % 2 ? tilts[k][1] : body;
+					Wall(c, body, ++seed, 0.025f, 0.05f); // (painted: evener than bare concrete)
+					// (the second tone over the upper reveal)
+					c.Rect(0, 7.45f, c.mw, c.mh, [&](size_t i, float, float) {
+						const float lum = (c.albedo[i][0] + c.albedo[i][1] + c.albedo[i][2]) / std::max(1.0f, body[0] + body[1] + body[2]);
+						c.albedo[i] = Scale(band, lum);
+					});
+					// (form marks: faint horizontal lines every 1.2 m, the panel cast lying flat)
+					for (float y = 1.2f; y < c.mh; y += 1.2f)
+						c.Rect(0, y, c.mw, y + 0.015f, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 0.97f); });
+					// (reveals: shallow grooves, their lower lip lit)
+					for (const float y : {4.2f, 4.32f, 7.4f})
+					{
+						c.Rect(0, y, c.mw, y + 0.035f, [&](size_t i, float, float) {
+							c.albedo[i] = Scale(c.albedo[i], 0.72f);
+							c.height[i] = 0.3f;
+						});
+						c.Rect(0, y - 0.012f, c.mw, y, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 1.06f); });
+					}
+					// (the joints between panels)
+					for (const float x : {0.0f, 7.5f})
+					{
+						c.Rect(x - 0.015f, 0, x + 0.015f, c.mh, [&](size_t i, float, float) {
+							c.albedo[i] = Scale(c.albedo[i], 0.45f);
+							c.height[i] = 0.25f;
+							c.spec[i] = 0.12f;
+						});
+						c.Rect(x + 0.015f, 0, x + 0.03f, c.mh, [&](size_t i, float, float) { c.albedo[i] = Scale(c.albedo[i], 1.07f); });
+					}
+					// (rain-washed streaks under the joints' tops and the foot splashed with soil)
+					c.Rect(0, 0, c.mw, 0.6f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.8f + 0.2f * v); });
+					if (doors)
+					{
+						const float x0 = 9.45f, x1 = 13.05f, top = 4.3f;
+						c.Fill(x0 - 0.12f, 0, x1 + 0.12f, top + 0.14f, {92, 96, 98}, 0.55f, 0.35f); // (the steel jamb and head)
+						c.Rect(x0, 0.06f, x1, top, [&](size_t i, float, float v) {
+							const float m = v * (top - 0.06f) / 0.076f;
+							const float slat = m - std::floor(m);
+							const float rib = slat < 0.18f ? 0.82f : 1.0f - 0.06f * slat;
+							c.albedo[i] = Scale(Rgb{214, 216, 214}, rib * (0.97f + 0.04f * v));
+							c.height[i] = slat < 0.18f ? 0.42f : 0.62f;
+							c.spec[i] = 0.3f;
+						});
+						c.Fill(x0, 0, x1, 0.06f, {40, 40, 42}, 0.5f, 0.2f); // (the bottom bar's rubber)
+						// (a dirty smear up from the floor where the forklifts go)
+						c.Rect(x0, 0.06f, x1, 0.9f, [&](size_t i, float, float v) { c.albedo[i] = Scale(c.albedo[i], 0.82f + 0.18f * v); });
+					}
+				}, k == 0 && doors == 0, 2);
 		// shop fronts: 4.5 m: tall panes in aluminium, a fascia for the signs
 		add(Kind::Shop, "shop", "shop", 12, 4.5f, [&](Canvas& c) {
 			Wall(c, {70, 72, 76}, ++seed, 0.05f, 0.05f);
@@ -669,6 +726,9 @@ namespace worldgen::facades
 			// (siding weighted as the street pictures show the colours: white most, cream and light grey next - picked evenly
 			// the reviewers had seen tan siding where most houses are white or pale)
 			const auto weight = [&](const Style& st) {
+				// (a tilt-up wall without doors twice as often as one with)
+				if (k == Kind::TiltUp)
+					return st.diffuse.ends_with("_doors") ? 1 : 2;
 				// (block and stucco walls with windows of their own twice as often as ribbons of windows)
 				if (k == Kind::Concrete)
 					return st.diffuse.find("punched_") != std::string::npos ? 2 : 1;
@@ -694,8 +754,12 @@ namespace worldgen::facades
 		const bool industrial = kind == "industrial" || kind == "warehouse" || kind == "shed" || kind == "hangar" || kind == "manufacture" || kind == "barn" ||
 		                        kind == "farm_auxiliary" || kind == "storage_tank";
 		const bool office = kind == "office" || kind == "commercial" || kind == "retail" || kind == "hospital" || kind == "university" || kind == "school";
+		// (the warehouses and works: tilt-up concrete four in five - Florida's are -, the rest and the small ones, the barns and
+		// the farms' sheds ribbed metal)
 		if (industrial)
-			return among(Kind::Shed);
+			return area >= 500 && kind != "barn" && kind != "farm_auxiliary" && kind != "shed" && kind != "storage_tank" && r < 0.8f
+			           ? among(Kind::TiltUp)
+			           : among(Kind::Shed);
 		if (kind == "parking" && height >= 5)
 			return among(Kind::Garage);
 		if (kind == "parking" || kind == "stadium" || kind == "grandstand" || kind == "garage" || kind == "garages" || (height < 10 && area > 3000 && !house))
