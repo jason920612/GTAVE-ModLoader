@@ -112,6 +112,11 @@ namespace loader::config
 		// The memory (GB) the packs of lands on a hard disk are held in, read in ahead - the land the player is on and the
 		// ones they near (game/diskcache.hpp): -1 = an eighth of the computer's memory (at most 32), 0 = none.
 		int diskCacheGB = -1;
+		// A folder on a fast drive (an SSD) the lands on a hard disk are copied to as the player goes there - each one once
+		// it is in memory (diskCacheGB), from there: no more reads of the hard disk -, and read from at the next start
+		// (game/diskcache.hpp); "" none. At most landCacheGB, the lands least lately used let go first.
+		std::string landCache;
+		int landCacheGB = 600;
 		// DirectStorage - which the game links but has not used on these drives (it reads its files through Windows' file cache
 		// itself, research §69) - told to read through the cache too, should the game use it: "auto" (when the game or a land
 		// lies on a hard disk), "on", "off" (past the cache, as DirectStorage has it). Takes effect when the game starts.

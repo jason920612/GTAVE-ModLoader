@@ -27,4 +27,9 @@ namespace loader::paths
 	std::vector<std::filesystem::path> LandRoots();
 	std::vector<std::filesystem::path> LandFolders();
 	std::filesystem::path LandDir(std::string_view land);
+	// The lands' cache on a fast drive (config landCache; empty: none), and a land's folder there when its copy is whole -
+	// every file of the land's own folder there, of its size and time, no dlc.rpf.new waiting beside them - else the land's
+	// own folder (LandFolders and LandDir give the copy's).
+	std::filesystem::path CacheRoot();
+	std::filesystem::path Cached(const std::filesystem::path& folder);
 }

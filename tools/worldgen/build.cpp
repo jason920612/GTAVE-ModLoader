@@ -1619,8 +1619,11 @@ namespace worldgen::build
 					// and brown; the game's is always summer, as the street pictures of most of the year show them - a brownish
 					// colour in developed land turned most of the way to a lawn's green of its brightness, as far as the pictures see
 					// grass there: a gravel lot, a sandy one, bare earth keep theirs)
-					if (landCoverAt && grassy > 0)
-						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24 && out[0] > out[2] + 10 && out[0] >= out[1] - 5)
+					// (and south Florida's grey-green or teal winter lawns as well: the reviewers of Miami's views saw "desaturated
+					// grey-green", "teal" lawns on 8 of 36 - any colour not already a healthy lawn's green)
+					const bool healthy = out[1] > out[0] + 12 && out[1] > out[2] + 25;
+					if (landCoverAt && grassy > 0 && !healthy)
+						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24 && ((out[0] > out[2] + 10 && out[0] >= out[1] - 5) || latAt(y) < 27.0))
 						{
 							// (the street pictures' summer lawns - St. Augustine grass - green, not quite all of it: patches keep the
 							// pictures' brown - the reviewers had seen "pale olive", then "uniform, oversaturated turf")
@@ -3866,7 +3869,7 @@ namespace worldgen::build
 					}
 				const auto key4 = [](float x, float y) { return static_cast<int64_t>(std::floor(x / 4)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 4))); };
 				const auto fenceYard = [&](std::vector<P2> lot, const std::vector<P2>& house, const P2& centre, const P2& streetDir, uint32_t ys, int year,
-				                           size_t ownDrive, const auto& onLane) {
+				                           size_t ownDrive, const auto& onLane, bool block = false) {
 					if (lot.size() < 3)
 						return;
 					if (polygon::Area(lot) < 0) // (anticlockwise: the lot's inside on each edge's left)
@@ -3927,12 +3930,29 @@ namespace worldgen::build
 						const uint32_t pick = (ys >> 8) % 100;
 						const bool older = year > 0 && year < 1970;
 						const float tall = static_cast<float>((ys >> 16) % 100) / 100.0f;
-						if (pick < (older ? 20u : 40u))
-							fence.kind = "hedge", fence.height = 1.3f + 1.1f * tall;
-						else if (pick < (older ? 35u : 55u))
+						// (hedges waist to head high: 2-2.4 m ones had walled the reviewers' views off where the photos have a
+						// lawn open to the street; an apartment block's mostly a hedge, head high or more - Miami Beach's walk-ups -,
+						// else a low wall or railings)
+						if (block)
+						{
+							if (pick < 50)
+								fence.kind = "hedge", fence.height = 1.4f + 0.9f * tall;
+							else if (pick < 70)
+								fence.kind = "wall", fence.height = tall < 0.5f ? 1.0f : 1.4f;
+							else if (pick < 95)
+								fence.kind = "fence", fence.material = (ys >> 24) % 10 < 5 ? "aluminium" : "bars", fence.height = 1.2f;
+							else
+								fence.kind = "fence", fence.material = "chain_link", fence.height = 1.5f;
+						}
+						else if (pick < (older ? 15u : 30u))
+							fence.kind = "hedge", fence.height = 1.0f + 0.7f * tall;
+						else if (pick < (older ? 32u : 50u))
 							fence.kind = "wall", fence.height = tall < 0.5f ? 1.0f : 1.5f;
 						else if (pick < (older ? 70u : 88u))
-							fence.kind = "fence", fence.material = "bars", fence.height = tall < 0.6f ? 1.2f : 1.5f;
+						{
+							// (four in ten of them white aluminium pickets, the rest black iron)
+							fence.kind = "fence", fence.material = (ys >> 24) % 10 < 4 ? "aluminium" : "bars", fence.height = tall < 0.6f ? 1.2f : 1.5f;
+						}
 						else
 							fence.kind = "fence", fence.material = "chain_link", fence.height = 1.2f;
 					}
@@ -4044,7 +4064,8 @@ namespace worldgen::build
 								for (const auto* outline : it->second)
 									if (polygon::Inside(*outline, p))
 										return true;
-							if (hedge && !isSide[i] && std::fabs((p[0] - centre[0]) * streetDir[0] + (p[1] - centre[1]) * streetDir[1]) < 0.6f)
+							if (hedge && !isSide[i] && (streetDir[0] != 0 || streetDir[1] != 0) &&
+							    std::fabs((p[0] - centre[0]) * streetDir[0] + (p[1] - centre[1]) * streetDir[1]) < 0.6f)
 								return true;
 							if (const auto it = drivewayCells.find(key50(p[0], p[1])); it != drivewayCells.end())
 								for (const size_t wi : it->second)
@@ -4470,6 +4491,31 @@ namespace worldgen::build
 						}
 					}
 				}
+				// (and the apartment blocks' lots - 350 m2 and more: a house's size ones were the houses' -, seven in ten; their
+				// driveways the map's service roads, which the barriers leave open)
+				size_t blockYards = 0;
+				for (size_t bi = 0; bi < w.buildings.size(); ++bi)
+				{
+					const auto& b = w.buildings[bi];
+					if ((b.kind != "apartments" && b.kind != "dormitory") || b.footprint.size() < 3)
+						continue;
+					const auto lotIt = lotOf.find(bi);
+					if (lotIt == lotOf.end())
+						continue;
+					P2 c{0, 0};
+					for (const P2& q : b.footprint)
+						c[0] += q[0], c[1] += q[1];
+					c[0] /= static_cast<float>(b.footprint.size()), c[1] /= static_cast<float>(b.footprint.size());
+					if (c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1 || std::fabs(polygon::Area(b.footprint)) < 350 || latAt(c[1]) >= 27.0)
+						continue;
+					const uint32_t ys = seeds::PlaceAt(seeds::Middle(b.footprint), 7, 17);
+					if (ys % 100 >= 70)
+						continue;
+					const size_t before = yards.size();
+					fenceYard(lotIt->second, b.footprint, c, P2{0, 0}, ys, 0, SIZE_MAX, [](float, float) { return false; }, true);
+					blockYards += yards.size() > before;
+				}
+				std::printf("yards: %zu apartment blocks' lots fenced\n", blockYards);
 				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved (%zu houses on the map's own), %zu shrubs "
 				            "by houses, %zu mailboxes; %zu front yards fenced (%zu lines; of %zu houses %zu on a lot of the rolls, %zu chosen, %zu with no street "
 				            "edge)\n",
@@ -4754,7 +4800,7 @@ namespace worldgen::build
 		std::array<ydr::Material, paving::kPavings> pavedMaterials;
 		pavedMaterials.fill(asphalt);
 		ydr::Material railTrackMaterial = asphalt, railBedMaterial = asphalt, railSteelMaterial = asphalt, cableMaterial;
-		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial; // (the barriers')
+		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial, aluminiumMaterial; // (the barriers')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
 		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal;
 		{
@@ -4945,7 +4991,7 @@ namespace worldgen::build
 				// shader -; that shader also for the guard rails' beam picture, weathered boards and white painted block (their
 				// shine the asphalt's dull one)
 				if (!fences.mesh.indices.empty() || !fences.steel.indices.empty() || !fences.rail.indices.empty() || !fences.boards.indices.empty() ||
-				    !fences.block.indices.empty() || !fences.iron.indices.empty())
+				    !fences.block.indices.empty() || !fences.iron.indices.empty() || !fences.ironWhite.indices.empty())
 				{
 					if (!GameMaterial(files, "prop_fnclink_10a.ydr", 0, chainLinkMaterial, error) || !GameMaterial(files, "prop_fnclink_10a.ydr", 2, steelMaterial, error))
 						return false;
@@ -4976,6 +5022,13 @@ namespace worldgen::build
 						shared.push_back(texture::Make(o.name + "_iron", barriers::IronPicture(), texture::Format::Bc3, true));
 						ironMaterial.Texture(kDiffuseTex, o.name + "_iron");
 						ironMaterial.Texture(kBumpTex, o.name + "_flat_n");
+					}
+					aluminiumMaterial = chainLinkMaterial;
+					if (!fences.ironWhite.indices.empty())
+					{
+						shared.push_back(texture::Make(o.name + "_iron_white", barriers::IronPicture(true), texture::Format::Bc3, true));
+						aluminiumMaterial.Texture(kDiffuseTex, o.name + "_iron_white");
+						aluminiumMaterial.Texture(kBumpTex, o.name + "_flat_n");
 					}
 				}
 				// The ground as the aerial pictures show it (research/phase0.md §63): the golf course's shader
@@ -5352,7 +5405,7 @@ namespace worldgen::build
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
 		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
-		         &fences.boards, &fences.block, &fences.concrete, &fences.iron})
+		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
 		for (const auto& m : surfaces.paved)
 			meshTiles.emplace(&m, MeshTiles(m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -6535,6 +6588,7 @@ namespace worldgen::build
 				addTo(pavedMaterials[static_cast<size_t>(paving::Paving::Concrete)], fences.concrete);
 				addTo(chainLinkMaterial, fences.mesh);
 				addTo(ironMaterial, fences.iron);
+				addTo(aluminiumMaterial, fences.ironWhite);
 				if (!bd.lods[0].empty())
 				{
 					if (!ydr::Write(bd, file, error))

@@ -68,6 +68,8 @@ namespace loader::config
 			c.worldSeamless = j.value("worldSeamless", c.worldSeamless);
 			c.landFolders = j.value("landFolders", c.landFolders);
 			c.diskCacheGB = j.value("diskCacheGB", c.diskCacheGB);
+			c.landCache = j.value("landCache", c.landCache);
+			c.landCacheGB = j.value("landCacheGB", c.landCacheGB);
 			c.bufferedIo = j.value("bufferedIo", c.bufferedIo);
 		}
 
@@ -115,6 +117,8 @@ namespace loader::config
 				{"worldSeamless", c.worldSeamless},
 				{"landFolders", c.landFolders},
 				{"diskCacheGB", c.diskCacheGB},
+				{"landCache", c.landCache},
+				{"landCacheGB", c.landCacheGB},
 				{"bufferedIo", c.bufferedIo},
 			};
 		}

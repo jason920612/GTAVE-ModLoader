@@ -48,7 +48,7 @@ namespace worldgen::barriers
 			const std::string& m = b.material;
 			if (m == "wood" || m == "wooden" || m == "board" || m == "boards" || m == "privacy" || m == "panel")
 				return Kind::Boards;
-			if (m == "bars" || m == "metal_bars" || m == "wrought_iron" || m == "iron")
+			if (m == "bars" || m == "metal_bars" || m == "wrought_iron" || m == "iron" || m == "aluminium")
 				return Kind::Bars;
 			if (m == "railing" || m == "split_rail" || m == "metal_bars" || m == "bars" || m == "pole" || m == "post_and_rail" || m == "barbed_wire" ||
 			    m == "electric" || m == "wire")
@@ -96,7 +96,7 @@ namespace worldgen::barriers
 			case Kind::GuardRail:
 				return 1.905f;
 			case Kind::Hedge:
-				return 1.7f;
+				return 1.25f; // (the bushes 1.9 m long overlapping: 1.7 m apart they had read as "a row of identical rounded blobs")
 			default:
 				return 3.0f;
 			}
@@ -339,13 +339,14 @@ namespace worldgen::barriers
 				// the picture's panels (a panel every 1.22 m, from 8 cm over the ground to the spear tips), both faces, the
 				// vertex colours the chain link's; square posts 6 cm across of the picture's top rail - black throughout
 				const Colour foot{234, 234, 34, 255}, top{234, 234, 255, 255};
+				roads::Mesh& pickets = b.material == "aluminium" ? out.ironWhite : out.iron; // (white aluminium, or black iron)
 				for (size_t k = 0; k + 1 < q.size(); ++k)
 				{
 					if (!built[k])
 						continue;
 					const float za = z[k] + 0.08f, zb = z[k + 1] + 0.08f, ta = z[k] + h, tb = z[k + 1] + h, perMetre = 1 / (h - 0.08f);
-					Writer::Face(out.iron, q[k], q[k + 1], za, zb, ta, tb, s[k] / 1.22f, s[k + 1] / 1.22f, 1, perMetre, foot, top);
-					Writer::Face(out.iron, q[k + 1], q[k], zb, za, tb, ta, s[k + 1] / 1.22f, s[k] / 1.22f, 1, perMetre, foot, top);
+					Writer::Face(pickets, q[k], q[k + 1], za, zb, ta, tb, s[k] / 1.22f, s[k + 1] / 1.22f, 1, perMetre, foot, top);
+					Writer::Face(pickets, q[k + 1], q[k], zb, za, tb, ta, s[k + 1] / 1.22f, s[k] / 1.22f, 1, perMetre, foot, top);
 					w.CollideFace(q[k], q[k + 1], za, zb, ta, tb, kRailing, false);
 					++stats.pieces;
 				}
@@ -356,7 +357,7 @@ namespace worldgen::barriers
 					    P2{q[k][0] + (d[0] - n[0]) * half, q[k][1] + (d[1] - n[1]) * half}, P2{q[k][0] - (d[0] + n[0]) * half, q[k][1] - (d[1] + n[1]) * half},
 					    P2{q[k][0] - (d[0] - n[0]) * half, q[k][1] - (d[1] - n[1]) * half}}; // (clockwise from above: outward is each side's left)
 					for (size_t e = 0; e < 4; ++e)
-						Writer::Face(out.iron, c[e], c[(e + 1) % 4], z[k] - 0.1f, z[k] - 0.1f, z[k] + h + 0.03f, z[k] + h + 0.03f, 0.5f, 0.5f, rail, 0, foot, top);
+						Writer::Face(pickets, c[e], c[(e + 1) % 4], z[k] - 0.1f, z[k] - 0.1f, z[k] + h + 0.03f, z[k] + h + 0.03f, 0.5f, 0.5f, rail, 0, foot, top);
 				});
 				++stats.fences;
 				break;
@@ -456,7 +457,7 @@ namespace worldgen::barriers
 		}
 	}
 
-	texture::Image IronPicture()
+	texture::Image IronPicture(bool white)
 	{
 		// 512 x 512 for 1.22 m by the fence's height: pickets 10 px wide every 51.2 px, spear tips over the top 28 rows, the
 		// top rail rows 44-63 - solid across, the posts' -, the bottom rail rows 430-447, the pickets on to row 500; black
@@ -465,7 +466,7 @@ namespace worldgen::barriers
 		const auto paint = [&](int x, int y, float shade) {
 			if (x < 0 || x >= 512 || y < 0 || y >= 512)
 				return;
-			const uint8_t c = static_cast<uint8_t>(std::clamp(8.0f + 18.0f * shade, 0.0f, 255.0f));
+			const uint8_t c = static_cast<uint8_t>(std::clamp(white ? 196.0f + 50.0f * shade : 8.0f + 18.0f * shade, 0.0f, 255.0f));
 			img.At(x, y) = {c, c, static_cast<uint8_t>(std::min(255, c + 2)), 255};
 		};
 		for (int p = 0; p < 12; ++p)

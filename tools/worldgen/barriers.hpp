@@ -26,11 +26,12 @@ namespace worldgen::barriers
 		roads::Mesh block;    // walls (painted block)
 		roads::Mesh concrete; // retaining walls
 		roads::Mesh iron;     // wrought iron pickets: IronPicture cut out (the chain link's shader; both faces), their posts
+		roads::Mesh ironWhite; // white aluminium pickets (material "aluminium"): IronPicture(true), as the iron's
 	};
 
 	// The wrought iron fence's picture: a 1.22 m panel of twelve square pickets with spear tips, a rail under the tips and
 	// one near the foot, black paint (its alpha the cut-out; the top rail's rows solid across, the posts' colour).
-	texture::Image IronPicture();
+	texture::Image IronPicture(bool white = false);
 
 	// A cemetery's fence where the map has none: wrought iron along its outline's edges by the streets (`byStreet(x, y)`),
 	// not where the map has a barrier within 4 m, not across its paths (`onPath(x, y)`: their gates); none round a

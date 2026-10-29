@@ -38,6 +38,8 @@ usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.t
           builds - at most --jobs + --prep + 2 cells under way
   --caches <folder>: the ground's tiles (dem\\) and the aerial pictures' answers (naip\\) kept there for every cell (a cell
           asks for its box and 3 km round it: half of it its neighbours' too), trimmed to --cachegb (60) oldest first
+  --scans <folder>: a cell with a laser scan's rasters in <folder>\\<name> (lidar.py raster's) is built with them: its
+          buildings' measured shapes and heights, its trees where the scan saw them
   --lands <folder>: a new land's pack goes there (<folder>\\<name>: a folder of the loader's landFolders, another drive's -
           the lands too many for the game's), one in ModLoader\\mods already stays there
 Paths: --game, --worldgen, --keys, --pbf, --worlds (the world folders), --log as below by default.
@@ -230,6 +232,12 @@ def prepare(c, r, flags):
     return name, '', {'folder': folder, 'log': log, 'world': world, 'cover': cover, 'ground': ground, 'photo': photo, 'extra': walls + rolls}
 
 
+def scan_of(name):
+    """A laser scan's rasters for the cell (lidar.py raster's, in --scans <folder>\\<name>): the build's --scan, else nothing."""
+    folder = os.path.join(O['scans'], name) if O.get('scans') else ''
+    return ['--scan', folder] if folder and os.path.isdir(folder) and any(f.startswith('t_') for f in os.listdir(folder)) else []
+
+
 def make(c, r, flags, ready):
     """A prepared cell built and packed (the CPU's time): its name, and "" when it was built, else what went wrong."""
     name = land(c, r)[0]
@@ -240,7 +248,7 @@ def make(c, r, flags, ready):
     shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--core', ','.join(f'{v:.1f}' for v in CORE),
             '--landcover', cover,
-            '--ground', ground, '--photo', photo, *ready['extra'], '--navmesh', 'near', '--climate', 'tropical'], log):
+            '--ground', ground, '--photo', photo, *ready['extra'], *scan_of(name), '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     if not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
         g_full.set()

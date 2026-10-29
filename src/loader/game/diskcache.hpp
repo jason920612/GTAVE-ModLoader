@@ -22,4 +22,8 @@ namespace loader::game::diskcache
 	void Want(const std::vector<std::filesystem::path>& packs);
 	// What it does and holds (the pipe's "diskcache").
 	std::string Report();
+	// The lands' cache on a fast drive (config landCache, paths::Cached): a land on a hard disk whose pack is all in memory
+	// is copied there - its folder's files, the pack's reads coming from memory -, at the thread's background priority, a
+	// land at a time; the least lately used lets go past config landCacheGB (one in use is not let go). Used from the
+	// next start.
 }

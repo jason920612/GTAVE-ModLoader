@@ -9,9 +9,11 @@
 #include <condition_variable>
 #include <cwctype>
 #include <format>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include <MinHook.h>
@@ -84,6 +86,161 @@ namespace loader::game::diskcache
 		std::string Name(const std::filesystem::path& pack)
 		{
 			return pack.parent_path().filename().string();
+		}
+
+		// the lands' cache: the folders to copy there, one at a time; what it holds (for the report)
+		std::mutex g_fillMutex;
+		std::condition_variable g_fillWake;
+		std::deque<std::filesystem::path> g_fillQueue;
+		std::set<std::wstring> g_fillAsked; // (once a run each)
+		std::string g_fillState = "none";
+
+		uint64_t FolderSize(const std::filesystem::path& folder)
+		{
+			uint64_t total = 0;
+			std::error_code ec;
+			for (const auto& e : std::filesystem::directory_iterator(folder, ec))
+			{
+				std::error_code e2;
+				if (e.is_regular_file(e2))
+					total += e.file_size(e2);
+			}
+			return total;
+		}
+
+		// Copies a land's folder into the cache: its files into <name>.part, the pack last, their times the land's; the
+		// old copy gone, the new one named. Room made first: the least lately used copies let go (one in use stays).
+		void CopyLand(const std::filesystem::path& folder)
+		{
+			const std::filesystem::path root = paths::CacheRoot();
+			std::error_code ec;
+			if (root.empty() || paths::Cached(folder) != folder || std::filesystem::exists(folder / L"dlc.rpf.new", ec))
+				return;
+			const std::string name = folder.filename().string();
+			const uint64_t need = FolderSize(folder), budget = static_cast<uint64_t>(std::max(0, config::Get().landCacheGB)) << 30;
+			std::filesystem::create_directories(root, ec);
+			// (room: the copies by their last use, oldest first)
+			std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> copies;
+			uint64_t used = 0;
+			for (const auto& e : std::filesystem::directory_iterator(root, ec))
+			{
+				std::error_code e2;
+				if (!e.is_directory(e2) || e.path().filename() == folder.filename())
+					continue;
+				used += FolderSize(e.path());
+				auto when = std::filesystem::last_write_time(e.path() / L"used", e2);
+				if (e2)
+					when = std::filesystem::last_write_time(e.path(), e2);
+				copies.push_back({when, e.path()});
+			}
+			std::sort(copies.begin(), copies.end());
+			for (const auto& [when, path] : copies)
+			{
+				if (used + need <= budget)
+					break;
+				const uint64_t size = FolderSize(path);
+				std::error_code e2;
+				std::filesystem::remove_all(path, e2);
+				if (!e2)
+				{
+					used -= std::min(used, size);
+					log::Info("disk cache: {} let go from the lands' cache ({} MB)", path.filename().string(), size >> 20);
+				}
+			}
+			if (used + need > budget)
+			{
+				log::Warn("disk cache: no room in the lands' cache for {} ({} MB; {} of {} MB used)", name, need >> 20, used >> 20, budget >> 20);
+				return;
+			}
+			const auto t0 = std::chrono::steady_clock::now();
+			const std::filesystem::path part = root / (folder.filename().wstring() + L".part"), copy = root / folder.filename();
+			std::filesystem::remove_all(part, ec);
+			std::filesystem::create_directories(part, ec);
+			std::vector<std::filesystem::path> files;
+			for (const auto& e : std::filesystem::directory_iterator(folder, ec))
+			{
+				std::error_code e2;
+				if (e.is_regular_file(e2) && e.path().filename() != L"dlc.rpf")
+					files.push_back(e.path());
+			}
+			files.push_back(folder / L"dlc.rpf");
+			for (const auto& file : files)
+			{
+				const std::filesystem::path to = part / file.filename();
+				std::error_code e2;
+				if (!CopyFileExW(file.c_str(), to.c_str(), nullptr, nullptr, nullptr, 0))
+				{
+					log::Warn("disk cache: {} not copied into the lands' cache (error {})", (folder.filename() / file.filename()).string(), GetLastError());
+					std::filesystem::remove_all(part, e2);
+					return;
+				}
+				std::filesystem::last_write_time(to, std::filesystem::last_write_time(file, e2), e2);
+			}
+			// (a pack rebuilt meanwhile: this copy is of the old one)
+			for (const auto& file : files)
+			{
+				std::error_code e2, e3;
+				if (std::filesystem::last_write_time(file, e2) != std::filesystem::last_write_time(part / file.filename(), e3) || e2 || e3)
+				{
+					std::filesystem::remove_all(part, e2);
+					return;
+				}
+			}
+			std::filesystem::remove_all(copy, ec);
+			std::filesystem::rename(part, copy, ec);
+			if (ec)
+			{
+				log::Warn("disk cache: {}'s copy not named in the lands' cache ({})", name, ec.message());
+				std::filesystem::remove_all(part, ec);
+				return;
+			}
+			const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+			log::Info("disk cache: {} ({} MB) copied into the lands' cache in {:.1f} s ({:.0f} MB/s): read from there at the next start", name, need >> 20,
+			    seconds, seconds > 0 ? (need >> 20) / seconds : 0.0);
+		}
+
+		void Fill()
+		{
+			// (a copy left half-made by an earlier run: gone)
+			{
+				const std::filesystem::path root = paths::CacheRoot();
+				std::error_code ec;
+				for (const auto& e : std::filesystem::directory_iterator(root, ec))
+					if (e.path().extension() == L".part")
+					{
+						std::error_code e2;
+						std::filesystem::remove_all(e.path(), e2);
+					}
+			}
+			SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+			for (;;)
+			{
+				std::filesystem::path folder;
+				{
+					std::unique_lock lock(g_fillMutex);
+					g_fillWake.wait(lock, [] { return !g_fillQueue.empty(); });
+					folder = g_fillQueue.front();
+					g_fillQueue.pop_front();
+					g_fillState = "copying " + folder.filename().string();
+				}
+				CopyLand(folder);
+				std::lock_guard lock(g_fillMutex);
+				g_fillState = "idle";
+			}
+		}
+
+		// a land whose pack is all in memory: to the cache (once a run)
+		void ToCache(const std::filesystem::path& pack)
+		{
+			if (paths::CacheRoot().empty())
+				return;
+			static std::once_flag started;
+			std::call_once(started, [] { std::thread(Fill).detach(); });
+			std::lock_guard lock(g_fillMutex);
+			if (!g_fillAsked.insert(pack.parent_path().wstring()).second)
+				return;
+			g_fillQueue.push_back(pack.parent_path());
+			g_fillWake.notify_all();
 		}
 
 		// The working set's minimum kept over what is locked (VirtualLock counts against it), else nothing more is locked.
@@ -242,6 +399,8 @@ namespace loader::game::diskcache
 					}
 					if (!h->failed && h->read < h->size)
 						ReadIn(*h, k == 0, seen);
+					if (!h->failed && h->read == h->size)
+						ToCache(h->file);
 				}
 			}
 		}
@@ -341,6 +500,11 @@ namespace loader::game::diskcache
 		for (const auto& h : g_held)
 			out += std::format(" | held {}: {}/{} MB, {} MB locked, {:.1f} s{}", Name(h->file), h->read >> 20, h->size >> 20, h->locked >> 20, h->seconds.load(),
 			    h->failed ? " (failed)" : "");
+		if (const auto root = paths::CacheRoot(); !root.empty())
+		{
+			std::lock_guard fill(g_fillMutex);
+			out += std::format(" | lands' cache {}: {}, {} waiting", root.string(), g_fillState, g_fillQueue.size());
+		}
 		return out;
 	}
 }
