@@ -902,10 +902,22 @@ int main(int argc, char** argv)
 	_setmaxstdio(8192);
 	// (unbuffered: a long build's progress shows as it happens, also into a log)
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
-	// A batch's steps (sectors.py sets WG_BACKGROUND) in Windows' background mode - idle CPU, very low I/O and memory
-	// priority: the game played meanwhile reads from the disk the batch writes.
+	// A batch's steps (sectors.py sets WG_BACKGROUND) behind the game played meanwhile, which reads from the disk the batch
+	// writes: idle CPU, low I/O and memory priority. Not Windows' background mode: it holds the process's working set to
+	// 32 MB - a build of 10 GB took a million page faults a second and ran 2.5 times as long.
 	if (const char* background = std::getenv("WG_BACKGROUND"); background && *background == '1')
-		SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
+	{
+		SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
+		MEMORY_PRIORITY_INFORMATION memory{MEMORY_PRIORITY_LOW};
+		SetProcessInformation(GetCurrentProcess(), ProcessMemoryPriority, &memory, sizeof(memory));
+		// (the I/O priority: ntdll's NtSetInformationProcess, ProcessIoPriority 33, 1 = low)
+		using SetInformationFn = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG);
+		if (const auto set = reinterpret_cast<SetInformationFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationProcess")))
+		{
+			ULONG io = 1;
+			set(GetCurrentProcess(), 33, &io, sizeof(io));
+		}
+	}
 	if (argc < 2)
 		return Fail("usage: worldgen roundtrip|extract-ynd|regrid|testroad --game <dir> --keys <ng.bin> [--out <dir>]");
 	for (int i = 2; i + 1 < argc; i += 2)

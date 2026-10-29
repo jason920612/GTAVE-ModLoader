@@ -125,13 +125,14 @@ def run(cmd, log):
 
 
 def background():
-    """This process in Windows' background mode (idle CPU, very low I/O and memory priority), its steps at idle priority:
+    """This process at idle priority (and its steps; worldgen with WG_BACKGROUND lowers its I/O and memory priority too):
     the game reads its files from the disk the batch writes, and played meanwhile at normal priority its streaming waited
-    for the disk (frames of 100 ms to 2.7 s) and the batch's jobs took the CPU from its threads."""
+    for the disk (frames of 100 ms to 2.7 s) and the batch's jobs took the CPU from its threads. Not Windows' background
+    mode: it holds a process's working set to 32 MB (the builds ran 2.5 times as long, a million page faults a second)."""
     if os.name == 'nt':
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00100000)  # PROCESS_MODE_BACKGROUND_BEGIN
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00000040)  # IDLE_PRIORITY_CLASS
 
 
 g_full = threading.Event()
