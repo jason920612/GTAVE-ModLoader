@@ -2,7 +2,9 @@
 
 #include <Windows.h>
 
+#include <cstddef>
 #include <cstring>
+#include <tuple>
 
 #include "../config.hpp"
 #include "../log.hpp"
@@ -63,6 +65,25 @@ namespace loader::game::pathregions
 			uint32_t nodeArea;    // what the node there says (0xFFFFFFFF: past the count)
 		};
 		LinkGuard* g_guard = nullptr;
+
+		// The route search (0xF4FFE0: the vehicles' routes, the GPS): its expansion of a node follows each link into the
+		// link's region - the area checked (at most 1023, a region loaded, with nodes) but not the node: one past the
+		// region's count, or one of another area, is taken on as a node there and put into the search's open lists through
+		// its first 16 bytes; when it is not one, the game writes through what lies there (0xF51346: crashed after a
+		// crossing that did not come, the band's regions holding the other land's nodes while they waited to be unloaded).
+		// Its walk back along the route reads the links' nodes the same way (0xF517EC). Both pass over such links now, as
+		// the other path through the search does (0xF5100E: the count and the area checked).
+		constexpr uintptr_t kSearchLink = 0xF507A9, kSearchSkip = 0xF50790, kBackLink = 0xF517EC, kBackSkip = 0xF517C0;
+		constexpr uint8_t kSearchLinkBytes[] = {0x48, 0xC1, 0xE9, 0x10, 0x48, 0x8D, 0x04, 0x89};             // shr rcx,10h; lea rax,[rcx+rcx*4]
+		constexpr uint8_t kSearchSkipBytes[] = {0x44, 0x89, 0xF6, 0x8B, 0x84, 0x24, 0xB8, 0x00, 0x00, 0x00}; // mov esi,r14d; mov eax,[rsp+0B8h]
+		constexpr uint8_t kBackLinkBytes[] = {0x48, 0xC1, 0xEE, 0x10, 0x44, 0x8B, 0x69, 0x04};               // shr rsi,10h; mov r13d,[rcx+4]
+		constexpr uint8_t kBackSkipBytes[] = {0x48, 0x83, 0xC1, 0x08, 0x48, 0xFF, 0xC8};                     // add rcx,8; dec rax
+		struct RouteGuard
+		{
+			volatile long count;
+			uint32_t link; // area | node << 16 (the last passed over)
+		};
+		RouteGuard* g_routeGuard = nullptr;
 	}
 
 	bool Install()
@@ -305,8 +326,114 @@ namespace loader::game::pathregions
 		return true;
 	}
 
+	bool GuardRouteSearchLinks()
+	{
+		const auto module = pattern::Module::Main();
+		const uintptr_t paths = module.base + kThePaths;
+		for (const auto& [rva, bytes, length] : {std::tuple{kSearchLink, kSearchLinkBytes, sizeof(kSearchLinkBytes)},
+		         std::tuple{kSearchSkip, kSearchSkipBytes, sizeof(kSearchSkipBytes)}, std::tuple{kBackLink, kBackLinkBytes, sizeof(kBackLinkBytes)},
+		         std::tuple{kBackSkip, kBackSkipBytes, sizeof(kBackSkipBytes)}})
+			if (std::memcmp(reinterpret_cast<const void*>(module.base + rva), bytes, length) != 0)
+			{
+				log::Warn("world path regions: the route search's code at {:#x} differs from the build this was made for; its links to nodes that "
+				          "are not there are left as they are",
+				    rva);
+				return false;
+			}
+		uint8_t* block = AllocateNear(module.base, 256);
+		if (!block)
+			return false;
+		g_routeGuard = reinterpret_cast<RouteGuard*>(block + 224);
+		const auto guard = reinterpret_cast<uintptr_t>(g_routeGuard);
+		uint8_t* at = block;
+		const auto bytes = [&](std::initializer_list<uint8_t> list) {
+			for (const uint8_t b : list)
+				*at++ = b;
+		};
+		const auto rel32 = [&](uintptr_t target, int after = 0) { // (rip-relative: from the instruction's end, `after` bytes on)
+			const int32_t rel = static_cast<int32_t>(static_cast<intptr_t>(target) - reinterpret_cast<intptr_t>(at + 4 + after));
+			std::memcpy(at, &rel, 4);
+			at += 4;
+		};
+		// (a jump within the stub, its target patched once known)
+		const auto forward = [&](std::initializer_list<uint8_t> opcode) {
+			bytes(opcode);
+			uint8_t* hole = at;
+			at += 4;
+			return hole;
+		};
+		const auto land = [&](uint8_t* hole) {
+			const int32_t rel = static_cast<int32_t>(at - (hole + 4));
+			std::memcpy(hole, &rel, 4);
+		};
+		// the search's expansion of a node: the link in ecx, its area in r15, the area's nodes in rsi
+		uint8_t* search = at;
+		bytes({0x50, 0x52});                   // push rax; push rdx
+		bytes({0x89, 0xC8, 0xC1, 0xE8, 0x10}); // mov eax,ecx; shr eax,16 (the node)
+		bytes({0x48, 0x8D, 0x15});             // lea rdx,[ThePaths]
+		rel32(paths);
+		bytes({0x4A, 0x8B, 0x94, 0xFA, 0x40, 0x16, 0x00, 0x00}); // mov rdx,[rdx+r15*8+1640h] (the area's region)
+		bytes({0x3B, 0x42, 0x18});                               // cmp eax,[rdx+18h] (its node count)
+		uint8_t* past = forward({0x0F, 0x83});                   // jae bad
+		bytes({0x48, 0x8D, 0x04, 0x80});                         // lea rax,[rax+rax*4]
+		bytes({0x66, 0x44, 0x3B, 0x7C, 0xC6, 0x10});             // cmp r15w,[rsi+rax*8+10h] (the area the node says)
+		uint8_t* other = forward({0x0F, 0x85});                  // jne bad
+		bytes({0x5A, 0x58});                                     // pop rdx; pop rax
+		bytes({0x48, 0xC1, 0xE9, 0x10, 0x48, 0x8D, 0x04, 0x89}); // shr rcx,10h; lea rax,[rcx+rcx*4] (as the game has them)
+		bytes({0xE9});
+		rel32(module.base + kSearchLink + sizeof(kSearchLinkBytes));
+		land(past), land(other);
+		bytes({0x89, 0x0D}); // mov [link],ecx
+		rel32(guard + offsetof(RouteGuard, link));
+		bytes({0xF0, 0xFF, 0x05}); // lock inc dword [count]
+		rel32(guard + offsetof(RouteGuard, count));
+		bytes({0x5A, 0x58, 0xE9}); // pop rdx; pop rax; jmp <the link passed over, as one into a region not loaded>
+		rel32(module.base + kSearchSkip);
+		// the route's walk back: the link in esi, its region in rdx, the region's nodes in r12
+		uint8_t* back = at;
+		bytes({0x50});                                           // push rax
+		bytes({0x89, 0xF0, 0xC1, 0xE8, 0x10});                   // mov eax,esi; shr eax,16 (the node)
+		bytes({0x3B, 0x42, 0x18});                               // cmp eax,[rdx+18h]
+		past = forward({0x0F, 0x83});                            // jae bad
+		bytes({0x48, 0x8D, 0x04, 0x80});                         // lea rax,[rax+rax*4]
+		bytes({0x66, 0x41, 0x3B, 0x74, 0xC4, 0x10});             // cmp si,[r12+rax*8+10h]
+		other = forward({0x0F, 0x85});                           // jne bad
+		bytes({0x58});                                           // pop rax
+		bytes({0x48, 0xC1, 0xEE, 0x10, 0x44, 0x8B, 0x69, 0x04}); // shr rsi,10h; mov r13d,[rcx+4] (as the game has them)
+		bytes({0xE9});
+		rel32(module.base + kBackLink + sizeof(kBackLinkBytes));
+		land(past), land(other);
+		bytes({0x89, 0x35}); // mov [link],esi
+		rel32(guard + offsetof(RouteGuard, link));
+		bytes({0xF0, 0xFF, 0x05}); // lock inc dword [count]
+		rel32(guard + offsetof(RouteGuard, count));
+		bytes({0x58, 0xE9}); // pop rax; jmp <the next link>
+		rel32(module.base + kBackSkip);
+		FlushInstructionCache(GetCurrentProcess(), block, 256);
+		for (const auto& [site, target] : {std::pair{module.base + kSearchLink, search}, std::pair{module.base + kBackLink, back}})
+		{
+			uint8_t jump[8];
+			std::memset(jump, 0x90, sizeof(jump));
+			jump[0] = 0xE9;
+			const int32_t rel = static_cast<int32_t>(reinterpret_cast<intptr_t>(target) - static_cast<intptr_t>(site + 5));
+			std::memcpy(jump + 1, &rel, 4);
+			Write(site, jump, sizeof(jump));
+		}
+		log::Info("world path regions: the route search passes over links to nodes that are not there (+{:#x}, +{:#x})", kSearchLink, kBackLink);
+		return true;
+	}
+
 	void ReportGuards()
 	{
+		static long routeReported = 0;
+		if (g_routeGuard && g_routeGuard->count != routeReported)
+		{
+			const long now = g_routeGuard->count;
+			const uint32_t link = g_routeGuard->link;
+			log::Warn("world path regions: the route search passed over {} link(s) to nodes that are not there (the last: area {} node {})",
+			    now - routeReported, link & 0xFFFF, link >> 16);
+			routeReported = now;
+		}
 		static long reported = 0;
 		if (!g_guard || g_guard->count == reported)
 			return;

@@ -1533,8 +1533,8 @@ namespace worldgen::roads
 				x.lanesF = otherPointsHere ? o.backward : o.forward, x.lanesB = otherPointsHere ? o.forward : o.backward;
 			return x;
 		};
-		// the roads' surfaces, for what lies beside an edge: a parapet or a retaining wall only where no other road's surface
-		// at about its height goes on past it - two decks or embankments side by side (a ramp leaving the road, the two
+		// the roads' surfaces, for what lies beside an edge: a parapet or a retaining wall only where no other road's carriageway
+		// flush with it goes on past it - two decks or embankments side by side (a ramp leaving the road, the two
 		// carriageways of a divided road on one structure) are one surface, a barrier only once they part (it had been two
 		// walls side by side, crossing over each other's lanes where the ramp leaves). Not the road's own continuation at a
 		// change of road.
@@ -1553,7 +1553,9 @@ namespace worldgen::roads
 			const Edge& e = n.edges[ei];
 			if (hidden[ei] || e.points.size() < 2 || e.z.size() != e.points.size())
 				continue;
-			const float half = e.HalfWidth() + e.Walk();
+			// (the carriageway alone: a side's sidewalk is not known here - one counted that was not there took the wall
+			// off a raised road with a gap between it and the next, and a car fell 7 m into it)
+			const float half = e.HalfWidth();
 			for (size_t k = 0; k + 1 < e.points.size(); ++k)
 			{
 				const P2 &a = e.points[k], &c = e.points[k + 1];
@@ -1562,7 +1564,8 @@ namespace worldgen::roads
 						pieces[pieceKey(x + kPieceCell / 2, y + kPieceCell / 2)].push_back({ei, k, half});
 			}
 		}
-		// (whether another road's surface - not edge `self`'s, nor the road it changes into - takes in (x, y) at about height zz)
+		// (whether another road's surface - not edge `self`'s, nor the road it changes into - takes in (x, y) at height zz, flush
+		// with it within 0.4 m: a step more than that keeps its wall)
 		const auto surfaced = [&](size_t self, float x, float y, float zz) {
 			const auto it = pieces.find(pieceKey(x, y));
 			if (it == pieces.end())
@@ -1580,7 +1583,7 @@ namespace worldgen::roads
 				const float dx = c[0] - a[0], dy = c[1] - a[1], l2 = dx * dx + dy * dy;
 				const float t = l2 > 0 ? std::clamp(((x - a[0]) * dx + (y - a[1]) * dy) / l2, 0.0f, 1.0f) : 0.0f;
 				const float oz = o.z[q.at] + (o.z[q.at + 1] - o.z[q.at]) * t;
-				if (std::hypot(x - a[0] - dx * t, y - a[1] - dy * t) <= q.half && std::fabs(oz - zz) < 1.2f)
+				if (std::hypot(x - a[0] - dx * t, y - a[1] - dy * t) <= q.half && std::fabs(oz - zz) < 0.4f)
 					return true;
 			}
 			return false;

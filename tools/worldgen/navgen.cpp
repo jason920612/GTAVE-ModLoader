@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -37,16 +40,25 @@ namespace worldgen::navgen
 			std::vector<Polygon> polys;
 		};
 
+		// (research - WG_NAVTIMES=1 prints it: each of Recast's steps' time, all squares' summed, microseconds)
+		std::atomic<int64_t> g_stepTime[RC_MAX_TIMERS]{};
+
 		class Context : public rcContext
 		{
 		public:
 			std::string errors;
 
 		protected:
+			std::chrono::steady_clock::time_point started[RC_MAX_TIMERS];
 			void doLog(const rcLogCategory category, const char* message, const int length) override
 			{
 				if (category == RC_LOG_ERROR)
 					errors.append(message, length).append("; ");
+			}
+			void doStartTimer(const rcTimerLabel label) override { started[label] = std::chrono::steady_clock::now(); }
+			void doStopTimer(const rcTimerLabel label) override
+			{
+				g_stepTime[label] += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started[label]).count();
 			}
 		};
 
@@ -297,6 +309,8 @@ namespace worldgen::navgen
 	{
 		if (surfaces.size() != mesh.triangles.size())
 			return error = "a surface per triangle is needed", false;
+		const auto t0 = std::chrono::steady_clock::now();
+		std::chrono::steady_clock::time_point t1, t2;
 		// the triangles' boxes (x0 x1 y0 y1) and the squares the walkable ones reach into
 		std::vector<std::array<float, 4>> boxes(mesh.triangles.size());
 		std::vector<uint8_t> areas(mesh.triangles.size());
@@ -348,6 +362,7 @@ namespace worldgen::navgen
 				if (!errors[i].empty())
 					return error = errors[i], false;
 		}
+		t1 = std::chrono::steady_clock::now();
 		std::vector<SquareMesh> meshes;
 		std::map<Square, int> slot;
 		for (size_t i = 0; i < order.size(); ++i)
@@ -480,6 +495,7 @@ namespace worldgen::navgen
 						++out.joined;
 				}
 
+		t2 = std::chrono::steady_clock::now();
 		// the navmeshes
 		for (size_t m = 0; m < meshes.size(); ++m)
 		{
@@ -643,6 +659,16 @@ namespace worldgen::navgen
 			Node(nm, polyBoxes, x0, y0, x0 + kSquare, y0 + kSquare, zMin, zMax, 0);
 			out.polygons += polys.size();
 			out.navmeshes[sq] = std::move(nm);
+		}
+		if (const char* times = std::getenv("WG_NAVTIMES"); times && *times == '1')
+		{
+			const auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+			std::printf("navmesh times: squares %.0f ms (%u threads), sides %.0f ms, navmeshes %.0f ms; Recast's steps (all squares, ms):", ms(t0, t1),
+			    std::max(1u, std::thread::hardware_concurrency()), ms(t1, t2), ms(t2, std::chrono::steady_clock::now()));
+			for (int k = 0; k < RC_MAX_TIMERS; ++k)
+				if (g_stepTime[k])
+					std::printf(" %d=%.0f", k, g_stepTime[k] / 1000.0);
+			std::printf("\n");
 		}
 		return true;
 	}

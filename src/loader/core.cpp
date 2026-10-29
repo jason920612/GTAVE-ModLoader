@@ -361,6 +361,7 @@ namespace loader::core
 		game::pathregions::Install();
 		game::pathregions::AllowNewRegionFiles();
 		game::pathregions::GuardNextNodeLinks();
+		game::pathregions::GuardRouteSearchLinks();
 		game::navgrid::Install();
 		game::playarea::Install();
 		game::sectors::Install();

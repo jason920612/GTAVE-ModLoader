@@ -28,5 +28,9 @@ namespace loader::game::pathregions
 	// of another area) on as a link with no node, and the game exits reading it (research/phase0.md §61.27): such links
 	// are passed over, as one into a region not loaded is. ReportGuards logs how many were (from the game's thread).
 	bool GuardNextNodeLinks();
+	// The route search (vehicles' routes, the GPS) follows links into their regions checking the area but not the node: a
+	// link to a node past the region's count, or to a node of another area - a band's region holding another land's nodes
+	// while it waits to be unloaded - had it write through what lay there (crash 0xF51346). Such links are passed over.
+	bool GuardRouteSearchLinks();
 	void ReportGuards();
 }
