@@ -324,6 +324,33 @@ namespace loader::game::crossing
 		return out;
 	}
 
+	std::vector<int32_t> VehiclesNear(float x, float y, float radius)
+	{
+		std::vector<int32_t> out;
+		if (!CodeKnown())
+			return out;
+		std::vector<uintptr_t> vehicles, peds;
+		Near(x, y, radius, vehicles, peds);
+		const auto guidOf = reinterpret_cast<int32_t (*)(uintptr_t)>(pattern::Module::Main().base + kGuidOf);
+		for (const uintptr_t v : vehicles)
+			if (const int32_t h = guidOf(v))
+				out.push_back(h);
+		return out;
+	}
+
+	std::vector<std::array<float, 3>> VehiclePlacesNear(float x, float y, float radius)
+	{
+		std::vector<std::array<float, 3>> out;
+		if (!CodeKnown())
+			return out;
+		std::vector<uintptr_t> vehicles, peds;
+		Near(x, y, radius, vehicles, peds);
+		for (const uintptr_t v : vehicles)
+			if (std::array<float, 3> p{}; Copy(p.data(), v + 0x90, sizeof(p)))
+				out.push_back(p);
+		return out;
+	}
+
 	void Tick()
 	{
 		if (!g_retask.empty())

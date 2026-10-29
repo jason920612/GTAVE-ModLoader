@@ -691,8 +691,9 @@ namespace worldgen::flora
 			return out;
 		}
 
-		// A cabbage palm (the sabal, Florida's own): a straight trunk in the criss-cross boots of old leaf bases, a dense round
-		// head of thirty-odd fan leaves on stalks 1.1-1.7 m long out every way, the lower ones hanging.
+		// A cabbage palm (the sabal, Florida's own): a straight trunk in the criss-cross boots of old leaf bases, a round head
+		// of thirty-odd fan leaves on stalks 0.8-1.3 m long out every way, the lower ones hanging - or, two in three, "hurricane
+		// cut" as the towns keep them: the lower leaves trimmed off, the head a brush of the upper ones.
 		Model SabalPalm(uint32_t seed)
 		{
 			Random rnd(seed);
@@ -704,17 +705,39 @@ namespace worldgen::flora
 			    0.22f, rnd, 0.015f);
 			limbs.push_back({trunk, kBarkSabal});
 			const P3 crown = trunk.p.back(), middle{crown[0], crown[1], crown[2] + 0.4f};
-			const int n = 34 + static_cast<int>(rnd.Next() % 10);
+			// (the head's core: the leaf bases' mass the stalks come out of, narrowing up - the trunk's top had been a cut
+			// stump in the head further off, where the stalks are not drawn)
+			limbs.push_back({Grow(crown, {0, 0, 1}, {0, 0, 1}, 0.0f, 0.8f, 2, trunk.r.back() * 1.3f, 0.08f, rnd, 0.01f), kBarkSabal});
+			const bool trimmed = rnd.Next() % 3 != 0;
+			const int n = (trimmed ? 26 : 34) + static_cast<int>(rnd.Next() % 8);
+			// (the spin that turns a card's picture's up to `up`: its sideways and up as Card makes them)
+			const auto spinTo = [](const P3& facing, const P3& up) {
+				const P3 f = Unit3(facing);
+				const P3 u = Unit3(Cross(f, std::fabs(f[2]) < 0.95f ? P3{0, 0, 1} : P3{1, 0, 0}));
+				P3 v = Cross(u, f);
+				if (v[2] < 0)
+					v = Mul(v, -1);
+				return std::atan2(-Dot(up, u), Dot(up, v));
+			};
 			for (int k = 0; k < n; ++k)
 			{
 				// (the stalks' directions spread over a sphere, from straight up to well down - none straight down)
-				const float a = k * 2.39996f, z = 1 - 1.6f * (k + 0.5f) / n, rr = std::sqrt(std::max(0.0f, 1 - z * z));
+				const float a = k * 2.39996f, z = 1 - (trimmed ? 1.15f : 1.6f) * (k + 0.5f) / n, rr = std::sqrt(std::max(0.0f, 1 - z * z));
 				const P3 dir{std::cos(a) * rr, std::sin(a) * rr, z};
-				const Limb stalk = Grow(crown, dir, {0, 0, -1}, 0.05f, rnd.Range(1.1f, 1.7f), 2, 0.035f, 0.02f, rnd, 0.05f);
+				// (4.5 cm at the base: drawn at the second level too - the fans had floated round a hole there)
+				const Limb stalk = Grow(crown, dir, {0, 0, -1}, 0.05f, rnd.Range(0.8f, 1.3f), 2, 0.045f, 0.025f, rnd, 0.05f);
 				limbs.push_back({stalk, kBarkSabal});
 				const P3 end = stalk.p.back(), outward = Unit3(Sub(end, crown));
-				const float size = rnd.Range(1.4f, 1.9f);
-				fans.push_back({Add(end, Mul(outward, size * 0.3f)), outward, Sub(end, middle), rnd.Range(-0.4f, 0.4f), size, size, static_cast<int>(rnd.Next() % 4), kFanFrond,
+				// the blade spreads on out of the stalk's end as a hand from its arm - the fan's hub (the picture's foot) there,
+				// the picture's up along the stalk -, its upper side to the sky, rolled round the stalk a little (each fan had
+				// faced out from the crown: the head a ball of discs, "a lollipop")
+				P3 face = Sub(P3{0, 0, 1}, Mul(outward, outward[2]));
+				if (Dot(face, face) < 0.04f)
+					face = {-std::sin(a), std::cos(a), 0};
+				face = Unit3(face);
+				const float roll = rnd.Range(-0.6f, 0.6f), size = rnd.Range(1.2f, 1.6f);
+				face = Add(Mul(face, std::cos(roll)), Mul(Cross(outward, face), std::sin(roll)));
+				fans.push_back({Add(end, Mul(outward, size * 0.38f)), face, Sub(end, middle), spinTo(face, outward), size, size, static_cast<int>(rnd.Next() % 4), kFanFrond,
 				    false});
 			}
 			FinishPalm(out, limbs, {}, crown, middle, 0, fans);

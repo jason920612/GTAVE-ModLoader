@@ -204,7 +204,8 @@ namespace loader::game::sectors
 		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
 		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E,
 		                   kGetEntityUprightValue = 0x95EED5A694951F9F, kIsEntityOnScreen = 0xE659E47AF827484B,
-		                   kSetAllVehicleGeneratorsActiveInArea = 0xC12321827687FE4D, kRemoveVehiclesFromGeneratorsInArea = 0x46A1E1A299EC4BBA;
+		                   kSetAllVehicleGeneratorsActiveInArea = 0xC12321827687FE4D, kRemoveVehiclesFromGeneratorsInArea = 0x46A1E1A299EC4BBA,
+		                   kDeleteEntity = 0xAE3CBE5BF394C9C9;
 		struct ParkedCar
 		{
 			float x = 0, y = 0, z = 0, heading = 0;
@@ -234,6 +235,53 @@ namespace loader::game::sectors
 			g_parkedLive.clear();
 		}
 
+		// (a save loaded: the cars made that still stand where they were made kept, the others forgotten - their numbers will
+		// be other entities'. The game says "loaded" at the end of its first loading screen too, the world not cleared: the
+		// cars made meanwhile had all been forgotten and made again on top of themselves - the two thrown up and over, the
+		// overturned cars of Miami Beach's streets, 2026-10-29)
+		void RecheckParked()
+		{
+			size_t kept = 0;
+			for (size_t k = 0; k < g_parkedLive.size(); ++k)
+			{
+				ParkedCar& car = g_parked[g_parkedLive[k].first].cars[g_parkedLive[k].second];
+				bool stands = car.vehicle > 0 && natives::Invoke<int32_t>(kDoesEntityExist, car.vehicle) && natives::Invoke<int32_t>(kIsEntityAVehicle, car.vehicle) &&
+				              natives::Invoke<uint32_t>(kGetEntityModel, car.vehicle) == car.model;
+				if (stands)
+				{
+					const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, car.vehicle, 1);
+					stands = std::hypot(p.x - car.x, p.y - car.y) < 3 && std::fabs(p.z - car.z) < 3;
+				}
+				if (stands)
+					g_parkedLive[kept++] = g_parkedLive[k];
+				else
+					car.vehicle = 0;
+			}
+			g_parkedLive.resize(kept);
+		}
+
+		// A car of ours taken away; false: the game would not (it was left there, the game's now - the place not used again
+		// while it stands there).
+		size_t g_parkedStuck = 0;
+		bool Remove(int32_t& vehicle)
+		{
+			const int32_t v = vehicle;
+			natives::Invoke<void>(kSetEntityAsMissionEntity, v, 1, 1);
+			natives::Invoke<void>(kDeleteVehicle, &vehicle);
+			if (!natives::Invoke<int32_t>(kDoesEntityExist, v))
+				return vehicle = 0, true;
+			int32_t entity = v;
+			natives::Invoke<void>(kDeleteEntity, &entity);
+			if (!natives::Invoke<int32_t>(kDoesEntityExist, v))
+				return vehicle = 0, true;
+			entity = v;
+			natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &entity);
+			if (g_parkedStuck++ < 5)
+				log::Warn("sectors: a parked car ({}) could not be taken away - left to the game", v);
+			vehicle = 0;
+			return false;
+		}
+
 		// (a land put away: the cars made taken away first - the loader's script made them, so the map group's revert left
 		// them, and their road nodes were the old land's: the game read a node of the new land's road network in their place
 		// and stopped, 0xF4A932, on the second switch)
@@ -250,12 +298,24 @@ namespace loader::game::sectors
 				if (natives::Invoke<int32_t>(kIsPedInVehicle, player, car.vehicle, 0))
 					natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle);
 				else
-				{
-					natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
-					natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
-				}
+					Remove(car.vehicle);
 			}
 			ForgetParked();
+		}
+
+		// Whether a car made at a place would stand in another vehicle (one of the traffic, the player's, one of ours left
+		// there): one within its length ahead or behind and its width beside (as seen along the place's heading) - the
+		// neighbouring places' cars are further off: 2.7 m beside in a car park, 6.6 m on by the kerb.
+		bool Blocked(const ParkedCar& car)
+		{
+			const float h = car.heading * 3.14159265f / 180, fx = -std::sin(h), fy = std::cos(h);
+			for (const auto& p : crossing::VehiclePlacesNear(car.x, car.y, 6))
+			{
+				const float dx = p[0] - car.x, dy = p[1] - car.y;
+				if (std::fabs(dx * fx + dy * fy) < 4.8f && std::fabs(dy * fx - dx * fy) < 2.2f && std::fabs(p[2] - car.z) < 3)
+					return true;
+			}
+			return false;
 		}
 
 		int64_t ParkCell(float x, float y)
@@ -336,9 +396,9 @@ namespace loader::game::sectors
 					const bool moved = std::hypot(p.x - car.x, p.y - car.y) > 3 || std::fabs(p.z - car.z) > 3;
 					if (!inside && (natives::Invoke<float>(kGetEntityUprightValue, car.vehicle) < 0.5f || (settling && moved)))
 					{
-						natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
-						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
-						car.vehicle = settling ? 0 : -1;
+						// (one the game would not let go stays there, its: the place not used again either)
+						const bool taken = Remove(car.vehicle);
+						car.vehicle = taken && settling ? 0 : -1;
 						gone = true;
 						++removed;
 					}
@@ -350,9 +410,7 @@ namespace loader::game::sectors
 					}
 					else if (!here || g_parkedLive[k].first != here->name || std::hypot(c.x - car.x, c.y - car.y) > kParkFar)
 					{
-						natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
-						natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
-						car.vehicle = 0;
+						Remove(car.vehicle);
 						gone = true;
 						++removed;
 					}
@@ -401,10 +459,7 @@ namespace loader::game::sectors
 			size_t count = g_parkedLive.size(), farthest = 0;
 			std::vector<bool> letGo(g_parkedLive.size());
 			const auto release = [&](size_t k) {
-				ParkedCar& old = pl.cars[g_parkedLive[k].second];
-				natives::Invoke<void>(kSetEntityAsMissionEntity, old.vehicle, 1, 1);
-				natives::Invoke<void>(kDeleteVehicle, &old.vehicle);
-				old.vehicle = 0;
+				Remove(pl.cars[g_parkedLive[k].second].vehicle);
 				letGo[k] = true;
 				--count;
 			};
@@ -423,9 +478,12 @@ namespace loader::game::sectors
 					break;
 				if (!natives::Invoke<int32_t>(kHasModelLoaded, car.model))
 					continue;
-				// (the ground under it in: its collision found within 3 m of its place)
+				// (the ground under it in: its collision found within 3 m of its place; and nothing standing there - a car of
+				// the traffic, the player's, one of ours forgotten or the game would not let go)
 				float gz = 0;
 				if (!natives::Invoke<int32_t>(kGetGroundZFor3dCoord, car.x, car.y, car.z + 3.0f, &gz, 0, 0) || std::fabs(gz - car.z) > 3)
+					continue;
+				if (Blocked(car))
 					continue;
 				if (count >= kParkMax)
 				{
@@ -995,6 +1053,34 @@ namespace loader::game::sectors
 		    g_parkRefused && now - g_parkRefused < 60000 ? std::format(", the game made none {:.0f} s ago", (now - g_parkRefused) / 1000.0) : "");
 	}
 
+	std::string Cars(float radius)
+	{
+		const ULONGLONG now = GetTickCount64();
+		const auto c = natives::Invoke<natives::ScrVector>(kGetFinalRenderedCamCoord);
+		std::unordered_map<int32_t, const ParkedCar*> ours;
+		for (const auto& [land, k] : g_parkedLive)
+			ours[g_parked[land].cars[k].vehicle] = &g_parked[land].cars[k];
+		std::string out = std::format("camera {:.1f} {:.1f} {:.1f}", c.x, c.y, c.z);
+		for (const int32_t v : crossing::VehiclesNear(c.x, c.y, radius))
+		{
+			const auto p = natives::Invoke<natives::ScrVector>(kGetEntityCoords, v, 1);
+			const int32_t driver = natives::Invoke<int32_t>(kGetPedInVehicleSeat, v, -1, 0);
+			out += std::format(" | {} {:08X} {:.1f} {:.1f} {:.1f} heading {:.0f} up {:.2f} speed {:.1f}{}{}", v, natives::Invoke<uint32_t>(kGetEntityModel, v), p.x, p.y,
+			    p.z, natives::Invoke<float>(kGetEntityHeading, v), natives::Invoke<float>(kGetEntityUprightValue, v), natives::Invoke<float>(kGetEntitySpeed, v),
+			    driver ? " driven" : "", natives::Invoke<int32_t>(kIsEntityAMissionEntity, v) ? " mission" : "");
+			if (const auto it = ours.find(v); it != ours.end())
+				out += std::format(" ours: made at {:.1f} {:.1f} {:.1f} heading {:.0f} ({:.1f} m off), try {}, {:.1f} s ago", it->second->x, it->second->y,
+				    it->second->z, it->second->heading, std::hypot(p.x - it->second->x, p.y - it->second->y), it->second->tries, (now - it->second->made) / 1000.0);
+		}
+		// (and the land's places round there given up - a car made there fell over, rolled or was moved)
+		size_t takenNear = 0, takenAll = 0;
+		for (const auto& [land, pl] : g_parked)
+			for (const ParkedCar& car : pl.cars)
+				if (car.vehicle == -1)
+					++takenAll, takenNear += std::hypot(car.x - c.x, car.y - c.y) <= radius;
+		return out + std::format(" | places given up: {} within {:.0f} m, {} in all; {} the game would not let go", takenNear, radius, takenAll, g_parkedStuck);
+	}
+
 	std::vector<std::string> Lands()
 	{
 		std::vector<std::string> out;
@@ -1221,8 +1307,7 @@ namespace loader::game::sectors
 					natives::Invoke<void>(kSetEntityAsNoLongerNeeded, &car.vehicle), ++released;
 				else if (exists)
 				{
-					natives::Invoke<void>(kSetEntityAsMissionEntity, car.vehicle, 1, 1);
-					natives::Invoke<void>(kDeleteVehicle, &car.vehicle);
+					Remove(car.vehicle);
 					++removed;
 				}
 				car.vehicle = 0;
@@ -1900,7 +1985,7 @@ namespace loader::game::sectors
 	void Loaded(int32_t save)
 	{
 		g_loadedAt = GetTickCount64();
-		ForgetParked();
+		RecheckParked();
 		if (!save || g_lands.empty())
 			return;
 		const auto j = ReadSaves();

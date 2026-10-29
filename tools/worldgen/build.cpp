@@ -2659,14 +2659,16 @@ namespace worldgen::build
 				{
 					if (!r.sidewalks || !r.sidewalkLeft || !r.sidewalkRight)
 					{
-						size_t townish = 0, samples = 0;
+						size_t townish = 0, samples = 0, suburban = 0;
 						for (size_t k = 0; k < r.points.size(); k += std::max<size_t>(1, r.points.size() / 8), ++samples)
 						{
 							const uint8_t lc = landCoverAt(r.points[k][0], r.points[k][1]);
 							townish += lc >= 22 && lc <= 24;
+							suburban += lc == 21 || lc == 22;
 						}
 						const bool street = r.kind != "service" && r.kind != "track" && !r.kind.starts_with("motorway") && !r.kind.ends_with("_link");
-						r.curb = street && townish * 2 >= samples;
+						const bool swales = latAt(r.points[r.points.size() / 2][1]) < 27.0 && suburban * 2 > samples;
+						r.curb = street && townish * 2 >= samples && !swales;
 					}
 					continue;
 				}
@@ -2703,8 +2705,17 @@ namespace worldgen::build
 				}
 				if (built * 10 < samples * (big ? 5u : 7u))
 				{
+					// (south Florida's suburbs - low intensity development along most of the street - drain to grass swales, no
+					// kerb: the reviewers of Miami's views saw "tall raised kerbs" where the photos have flush edges and swales)
+					size_t suburban = 0, looked = 0;
+					for (size_t k = 0; k < r.points.size(); k += std::max<size_t>(1, r.points.size() / 8), ++looked)
+					{
+						const uint8_t lc = landCoverAt(r.points[k][0], r.points[k][1]);
+						suburban += lc == 21 || lc == 22;
+					}
+					const bool swales = latAt(r.points[r.points.size() / 2][1]) < 27.0 && suburban * 2 > looked;
 					r.sidewalks = false, ++without;
-					r.curb = townish * 2 >= samples;
+					r.curb = townish * 2 >= samples && !swales;
 				}
 				else if (dense * 2 >= samples)
 					r.sidewalkWidth = 3.0f;

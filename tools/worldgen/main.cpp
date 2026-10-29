@@ -1676,14 +1676,15 @@ int main(int argc, char** argv)
 			for (int k = 0; k < 4; ++k)
 			{
 				const auto m = worldgen::flora::Make(static_cast<worldgen::flora::Species>(s), static_cast<uint32_t>(s * 101 + k * 7 + 1));
-				// (--obj 1: the nearest level as an OBJ, a group per picture, texture coordinates kept)
+				// (--obj 1: the nearest level as an OBJ - or --lod n's -, a group per picture, texture coordinates kept)
 				if (g_options.contains("obj"))
 				{
+					const size_t lod = g_options.contains("lod") ? std::min<size_t>(std::stoul(g_options["lod"]), m.lods.size() - 1) : 0;
 					std::ofstream obj(out / std::format("tree_{}_{}.obj", s, k));
 					size_t base = 1;
 					for (int t = 0; t < worldgen::flora::kTextures; ++t)
 					{
-						const auto& mesh = m.lods[0][t];
+						const auto& mesh = m.lods[lod][t];
 						if (mesh.indices.empty())
 							continue;
 						obj << "g picture" << t << "\n";

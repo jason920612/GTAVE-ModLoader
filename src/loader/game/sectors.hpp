@@ -25,6 +25,9 @@ namespace loader::game::sectors
 	std::vector<std::string> Lands();
 	// The parked cars the loader has made (and their limit), for the debug pipe.
 	std::string Parked();
+	// Game thread: every vehicle within `radius` of the camera - where, how upright, how fast, driven, a mission's; the
+	// parked cars the loader made with where they were made -, and the parked places given up (the debug pipe's "cars").
+	std::string Cars(float radius);
 
 	// The game thread: that land there instead of the one that shares its place, and the player then at `at` (x, y; null:
 	// wherever the world's clearing leaves them). The switch runs on in Tick (the screen faded meanwhile); "" when it

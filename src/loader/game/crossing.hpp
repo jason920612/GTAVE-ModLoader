@@ -1,5 +1,8 @@
 #pragma once
+#include <array>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 // Crossing between the world builder's lands without a cut (research/phase0.md §64-65; the user: no frame over 15 ms).
 // Neighbouring lands share a band of the same real-world content round their common edge (worldgen: their boxes overlap
@@ -28,6 +31,11 @@ namespace loader::game::crossing
 	// Game thread: what round (x, y, z) does not go with the shift - rockets and grenades in flight (the game's objects),
 	// explosions, fires (places of their own) -, "" none: the shift waits for them (the band is the same place in both lands).
 	std::string Hazards(float x, float y, float z);
+
+	// Game thread: the vehicles within `radius` of (x, y) - the game's vehicle pool's -, their script handles; or only their
+	// places (x, y, z: no handles made for them).
+	std::vector<int32_t> VehiclesNear(float x, float y, float radius);
+	std::vector<std::array<float, 3>> VehiclePlacesNear(float x, float y, float radius);
 
 	// Game thread, each frame.
 	void Tick();

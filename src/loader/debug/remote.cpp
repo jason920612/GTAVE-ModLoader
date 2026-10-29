@@ -1305,6 +1305,20 @@ namespace loader::debug::remote
 					return "err the game thread did not run it";
 				return "ok " + job->result;
 			}
+			if (cmd == "cars")
+			{
+				// cars [radius]: every vehicle within radius (60 m) of the camera, the parked cars the loader made among them
+				// (game/sectors.hpp)
+				float radius = 60;
+				in >> radius;
+				auto job = std::make_shared<Job>();
+				job->run = [radius] { return game::sectors::Cars(radius); };
+				std::unique_lock lock(g_mutex);
+				g_jobs.push_back(job);
+				if (!g_callDone.wait_for(lock, std::chrono::seconds(30), [&] { return job->done; }))
+					return "err the game thread did not run it";
+				return "ok " + job->result;
+			}
 			if (cmd == "dlc")
 			{
 				// dlc packs | dlc execute|revert <pack> <group> [execute|revert <pack> <group> ...]: the DLC content
