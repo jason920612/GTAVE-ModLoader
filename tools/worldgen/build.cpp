@@ -1574,7 +1574,7 @@ namespace worldgen::build
 		// what the aerial pictures show (tools/worldgen/photo.py, research/phase0.md §63): every tree, each metre's cover,
 		// each 4 m cell's ground colour - the trees and the ground then as they are there
 		std::vector<trees::Seen> photoTrees;
-		raster::Grid<uint8_t> photoClass, canopySeen;
+		raster::Grid<uint8_t> photoClass, growing;
 		raster::Grid<std::array<uint8_t, 4>> photoCover;
 		if (!o.photo.empty())
 		{
@@ -1584,17 +1584,11 @@ namespace worldgen::build
 			// (the map's car parks and paved areas paved, whatever the pictures make of them - a stained concrete lot came out
 			// as sand, a lot under trees as their lawn: Tallahassee maps 1600 of them; where the pictures saw the trees'
 			// canopy over one, the colour of asphalt)
-			// (where the pictures see canopy, every 2 m - before the car parks' paving goes over it: the scan's trees are checked
-			// against it below)
-			canopySeen.Init(photoClass.x0, photoClass.y0, photoClass.x0 + photoClass.nx * photoClass.cell, photoClass.y0 + photoClass.ny * photoClass.cell, 2.0f, 0);
-			for (int j = 0; j < photoClass.ny; ++j)
-				for (int i = 0; i < photoClass.nx; ++i)
-					if (photoClass.At(i, j) == 2)
-					{
-						const auto c = canopySeen.Cell({photoClass.x0 + (i + 0.5f) * photoClass.cell, photoClass.y0 + (j + 0.5f) * photoClass.cell});
-						if (canopySeen.In(c[0], c[1]))
-							canopySeen.At(c[0], c[1]) = 1;
-					}
+			// (where the pictures see something growing - canopy, grass - or nothing at all, before the car parks' paving goes over
+			// it: the scan's trees are checked against it below)
+			growing = photoClass;
+			for (auto& v : growing.v)
+				v = v == 0 || (v >= 2 && v <= 4) ? 1 : 0;
 			raster::Grid<uint8_t> paved;
 			paved.x0 = photoClass.x0, paved.y0 = photoClass.y0, paved.cell = photoClass.cell, paved.nx = photoClass.nx, paved.ny = photoClass.ny;
 			paved.v.assign(photoClass.v.size(), 0);
@@ -3537,15 +3531,27 @@ namespace worldgen::build
 											best = dd, t.kind = q->kind;
 						kinds += best < 4;
 					}
-					// (a tree the scan measured that the newer aerial pictures no longer show - no canopy within 3 m of it: cut
-					// down since, a building or a lawn there now - left out: a parking garage's lawn had a row of the scan's trees)
+					// (a tree the scan measured where the newer aerial pictures show nothing growing - only paving, roofs or water
+					// within 1.5 m of its crown's middle: cut down since, a car park or a building there now - left out. Not by their
+					// canopy class alone: it sees half the scan's canopy in Miami Beach's streets - a third of the trees under 6 m,
+					// two thirds of the tall ones -, and leaving out every tree it did not see had thinned the streets' trees by half,
+					// the reviewers' "far too sparse" on every view)
 					size_t gone = 0;
-					if (!canopySeen.v.empty())
+					if (!growing.v.empty())
 						std::erase_if(measured, [&](const trees::Seen& t) {
-							for (float dy = -3; dy <= 3; dy += 2)
-								for (float dx = -3; dx <= 3; dx += 2)
-									if (const auto c = canopySeen.Cell({t.x + dx, t.y + dy}); canopySeen.In(c[0], c[1]) && canopySeen.At(c[0], c[1]))
-										return false;
+							bool seen = false, any = false;
+							for (float dy = -1.5f; dy <= 1.5f && !any; dy += 1.5f)
+								for (float dx = -1.5f; dx <= 1.5f && !any; dx += 1.5f)
+								{
+									const int i = static_cast<int>(std::floor((t.x + dx - growing.x0) / growing.cell)),
+									          j = static_cast<int>(std::floor((t.y + dy - growing.y0) / growing.cell));
+									if (!growing.In(i, j))
+										continue;
+									seen = true;
+									any = growing.At(i, j) != 0;
+								}
+							if (!seen || any)
+								return false;
 							++gone;
 							return true;
 						});
