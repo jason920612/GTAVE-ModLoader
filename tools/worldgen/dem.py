@@ -4,13 +4,15 @@ hydro-flattened: a lake's surface one height, a river's stepping down along it) 
 cut to a sector's box and resampled onto the sector's game coordinates.
 
 usage: python -I tools/worldgen/dem.py --world <world.json> --out <ground.bin> [--cell 8] [--step 10] [--cache <dir>] [--margin 300]
+       [--fetch 6]
   ground.bin ('WBGR' version 1): x0, y0, cell (float32), nx, ny (uint32); then each cell's height in centimetres (int16;
   -32768: not known - out at sea, where the service has nothing), rows south to north.
   --step: the metres a pixel asked for (10: a third of an arc second, the 10 m DEM's; 2: the lidar's 1 m DEM where the
           service has it - Florida's towns -, the yards over the streets, the ditches, the rises the street pictures show)
 The service is asked for the tiles of the state's lattice that meet the sector box (exportImage, float32 GeoTIFF on a
 latitude / longitude grid; tiles of 2000 pixels a side from 24 N, 88 W - the same for every sector, so that neighbours
-share the ground of the band between them) and the answers kept in --cache.
+share the ground of the band between them) and the answers kept in --cache (a folder every land can share: a file's time is
+its last use), --fetch of them asked for at a time (each takes the service 10-15 s).
 """
 import io, json, math, os, struct, sys, time, urllib.request
 
@@ -23,7 +25,7 @@ TILE = 2000  # (pixels a side a request at most: the service answers 500 to 4000
 
 
 def options(argv):
-    o = {'cell': '8', 'cache': r'D:\GTAV-UE5\dem\cache', 'margin': '300', 'step': ''}
+    o = {'cell': '8', 'cache': r'D:\GTAV-UE5\dem\cache', 'margin': '300', 'step': '', 'fetch': '6'}
     for i in range(0, len(argv) - 1, 2):
         if not argv[i].startswith('--'):
             sys.exit(__doc__)
@@ -36,7 +38,7 @@ def options(argv):
 ORIGIN = (24.0, -88.0)  # (the state's projection's origin, sectors.py: the corner of the tiles' lattice)
 
 
-def fetch(south, west, north, east, cache, step=STEP):
+def fetch(south, west, north, east, cache, step=STEP, workers=1):
     """Heights over the box (metres, NaN where none), rows north to south, and the box they cover: the whole tiles of
     the state's lattice (TILE pixels of `step` a side from ORIGIN) that meet it - every land asks for the same tiles, so
     neighbouring lands read the same pixels for the same ground (a grid of a land's own had the service resample them
@@ -45,10 +47,12 @@ def fetch(south, west, north, east, cache, step=STEP):
     i0, i1 = math.floor((west - ORIGIN[1]) / span), math.floor((east - ORIGIN[1]) / span)
     j0, j1 = math.floor((south - ORIGIN[0]) / span), math.floor((north - ORIGIN[0]) / span)
     a = np.full(((j1 - j0 + 1) * TILE, (i1 - i0 + 1) * TILE), np.nan, dtype=np.float32)
-    for j in range(j0, j1 + 1):
-        for i in range(i0, i1 + 1):
+    import concurrent.futures
+    tiles = [(j, i) for j in range(j0, j1 + 1) for i in range(i0, i1 + 1)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for (j, i), tile in zip(tiles, pool.map(lambda t: fetch_one(ORIGIN[0] + t[0] * span, ORIGIN[1] + t[1] * span, TILE, TILE, cache, step), tiles)):
             row, column = (j1 - j) * TILE, (i - i0) * TILE
-            a[row:row + TILE, column:column + TILE] = fetch_one(ORIGIN[0] + j * span, ORIGIN[1] + i * span, TILE, TILE, cache, step)
+            a[row:row + TILE, column:column + TILE] = tile
     return a, (ORIGIN[0] + j0 * span, ORIGIN[1] + i0 * span, ORIGIN[0] + (j1 + 1) * span, ORIGIN[1] + (i1 + 1) * span)
 
 
@@ -69,16 +73,18 @@ def fetch_one(south, west, width, height, cache, step):
     os.makedirs(cache, exist_ok=True)
     tag = '' if step == STEP else f'_{1 / step:.0f}'
     file = os.path.join(cache, f'dem_{south:.4f}_{west:.4f}_{width}x{height}{tag}.tif')
-    # (a kept answer that does not read whole - an earlier download cut short - asked for again)
+    # (a kept answer that does not read whole - an earlier download cut short - asked for again; one read: its time set,
+    # the shared cache trimmed oldest first)
     if os.path.exists(file):
         try:
             read_tiff(file)
+            os.utime(file)
         except Exception:
             os.remove(file)
     if not os.path.exists(file):
         url = (f'{SERVICE}?bbox={west:.7f},{south:.7f},{west + width * step:.7f},{south + height * step:.7f}&bboxSR=4326&imageSR=4326'
                f'&size={width},{height}&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image')
-        for attempt in range(6):
+        for attempt in range(12):
             try:
                 with urllib.request.urlopen(url, timeout=600) as r:
                     data = r.read()
@@ -87,11 +93,12 @@ def fetch_one(south, west, width, height, cache, step):
                 # (all of it: the service now and then cuts an answer short - a TIFF's head and part of its pixels)
                 read_tiff(io.BytesIO(data))
                 break
-            except Exception as e:  # (the service is busy now and then: tried again)
-                if attempt == 5:
+            except Exception as e:  # (the service is busy now and then - once a gateway time-out for over 4 minutes: tried
+                # again for 16 minutes)
+                if attempt == 11:
                     raise
                 print(f'  ground: {e}; again', flush=True)
-                time.sleep(15 * (attempt + 1))
+                time.sleep(min(300, 15 * (attempt + 1)))
         with open(file + '.part', 'wb') as f:
             f.write(data)
         os.replace(file + '.part', file)
@@ -130,7 +137,7 @@ def main():
     lats = lat0 + (ys - gy0) / ky
     step = float(o['step']) / 111320 if o['step'] else STEP
     pad = 3 * step
-    a, (s, wl, n, e) = fetch(lats.min() - pad, lons.min() - pad, lats.max() + pad, lons.max() + pad, o['cache'], step)
+    a, (s, wl, n, e) = fetch(lats.min() - pad, lons.min() - pad, lats.max() + pad, lons.max() + pad, o['cache'], step, int(o['fetch']))
     # bilinear, by pixel centres (row 0 the northmost)
     fx = (lons - wl) / step - 0.5
     fy = (n - lats) / step - 0.5

@@ -6,6 +6,7 @@ in EPSG:3857) for how tall the trees are.
 
 usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
   photo.py --world <world.json> --out <dir> [--area x0,y0,x1,y1] [--chm D:\\GTAV-UE5\\chm] [--keep <dir>] [--fetch 4]
+           [--cache <dir>] [--landcover <landcover.bin>]
   <dir>/trees.bin  'WBTR' version 1, count (u32); each tree: x, y, height, crown radius (f32), kind (u8: 0 evergreen, 1 bare
                    - leafless in the pictures' winter, 2 palm-like: small round crown), pad (3 bytes)
   <dir>/cover.bin  'WBPC' version 1, x0, y0, cell (f32), nx, ny (u32); each 4 m cell (rows south to north): its class (u8:
@@ -14,6 +15,10 @@ usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
   <dir>/classes.bin 'WBCL' version 1, x0, y0, cell (f32: 1 m), nx, ny (u32); each metre's class as above (rows south to
                    north; over --area, else the world's box)
   --keep: the 1 m pictures (naip_<i>_<j>.npz) kept there, read from there again
+  --cache: the service's answers kept there for every land (a land's blocks lie on the state plane's 2 km lattice - the
+          lands' corners are whole metres of it, 8 and 10 km apart -, so a neighbour asks for the same blocks of the band
+          between them in the same words: half a land's blocks are its neighbours'); a file's time is its last use
+  --landcover: nlcd.py's classes - a block all open water there is not asked for (the picture all 0: no trees, no cover)
 The pictures are asked for in blocks of 2 km (4 bands, JPEG); a tree is a peak of the canopy's brightness in the near
 infrared (its sunlit crown) - the canopy where the canopy heights say 3 m and more or the near infrared is high and
 uneven (crowns and their shadows, not a lawn's even green) - at least a crown's reach from a taller one.
@@ -42,7 +47,21 @@ def options(argv):
     return o
 
 
-def fetch(url, tries=9):
+def fetch(url, tries=9, cache=None):
+    """The answer to `url` - from `cache` (a folder) when it was asked for before, by any land."""
+    if cache:
+        import hashlib
+        path = os.path.join(cache, hashlib.sha1(url.encode()).hexdigest()[:20] + '.bin')
+        if os.path.exists(path):
+            os.utime(path)
+            with open(path, 'rb') as f:
+                return f.read()
+        data = fetch(url, tries)
+        os.makedirs(cache, exist_ok=True)
+        with open(path + '.part', 'wb') as f:
+            f.write(data)
+        os.replace(path + '.part', path)
+        return data
     # (the picture service goes down for minutes at a time - 504s for a quarter of an hour took four lands of the
     # statewide batch: waits of 15 s doubling to 5 min, about 20 min in all)
     for k in range(tries):
@@ -63,7 +82,7 @@ class Projection:
         return self.lat0 + (y - self.y0) / self.ky, self.lon0 + (x - self.x0) / self.kx
 
 
-def naip_block(pr, x0, y0, nx, ny):
+def naip_block(pr, x0, y0, nx, ny, cache=None):
     """RGBN of the game box [x0, x0 + nx) x [y0, y0 + ny) at 1 m, rows north to south (as the picture's)."""
     s, w = pr.latlon(x0, y0)
     n, e = pr.latlon(x0 + nx * CELL, y0 + ny * CELL)
@@ -71,7 +90,7 @@ def naip_block(pr, x0, y0, nx, ny):
     for bands, at in (('0,1,2', slice(0, 3)), ('3', slice(3, 4))):
         q = urllib.parse.urlencode({'bbox': f'{w},{s},{e},{n}', 'bboxSR': 4326, 'imageSR': 4326, 'size': f'{nx},{ny}', 'bandIds': bands,
                                     'format': 'jpg', 'compressionQuality': 92, 'f': 'image'})
-        im = Image.open(io.BytesIO(fetch(f'{NAIP}?{q}')))
+        im = Image.open(io.BytesIO(fetch(f'{NAIP}?{q}', cache=cache)))
         a = np.asarray(im.convert('RGB' if bands != '3' else 'L'))
         if a.shape[:2] != (ny, nx):
             a = np.asarray(Image.fromarray(a).resize((nx, ny), Image.BILINEAR))
@@ -327,12 +346,36 @@ def main():
         x0, y0 = bx - OVERLAP, by - OVERLAP
         return x0, y0, int(min(BLOCK, ax1 - bx) + 2 * OVERLAP), int(min(BLOCK, ay1 - by) + 2 * OVERLAP)
 
+    # (the land cover's open water, for the blocks all water)
+    water = None
+    if 'landcover' in o and os.path.exists(o['landcover']):
+        with open(o['landcover'], 'rb') as f:
+            head = f.read(28)
+            if head[:4] == b'WBLC':
+                _, lx0, ly0, lcell, lnx, lny = struct.unpack('<I3f2I', head[4:])
+                water = (lx0, ly0, lcell, np.frombuffer(f.read(lnx * lny), np.uint8).reshape(lny, lnx) == 11)
+
+    def all_water(x0, y0, nx, ny):
+        if water is None:
+            return False
+        lx0, ly0, lcell, wet = water
+        i0, i1 = int(math.floor((x0 - lx0) / lcell)), int(math.ceil((x0 + nx * CELL - lx0) / lcell))
+        j0, j1 = int(math.floor((y0 - ly0) / lcell)), int(math.ceil((y0 + ny * CELL - ly0) / lcell))
+        # (the whole block inside the land cover's grid, every cell of it open water)
+        return 0 <= i0 and 0 <= j0 and i1 <= wet.shape[1] and j1 <= wet.shape[0] and bool(wet[j0:j1, i0:i1].all())
+
+    skipped = 0
+
     def picture(bx, by):
+        nonlocal skipped
         x0, y0, nx, ny = window(bx, by)
+        if all_water(x0, y0, nx, ny):
+            skipped += 1
+            return np.zeros((ny, nx, 4), np.uint8)
         cached = os.path.join(o['keep'], f'naip_{int(bx)}_{int(by)}.npz') if 'keep' in o else None
         if cached and os.path.exists(cached):
             return np.load(cached)['rgbn']
-        rgbn = naip_block(pr, x0, y0, nx, ny)
+        rgbn = naip_block(pr, x0, y0, nx, ny, o.get('cache'))
         if cached:
             os.makedirs(o['keep'], exist_ok=True)
             np.savez_compressed(cached, rgbn=rgbn)
@@ -403,6 +446,8 @@ def main():
     with open(os.path.join(out, 'classes.bin'), 'wb') as f:
         f.write(b'WBCL' + struct.pack('<I3f2I', 1, ax0, ay0, CELL, fnx, fny))
         f.write(fine.tobytes())
+    if skipped:
+        print(f'{skipped} of {len(blocks)} blocks all open water: not asked for')
     print(f'{len(trees)} trees ({sum(1 for t in trees if t[4] == 0)} evergreen, {sum(1 for t in trees if t[4] == 1)} bare); '
           f'cover: ' + ', '.join(f'{name} {np.mean(cover == c):.1%}' for c, name in enumerate(('unseen', 'water', 'canopy', 'grass', 'dry', 'bare', 'paved'))))
 

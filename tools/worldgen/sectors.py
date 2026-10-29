@@ -17,10 +17,10 @@ of numpy, scipy, tifffile, zarr and Pillow: every tree, the ground's cover and c
 like Florida's -, the walls' colour and brick from the street pictures where there are any (photofacade.py, --mapillary),
 power lines along the streets, parked cars, the trees and ground of the pictures, the game's plants on the ground,
 navmeshes only where people go; every edge open: the land goes on into the neighbours), its population zones (zones.py,
-into the land.json) and its pack (ModLoader\\mods\\<name>; dlc.rpf.new when a pack is there already: the loader takes it
-at the next start). The build's own files and the pictures' are removed once packed (--keep: kept).
+into the land.json) and its pack (ModLoader\\mods\\<name>, or --lands; dlc.rpf.new when a pack is there already: the loader
+takes it at the next start). The build's own files and the pictures' are removed once packed (--keep: kept).
 
-usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.tsv> [--jobs n] [--skip-built] [--dry-run]
+usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.tsv> [--jobs n] [--prep n] [--skip-built] [--dry-run]
        [--keep] [--mapillary <metadata.csv>[,<metadata.csv>...]]
        python -I tools/worldgen/sectors.py --survey <cells.tsv>: the cells with land in them (worldgen survey on the state's
        extract, then the sea flood-filled away from the grid's edge: what is left - land, marshes, lakes - is built)
@@ -30,10 +30,17 @@ usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.t
   --list: the survey's land cells (--survey: a tsv with column and row), built nearest --home first (column,row; by default
           Miami's cell)
   --names col,row=name;...  existing packs for some cells (not built again)
-  --free <GB>: no cell started with less than this left on the game's drive (120)
+  --free <GB>: no cell started with less than this left on the drive its pack goes to or on the world folders' (120)
+  --jobs: the builds at a time (worldgen build: the CPU's); --prep: the cells made ready at a time (the map, the land cover,
+          the ground, the aerial and street pictures, the property rolls: mostly waiting for the services), ahead of the
+          builds - at most --jobs + --prep + 2 cells under way
+  --caches <folder>: the ground's tiles (dem\\) and the aerial pictures' answers (naip\\) kept there for every cell (a cell
+          asks for its box and 3 km round it: half of it its neighbours' too), trimmed to --cachegb (60) oldest first
+  --lands <folder>: a new land's pack goes there (<folder>\\<name>: a folder of the loader's landFolders, another drive's -
+          the lands too many for the game's), one in ModLoader\\mods already stays there
 Paths: --game, --worldgen, --keys, --pbf, --worlds (the world folders), --log as below by default.
 """
-import collections, concurrent.futures, math, os, shutil, subprocess, sys, threading, time
+import collections, concurrent.futures, math, os, queue, shutil, subprocess, sys, threading, time
 
 O = {
     'game': r'D:\SteamLibrary\steamapps\common\Grand Theft Auto V Enhanced',
@@ -53,6 +60,9 @@ O = {
     'worlds': r'D:\GTAV-UE5\world',
     'names': '',
     'jobs': '1',
+    'prep': '2',
+    'caches': r'D:\GTAV-UE5\caches',
+    'cachegb': '60',
     'log': r'D:\GTAV-UE5\world\florida\sectors.log',
 }
 # the state's projection (worldgen world::Projection: x = x0 + (lon - lon0) kx, y = y0 + (lat - lat0) ky - metres per degree
@@ -125,20 +135,52 @@ def background():
 g_full = threading.Event()
 
 
-def build(c, r, flags):
-    """One cell: its name, and "" when it was built, else what went wrong."""
+def pack_of(name):
+    """Where a land's pack is or goes: ModLoader\\mods\\<name> when it is there, else --lands\\<name> when given."""
+    mods = os.path.join(O['game'], 'ModLoader', 'mods', name, 'dlc.rpf')
+    if O.get('lands') and not os.path.exists(mods):
+        return os.path.join(O['lands'], name, 'dlc.rpf')
+    return mods
+
+
+def trim(folder, limit):
+    """A shared cache kept under `limit` bytes: the files used longest ago (their time: the last use) removed first."""
+    files = []
+    for root, _, names in os.walk(folder):
+        for f in names:
+            path = os.path.join(root, f)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            files.append((st.st_mtime, st.st_size, path))
+    total = sum(f[1] for f in files)
+    for _, size, path in sorted(files):
+        if total <= limit:
+            break
+        try:
+            os.remove(path)
+            total -= size
+        except OSError:
+            pass
+
+
+def prepare(c, r, flags):
+    """A cell made ready for its build - the map, the land cover, the ground, the aerial and street pictures, the property
+    rolls (mostly the services' time): its name, "" or what went wrong, and what the build takes."""
     name, projection, (s, w, n, e) = land(c, r)
     # (none started with less than --free GB, 120 by default, left on the game's drive: the rest of the list waits for the
     # next run, --skip-built)
     # (nor once the game is not where it was - moved to another drive: the packs would go into a folder of their own)
     if g_full.is_set() or not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
         g_full.set()
-        return name, 'not started: the game is not at ' + O['game']
-    if shutil.disk_usage(O['game']).free < float(O.get('free', 120)) * 1e9:
-        g_full.set()
-        return name, 'not started: the disk is nearly full'
+        return name, 'not started: the game is not at ' + O['game'], None
+    pack = pack_of(name)
+    for where in (os.path.splitdrive(pack)[0] + os.sep, O['worlds']):
+        if shutil.disk_usage(where).free < float(O.get('free', 120)) * 1e9:
+            g_full.set()
+            return name, f'not started: {where} is nearly full', None
     folder = os.path.join(O['worlds'], name)
-    pack = os.path.join(O['game'], 'ModLoader', 'mods', name, 'dlc.rpf')
     os.makedirs(folder, exist_ok=True)
     log = os.path.join(folder, 'build.log')
     common = ['--game', O['game'], '--keys', O['keys']]
@@ -146,29 +188,31 @@ def build(c, r, flags):
     if not os.path.exists(world):
         if run([O['worldgen'], 'osm', *common, '--pbf', O['pbf'], '--box', f'{s:.9f},{w:.9f},{n:.9f},{e:.9f}', '--projection',
                 ','.join(f'{v:.9f}' for v in projection), '--out', folder, '--name', name], log):
-            return name, f'osm failed (see {log})'
+            return name, f'osm failed (see {log})', None
         if run([sys.executable, '-I', O['msbuildings'], 'merge', '--world', world, '--cells', O['mscells']], log):
             os.remove(world)  # (made again, both steps, next time)
-            return name, f'footprints failed (see {log})'
+            return name, f'footprints failed (see {log})', None
     cover = os.path.join(folder, 'landcover.bin')
     if not os.path.exists(cover) and run([O['venv'], '-I', O['nlcd'], '--world', world, '--out', cover], log):
-        return name, f'land cover failed (see {log})'
+        return name, f'land cover failed (see {log})', None
     ground = os.path.join(folder, 'ground.bin')
-    # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests; its downloads in the sector's
-    # folder, removed with the build's files - over 100 MB a sector, the state's would fill the disk; 3.3 km round the box:
-    # the build works the water and the ground out 3 km past it, so that neighbours' bands are the same)
+    # (the 1 m lidar DEM sampled every 2 m into 4 m cells: the yards' banks, the roads' crests; its tiles of the state's
+    # lattice in the shared cache - 3.3 km round the box: the build works the water and the ground out 3 km past it, so that
+    # neighbours' bands are the same -, six asked for at a time)
     if not os.path.exists(ground) and run([O['venv'], '-I', O['dem'], '--world', world, '--out', ground, '--step', '2', '--cell', '4',
-                                           '--margin', '3300', '--cache', os.path.join(folder, 'dem_cache')], log):
-        return name, f'ground failed (see {log})'
+                                           '--margin', '3300', '--cache', os.path.join(O['caches'], 'dem'), '--fetch', '6'], log):
+        return name, f'ground failed (see {log})', None
     photo = os.path.join(folder, 'photo')
-    if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo], log):
-        return name, f'aerial pictures failed (see {log})'
+    if not os.path.exists(os.path.join(photo, 'cover.bin')) and run([O['venv'], '-I', O['photo'], '--world', world, '--out', photo,
+                                                                     '--cache', os.path.join(O['caches'], 'naip'), '--landcover', cover,
+                                                                     '--fetch', '6'], log):
+        return name, f'aerial pictures failed (see {log})', None
     # (the walls the street pictures show, when any were taken in the sector)
     walls = []
     if O.get('mapillary'):
         seen = os.path.join(folder, 'facades.json')
         if run([O['venv'], '-I', O['photofacade'], '--world', world, '--metadata', O['mapillary'], '--out', seen], log):
-            return name, f'street pictures failed (see {log})'
+            return name, f'street pictures failed (see {log})', None
         with open(seen, encoding='utf-8') as f:
             if '"building"' in f.read(4096):
                 walls = ['--facades', seen]
@@ -178,13 +222,22 @@ def build(c, r, flags):
     if os.path.exists(O['parcelIndex']):
         parcels = os.path.join(folder, 'parcels.json')
         if run([O['venv'], '-I', O['parcels'], 'join', '--world', world, '--index', O['parcelIndex'], '--out', parcels], log):
-            return name, f'property rolls failed (see {log})'
+            return name, f'property rolls failed (see {log})', None
         rolls = ['--parcels', parcels]
+    return name, '', {'folder': folder, 'log': log, 'world': world, 'cover': cover, 'ground': ground, 'photo': photo, 'extra': walls + rolls}
+
+
+def make(c, r, flags, ready):
+    """A prepared cell built and packed (the CPU's time): its name, and "" when it was built, else what went wrong."""
+    name = land(c, r)[0]
+    folder, log, world, cover, ground, photo = (ready[k] for k in ('folder', 'log', 'world', 'cover', 'ground', 'photo'))
+    common = ['--game', O['game'], '--keys', O['keys']]
+    pack = pack_of(name)
     gen = os.path.join(folder, 'full_gen')
     shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--core', ','.join(f'{v:.1f}' for v in CORE),
             '--landcover', cover,
-            '--ground', ground, '--photo', photo, *walls, *rolls, '--navmesh', 'near', '--climate', 'tropical'], log):
+            '--ground', ground, '--photo', photo, *ready['extra'], '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     if not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
         g_full.set()
@@ -200,7 +253,7 @@ def build(c, r, flags):
     if 'keep' not in flags:
         shutil.rmtree(gen, ignore_errors=True)
         shutil.rmtree(photo, ignore_errors=True)  # (about 200 MB a sector: made again from the pictures if wanted)
-        shutil.rmtree(os.path.join(folder, 'dem_cache'), ignore_errors=True)
+        shutil.rmtree(os.path.join(folder, 'dem_cache'), ignore_errors=True)  # (an earlier run's own cache)
         # (and the build's lists - the props, the roads' wear, the buildings found: 30 MB a sector, for looking into one)
         for f in ('world.json', name + '_props.txt', name + '_wear.txt', name + '_found.txt'):
             try:
@@ -278,25 +331,55 @@ def main():
         name = named.get((c, r), land(c, r)[0])
         if (c, r) in named:
             continue
-        if 'skip-built' in flags and os.path.exists(os.path.join(O['game'], 'ModLoader', 'mods', name, 'dlc.rpf')):
+        if 'skip-built' in flags and os.path.exists(pack_of(name)):
             continue
         todo.append((c, r))
-    say(f'{len(cells)} cells, {len(todo)} to build with {O["jobs"]} job(s)')
+    say(f'{len(cells)} cells, {len(todo)} to build with {O["jobs"]} build(s) and {O["prep"]} made ready at a time')
     if 'dry-run' in flags:
         for c, r in todo[:20]:
             print(f'  {c},{r}')
         return
     start, done, failed = time.time(), 0, 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=int(O['jobs'])) as pool:
-        futures = {pool.submit(build, c, r, flags): (c, r) for c, r in todo}
-        for future in concurrent.futures.as_completed(futures):
-            c, r = futures[future]
-            name, error = future.result()
+    jobs, prep = int(O['jobs']), int(O['prep'])
+    # (a cell is made ready while others build; at most jobs + prep + 2 under way - their files on the disk - and the
+    # builds in the order the cells were made ready)
+    room = threading.Semaphore(jobs + prep + 2)
+    finished = queue.Queue()
+
+    def build_it(c, r, ready):
+        try:
+            name, error = make(c, r, flags, ready)
+        except Exception as e:
+            name, error = land(c, r)[0], f'build raised {e!r}'
+        finally:
+            room.release()
+        finished.put((c, r, name, error))
+
+    def ready_it(c, r):
+        room.acquire()
+        try:
+            name, error, ready = prepare(c, r, flags)
+        except Exception as e:
+            name, error, ready = land(c, r)[0], f'making ready raised {e!r}', None
+        if error:
+            room.release()
+            finished.put((c, r, name, error))
+            return
+        builds.submit(build_it, c, r, ready)
+
+    caches = [os.path.join(O['caches'], k) for k in ('dem', 'naip')]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as builds, concurrent.futures.ThreadPoolExecutor(max_workers=prep) as readying:
+        for c, r in todo:
+            readying.submit(ready_it, c, r)
+        for _ in todo:
+            c, r, name, error = finished.get()
             done += 1
             failed += bool(error)
             spent = time.time() - start
             left = spent / done * (len(todo) - done)
             say(f'{done}/{len(todo)} {c},{r} {name}: {error or "built"} ({spent / 3600:.1f} h so far, about {left / 3600:.1f} h left)')
+            for folder in caches:
+                trim(folder, float(O['cachegb']) * 1e9 / len(caches))
     say(f'finished: {done - failed} built, {failed} failed')
 
 
