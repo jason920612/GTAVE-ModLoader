@@ -11,6 +11,8 @@
 #include <format>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -43,8 +45,16 @@ namespace loader::game::minimap
 		constexpr uintptr_t kDraw = 0x56ECA0, kDrawAll = 0x570630, kDrawAllCall = 0x57C1D9;
 		// The session's end: 0x5700B0 (the array, the shutdown's kind: 8 releases them all), jumped to from 0x568F60.
 		constexpr uintptr_t kShutdown = 0x5700B0, kShutdownJump = 0x56903F;
-		// The streaming request's own: its flags cleared (two kinds), released.
-		constexpr uintptr_t kClearA = 0xCF2420, kClearB = 0xCF24C0, kRelease = 0xCF2590;
+		// The streaming request's own: its flags cleared (two kinds), released; asked for (the request, the slot, its store's
+		// index - the drawable dictionaries' at +0x3ED63B4 -, flags: 0x56FB80 asks with 7, 0x56FDA8).
+		constexpr uintptr_t kClearA = 0xCF2420, kClearB = 0xCF24C0, kRelease = 0xCF2590, kAsk = 0xCF2200, kAskCall = 0x56FDA8,
+		                    kDrawableStore = 0x3ED63B4;
+		// A drawable dictionary's slot by its name, as the radar's stream finds one (0x56FC25): the game's string hash (0xAA4680,
+		// kind 0) looked up in the store's map of names - +0x3ED6428 its buckets (a first node's index each), +0x3ED6430 how
+		// many, +0x3ED6420 its nodes (12 bytes: the name's hash, the slot, the next node's index; -1 none).
+		constexpr uintptr_t kHash = 0xAA4680, kNameBuckets = 0x3ED6428, kNameBucketCount = 0x3ED6430, kNameNodes = 0x3ED6420;
+		// The radar's lattice (minimap.ymt; worldgen's minimap.cpp): a supertile's metres, six tiles a side.
+		constexpr float kSuperW = 9400.0f / 8, kSuperH = 12492.0f / 9;
 		// The thread's state the game checks first: its slot in thread-local storage (+0x590 & 6: not this thread's work).
 		constexpr uintptr_t kTlsIndex = 0x2E97518;
 
@@ -75,6 +85,7 @@ namespace loader::game::minimap
 		using ShutdownFn = void (*)(uint8_t*, int);
 		using RequestFn = void (*)(void*, int);
 		using ReleaseFn = void (*)(void*);
+		using AskFn = uint8_t (*)(void*, int32_t, uint32_t, uint32_t);
 		using InitFn = void (*)(int);
 		using ReachFn = void (*)(void*, float*, float*, uint64_t);
 		using SquareStepFn = void (*)(uint8_t* square, uint8_t wanted, uint8_t drawn, const char* name);
@@ -86,6 +97,7 @@ namespace loader::game::minimap
 		ShutdownFn g_shutdown = nullptr;
 		RequestFn g_clearA = nullptr, g_clearB = nullptr;
 		ReleaseFn g_release = nullptr;
+		AskFn g_ask = nullptr;
 		InitFn g_pictureInit = nullptr;
 		ReachFn g_reach = nullptr;
 		SquareStepFn g_squareStep = nullptr;
@@ -108,6 +120,28 @@ namespace loader::game::minimap
 		std::vector<Supertile> g_supertiles;
 		std::vector<uint8_t> g_entries;
 		bool g_suspended = false; // (a sector switch under way: none wanted)
+
+		// The lands registered for a crossing, their supertiles under names of their own (OwnName): each an entry like the
+		// game's that asks for its file's slot itself - the game's way (0x56FB80) asks by the name its numbers make, the land
+		// there's - its models then found by those numbers as the game's are (supertile_back_<column>_<row>...). Drawn while
+		// the land is the player's; streamed too while it arrives, for where the player arrives.
+		struct Own
+		{
+			struct Tile
+			{
+				int column = 0, row = 0;
+				int32_t slot = -1;
+				uint8_t entry[kEntry]{};
+				bool asked = false;
+			};
+			std::vector<std::unique_ptr<Tile>> tiles;
+			float shift[2]{}; // (arriving: where the player arrives, in the lattice's tiles from the view's middle)
+			bool arriving = false, drawn = false, going = false;
+			int quiet = 0; // (frames since its tiles were all let go: the render thread's last use)
+		};
+		std::map<std::string, Own> g_own;
+		std::mutex g_ownMutex; // (the render thread draws them)
+		std::map<std::string, int> g_numbers; // (each land's number in its supertiles' names)
 
 		// the pause map: the lands' squares (row, column on the lattice) -> the lands that have a picture of it (their pack's
 		// folder, the pictures' name); the open sea's (the first land with pictures that is there)
@@ -152,15 +186,50 @@ namespace loader::game::minimap
 			const int rowFrom = FloorSixth(static_cast<int>(std::floor(middle[1] - half[1]))), rowTo = FloorSixth(static_cast<int>(std::ceil(middle[1] + half[1])));
 			const int columnFrom = FloorSixth(static_cast<int>(std::floor(middle[0] - half[0]))),
 			          columnTo = FloorSixth(static_cast<int>(std::ceil(middle[0] + half[0])));
+			std::lock_guard lock(g_ownMutex);
 			for (Supertile& s : g_supertiles)
 			{
-				const bool there = std::any_of(s.owners.begin(), s.owners.end(), [](const std::string& o) { return !sectors::Dormant(o); });
+				// (a land with supertiles of its own draws those, not the pack's names - the land registered first's files)
+				const bool there = std::any_of(s.owners.begin(), s.owners.end(), [](const std::string& o) { return !sectors::Dormant(o) && !g_own.contains(o); });
 				const uint8_t want = !none && !g_suspended && there && s.row >= rowFrom && s.row <= rowTo && s.column >= columnFrom && s.column <= columnTo;
 				uint8_t* e = s.entry;
 				if (e[0x72] != want)
 				{
 					e[want ? 0x70 : 0x71] = 1;
 					e[0x72] = want;
+				}
+			}
+			const uint32_t store = *reinterpret_cast<const uint32_t*>(g_base + kDrawableStore);
+			for (auto& [land, own] : g_own)
+			{
+				const bool here = !own.going && !sectors::Dormant(land);
+				own.drawn = here;
+				if (here)
+					own.arriving = false;
+				const bool active = here || (!own.going && own.arriving);
+				const float sx = here ? 0.0f : own.shift[0], sy = here ? 0.0f : own.shift[1];
+				const int ownRowFrom = FloorSixth(static_cast<int>(std::floor(middle[1] + sy - half[1]))),
+				          ownRowTo = FloorSixth(static_cast<int>(std::ceil(middle[1] + sy + half[1])));
+				const int ownColumnFrom = FloorSixth(static_cast<int>(std::floor(middle[0] + sx - half[0]))),
+				          ownColumnTo = FloorSixth(static_cast<int>(std::ceil(middle[0] + sx + half[0])));
+				for (auto& t : own.tiles)
+				{
+					const bool want = active && !none && !g_suspended && t->slot >= 0 && t->row >= ownRowFrom && t->row <= ownRowTo &&
+					                  t->column >= ownColumnFrom && t->column <= ownColumnTo;
+					uint8_t* e = t->entry;
+					if (want && !t->asked)
+					{
+						// (as the game's own stream asks when it found the slot by name: 0x56FDA8)
+						g_ask(e + 0x0C, t->slot, store, 7);
+						e[0x72] = 1;
+						t->asked = true;
+					}
+					else if (!want && t->asked)
+					{
+						e[0x71] = 1;
+						e[0x72] = 0;
+						t->asked = false;
+					}
 				}
 			}
 			return result;
@@ -173,16 +242,25 @@ namespace loader::game::minimap
 				return;
 			for (Supertile& s : g_supertiles)
 				g_stream(s.entry);
+			std::lock_guard lock(g_ownMutex);
+			for (auto& [land, own] : g_own)
+				for (auto& t : own.tiles)
+					g_stream(t->entry);
 		}
 
 		void DrawAll(uint8_t* array)
 		{
+			std::lock_guard lock(g_ownMutex);
 			for (int pass = 0; pass < 2; ++pass)
 			{
 				for (size_t k = 0; k < kGameEntries; ++k)
 					g_draw(array + k * kEntry, pass);
 				for (Supertile& s : g_supertiles)
 					g_draw(s.entry, pass);
+				for (auto& [land, own] : g_own)
+					if (own.drawn)
+						for (auto& t : own.tiles)
+							g_draw(t->entry, pass);
 			}
 		}
 
@@ -204,6 +282,48 @@ namespace loader::game::minimap
 				return;
 			for (Supertile& s : g_supertiles)
 				Release(s.entry);
+			std::lock_guard lock(g_ownMutex);
+			for (auto& [land, own] : g_own)
+				for (auto& t : own.tiles)
+					Release(t->entry);
+			g_own.clear();
+		}
+
+		int32_t SlotOf(const std::string& name)
+		{
+			const uint32_t hash = reinterpret_cast<uint32_t (*)(int, const char*)>(g_base + kHash)(0, name.c_str());
+			const auto* buckets = *reinterpret_cast<const uint32_t* const*>(g_base + kNameBuckets);
+			const uint32_t count = *reinterpret_cast<const uint32_t*>(g_base + kNameBucketCount);
+			const auto* nodes = *reinterpret_cast<const uint32_t* const*>(g_base + kNameNodes);
+			if (!buckets || !count || !nodes)
+				return -1;
+			for (uint32_t i = buckets[hash % count]; i != 0xFFFFFFFF; i = nodes[static_cast<size_t>(i) * 3 + 2])
+				if (nodes[static_cast<size_t>(i) * 3] == hash)
+					return static_cast<int32_t>(nodes[static_cast<size_t>(i) * 3 + 1]);
+			return -1;
+		}
+
+		// "minimap_<column + 1000>_<row + 1000>" in a file's name (any folder, any extension): the two numbers, and where the
+		// first starts and the second ends
+		bool TileNumbers(std::string_view name, int& c, int& r, size_t& from, size_t& to)
+		{
+			const size_t slash = name.find_last_of("/\\");
+			const size_t start = slash == std::string_view::npos ? 0 : slash + 1;
+			if (name.substr(start, 8) != "minimap_")
+				return false;
+			size_t i = start + 8;
+			const auto number = [&](int& v) {
+				const size_t first = i;
+				v = 0;
+				while (i < name.size() && name[i] >= '0' && name[i] <= '9' && i - first < 9)
+					v = v * 10 + (name[i++] - '0');
+				return i > first;
+			};
+			from = i;
+			if (!number(c) || i >= name.size() || name[i++] != '_' || !number(r))
+				return false;
+			to = i;
+			return i == name.size() || name[i] == '.';
 		}
 
 		// The pause map's grid widened to the lands' squares (each session start: minimap.ymt is read once, at the start).
@@ -403,6 +523,10 @@ namespace loader::game::minimap
 		g_clearA = reinterpret_cast<RequestFn>(g_base + kClearA);
 		g_clearB = reinterpret_cast<RequestFn>(g_base + kClearB);
 		g_release = reinterpret_cast<ReleaseFn>(g_base + kRelease);
+		if (Goes(kAskCall, 0xE8, kAsk))
+			g_ask = reinterpret_cast<AskFn>(g_base + kAsk);
+		else
+			log::Warn("minimap: the radar's streaming request is not where this build has it; a crossing blanks the radar for a moment");
 
 		// the lands' supertiles: entries like the game's, numbered on the lattice + 1000 (their files' names)
 		g_entries.assign(g_supertiles.size() * kEntry, 0);
@@ -481,6 +605,11 @@ namespace loader::game::minimap
 			*reinterpret_cast<int32_t*>(s.entry + 0x0C) = -1;
 			*reinterpret_cast<uint16_t*>(s.entry + 0x10) = 0x7F00;
 		}
+		std::lock_guard lock(g_ownMutex);
+		for (auto& [land, own] : g_own)
+			for (auto& t : own.tiles)
+				if (t->asked)
+					Release(t->entry), t->asked = false;
 	}
 
 	void Resume()
@@ -492,6 +621,81 @@ namespace loader::game::minimap
 	void Going(const std::vector<std::string>& lands)
 	{
 		g_going = lands;
+		// (a sector switch: the lands put away take their files with them - their own supertiles let go and forgotten)
+		std::lock_guard lock(g_ownMutex);
+		for (const std::string& land : lands)
+			if (const auto it = g_own.find(land); it != g_own.end())
+			{
+				for (auto& t : it->second.tiles)
+					Release(t->entry);
+				g_own.erase(it);
+			}
+	}
+
+	std::string OwnName(const std::string& land, std::string_view name)
+	{
+		if (!g_ask || g_supertiles.empty())
+			return {};
+		int c = 0, r = 0;
+		size_t from = 0, to = 0;
+		if (!TileNumbers(name, c, r, from, to))
+			return {};
+		auto number = g_numbers.find(land);
+		if (number == g_numbers.end())
+			number = g_numbers.emplace(land, static_cast<int>(g_numbers.size()) + 1).first;
+		// (the land's number in the column's: minimap_<number * 10000 + column + 1000>_<row + 1000>, a name no pack has)
+		return std::format("{}{}_{}{}", name.substr(0, from), number->second * 10000 + c, r, name.substr(to));
+	}
+
+	void OwnTile(const std::string& land, std::string_view name)
+	{
+		int c = 0, r = 0;
+		size_t from = 0, to = 0;
+		const auto number = g_numbers.find(land);
+		if (!TileNumbers(name, c, r, from, to) || number == g_numbers.end())
+			return;
+		auto t = std::make_unique<Own::Tile>();
+		t->column = c - kIndexBase, t->row = r - kIndexBase;
+		t->slot = SlotOf(std::format("minimap_{}_{}", number->second * 10000 + c, r));
+		if (t->slot < 0)
+			log::Warn("minimap: {}'s radar supertile {} {} not found under its own name", land, t->column, t->row);
+		ResetEntry(t->entry);
+		*reinterpret_cast<int32_t*>(t->entry + 0x00) = r;
+		*reinterpret_cast<int32_t*>(t->entry + 0x04) = c;
+		std::lock_guard lock(g_ownMutex);
+		g_own[land].tiles.push_back(std::move(t));
+	}
+
+	void Arriving(const std::string& land, float dx, float dy)
+	{
+		// (its supertiles are registered over the next frames, as its data files are switched on: they join it then)
+		if (!g_ask || g_supertiles.empty())
+			return;
+		std::lock_guard lock(g_ownMutex);
+		Own& own = g_own[land];
+		// (the lattice's columns east, its rows south)
+		own.shift[0] = dx / (kSuperW / 6);
+		own.shift[1] = -dy / (kSuperH / 6);
+		own.arriving = true;
+	}
+
+	bool LetTilesGo(const std::string& land)
+	{
+		std::lock_guard lock(g_ownMutex);
+		const auto it = g_own.find(land);
+		if (it == g_own.end())
+			return true;
+		Own& own = it->second;
+		own.going = true; // (none wanted any more: the stream lets each go)
+		if (std::any_of(own.tiles.begin(), own.tiles.end(), [](const auto& t) { return t->asked || t->entry[0x08] || t->entry[0x71]; }))
+		{
+			own.quiet = 0;
+			return false;
+		}
+		if (++own.quiet < 3)
+			return false;
+		g_own.erase(it);
+		return true;
 	}
 
 	bool LetGo(const std::vector<int32_t>& slots)

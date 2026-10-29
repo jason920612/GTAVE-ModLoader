@@ -268,7 +268,19 @@ namespace loader::game::seamless
 						return reinterpret_cast<uint64_t>(index);
 					}
 				if (uint32_t tile = 0; g_registering && RadarTile(name, tile))
+				{
+					// (under a name of the land's own: the land there keeps the pack's, the radar streams this one before the
+					// crossing - game/minimap.hpp)
+					if (const std::string own = minimap::OwnName(*g_registering, name); !own.empty())
+					{
+						static std::deque<std::string> kept; // (the names as registered, kept)
+						kept.push_back(own);
+						const uint64_t result = g_registerFile(a, index, kept.back().c_str(), handle, e, f, g, h, i);
+						minimap::OwnTile(*g_registering, name);
+						return result;
+					}
 					g_radar[*g_registering][tile] = handle;
+				}
 			}
 			return g_registerFile(a, index, name, handle, e, f, g, h, i);
 		}
@@ -827,9 +839,11 @@ namespace loader::game::seamless
 				}
 				case 1:
 				{
-					// its pause map pictures let go by the squares holding them (the radar draws them too, zoomed out)
-					const bool done = landfiles::LetPicturesGo(j.land, PackOf(j.land));
-					work = std::format("{}'s pause map pictures {}", j.land, done ? "let go" : "still held");
+					// its pause map pictures let go by the squares holding them (the radar draws them too, zoomed out), and its
+					// radar supertiles under names of its own
+					const bool tiles = minimap::LetTilesGo(j.land);
+					const bool done = landfiles::LetPicturesGo(j.land, PackOf(j.land)) && tiles;
+					work = std::format("{}'s pause map pictures and radar {}", j.land, done ? "let go" : "still held");
 					if (done || Since(j.since) > 10000)
 						next(2);
 					else

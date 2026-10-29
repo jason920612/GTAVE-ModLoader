@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // The game's map of the world builder's new land (research/phase0.md §61.26). A land's pack brings it in the game's own
@@ -24,6 +25,21 @@ namespace loader::game::minimap
 	// "loaded" with no dictionary there, 0x56FB80).
 	void Suspend();
 	void Resume();
+
+	// A land registered for a crossing (game/seamless) has its radar supertiles registered under names of its own
+	// (minimap_<its number + column>_<row>): the land there keeps the pack's names, and the radar streams the arriving
+	// land's supertiles before the crossing and draws them from the frame the player is in it - no blank radar while the
+	// names would change hands.
+	// OwnName: the name a land's supertile file `name` (minimap_<column>_<row>.ydd, any folder) is registered under, "" to
+	// keep the pack's; OwnTile: it was (its slot then found by that name, as the radar's stream finds one).
+	std::string OwnName(const std::string& land, std::string_view name);
+	void OwnTile(const std::string& land, std::string_view name);
+	// The game thread: the land arriving - its supertiles streamed for where the player arrives, (dx, dy) metres from
+	// where they are - until it is the player's land or let go.
+	void Arriving(const std::string& land, float dx, float dy);
+	// The game thread, a step a frame while a land is taken back: its own supertiles let go (the render thread's last use
+	// waited for); true once they are and the land forgotten.
+	bool LetTilesGo(const std::string& land);
 
 	// The game thread, from a sector switch's start until Resume: the lands being put away named no more on the pause
 	// map's squares (a square looking a picture up finds the next land's, or none).

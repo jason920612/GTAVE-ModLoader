@@ -1394,6 +1394,7 @@ namespace loader::game::sectors
 				}
 				g_cross.state = Cross::State::Registering;
 				g_cross.from = here->name, g_cross.to = next->name, g_cross.side = side, g_cross.since = now;
+				minimap::Arriving(next->name, g_cross.offset[0], g_cross.offset[1]);
 				sea::Prepare(next->name);
 				log::Info("sectors: nearing {}'s {} edge ({:.0f} m) at ({:.0f}, {:.0f}): {} registered, +({:.0f}, {:.0f})", here->name, side, nearest, p.x, p.y,
 				    next->name, g_cross.offset[0], g_cross.offset[1]);
