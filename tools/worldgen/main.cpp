@@ -1256,7 +1256,7 @@ int main(int argc, char** argv)
 		for (size_t k = 0; k < r.nodes.size(); ++k)
 		{
 			const auto& n = r.nodes[k];
-			std::printf("%zu %s (%.1f, %.1f) links", k, k < r.vehicleNodes ? "v" : "p", ox + n.X() / 4.0f, oy + n.Y() / 4.0f);
+			std::printf("%zu %s (%.1f, %.1f, %.2f) links", k, k < r.vehicleNodes ? "v" : "p", ox + n.X() / 4.0f, oy + n.Y() / 4.0f, n.Z() / 32.0f);
 			for (uint32_t l = 0; l < n.LinkCount() && n.FirstLink() + l < r.links.size(); ++l)
 				std::printf(" %u:%u", r.links[n.FirstLink() + l].area, r.links[n.FirstLink() + l].node);
 			std::printf("\n");

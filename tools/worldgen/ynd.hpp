@@ -21,6 +21,7 @@ namespace worldgen::ynd
 		uint16_t FirstLink() const;
 		int16_t X() const;
 		int16_t Y() const;
+		int16_t Z() const; // (1/32 m)
 		uint32_t LinkCount() const;
 		void SetArea(uint16_t v);
 		void SetIndex(uint16_t v);

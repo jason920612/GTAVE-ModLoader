@@ -24,6 +24,7 @@ namespace worldgen::ynd
 	uint16_t Node::FirstLink() const { uint16_t v; std::memcpy(&v, raw + 0x1A, 2); return v; }
 	int16_t Node::X() const { int16_t v; std::memcpy(&v, raw + 0x1C, 2); return v; }
 	int16_t Node::Y() const { int16_t v; std::memcpy(&v, raw + 0x1E, 2); return v; }
+	int16_t Node::Z() const { int16_t v; std::memcpy(&v, raw + 0x22, 2); return v; }
 	uint32_t Node::LinkCount() const { return raw[0x25] >> 3; }
 	void Node::SetArea(uint16_t v) { std::memcpy(raw + 0x10, &v, 2); }
 	void Node::SetIndex(uint16_t v) { std::memcpy(raw + 0x12, &v, 2); }

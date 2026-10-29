@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <queue>
 #include <unordered_map>
 
 #include "convert/resource.hpp"
@@ -253,6 +254,34 @@ namespace worldgen::roads
 					s += l;
 				}
 			}
+			// A face from `bottom` up to `top` (the same points at two heights), facing to the left of the line's direction when
+			// `faceLeft`: a retaining wall, its height changing along it; textured as the bridges' concrete, 7.4 m a picture.
+			void Face(Mesh& m, const std::vector<P3>& top, const std::vector<P3>& bottom, bool faceLeft, uint8_t material)
+			{
+				float s = 0;
+				for (size_t i = 0; i + 1 < top.size(); ++i)
+				{
+					const P2 d = Dir({top[i][0], top[i][1]}, {top[i + 1][0], top[i + 1][1]});
+					const P2 n = faceLeft ? Left(d) : P2{-Left(d)[0], -Left(d)[1]};
+					const float l = Dist({top[i][0], top[i][1]}, {top[i + 1][0], top[i + 1][1]});
+					const P3 normal{n[0], n[1], 0};
+					const uint32_t i0 = Add(m, bottom[i], normal, {s / 7.4f, -bottom[i][2] / 7.4f}),
+					               i1 = Add(m, bottom[i + 1], normal, {(s + l) / 7.4f, -bottom[i + 1][2] / 7.4f}),
+					               i2 = Add(m, top[i + 1], normal, {(s + l) / 7.4f, -top[i + 1][2] / 7.4f}), i3 = Add(m, top[i], normal, {s / 7.4f, -top[i][2] / 7.4f});
+					if (faceLeft)
+						Tri(m, i0, i2, i1), Tri(m, i0, i3, i2);
+					else
+						Tri(m, i0, i1, i2), Tri(m, i0, i2, i3);
+					if (material)
+					{
+						if (faceLeft)
+							Collide(bottom[i], top[i + 1], bottom[i + 1], material, false), Collide(bottom[i], top[i], top[i + 1], material, false);
+						else
+							Collide(bottom[i], bottom[i + 1], top[i + 1], material, false), Collide(bottom[i], top[i + 1], top[i], material, false);
+					}
+					s += l;
+				}
+			}
 			// A flat polygon (a fan from `centre`, the points anticlockwise round it), textured in world space.
 			void Fan(Mesh& m, const P3& centre, const std::vector<P3>& ring, uint8_t material, bool ground, uint8_t kind = 0)
 			{
@@ -350,6 +379,10 @@ namespace worldgen::roads
 				}
 			}
 			anchors.push_back({s.back(), zb});
+			// (an anchor no higher than its ends reach at kGrade: a short bridge from a junction on the ground to one in the air
+			// across a lattice line had had a hump there - 10.5 m up to 19.5 and down to 14.3 in 54 m)
+			for (size_t a = 1; a + 1 < anchors.size(); ++a)
+				anchors[a].second = std::min({anchors[a].second, za + kGrade * (anchors[a].first - s.front()), zb + kGrade * (s.back() - anchors[a].first)});
 			std::vector<float> z(p.size());
 			size_t k = 0;
 			for (size_t i = 0; i < p.size(); ++i)
@@ -1089,6 +1122,44 @@ namespace worldgen::roads
 			const float g = ground(v.p[0], v.p[1]);
 			v.z = air ? std::max(g, 0.0f) + kLevel * layer : std::max(g + 0.05f, 0.6f);
 		}
+		// The approaches: a junction of bridges in the air is reached from the roads on the ground at kGrade at most. The
+		// map's bridge starts where the deck does - the ramp before it is fill: where the measured ground is lower (it had been
+		// 6-50 m of bridge rising 6.5-13 m, 24 % to a wall; the driver AI stopped on them, cars launched off them), the road
+		// before it rises over the ground on an embankment between retaining walls (Geometry). Each vertex on the ground as
+		// high as any junction in the air asks for, through any road, at kGrade a metre down from it.
+		std::vector<bool> raised(n.vertices.size(), false);
+		{
+			const auto inAir = [&](const Vertex& v) {
+				return !v.edges.empty() && std::all_of(v.edges.begin(), v.edges.end(), [&](int ei) { return n.edges[ei].bridge; });
+			};
+			std::vector<float> want(n.vertices.size(), -1e30f);
+			std::priority_queue<std::pair<float, int>> open;
+			for (size_t vi = 0; vi < n.vertices.size(); ++vi)
+				if (inAir(n.vertices[vi]))
+					want[vi] = n.vertices[vi].z, open.push({want[vi], static_cast<int>(vi)});
+			while (!open.empty())
+			{
+				const auto [h, vi] = open.top();
+				open.pop();
+				if (h < want[static_cast<size_t>(vi)])
+					continue;
+				for (const int ei : n.vertices[static_cast<size_t>(vi)].edges)
+				{
+					const Edge& e = n.edges[static_cast<size_t>(ei)];
+					const int u = e.a == vi ? e.b : e.a;
+					if (u == vi || inAir(n.vertices[static_cast<size_t>(u)]))
+						continue;
+					const float h2 = h - kGrade * Length(e.points);
+					if (h2 <= want[static_cast<size_t>(u)] || h2 <= n.vertices[static_cast<size_t>(u)].z)
+						continue;
+					want[static_cast<size_t>(u)] = h2;
+					open.push({h2, u});
+				}
+			}
+			for (size_t vi = 0; vi < n.vertices.size(); ++vi)
+				if (!inAir(n.vertices[vi]) && want[vi] > n.vertices[vi].z)
+					n.vertices[vi].z = want[vi], raised[vi] = true;
+		}
 		for (Edge& e : n.edges)
 		{
 			e.z.resize(e.points.size());
@@ -1120,7 +1191,12 @@ namespace worldgen::roads
 				const float g = ground(e.points[i][0], e.points[i][1]);
 				if (!e.bridge)
 				{
+					// (on the ground; from a raised end down to it at kGrade)
 					e.z[i] = std::max(g + 0.05f, 0.6f);
+					if (raised[static_cast<size_t>(e.a)])
+						e.z[i] = std::max(e.z[i], za - kGrade * along[i]);
+					if (raised[static_cast<size_t>(e.b)])
+						e.z[i] = std::max(e.z[i], zb - kGrade * (total - along[i]));
 					continue;
 				}
 				const float t = total > 0 ? along[i] / total : 0;
@@ -1151,6 +1227,85 @@ namespace worldgen::roads
 		{
 			e.z.front() = n.vertices[e.a].z;
 			e.z.back() = n.vertices[e.b].z;
+		}
+		// No stretch steeper than kSteepest: every point of every road (bridges too - one over a structure the ground has is
+		// g + 1 there) at least as high as any other reached along the roads asks for at kSteepest a metre down from it - the
+		// low end of a cliff raised into a ramp, nothing lowered. (Its reach is a cliff's height / kSteepest, 100 m for 12 m:
+		// two lands sharing a band see the same.) A bridge whose end it raised then runs from there (its line again from its
+		// new ends, no dip between).
+		{
+			std::vector<size_t> first(n.edges.size());
+			size_t count = n.vertices.size();
+			for (size_t ei = 0; ei < n.edges.size(); ++ei)
+				first[ei] = count, count += n.edges[ei].z.size() >= 2 ? n.edges[ei].z.size() - 2 : 0;
+			// (a point's node: its vertex at either end, else its own)
+			const auto node = [&](size_t ei, size_t i) {
+				const Edge& e = n.edges[ei];
+				return i == 0 ? static_cast<size_t>(e.a) : i + 1 == e.z.size() ? static_cast<size_t>(e.b) : first[ei] + i - 1;
+			};
+			std::vector<float> h(count);
+			for (size_t vi = 0; vi < n.vertices.size(); ++vi)
+				h[vi] = n.vertices[vi].z;
+			for (size_t ei = 0; ei < n.edges.size(); ++ei)
+				for (size_t i = 1; i + 1 < n.edges[ei].z.size(); ++i)
+					h[node(ei, i)] = n.edges[ei].z[i];
+			// (each vertex's roads: the edge and its point there)
+			std::vector<std::vector<std::pair<size_t, size_t>>> at(n.vertices.size());
+			for (size_t ei = 0; ei < n.edges.size(); ++ei)
+				if (n.edges[ei].z.size() >= 2)
+					at[static_cast<size_t>(n.edges[ei].a)].push_back({ei, 0}), at[static_cast<size_t>(n.edges[ei].b)].push_back({ei, n.edges[ei].z.size() - 1});
+			std::priority_queue<std::pair<float, size_t>> open;
+			for (size_t k = 0; k < count; ++k)
+				open.push({h[k], k});
+			const auto offer = [&](size_t k, float want) {
+				if (want > h[k] + 1e-3f)
+					h[k] = want, open.push({want, k});
+			};
+			const auto along = [&](size_t ei, size_t i, float hh) {
+				const Edge& e = n.edges[ei];
+				if (i > 0)
+					offer(node(ei, i - 1), hh - kSteepest * Dist(e.points[i], e.points[i - 1]));
+				if (i + 1 < e.z.size())
+					offer(node(ei, i + 1), hh - kSteepest * Dist(e.points[i], e.points[i + 1]));
+			};
+			while (!open.empty())
+			{
+				const auto [hh, k] = open.top();
+				open.pop();
+				if (hh < h[k])
+					continue;
+				if (k < n.vertices.size())
+				{
+					for (const auto& [ei, i] : at[k])
+						along(ei, i, hh);
+					continue;
+				}
+				// (an edge's own point: its edge the last whose first node is not past it)
+				const size_t ei = static_cast<size_t>(std::upper_bound(first.begin(), first.end(), k) - first.begin()) - 1;
+				along(ei, k - first[ei] + 1, hh);
+			}
+			std::vector<bool> lifted(n.vertices.size(), false);
+			for (size_t vi = 0; vi < n.vertices.size(); ++vi)
+				lifted[vi] = h[vi] > n.vertices[vi].z + 0.01f, n.vertices[vi].z = h[vi];
+			for (size_t ei = 0; ei < n.edges.size(); ++ei)
+			{
+				Edge& e = n.edges[ei];
+				if (e.z.size() < 2)
+					continue;
+				for (size_t i = 0; i < e.z.size(); ++i)
+					e.z[i] = h[node(ei, i)];
+				if (e.bridge && (lifted[static_cast<size_t>(e.a)] || lifted[static_cast<size_t>(e.b)]))
+				{
+					std::vector<float> s(e.points.size(), 0.0f);
+					for (size_t i = 1; i < e.points.size(); ++i)
+						s[i] = s[i - 1] + Dist(e.points[i - 1], e.points[i]);
+					const std::vector<float> line = BridgeLine(e.points, s, e.z.front(), e.z.back(), [&](float x, float y) {
+						return std::max(ground(x, y), 0.0f) + kLevel * std::max(1, e.layer);
+					});
+					for (size_t i = 1; i + 1 < e.z.size(); ++i)
+						e.z[i] = std::max(e.z[i], line[i]);
+				}
+			}
 		}
 	}
 
@@ -1751,6 +1906,74 @@ namespace worldgen::roads
 							box(0, 1.8f, width - 1.0f, top - 1.0f, top); // (the cap across)
 						}
 					}
+				}
+			}
+			// a road raised over the ground (Heights: the approach to a junction of bridges in the air, a ramp off a cliff of
+			// the ground's): each side over the ground there a retaining wall of concrete from its edge (the sidewalk's, else the
+			// carriageway's) down into the ground where it is 0.4 m over it, and over 1.5 m a parapet on the edge (0.3 m wide,
+			// 0.95 m high) - cars kept on it, and off its sides from below; a road across a slope has the low side's alone
+			if (!e.bridge && ground)
+			{
+				constexpr float kParapet = 0.95f, kThick = 0.3f, kRaised = 0.4f, kGuarded = 1.5f;
+				std::vector<P3> edgeL, edgeR, innerL, innerR;
+				std::vector<float> riseL(p.size()), riseR(p.size());
+				for (size_t i = 0; i < p.size(); ++i)
+				{
+					const float k = scale[i];
+					const auto at = [&](float o, float dz) { return P3{p[i][0] + nrm[i][0] * o * k, p[i][1] + nrm[i][1] * o * k, z[i] + dz}; };
+					const float lo = halfAt[i] + walkAtL[i], ro = halfAt[i] + walkAtR[i];
+					const float lz = walkAtL[i] > 0 ? kKerb : 0.0f, rz = walkAtR[i] > 0 ? kKerb : 0.0f;
+					edgeL.push_back(at(lo, lz)), edgeR.push_back(at(-ro, rz));
+					innerL.push_back(at(lo - kThick, lz)), innerR.push_back(at(-ro + kThick, rz));
+					riseL[i] = edgeL[i][2] - ground(edgeL[i][0], edgeL[i][1]), riseR[i] = edgeR[i][2] - ground(edgeR[i][0], edgeR[i][1]);
+				}
+				// (each stretch of a side over `over`, a point of the edge either side of it in)
+				const auto stretchesOver = [&](const std::vector<float>& rise, float over, auto&& f) {
+					for (size_t i = 0; i < p.size();)
+					{
+						if (rise[i] <= over)
+						{
+							++i;
+							continue;
+						}
+						size_t j = i;
+						while (j + 1 < p.size() && rise[j + 1] > over)
+							++j;
+						f(i == 0 ? size_t{0} : i - 1, std::min(p.size() - 1, j + 1));
+						i = j + 1;
+					}
+				};
+				const auto part = [](const std::vector<P3>& v, size_t i0, size_t i1) { return std::vector<P3>(v.begin() + i0, v.begin() + i1 + 1); };
+				// (0.3 m into the ground; at a stretch's end points, where the ground comes up to the edge, no higher than it)
+				const auto down = [&](std::vector<P3> v) {
+					for (P3& q : v)
+						q[2] = std::min(ground(q[0], q[1]) - 0.3f, q[2]);
+					return v;
+				};
+				const auto up = [](std::vector<P3> v, float dz) {
+					for (P3& q : v)
+						q[2] += dz;
+					return v;
+				};
+				for (const bool leftSide : {true, false})
+				{
+					const std::vector<P3>& edge = leftSide ? edgeL : edgeR;
+					const std::vector<P3>& inside = leftSide ? innerL : innerR;
+					const std::vector<float>& rise = leftSide ? riseL : riseR;
+					stretchesOver(rise, kRaised, [&](size_t i0, size_t i1) { b.Face(out.structure, part(edge, i0, i1), down(part(edge, i0, i1)), leftSide, kConcrete); });
+					stretchesOver(rise, kGuarded, [&](size_t i0, size_t i1) {
+						const auto outer = part(edge, i0, i1), inner = part(inside, i0, i1);
+						// (its outer face over the retaining wall, its inner one facing the road, its top)
+						b.Face(out.structure, up(outer, kParapet), outer, leftSide, kConcrete);
+						b.Face(out.structure, up(inner, kParapet), inner, !leftSide, kConcrete);
+						std::vector<std::array<float, 2>> uv0(inner.size()), uv1(inner.size());
+						for (size_t i = 0; i < inner.size(); ++i)
+							uv0[i] = {0, s[i0 + i] / 7.4f}, uv1[i] = {kThick / 7.4f, s[i0 + i] / 7.4f};
+						if (leftSide)
+							b.Strip(out.structure, up(inner, kParapet), up(outer, kParapet), uv0, uv1, kConcrete, false);
+						else
+							b.Strip(out.structure, up(outer, kParapet), up(inner, kParapet), uv1, uv0, kConcrete, false);
+					});
 				}
 			}
 			// markings (on asphalt and concrete): between the directions (double yellow), between lanes (dashed white: a

@@ -88,6 +88,13 @@ namespace worldgen::roads
 	// between two ends on the ground arches up to `clearance` over its middle (less over a short one); a bridge's deck
 	// always 1 m over the ground under it.
 	constexpr float kLevel = 6.5f;
+	// The steepest a road goes up to a junction of bridges in the air: over lower ground it rises on an embankment between
+	// retaining walls (a parapet on them over 1.5 m).
+	constexpr float kGrade = 0.07f;
+	// The steepest any road goes: the measured ground's cliffs where it took a structure for ground (an airport's decks: a
+	// road on them 2.5 m to 9 m in 19 m, 12 m to 3.3 m in 37 m) are ramps on embankments at this instead. Florida's real roads
+	// keep under it; a hill's road at less is left as the ground has it.
+	constexpr float kSteepest = 0.12f;
 	void Heights(Network& n, const std::function<float(float, float)>& ground, float clearance = 6.0f);
 
 	struct Mesh
