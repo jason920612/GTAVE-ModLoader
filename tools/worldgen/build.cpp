@@ -2575,6 +2575,23 @@ namespace worldgen::build
 							if (n && ndvi / n > 0.15f)
 								dune.At(i, j) = 1, ++duneCells;
 						}
+						else if (!photoClass.v.empty())
+						{
+							// (else photo.py's classes, every 2 m over the cell: their trees or green grass on the beach, or -
+							// 25 m and more from the water, past the wet sand they class with it - their dry grass; most of
+							// the cell's)
+							int plants = 0, seen = 0;
+							for (float y = c[1] - land.cell / 2 + 1; y < c[1] + land.cell / 2; y += 2)
+								for (float x = c[0] - land.cell / 2 + 1; x < c[0] + land.cell / 2; x += 2)
+									if (const auto pc = photoClass.Cell({x, y}); photoClass.In(pc[0], pc[1]))
+									{
+										const uint8_t cl = photoClass.At(pc[0], pc[1]);
+										++seen;
+										plants += cl == 2 || cl == 3 || (cl == 4 && toWater.At(i, j) >= 25);
+									}
+							if (seen && plants * 2 > seen)
+								dune.At(i, j) = 1, ++duneCells;
+						}
 					}
 					else if (k == kPaved)
 						what = kPaving;
@@ -2634,8 +2651,49 @@ namespace worldgen::build
 						}
 					}
 			}
-			std::printf("ground cover: %zu lawn, %zu paving, %zu bare, %zu sand (%zu of it dunes' plants), %zu under water (4 m cells)%s\n", counts[0], counts[1],
-			    counts[2], counts[3], duneCells, counts[4], photographed ? "" : " (no aerial pictures: built-up land as lawn)");
+			// (and the dunes behind the beaches: land within 30 m of one, in none of the map's lots - homes, shops, works, car
+			// parks...; a park's is -, most of it plants in photo.py's classes, trees or green or dry grass: Miami Beach's dune is
+			// a strip the map leaves blank between the beach and the hotels, its grey-green scrub "dry grass" in the pictures)
+			size_t behind = 0;
+			if (!photoClass.v.empty())
+			{
+				raster::Grid<uint8_t> notBeach = land, lots = land;
+				std::fill(lots.v.begin(), lots.v.end(), uint8_t{0});
+				bool anyBeach = false;
+				for (size_t k = 0; k < land.v.size(); ++k)
+					notBeach.v[k] = land.v[k] != kBeach, anyBeach |= land.v[k] == kBeach;
+				if (anyBeach)
+				{
+					for (const auto& a : w.areas)
+						if (a.kind != "park" && a.kind != "beach" && a.kind != "grass" && a.kind != "wood" && a.kind != "wetland" && a.kind != "water" &&
+						    !a.outer.empty())
+							raster::FillPolygon(lots, a.outer, uint8_t{1});
+					const auto toBeach = raster::DistanceTo(notBeach, 1);
+					for (int j = 0; j < land.ny; ++j)
+						for (int i = 0; i < land.nx; ++i)
+						{
+							const uint8_t k = land.At(i, j);
+							if (k == kBeach || k == kWater || dune.At(i, j) || toBeach.At(i, j) > 30 || lots.At(i, j))
+								continue;
+							const P2 c = land.Centre(i, j);
+							int plants = 0, seen = 0;
+							for (float y = c[1] - land.cell / 2 + 1; y < c[1] + land.cell / 2; y += 2)
+								for (float x = c[0] - land.cell / 2 + 1; x < c[0] + land.cell / 2; x += 2)
+									if (const auto pc = photoClass.Cell({x, y}); photoClass.In(pc[0], pc[1]))
+									{
+										const uint8_t cl = photoClass.At(pc[0], pc[1]);
+										++seen;
+										plants += cl == 2 || cl == 3 || cl == 4;
+									}
+							if (seen && plants * 2 > seen)
+								dune.At(i, j) = 1, ++behind;
+						}
+				}
+			}
+			std::printf("ground cover: %zu lawn, %zu paving, %zu bare, %zu sand (%zu of it dunes' plants, %zu more dune cells behind the beaches), %zu under "
+			            "water (4 m cells)%s\n",
+			    counts[0], counts[1], counts[2], counts[3], duneCells, behind, counts[4], photographed ? "" : " (no aerial pictures: built-up land as lawn)");
+			duneCells += behind;
 		}
 		// (how far into a lawn: from its edge)
 		const auto lawnDepth = raster::DistanceTo(lawnCapable, 1);
@@ -4193,7 +4251,7 @@ namespace worldgen::build
 						    [&](float x, float y) {
 							    const auto c = land.Cell({x, y});
 							    // (and the dunes inside the map's beaches, where the pictures see plants)
-							    if (land.In(c[0], c[1]) && land.At(c[0], c[1]) == kBeach && dune.At(c[0], c[1]))
+							    if (land.In(c[0], c[1]) && dune.At(c[0], c[1]) && land.At(c[0], c[1]) != kWater)
 								    return !inCemetery(x, y);
 							    if (!land.In(c[0], c[1]) || land.At(c[0], c[1]) == kBeach || land.At(c[0], c[1]) == kWater || toSand.At(c[0], c[1]) > 45)
 								    return false;
@@ -4359,6 +4417,22 @@ namespace worldgen::build
 				}
 				if (newerStreets)
 					std::printf("power lines: %zu residential streets of newer homes (1975 on) with their lines underground\n", newerStreets);
+				// (and central Florida's kerbed arterials - tertiary and up, 27-29.5 N - where no scan shows their poles: the
+				// street pictures' Orlando arterials have steel or concrete street light poles, their lines underground or on
+				// concrete poles the game has no model of - round 25's reviewers: "wooden crossarm poles and wires where the photo
+				// has tall galvanised steel street lights")
+				size_t arterials = 0;
+				if (!scanned)
+					for (const auto& e : network.edges)
+						if ((e.curb || e.sidewalks) && e.points.size() >= 2 &&
+						    (e.kind.starts_with("primary") || e.kind.starts_with("secondary") || e.kind.starts_with("tertiary")) && !e.kind.ends_with("_link"))
+						{
+							const double lat = latAt(e.points[e.points.size() / 2][1]);
+							if (lat >= 27.0 && lat < 29.5)
+								raster::DrawLine(tall, e.points, 6.0f, uint8_t{1}), ++arterials;
+						}
+				if (arterials)
+					std::printf("power lines: %zu central Florida kerbed arterials' pieces with no wooden pole line\n", arterials);
 				const auto buried = [&](float x, float y) {
 					const auto cc = tall.Cell({x, y});
 					return tall.In(cc[0], cc[1]) && tall.At(cc[0], cc[1]) != 0;
@@ -5428,7 +5502,7 @@ namespace worldgen::build
 				for (int j = 0; j < land.ny; ++j)
 					for (int i = 0; i < land.nx; ++i)
 					{
-						if (land.At(i, j) != kBeach || !dune.At(i, j))
+						if (!dune.At(i, j) || land.At(i, j) == kWater) // (a dune's cell, on the beach or behind it)
 							continue;
 						// (each side: the neighbour across it, the side's two corners)
 						const int sides[4][6] = {{1, 0, i + 1, j, i + 1, j + 1}, {-1, 0, i, j, i, j + 1}, {0, 1, i, j + 1, i + 1, j + 1}, {0, -1, i, j, i + 1, j}};
@@ -6027,7 +6101,9 @@ namespace worldgen::build
 			    {"portblockgroup2b+hi.ytd", "im_freeway_road001", "sp1_rd.ytd", "im_freeway_road001_n", nullptr, nullptr},
 			    {"hw1_15_details.ytd", "im_ground_bricks03", "ss1_05_ground.ytd", "im_ground_bricks03_n", nullptr, nullptr},
 			    {"dt1_20_build+hi.ytd", "rsn_dc_archedcobbles_0001", "kt1_15_ground01+hidr.ytd", "rsn_dc_archedcobbles_0001_n", nullptr, nullptr},
-			    {"vb_38_ground+hi.ytd", "rsn_dc_rd_slabs_0001", "vb_38_ground.ytd", "rsn_dc_rd_slabs_0001_n", nullptr, nullptr},
+			    // (paving stones: interlocking concrete pavers - the reviewers saw the big slabs as "plain concrete" where Miami
+			    // Beach's promenades and park paths are paver blocks)
+			    {"sc1_13__grd+hidr.ytd", "sl_blockpave02", nullptr, nullptr, nullptr, nullptr},
 			    {"venicebeachrd+hi.ytd", "dc_gravel_road02", "cs1_09_decals_06+hidr.ytd", "dc_gravel_road02_n", nullptr, nullptr},
 			    {"cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01", "cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01_n", nullptr, nullptr},
 			    {"cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01", "cs3_01_beach3+hidr.ytd", "cs_rsn_sm_dirtroad_01_n", nullptr, nullptr}};
@@ -6619,11 +6695,12 @@ namespace worldgen::build
 					return land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) == kBeach;
 				};
 				const auto kindAt = [&](float x, float y) {
+					const auto dc = dune.Cell({x, y});
+					const bool onDune = dune.In(dc[0], dc[1]) && dune.At(dc[0], dc[1]);
 					if (beachAt(x, y))
-					{
-						const auto dc = dune.Cell({x, y});
-						return dune.In(dc[0], dc[1]) && dune.At(dc[0], dc[1]) ? 1 : 2; // (a dune's plants: dry grass)
-					}
+						return onDune ? 1 : 2; // (a dune's plants: dry grass)
+					if (onDune)
+						return 1;
 					const auto c = photoClass.Cell({x, y});
 					switch (photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : 0)
 					{

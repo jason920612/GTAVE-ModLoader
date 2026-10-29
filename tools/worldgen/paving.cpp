@@ -98,7 +98,8 @@ namespace worldgen::paving
 
 	float TextureMetres(Paving p)
 	{
-		constexpr float kMetres[kPavings] = {6.0f, 7.4f, 1.6f, 2.0f, 3.0f, 4.0f, 6.0f, 6.0f};
+		// (paving stones: Florida's interlocking concrete pavers - 20 x 10 cm blocks in a basket weave, the picture 1.4 m)
+		constexpr float kMetres[kPavings] = {6.0f, 7.4f, 1.6f, 2.0f, 1.4f, 4.0f, 6.0f, 6.0f};
 		return kMetres[static_cast<size_t>(p)];
 	}
 

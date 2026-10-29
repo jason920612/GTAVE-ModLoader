@@ -92,14 +92,15 @@ namespace worldgen::props
 		const uint32_t light = loader::convert::Joaat("prop_streetlight_01"), signal = loader::convert::Joaat("prop_traffic_01a");
 		for (const auto& e : n.edges)
 		{
-			if (!e.sidewalks || e.bridge)
+			// (a kerbed road's too where its sidewalks are walks of their own, set back past a verge)
+			if ((!e.sidewalks && !e.curb) || e.bridge)
 				continue;
 			// (a street light of its own on the bigger roads - the residential streets' hang on the power poles, the street
 			// pictures there have no steel poles)
 			const bool lit = !(e.kind == "residential" || e.kind == "unclassified" || e.kind == "living_street" || e.kind == "service" ||
 			                   e.kind == "road" || e.kind == "track");
 			const float total = Length(e);
-			const float side = e.HalfWidth() + 0.6f; // (on the sidewalk, near the kerb)
+			const float side = e.HalfWidth() + (e.sidewalks ? 0.6f : 1.2f); // (on the sidewalk near the kerb, else on the verge)
 			// (none by a street junction's corner, where turning cars cut across the kerb: from past its reach)
 			const float fromA = roads::CornerReach(n, e.a) + 1, fromB = roads::CornerReach(n, e.b) + 1;
 			// street lights every 45 m on the right of the way (both sides on wide roads), their arm (the model's -y)
