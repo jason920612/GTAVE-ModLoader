@@ -133,6 +133,7 @@ namespace loader::game::minimap
 				int32_t slot = -1;
 				uint8_t entry[kEntry]{};
 				bool asked = false;
+				bool wanted = false; // (the selection's word - another thread's -, asked for by the stream on the game's own)
 			};
 			std::vector<std::unique_ptr<Tile>> tiles;
 			float shift[2]{}; // (arriving: where the player arrives, in the lattice's tiles from the view's middle)
@@ -199,7 +200,9 @@ namespace loader::game::minimap
 					e[0x72] = want;
 				}
 			}
-			const uint32_t store = *reinterpret_cast<const uint32_t*>(g_base + kDrawableStore);
+			// (the selection runs on a thread of its own - 0x571150's, not the game's main one -: it only marks, as the game's
+			// does; the asking is the stream's, on the main thread. Asked from here, the request met the main thread's own in
+			// the streaming's request map, unlocked, and its free list was broken: crash 0xCE9491)
 			for (auto& [land, own] : g_own)
 			{
 				const bool here = !own.going && !sectors::Dormant(land);
@@ -217,14 +220,8 @@ namespace loader::game::minimap
 					const bool want = active && !none && !g_suspended && t->slot >= 0 && t->row >= ownRowFrom && t->row <= ownRowTo &&
 					                  t->column >= ownColumnFrom && t->column <= ownColumnTo;
 					uint8_t* e = t->entry;
-					if (want && !t->asked)
-					{
-						// (as the game's own stream asks when it found the slot by name: 0x56FDA8)
-						g_ask(e + 0x0C, t->slot, store, 7);
-						e[0x72] = 1;
-						t->asked = true;
-					}
-					else if (!want && t->asked)
+					t->wanted = want;
+					if (!want && t->asked)
 					{
 						e[0x71] = 1;
 						e[0x72] = 0;
@@ -242,10 +239,20 @@ namespace loader::game::minimap
 				return;
 			for (Supertile& s : g_supertiles)
 				g_stream(s.entry);
+			const uint32_t store = *reinterpret_cast<const uint32_t*>(g_base + kDrawableStore);
 			std::lock_guard lock(g_ownMutex);
 			for (auto& [land, own] : g_own)
 				for (auto& t : own.tiles)
+				{
+					if (t->wanted && !t->asked)
+					{
+						// (as the game's own stream asks when it found the slot by name: 0x56FDA8)
+						g_ask(t->entry + 0x0C, t->slot, store, 7);
+						t->entry[0x72] = 1;
+						t->asked = true;
+					}
 					g_stream(t->entry);
+				}
 		}
 
 		void DrawAll(uint8_t* array)
@@ -606,8 +613,11 @@ namespace loader::game::minimap
 		std::lock_guard lock(g_ownMutex);
 		for (auto& [land, own] : g_own)
 			for (auto& t : own.tiles)
+			{
+				t->wanted = false;
 				if (t->asked)
 					Release(t->entry), t->asked = false;
+			}
 	}
 
 	void Resume()
