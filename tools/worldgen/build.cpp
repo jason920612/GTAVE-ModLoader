@@ -63,6 +63,8 @@ namespace worldgen::build
 		constexpr uint32_t kDontInstanceCollision = 4;
 		// procedural.meta's procTagTable: what the game grows round the player on a material (research/phase0.md §63)
 		constexpr uint16_t kForestOvergrown = 157 << 8, kMeadowBrown = 161 << 8, kLushShort = 148 << 8;
+		// (City_GreenScrub_Grass_SPARSE: txgrass11's short grass tufts alone - a mown lawn's; Dunes_Grasses_Plants: the dunes')
+		constexpr uint16_t kTownLawn = 86 << 8, kDuneGrass = 142 << 8;
 
 		float Smooth(float t)
 		{
@@ -6690,7 +6692,18 @@ namespace worldgen::build
 						const float mx = cx0 + 0.5f * o.cell, my = cy0 + 0.5f * o.cell;
 						const uint8_t lcHere = landCoverAt ? landCoverAt(mx, my) : 0;
 						const bool mown = lcHere >= 21 && lcHere <= 24 && !thicketAt(mx, my);
-						const uint16_t plants = onRoad || mown ? 0 : top == 2 ? kForestOvergrown : top == 3 ? kLushShort : top == 4 ? kMeadowBrown : 0;
+						// (a town's mown lawn its short grass - City_GreenScrub_Grass_SPARSE: no flowers, the lawns had been "a flat
+						// uniform carpet" to round 26's reviewers -, a dune its grasses)
+						const auto dc = dune.Cell({mx, my});
+						const bool onDune = dune.In(dc[0], dc[1]) && dune.At(dc[0], dc[1]);
+						const bool lawnGrass = mown && (top == 2 || top == 3 || top == 4 || top == 5);
+						const uint16_t plants = onRoad                  ? 0
+						                        : onDune                ? kDuneGrass
+						                        : mown                  ? (lawnGrass ? kTownLawn : 0)
+						                        : top == 2              ? kForestOvergrown
+						                        : top == 3              ? kLushShort
+						                        : top == 4              ? kMeadowBrown
+						                                                : 0;
 						f.material.push_back(static_cast<uint16_t>((top == 2 ? kLeaves : top == 3 ? kGrassShort : top == 4 ? kGrass
 						                                            : top == 5 || top == 1 ? kSand : top == 6 ? kConcrete : kGrass) | plants));
 						// (and the colour the pictures see the ground there, the plants' tint: under the trees a leaf litter's)
@@ -6704,6 +6717,15 @@ namespace worldgen::build
 						if (seen > 0)
 							for (int k = 0; k < 3; ++k)
 								colour[k] = static_cast<uint8_t>(std::clamp(sum[k] / seen, 0.0f, 255.0f));
+						// (a town's lawn's grass the lawn's green the ground has - the winter's pictures see it dormant -: most of
+						// the way to a lawn's green of its brightness)
+						if (plants == kTownLawn)
+						{
+							const float l = (colour[0] + colour[1] + colour[2]) / 3.0f;
+							const float lawn[3] = {l * 0.76f, l * 1.13f, l * 0.55f};
+							for (int k = 0; k < 3; ++k)
+								colour[static_cast<size_t>(k)] = static_cast<uint8_t>(std::clamp(colour[static_cast<size_t>(k)] + (lawn[k] - colour[static_cast<size_t>(k)]) * 0.8f, 0.0f, 255.0f));
+						}
 						// (as the game's material bounds have it: about 0.45 of the pictures' - a dry field (165, 151, 121) there,
 						// (71, 60, 46) in the game's countryside)
 						for (uint8_t& k : colour)
