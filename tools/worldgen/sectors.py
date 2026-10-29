@@ -27,6 +27,8 @@ usage: python -I tools/worldgen/sectors.py --cells c0,r0,c1,r1 | --list <cells.t
   --mapillary: street picture downloads (Mapillary, CC BY-SA 4.0): a sector with pictures in it gets its walls' colours
           from them
   --first c,r;c,r...: these cells before the others (the street pictures' places: compared first)
+  --rebuild <cells.tsv>: these cells (column, row) before all others and built again though built (an older worldgen's
+          lands: a dlc.rpf.new beside each pack, taken at the game's next start)
   --list: the survey's land cells (--survey: a tsv with column and row), built nearest --home first (column,row; by default
           Miami's cell)
   --names col,row=name;...  existing packs for some cells (not built again)
@@ -326,15 +328,24 @@ def main():
         cells = [(c, r) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
     else:
         sys.exit(__doc__)
-    todo = []
+    again = []
+    if 'rebuild' in O:
+        with open(O['rebuild'], encoding='utf-8') as f:
+            header = f.readline().rstrip('\n').split('\t')
+            ci, ri = header.index('column'), header.index('row')
+            for line in f:
+                p = line.rstrip('\n').split('\t')
+                if len(p) > max(ci, ri) and (int(p[ci]), int(p[ri])) not in again:
+                    again.append((int(p[ci]), int(p[ri])))
+    todo = list(again)
     for c, r in cells:
         name = named.get((c, r), land(c, r)[0])
-        if (c, r) in named:
+        if (c, r) in named or (c, r) in again:
             continue
         if 'skip-built' in flags and os.path.exists(pack_of(name)):
             continue
         todo.append((c, r))
-    say(f'{len(cells)} cells, {len(todo)} to build with {O["jobs"]} build(s) and {O["prep"]} made ready at a time')
+    say(f'{len(cells)} cells, {len(todo)} to build ({len(again)} of them again) with {O["jobs"]} build(s) and {O["prep"]} made ready at a time')
     if 'dry-run' in flags:
         for c, r in todo[:20]:
             print(f'  {c},{r}')

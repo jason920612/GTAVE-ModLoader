@@ -269,7 +269,10 @@ namespace loader::game::crossing
 
 		void StartScene()
 		{
+			const auto t0 = Clock::now();
 			natives::Invoke<int32_t>(kNewLoadSceneStartSphere, g_preload.at[0], g_preload.at[1], g_preload.at[2], g_preload.radius, kLoadSceneCollision);
+			if (const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); ms > 5)
+				log::Info("crossing: the load scene of {:.0f} m at ({:.0f}, {:.0f}) took {:.1f} ms to start", g_preload.radius, g_preload.at[0], g_preload.at[1], ms);
 		}
 	}
 
