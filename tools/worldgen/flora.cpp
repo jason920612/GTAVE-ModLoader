@@ -98,7 +98,7 @@ namespace worldgen::flora
 				v = Mul(v, -1); // (the picture's up, up)
 			const float cs = std::cos(spin), sn = std::sin(spin);
 			const P3 ru = Add(Mul(u, cs), Mul(v, sn)), rv = Add(Mul(v, cs), Mul(u, -sn));
-			const P3 hu = Mul(hanging ? u : ru, width / 2), hv = Mul(hanging ? v : rv, height / 2);
+			const P3 hu = Mul(ru, width / 2), hv = Mul(rv, height / 2); // (a hanging card turned by its spin about its top edge's middle)
 			const P3 mid = hanging ? Sub(c, hv) : c;
 			const float du = 1.0f / static_cast<float>(across), dv = 1.0f / static_cast<float>(down);
 			const float u0 = static_cast<float>(cell % across) * du, v0 = static_cast<float>((cell / across) % down) * dv;
@@ -351,7 +351,7 @@ namespace worldgen::flora
 						const float spin = rnd.Range(0, kPi);
 						const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 						for (int c = 0; c < 2; ++c)
-							leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, wd, len2,
+							leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, rnd.Range(-0.2f, 0.2f), wd, len2,
 							    static_cast<int>(rnd.Next() % 4), kMoss, true});
 					}
 				}
@@ -377,7 +377,7 @@ namespace worldgen::flora
 							const float spin = rnd.Range(0, kPi);
 							const P3 light{at[0] - top[0], at[1] - top[1], 0.3f};
 							for (int c = 0; c < 2; ++c)
-								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, 0, rnd.Range(0.18f, 0.32f),
+								leaves.push_back({drop, {std::cos(spin + c * kPi / 2), std::sin(spin + c * kPi / 2), 0}, light, rnd.Range(-0.2f, 0.2f), rnd.Range(0.18f, 0.32f),
 								    rnd.Range(0.5f, 1.8f), static_cast<int>(rnd.Next() % 4), kMoss, true});
 						}
 					}
@@ -1134,13 +1134,23 @@ namespace worldgen::flora
 					const float len = (0.25f + 0.75f * (1 - std::fabs(g) * 2)) * rnd.Range(0.6f, 1.0f) * im.height, phase = rnd.Range(0, 2 * kPi),
 					            sway = rnd.Range(3, 12);
 					const std::array<float, 3> c{rnd.Range(118, 138), rnd.Range(124, 142), rnd.Range(108, 124)};
+					// (tangled, not combed: its way down a random walk with kinks over the slow sway, and every so often a fork of a
+					// short side strand curling off - straight strands had been "rigid straight strips", "stiff grey strings")
+					float drift = 0;
 					for (float y = rnd.Range(0, 20); y < len; y += 1.0f)
 					{
-						const float w = 2.6f * (1 - y / len) + 1.0f;
-						const float px = x + std::sin(y / 40 + phase) * sway;
+						const float w = 2.4f * (1 - y / len) + 0.9f;
+						drift += rnd.Range(-0.9f, 0.9f) + (rnd.Unit() < 0.04f ? rnd.Range(-4.0f, 4.0f) : 0.0f);
+						drift *= 0.97f;
+						const float px = x + std::sin(y / 40 + phase) * sway + drift;
 						Ellipse(im, px, y, w / 2 + 0.2f, 0.8f, 0, Shade(c, rnd.Range(0.85f, 1.05f)), x0, y0, x1, y1);
-						if (rnd.Unit() < 0.02f)
-							Line(im, px, y, px + rnd.Range(-14, 14), y + rnd.Range(10, 30), 1.0f, Shade(c, 0.9f), x0, y0, x1, y1);
+						if (rnd.Unit() < 0.035f)
+						{
+							// (a side strand: out and down in two kinked pieces)
+							const float sx = px + rnd.Range(-12, 12), sy = y + rnd.Range(8, 22);
+							Line(im, px, y, sx, sy, 1.0f, Shade(c, 0.92f), x0, y0, x1, y1);
+							Line(im, sx, sy, sx + rnd.Range(-8, 8), sy + rnd.Range(6, 18), 0.8f, Shade(c, 0.88f), x0, y0, x1, y1);
+						}
 					}
 				}
 			}
