@@ -24,7 +24,7 @@ The pictures are asked for in blocks of 2 km (4 bands, JPEG); a tree is a peak o
 infrared (its sunlit crown) - the canopy where the canopy heights say 3 m and more or the near infrared is high and
 uneven (crowns and their shadows, not a lawn's even green) - at least a crown's reach from a taller one.
 """
-import io, json, math, os, struct, sys, time, urllib.parse, urllib.request
+import io, json, math, os, struct, sys, threading, time, urllib.parse, urllib.request
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -127,13 +127,21 @@ class Canopy:
             if not os.path.exists(path):
                 os.makedirs(self.folder, exist_ok=True)
                 print(f'  canopy tile {key}: downloading', flush=True)
-                with urllib.request.urlopen(urllib.request.Request(CHM_URL.format(key), headers=AGENT), timeout=600) as r, open(path + '.part', 'wb') as f:
+                # (a part file of this worker's own: two workers - or two lands' builds - fetching the same tile had renamed the
+                # one part file over each other and failed; the second one there finds the first one's tile and keeps it)
+                part = f'{path}.{os.getpid()}.{threading.get_ident()}.part'
+                with urllib.request.urlopen(urllib.request.Request(CHM_URL.format(key), headers=AGENT), timeout=600) as r, open(part, 'wb') as f:
                     while True:
                         b = r.read(1 << 22)
                         if not b:
                             break
                         f.write(b)
-                os.replace(path + '.part', path)
+                try:
+                    os.replace(part, path)
+                except PermissionError:
+                    if not os.path.exists(path):
+                        raise
+                    os.remove(part)
             with tifffile.TiffFile(path) as t:
                 p = t.pages[0]
                 scale = p.tags['ModelPixelScaleTag'].value
