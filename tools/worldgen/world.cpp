@@ -276,7 +276,10 @@ namespace worldgen::world
 					r.forward = f > 0 ? f : std::max(1, (total + 1) / 2);
 					r.backward = b > 0 ? b : std::max(1, total / 2);
 				}
+				// (an alley: one lane's width for both ways, 3-3.5 m between the fences - the reviewers saw Miami Beach's twice as
+				// wide)
 				r.laneWidth = base == "motorway" || base == "trunk" ? 3.7f : base == "primary" || base == "secondary" ? 3.5f : base == "tertiary" ? 3.3f
+				              : highway == "service" && service == "alley"                                               ? 1.6f
 				              : highway == "service"                                                                     ? 2.8f
 				              : highway == "track"                                                                       ? 1.75f
 				                                                                                                         : 3.0f;

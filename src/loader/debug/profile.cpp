@@ -123,12 +123,14 @@ namespace loader::debug::profile
 			std::vector<Sample> samples = std::vector<Sample>(kMax);
 			std::atomic<size_t> taken = 0;
 			std::atomic<bool> running = false;
+			bool stalls = false;
 			std::vector<HANDLE> threads;
 			std::vector<DWORD> ids;
 			std::vector<uintptr_t> stackEnds; // (each thread's stack's end: its TEB's StackBase, 0 not known)
 			std::thread sampler;
 		};
 		std::unique_ptr<Trace> g_trace;
+		std::atomic<std::chrono::steady_clock::rep> g_beat = 0; // (the game thread's frame's start)
 
 		// a thread's stack's end (its TEB's StackBase, +8: ThreadBasicInformation's TebBaseAddress), 0 if not known
 		uintptr_t StackEnd(HANDLE thread)
@@ -248,6 +250,16 @@ namespace loader::debug::profile
 			const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
 			while (t->running)
 			{
+				if (t->stalls)
+				{
+					const auto now = std::chrono::steady_clock::now().time_since_epoch();
+					const std::chrono::steady_clock::duration beat(g_beat.load(std::memory_order_relaxed));
+					if (beat.count() && now - beat > std::chrono::milliseconds(150))
+						for (size_t k = 0; k < t->threads.size(); ++k)
+							SampleOne(t, k, base);
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+					continue;
+				}
 				for (size_t k = 0; k < t->threads.size(); ++k)
 					SampleOne(t, k, base);
 				const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(1000);
@@ -257,7 +269,12 @@ namespace loader::debug::profile
 		}
 	}
 
-	void Start(const std::vector<unsigned long>& others)
+	void Beat()
+	{
+		g_beat.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+	}
+
+	void Start(const std::vector<unsigned long>& others, bool stalls)
 	{
 		Stop();
 		size_t k = 0;
@@ -271,6 +288,8 @@ namespace loader::debug::profile
 		for (const DWORD id : g_trace->ids)
 			if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id))
 				g_trace->threads.push_back(h), g_trace->stackEnds.push_back(StackEnd(h));
+		g_trace->stalls = stalls;
+		g_beat = 0;
 		g_trace->running = true;
 		g_trace->sampler = std::thread(TraceThread, g_trace.get());
 	}

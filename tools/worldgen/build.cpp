@@ -34,6 +34,7 @@
 #include "polygon.hpp"
 #include "powerlines.hpp"
 #include "barriers.hpp"
+#include "signs.hpp"
 #include "props.hpp"
 #include "raster.hpp"
 #include "roads.hpp"
@@ -2643,6 +2644,18 @@ namespace worldgen::build
 			            "mapped round about; %zu sides the aerial pictures show (%zu set back)\n",
 			    sides, attached, none, aerialSides, aerialWalks.size());
 		}
+		// Miami-Dade's residential streets (south of 26 degrees) have a dashed yellow line between their directions - the
+		// street pictures do; the reviewers missed it on four of twelve views -, those a block long and more: a cul-de-sac's not
+		for (auto& r : near.roads)
+		{
+			if ((r.kind != "residential" && r.kind != "unclassified") || !r.forward || !r.backward || r.points.size() < 2 ||
+			    latAt(r.points[r.points.size() / 2][1]) >= 26.0)
+				continue;
+			float length = 0;
+			for (size_t k = 1; k < r.points.size(); ++k)
+				length += std::hypot(r.points[k][0] - r.points[k - 1][0], r.points[k][1] - r.points[k - 1][1]);
+			r.centreLine = length >= 120;
+		}
 		// sidewalks where the map says; where it says nothing, by how built up the land along the road is (NLCD): the street
 		// pictures' suburbs and country roads mostly have none - a verge of grass to the ditch -, the towns' middles and their
 		// bigger streets have them (developed medium and high intensity for any street, low intensity too for tertiary and up).
@@ -3365,6 +3378,7 @@ namespace worldgen::build
 		roads::Mesh wires; // (the power lines', powerlines.hpp)
 		std::vector<mapfiles::CarGen> parked; // (parked cars: the game's car generators)
 		std::vector<world::Barrier> yards;    // (south Florida's front yards' fences and hedges: built with the barriers)
+		signs::Meshes nameSigns;              // (the street name signs at the junctions, signs.hpp)
 		{
 			raster::Grid<uint8_t> blocked;
 			blocked.Init(gx0, gy0, gx1, gy1, 2.0f, 0);
@@ -3737,7 +3751,37 @@ namespace worldgen::build
 							on.push_back(scanPoles.at(key)[q]);
 					return side;
 				};
+				// (and a street the scan covers that shows no pole along it, 60 m long and more: its line is underground or in the
+				// alley behind - Miami Beach's are -, not on the rule's poles every 40 m the reviewers kept finding where the photos
+				// have none)
+				size_t unpoled = 0;
+				if (!scanPoles.empty())
+					for (const auto& e : network.edges)
+					{
+						if (e.kind == "service" || e.kind == "track" || e.kind.starts_with("motorway") || e.points.size() < 2)
+							continue;
+						const P2& mid = e.points[e.points.size() / 2];
+						float length = 0;
+						for (size_t k = 1; k < e.points.size(); ++k)
+							length += Dist(e.points[k - 1], e.points[k]);
+						if (length < 60 || !scan.Count(mid[0], mid[1]))
+							continue;
+						bool any = false;
+						const float outer = e.HalfWidth() + e.Walk() + 6;
+						for (size_t k = 0; k + 1 < e.points.size() && !any; ++k)
+							for (int dj = -1; dj <= 1 && !any; ++dj)
+								for (int di = -1; di <= 1 && !any; ++di)
+									if (const auto it = scanPoles.find(poleKey((e.points[k][0] + e.points[k + 1][0]) / 2 + di * 16.0f,
+									        (e.points[k][1] + e.points[k + 1][1]) / 2 + dj * 16.0f));
+									    it != scanPoles.end())
+										for (const P2& pq : it->second)
+											any = any || polygon::DistanceToSegment(pq, e.points[k], e.points[k + 1]) < outer;
+						if (!any)
+							raster::DrawLine(tall, e.points, 10.0f, uint8_t{1}), ++unpoled;
+					}
 				powerlines::Place(network, poleClear, ground, buried, {bx0, by0, bx1, by1}, poles, wires, ps, sideOf);
+				if (unpoled)
+					std::printf("power lines: %zu streets the scan shows no pole along left without\n", unpoled);
 				if (!scanPoles.empty())
 					std::printf("power lines: %zu roads' side by the poles the scan shows\n", sided);
 				postAt.clear();
@@ -3967,6 +4011,10 @@ namespace worldgen::build
 						else
 							fence.kind = "fence", fence.material = "chain_link", fence.height = 1.2f;
 					}
+					// (where a laser scan covers the lot its own hedges are there - the low growth it measured by the streets -: none
+					// by the rule, whose stood where the photos have an open lawn and missed the real ones)
+					if (fence.kind == "hedge" && scanned && scan.Count(centre[0], centre[1]))
+						return;
 					const bool hedge = fence.kind == "hedge";
 					// each run of edges on a street, from the first edge after one not on a street
 					size_t first = 0;
@@ -4552,6 +4600,13 @@ namespace worldgen::build
 				if (gs.cemeteries)
 					std::printf("cemeteries: %zu graves in %zu\n", gs.graves, gs.cemeteries);
 			}
+			// the street name signs (signs.hpp) at the junctions of named streets: on their stop signs, else on posts of their
+			// own (the reviewers saw the photos' green blades on the corners and signal arms, the game's none)
+			{
+				signs::Stats ss;
+				signs::Build(network, furniture, open, ground, {bx0, by0, bx1, by1}, nameSigns, surfaces.collision, ss);
+				std::printf("signs: street names at %zu junctions (%zu on the stop signs, %zu on posts of their own)\n", ss.junctions, ss.onStops, ss.posts);
+			}
 			// (the game's bushes - yellowish, some in flower: the reviewers' "dry brown shrubs" - swapped for our own dark green
 			// ones, scaled to the same height and spread)
 			if (!ownShrubs.empty())
@@ -4812,6 +4867,7 @@ namespace worldgen::build
 		pavedMaterials.fill(asphalt);
 		ydr::Material railTrackMaterial = asphalt, railBedMaterial = asphalt, railSteelMaterial = asphalt, cableMaterial;
 		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial, aluminiumMaterial; // (the barriers')
+		ydr::Material signBladeMaterial, signLetterMaterial; // (the street name signs')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
 		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal;
 		{
@@ -5002,7 +5058,7 @@ namespace worldgen::build
 				// shader -; that shader also for the guard rails' beam picture, weathered boards and white painted block (their
 				// shine the asphalt's dull one)
 				if (!fences.mesh.indices.empty() || !fences.steel.indices.empty() || !fences.rail.indices.empty() || !fences.boards.indices.empty() ||
-				    !fences.block.indices.empty() || !fences.iron.indices.empty() || !fences.ironWhite.indices.empty())
+				    !fences.block.indices.empty() || !fences.iron.indices.empty() || !fences.ironWhite.indices.empty() || !nameSigns.posts.indices.empty())
 				{
 					if (!GameMaterial(files, "prop_fnclink_10a.ydr", 0, chainLinkMaterial, error) || !GameMaterial(files, "prop_fnclink_10a.ydr", 2, steelMaterial, error))
 						return false;
@@ -5040,6 +5096,19 @@ namespace worldgen::build
 						shared.push_back(texture::Make(o.name + "_iron_white", barriers::IronPicture(true), texture::Format::Bc3, true));
 						aluminiumMaterial.Texture(kDiffuseTex, o.name + "_iron_white");
 						aluminiumMaterial.Texture(kBumpTex, o.name + "_flat_n");
+					}
+					// (the street name signs: their blades the steel's shader in plain green - the signs' sheeting -, their
+					// letters and borders the chain link's cut-out with our picture of the font's glyphs)
+					if (!nameSigns.blades.indices.empty())
+					{
+						shared.push_back(texture::Make(o.name + "_sign_green", texture::Image(4, 4, {16, 104, 64, 255}), texture::Format::Bc1));
+						signBladeMaterial = steelMaterial;
+						signBladeMaterial.Texture(kDiffuseTex, o.name + "_sign_green");
+						signBladeMaterial.Texture(kSpecularTex, o.name + "_asphalt_s");
+						shared.push_back(texture::Make(o.name + "_sign_font", signs::FontPicture(), texture::Format::Bc3, true));
+						signLetterMaterial = chainLinkMaterial;
+						signLetterMaterial.Texture(kDiffuseTex, o.name + "_sign_font");
+						signLetterMaterial.Texture(kBumpTex, o.name + "_flat_n");
 					}
 				}
 				// The ground as the aerial pictures show it (research/phase0.md §63): the golf course's shader
@@ -5416,7 +5485,7 @@ namespace worldgen::build
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
 		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
-		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite})
+		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite, &nameSigns.blades, &nameSigns.letters, &nameSigns.posts})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
 		for (const auto& m : surfaces.paved)
 			meshTiles.emplace(&m, MeshTiles(m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -6600,6 +6669,9 @@ namespace worldgen::build
 				addTo(chainLinkMaterial, fences.mesh);
 				addTo(ironMaterial, fences.iron);
 				addTo(aluminiumMaterial, fences.ironWhite);
+				addTo(steelMaterial, nameSigns.posts);
+				addTo(signBladeMaterial, nameSigns.blades);
+				addTo(signLetterMaterial, nameSigns.letters);
 				if (!bd.lods[0].empty())
 				{
 					if (!ydr::Write(bd, file, error))

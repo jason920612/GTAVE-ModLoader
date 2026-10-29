@@ -48,10 +48,10 @@ namespace loader::game::seamless
 	// Research: each data file's enabling sampled (debug/profile.hpp) by its calls in [from, to) - 0, not.
 	std::string Profile(uintptr_t from, uintptr_t to);
 
-	// The frames' times: recording started (true; the game's thread sampled all along, and the `others` - thread ids - too)
-	// or stopped and summed up (false: the longest, the share over 15 ms and the steps that ran in the long ones, where the
-	// threads were in them).
-	std::string Frames(bool start, const std::vector<unsigned long>& others = {});
+	// The frames' times: recording started (true; the game's thread sampled all along, and the `others` - thread ids - too;
+	// `stalls`: only in frames past 150 ms) or stopped and summed up (false: the longest, the share over 15 ms and the steps
+	// that ran in the long ones, where the threads were in them).
+	std::string Frames(bool start, const std::vector<unsigned long>& others = {}, bool stalls = false);
 
 	// Game thread: what else was done in the frame under way, while the frames' times are recorded (shown with a long one).
 	void Note(const std::string& what);

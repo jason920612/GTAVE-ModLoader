@@ -75,6 +75,7 @@
 #include "meta.hpp"
 #include "navgen.hpp"
 #include "pages.hpp"
+#include "signs.hpp"
 #include "ynd.hpp"
 #include "ynv.hpp"
 
@@ -1707,6 +1708,31 @@ int main(int argc, char** argv)
 			}
 		return 0;
 	}
+	if (command == "signs-test")
+	{
+		// the street name signs' glyph picture (its alpha as grey) as a PNG and some names as the signs abbreviate them: --out
+		// <dir> [--names "a;b;c"]
+		const fs::path out = g_options["out"];
+		fs::create_directories(out);
+		auto font = worldgen::signs::FontPicture();
+		for (auto& p : font.pixels)
+			p = {p[3], p[3], p[3], 255};
+		if (!worldgen::texture::WritePng(out / "signs_font.png", font, error))
+			return Fail(error);
+		const std::string names = g_options.contains("names") ? g_options["names"]
+		                                                     : "Southwest 54th Terrace;Shore Drive South;Southwest 57th Avenue/Red Road;John F. Kennedy Causeway;"
+		                                                       "Ponce de Le\xc3\xb3n Boulevard;West 4th Avenue Service Road;Court Street;Saint Augustine Road;69th Street";
+		for (size_t i = 0; i < names.size();)
+		{
+			const size_t j = names.find(';', i);
+			const std::string name = names.substr(i, j == std::string::npos ? std::string::npos : j - i);
+			std::printf("%s -> %s\n", name.c_str(), worldgen::signs::Abbreviate(name).c_str());
+			if (j == std::string::npos)
+				break;
+			i = j + 1;
+		}
+		return 0;
+	}
 	if (command == "texture-png")
 	{
 		// one of a texture dictionary's textures as a PNG (its first mip, decoded): --dictionary <file.ytd> --texture <name>
@@ -1976,8 +2002,12 @@ int main(int argc, char** argv)
 		}
 		else if (const auto* f = files.Find(g_options["model"]); !f || !files.Read(*f, data, error) || !loader::convert::Read(data, res, error))
 			return Fail("cannot read " + g_options["model"] + ": " + error);
+		// (a fragment - a yft - its main drawable)
+		const std::string& named = g_options.contains("model") ? g_options["model"] : g_options["file"];
+		const ue5export::drawable::View view(res);
+		const auto drawables = ue5export::drawable::Drawables(view, named.substr(named.rfind('.')));
 		ue5export::drawable::Model model;
-		if (!ue5export::drawable::Read(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, model, error))
+		if (!ue5export::drawable::Read(view, drawables.empty() ? ue5export::drawable::View::kRoot : drawables.begin()->second, model, error))
 			return Fail(error);
 		const size_t count = g_options.count("count") ? std::stoul(g_options["count"]) : 40;
 		for (const auto& s : model.sections)

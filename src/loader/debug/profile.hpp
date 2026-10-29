@@ -15,9 +15,12 @@ namespace loader::debug::profile
 	std::string Profiled(uintptr_t from, uintptr_t to, const std::function<void()>& run);
 
 	// This (the game's) thread - and the `others` (thread ids) - sampled all along from Start to Stop (each sample: when,
-	// the innermost function - of any module - and the game's functions it was called through).
-	void Start(const std::vector<unsigned long>& others = {});
+	// the innermost function - of any module - and the game's functions it was called through). `stalls`: only while the
+	// game thread's frame has gone on past 150 ms (Beat at each frame's start), every 5 ms - none stopped in the usual frames:
+	// a whole drive's long frames caught without the sampler's own stops making some.
+	void Start(const std::vector<unsigned long>& others = {}, bool stalls = false);
 	void Stop();
+	void Beat();
 
 	// Where the thread was between two moments of the sampling: "<n> samples; functions <where>:<count>...; through
 	// <rva<rva<rva>:<count>...", most first (<where>: a game function's rva, or <module>+<function's offset>).

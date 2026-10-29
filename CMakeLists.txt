@@ -290,6 +290,7 @@ add_executable(worldgen
     tools/worldgen/props.cpp
     tools/worldgen/powerlines.cpp
     tools/worldgen/barriers.cpp
+    tools/worldgen/signs.cpp
     tools/worldgen/flora.cpp
     tools/worldgen/navgen.cpp
     tools/worldgen/elevation.cpp

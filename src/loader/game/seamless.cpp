@@ -1065,6 +1065,7 @@ namespace loader::game::seamless
 			std::lock_guard lock(g_noteMutex);
 			g_frames.push_back({g_lastFrame, frame, g_frameWork});
 			g_frameWork.clear();
+			debug::profile::Beat();
 		}
 		g_lastFrame = frame;
 		// (objects waiting for being unloaded, given their files once they are - after 10 s of waiting, those far off and held by
@@ -1149,7 +1150,7 @@ namespace loader::game::seamless
 		return from ? std::format("the data files sampled by their calls in {:#x}-{:#x}", from, to) : "not sampled";
 	}
 
-	std::string Frames(bool start, const std::vector<unsigned long>& others)
+	std::string Frames(bool start, const std::vector<unsigned long>& others, bool stalls)
 	{
 		if (start)
 		{
@@ -1159,8 +1160,9 @@ namespace loader::game::seamless
 			// second)
 			if (!others.empty() && others[0] == 0)
 				return "recording (no thread sampled)";
-			debug::profile::Start(others);
-			return std::format("recording (the game's thread {} and {} more sampled)", GetCurrentThreadId(), others.size());
+			debug::profile::Start(others, stalls);
+			return std::format("recording (the game's thread {} and {} more sampled{})", GetCurrentThreadId(), others.size(),
+			    stalls ? " - only in frames past 150 ms" : "");
 		}
 		g_recording = false;
 		debug::profile::Stop();

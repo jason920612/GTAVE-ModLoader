@@ -15,7 +15,7 @@ usage: python -I tools/worldgen/compare.py aerial --land <name> --out <dir> [--a
   mapillary: street pictures someone downloaded from Mapillary (CC BY-SA 4.0: their creators named on each sheet),
           not panoramas, at their places and headings: <dir>/street_<k>_<id>.png
        python -I tools/worldgen/compare.py pano --land <name> --metadata <metadata.csv>[,...] --out <dir> [--limit 12] [--seed 1]
-          [--spacing 80] [--views 0,90,-90] [--poses <poses.json>]
+          [--spacing 80] [--views 0,90,-90] [--poses <poses.json>] [--since <year>]
   pano: the downloads' panoramas - where the comparison is exact: the game's camera at the picture's place (2 m up), and
           out of the panorama the very view the game's camera has (its field of view, 16:9) towards the picture's heading
           and the --views offsets (degrees: ahead, right, left); the panorama's own heading error (a few degrees) and tilt
@@ -49,9 +49,21 @@ def options(argv):
     return o
 
 
+def land_folder(name):
+    """A land's folder: ModLoader\\mods\\<name>, else in one of loader.json's landFolders (another drive's)."""
+    mods = os.path.join(GAME, 'ModLoader', 'mods', name)
+    if os.path.isdir(mods):
+        return mods
+    with open(os.path.join(GAME, 'ModLoader', 'loader.json'), encoding='utf-8-sig') as f:
+        for d in json.load(f).get('landFolders', []):
+            if os.path.isdir(os.path.join(d, name)):
+                return os.path.join(d, name)
+    return mods
+
+
 class Land:
     def __init__(self, name):
-        with open(os.path.join(GAME, 'ModLoader', 'mods', name, 'land.json'), encoding='utf-8') as f:
+        with open(os.path.join(land_folder(name), 'land.json'), encoding='utf-8') as f:
             j = json.load(f)
         self.name = name
         self.lat0, self.lon0, self.x0, self.y0, self.kx, self.ky = j['projection']
@@ -502,6 +514,10 @@ def pano(o):
     x0, y0, x1, y1 = land.world
     rows = [r for r in rows if x0 + 50 <= land.game(float(r['lat']), float(r['lon']))[0] <= x1 - 50 and
             y0 + 50 <= land.game(float(r['lat']), float(r['lon']))[1] <= y1 - 50]
+    # (--since <year>: only pictures taken then or later - the lands are built from 2021-2023 scans and aerial pictures, and
+    # Miami's panoramas are mostly 2015's: trees Irma felled, buildings finished since, counted against the game)
+    if 'since' in o:
+        rows = [r for r in rows if r.get('date', '')[:4] >= o['since']]
     rnd = random.Random(int(o.get('seed', 1)))
     rnd.shuffle(rows)
     # (--ids a,b,...: only those pictures - a check of a few places, the same as a full comparison took them)

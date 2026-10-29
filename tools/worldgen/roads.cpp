@@ -103,7 +103,7 @@ namespace worldgen::roads
 		bool Alike(const Edge& x, const Edge& y)
 		{
 			return x.forward == y.forward && x.backward == y.backward && x.laneWidth == y.laneWidth && x.sidewalks == y.sidewalks && x.bridge == y.bridge &&
-			       x.walkWidth == y.walkWidth && x.parking == y.parking && x.bike == y.bike && x.curb == y.curb && x.walkLeft == y.walkLeft &&
+			       x.walkWidth == y.walkWidth && x.parking == y.parking && x.bike == y.bike && x.curb == y.curb && x.centreLine == y.centreLine && x.walkLeft == y.walkLeft &&
 			       x.walkRight == y.walkRight &&
 			       x.layer == y.layer &&
 			       x.kind == y.kind && paving::Of(x.surface) == paving::Of(y.surface);
@@ -936,6 +936,7 @@ namespace worldgen::roads
 			e.parking = r.parking;
 			e.bike = r.bikeLanes ? 1.5f : 0.0f;
 			e.curb = r.curb && !r.sidewalks;
+			e.centreLine = r.centreLine;
 			e.walkLeft = r.sidewalkLeft, e.walkRight = r.sidewalkRight;
 			e.centre = r.centreLanes;
 			e.forward = r.forward, e.backward = r.backward, e.laneWidth = r.laneWidth, e.sidewalks = r.sidewalks, e.bridge = r.bridge, e.layer = r.layer, e.kind = r.kind,
@@ -1759,6 +1760,8 @@ namespace worldgen::roads
 					lines.insert(lines.end(), {c0 + 0.08f, c0 + 0.32f, c0 + t0 - 0.08f, c0 + t0 - 0.32f});
 				else if (e.forward && e.backward && through)
 					lines.insert(lines.end(), {c0 - 0.12f, c0 + 0.12f});
+				else if (e.forward && e.backward && e.centreLine)
+					lines.push_back(c0);
 				for (int j = 1; j < e.forward; ++j)
 					lines.push_back(c0 - j * w);
 				for (int j = 1; j < e.backward; ++j)
@@ -2105,6 +2108,8 @@ namespace worldgen::roads
 				line(offsets([&](size_t i) { return centreAt[i] + 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
 				line(offsets([&](size_t i) { return centreAt[i] - 0.12f; }), 0.16f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB);
 			}
+			else if (e.forward && e.backward && e.centreLine)
+				line(offsets([&](size_t i) { return centreAt[i]; }), 0.13f, kYellowU0, kYellowU1, 4.0f, sStart + clearA, sEnd - clearB, 3.0f, 12.0f, 0.15f, 0.85f);
 			for (int j = 1; j < e.forward; ++j)
 			{
 				const float from = sStart + std::max(clearA, na.any && j >= na.lanesF ? tapA : 0.0f);
@@ -2736,6 +2741,10 @@ namespace worldgen::roads
 
 	void Paths(const Network& n, float spacing, std::vector<PathNode>& nodes, std::vector<PathLink>& links)
 	{
+		// (no traffic made on an unnamed service road - a car park's aisle, an airport's service road - or an unnamed track - a
+		// park's or a golf course's maintenance path -, and the route search keeps to the streets: the AI driving south through
+		// Miami Beach had been routed onto a park's tracks and stuck there; a named track - a country dirt road - stays on)
+		const auto offRoad = [](const Edge& e) { return (e.kind == "service" || e.kind == "track") && e.name.empty(); };
 		const auto speedOf = [](const Edge& e) {
 			if (paving::Rough(paving::Of(e.surface)))
 				return std::min(e.speed > 0 ? e.speed : 9.0f, 9.0f);
@@ -2827,8 +2836,8 @@ namespace worldgen::roads
 			node.speed = speedOf(first);
 			node.density = densityOf(first);
 			node.street = loader::convert::Joaat(first.name);
-			// (switched off where only unnamed service roads meet: a street's end of one stays on)
-			node.off = std::all_of(list.begin(), list.end(), [&](int ei) { return n.edges[ei].kind == "service" && n.edges[ei].name.empty(); });
+			// (switched off where only unnamed service roads and tracks meet: a street's end of one stays on)
+			node.off = std::all_of(list.begin(), list.end(), [&](int ei) { return offRoad(n.edges[ei]); });
 			vertexNode[v] = static_cast<int>(nodes.size());
 			if (members[r] > 1)
 				vertexNode[r] = vertexNode[v];
@@ -2877,7 +2886,7 @@ namespace worldgen::roads
 				node.density = densityOf(e);
 				node.street = loader::convert::Joaat(e.name);
 				node.light = light;
-				node.off = e.kind == "service" && e.name.empty();
+				node.off = offRoad(e);
 				nodes.push_back(node);
 				const int here = static_cast<int>(nodes.size() - 1);
 				links.push_back({previous, here, e.forward, e.backward, e.LanesHalf() * 2, e.centre * e.laneWidth});

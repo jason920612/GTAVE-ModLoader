@@ -186,6 +186,7 @@ namespace loader::game::sectors
 		std::vector<std::string> g_farMaps, g_farAway; // (all; those put away)
 		int g_far = -1;                                 // (-1 not known yet, 0 there, 1 away)
 		ULONGLONG g_lastFar = 0;
+		size_t g_farSweep = 0; // (where the look round the far maps on a land goes on)
 
 		// Parked cars (research/phase0.md §63.3): the game's car generators on our lands made no car (their maps written -
 		// CCarGen - and not one ever came), so the loader makes them: a land's parked.bin (worldgen build: each car's place on
@@ -596,7 +597,25 @@ namespace loader::game::sectors
 						g_farAway.push_back(name);
 					}
 				g_far = 1;
+				g_farSweep = 0;
 				log::Info("sectors: on a new land; {} of Los Santos's {} far maps put away", g_farAway.size(), g_farMaps.size());
+			}
+			else if (on && g_far == 1)
+			{
+				// (and those that come in after: asked back on a step away - a camera put over the land's edge - and still
+				// loading when it came back, Chiliad stood over Miami Beach's horizon in the street pictures. A hundred looked
+				// at each second, round and round)
+				size_t again = 0;
+				for (size_t k = 0; k < 100; ++k, g_farSweep = (g_farSweep + 1) % g_farMaps.size())
+					if (const std::string& name = g_farMaps[g_farSweep]; natives::Invoke<int32_t>(kIsIplActive, name.c_str()))
+					{
+						natives::Invoke<void>(kRemoveIpl, name.c_str());
+						if (std::find(g_farAway.begin(), g_farAway.end(), name) == g_farAway.end())
+							g_farAway.push_back(name);
+						++again;
+					}
+				if (again)
+					log::Info("sectors: {} more of Los Santos's far maps came in on the land - put away", again);
 			}
 			else if (away && g_far != 0)
 			{

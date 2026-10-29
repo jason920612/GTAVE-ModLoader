@@ -56,6 +56,7 @@ O = {
     'photofacade': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photofacade.py'),
     'msbuildings': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'msbuildings.py'),
     'parcels': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'parcels.py'),
+    'lidar': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lidar.py'),
     'parcelIndex': r'D:\GTAV-UE5\parcels\fl\index.json',  # (parcels.py fetch's: every county's parcels and property roll)
     'mscells': r'D:\GTAV-UE5\buildings\ms\cells',  # (msbuildings.py split's)
     'venv': r'D:\GTAV-UE5\venv\Scripts\python.exe',
@@ -232,10 +233,18 @@ def prepare(c, r, flags):
     return name, '', {'folder': folder, 'log': log, 'world': world, 'cover': cover, 'ground': ground, 'photo': photo, 'extra': walls + rolls}
 
 
-def scan_of(name):
-    """A laser scan's rasters for the cell (lidar.py raster's, in --scans <folder>\\<name>): the build's --scan, else nothing."""
+def scan_of(name, world, ground, log):
+    """A laser scan's rasters for the cell (lidar.py raster's, in --scans <folder>\\<name>): the build's --scan, and the utility
+    poles it shows (lidar.py poles, made once into the folder: the build's --poles - the lines' side, and none where it shows
+    none), else nothing."""
     folder = os.path.join(O['scans'], name) if O.get('scans') else ''
-    return ['--scan', folder] if folder and os.path.isdir(folder) and any(f.startswith('t_') for f in os.listdir(folder)) else []
+    if not folder or not os.path.isdir(folder) or not any(f.startswith('t_') for f in os.listdir(folder)):
+        return []
+    poles = os.path.join(folder, 'poles.json')
+    if not os.path.exists(poles) and run([O['venv'], '-I', O['lidar'], 'poles', '--raster', folder, '--ground', ground, '--world', world,
+                                          '--out', poles], log):
+        return ['--scan', folder]
+    return ['--scan', folder, '--poles', poles]
 
 
 def make(c, r, flags, ready):
@@ -248,7 +257,7 @@ def make(c, r, flags, ready):
     shutil.rmtree(gen, ignore_errors=True)  # (an earlier, failed run's files are not packed with this one's)
     if run([O['worldgen'], 'build', *common, '--world', world, '--out', gen, '--name', name, '--open', 'nsew', '--core', ','.join(f'{v:.1f}' for v in CORE),
             '--landcover', cover,
-            '--ground', ground, '--photo', photo, *ready['extra'], *scan_of(name), '--navmesh', 'near', '--climate', 'tropical'], log):
+            '--ground', ground, '--photo', photo, *ready['extra'], *scan_of(name, world, ground, log), '--navmesh', 'near', '--climate', 'tropical'], log):
         return name, f'build failed (see {log})'
     if not os.path.exists(os.path.join(O['game'], 'GTA5_Enhanced.exe')):
         g_full.set()

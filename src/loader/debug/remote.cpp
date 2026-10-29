@@ -1061,8 +1061,9 @@ namespace loader::debug::remote
 			}
 			if (cmd == "seamless" || cmd == "frames")
 			{
-				// seamless begin <land> <there|-> x0 y0 x1 y1 | seamless status | frames start [thread id...]|stop: research
+				// seamless begin <land> <there|-> x0 y0 x1 y1 | seamless status | frames start|stalls [thread id...]|stop: research
 				// (game/seamless.hpp) - a land's overlay and maps registered over frames, only its band on, the frames' times
+				// (stalls: the threads sampled only in frames past 150 ms)
 				std::string what, land, there;
 				float band[4]{};
 				std::vector<unsigned long> threads;
@@ -1075,7 +1076,7 @@ namespace loader::debug::remote
 				auto job = std::make_shared<Job>();
 				job->run = [cmd, what, land, there, band, threads] {
 					if (cmd == "frames")
-						return game::seamless::Frames(what == "start", threads);
+						return game::seamless::Frames(what == "start" || what == "stalls", threads, what == "stalls");
 					if (what == "begin")
 					{
 						const std::string error = game::seamless::Begin(land, there == "-" ? std::string() : there, band);

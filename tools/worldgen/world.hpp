@@ -29,6 +29,8 @@ namespace worldgen::world
 		float parking = 0;           // (m: a parking lane's width each side, 0 none - the build's, not saved)
 		bool bikeLanes = false;      // (OSM cycleway=lane: a painted bike lane by each kerb)
 		bool curb = false;           // (a kerb and gutter without a sidewalk: a town's street - the build's, not saved)
+		bool centreLine = false;     // (a dashed yellow line between the directions of a street its kind gives none: Miami-Dade's
+		                             // residential streets - the build's, not saved)
 		bool sidewalkLeft = true, sidewalkRight = true; // (with sidewalks: which sides have one, left and right of the points' way;
 		                                                // the other a kerb and gutter - the build's, not saved)
 		bool bridge = false, tunnel = false;
