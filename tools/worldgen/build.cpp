@@ -261,6 +261,25 @@ namespace worldgen::build
 		// divided by its blur over about an eighth of the side (wrapping: it repeats), times its mean. Repeated every few
 		// metres those patches were a grid of squares from a little way off; the ground's larger changes come from the
 		// vertices' noise and the blend map, which do not repeat.
+		// A picture made to tile without a seam: crossfaded with itself moved half its size each way - the moved copy's edges are
+		// the middle of the picture, continuous round the wrap -, the copy's share growing from the middle out to all of it at
+		// the edges (a picture whose own edges do not meet drew a line at every repeat)
+		void Seamless(texture::Image& image)
+		{
+			const int w = image.width, h = image.height;
+			const texture::Image copy = image;
+			for (int y = 0; y < h; ++y)
+				for (int x = 0; x < w; ++x)
+				{
+					const float dx = std::fabs((x + 0.5f) / w - 0.5f) * 2, dy = std::fabs((y + 0.5f) / h - 0.5f) * 2;
+					const float t = std::clamp((std::max(dx, dy) - 0.45f) / 0.5f, 0.0f, 1.0f), k = t * t * (3 - 2 * t);
+					const auto& a = copy.At(x, y);
+					const auto& b = copy.At((x + w / 2) % w, (y + h / 2) % h);
+					for (int c = 0; c < 4; ++c)
+						image.At(x, y)[c] = static_cast<uint8_t>(std::lround(a[c] + (b[c] - a[c]) * k));
+				}
+		}
+
 		void Flatten(texture::Image& image)
 		{
 			const int w = image.width, h = image.height, rx = std::max(1, w / 16), ry = std::max(1, h / 16);
@@ -5151,7 +5170,16 @@ namespace worldgen::build
 				// white beside the street pictures; 4: weathered concrete - 0.58 as bright, greyer, a little warm)
 				// (5: aged concrete - 0.8 as bright, a little greyer: the sidewalks)
 				// (6: red concrete - the aged concrete tinted a dull brick red)
-				const char* suffix = treat == 6 ? "_red" : treat == 5 ? "_aged" : treat == 4 ? "_weathered" : treat == 3 ? "_dim" : treat == 2 ? "_neutral" : treat ? "_flat" : "";
+				// (7: made seamless - a normal map -, 8: flattened and made seamless)
+				const char* suffix = treat == 8   ? "_flat_seamless"
+				                     : treat == 7 ? "_seamless"
+				                     : treat == 6 ? "_red"
+				                     : treat == 5 ? "_aged"
+				                     : treat == 4 ? "_weathered"
+				                     : treat == 3 ? "_dim"
+				                     : treat == 2 ? "_neutral"
+				                     : treat     ? "_flat"
+				                                 : "";
 				const auto key = std::make_pair(std::string(dictionary), std::string(texture) + suffix);
 				if (const auto it = copied.find(key); it != copied.end())
 					return name = it->second, true;
@@ -5192,8 +5220,10 @@ namespace worldgen::build
 								p[c] = static_cast<uint8_t>(std::clamp(0.58f * warm[c] * (0.75f * p[c] + 0.25f * l), 0.0f, 255.0f));
 						}
 					}
-					else
+					else if (treat != 7)
 						Flatten(image);
+					if (treat == 7 || treat == 8)
+						Seamless(image);
 					if (treat == 2)
 						Neutral(image, kNeutralMean);
 					t = texture::Make(name, image, t.format.dxgi == 77 ? texture::Format::Bc3 : texture::Format::Bc1);
@@ -5237,7 +5267,9 @@ namespace worldgen::build
 				std::string d, n;
 				for (int k = 0; k < 4; ++k)
 				{
-					if (!use(groundLayers[k][0], groundLayers[k][1], d, 1) || !use(groundLayers[k][2], groundLayers[k][3], n))
+					// (the sands' pictures do not tile: made seamless, their normal maps too)
+					const bool sand = k >= 2;
+					if (!use(groundLayers[k][0], groundLayers[k][1], d, sand ? 8 : 1) || !use(groundLayers[k][2], groundLayers[k][3], n, sand ? 7 : 0))
 						return false;
 					ground3.Texture(loader::convert::Joaat(std::format("DiffuseTexture_layer{}", k)), d);
 					ground3.Texture(loader::convert::Joaat(std::format("BumpTexture_layer{}", k)), n);
@@ -6012,7 +6044,14 @@ namespace worldgen::build
 				// (the kinds of ground: 0 grass, 1 dry grass, 2 bare earth or sand, 3 paving, 4 leaf litter - under the woods'
 				// trees and in the water, under a town's trees its lawns (NLCD's developed land): their leaf litter had shown as
 				// bare brown yards wherever the game's trees cover less than the pictures' canopy; each pictures' class's)
+				// (the map's beaches: sand, whatever the pictures' class - their classifier takes bright dry sand for paving)
+				const auto beachAt = [&](float x, float y) {
+					const auto lc = land.Cell({x, y});
+					return land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) == kBeach;
+				};
 				const auto kindAt = [&](float x, float y) {
+					if (beachAt(x, y))
+						return 2;
 					const auto c = photoClass.Cell({x, y});
 					switch (photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : 0)
 					{
@@ -6082,7 +6121,8 @@ namespace worldgen::build
 						const float x = x0 + i * o.cell, y = y0 + j * o.cell;
 						const uint8_t lc = landCoverAt ? landCoverAt(x, y) : 0;
 						const int kind = kindAt(x, y);
-						f.tint[f.V(i, j)] = groundColour(x, y, c, kind == 4 ? -1 : kind)
+						// (a beach's tint: the pictures' colour of its ground, whatever class they give it)
+						f.tint[f.V(i, j)] = groundColour(x, y, c, kind == 4 || beachAt(x, y) ? -1 : kind)
 						                        ? photoNearest[(static_cast<int>(c[0]) >> 3) << 10 | (static_cast<int>(c[1]) >> 3) << 5 | (static_cast<int>(c[2]) >> 3)]
 						                    : lc >= 21 && lc <= 24 && !thicketAt(x, y) ? photoTown
 						                                                               : photoUsual;

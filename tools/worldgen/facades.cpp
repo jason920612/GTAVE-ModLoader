@@ -243,6 +243,43 @@ namespace worldgen::facades
 			}
 		}
 
+		// A curtain wall's pane (x0..x1, y0..y1, metres): one reflected scene across the wall - the sky with soft clouds, the
+		// street's darker band low in the glass -, each pane a little off its neighbours (brighter or darker, the scene shifted a
+		// little: panes are never quite flat); behind a quarter of them the office faint - the ceiling's light, the dark floor -,
+		// blinds down part way in a sixth, a faint sheen on a few
+		void Pane(Canvas& c, float x0, float y0, float x1, float y1, Rgb tint, uint32_t seed)
+		{
+			const float k = 0.94f + 0.12f * Rand(seed, 3), shift = 0.25f * (Rand(seed, 5) - 0.5f), sheen = Rand(seed, 7) * 1.4f - 0.2f;
+			const float inside = Rand(seed, 11), blinds = Rand(seed, 13), drop = 0.2f + 0.5f * Rand(seed, 17), shine = Rand(seed, 19);
+			const float h = y1 - y0;
+			c.Rect(x0, y0, x1, y1, [&](size_t i, float u, float v) {
+				const float wx = x0 + u * (x1 - x0), wy = y0 + v * h + shift;
+				// (the sky: the tint's reflection brighter up, soft clouds in it - the scene's, continuous from pane to pane)
+				Rgb g = Glass(tint, v, 0.5f);
+				// (in the texture's own cells - 4 and 8 to its side -: it tiles)
+				const float cx = wx / c.mw, cy = wy / c.mh;
+				const float cloud = Noise(cx * 4, cy * 4, 4, 77) * 0.6f + Noise(cx * 8, cy * 8, 8, 78) * 0.4f;
+				g = Mix(g, Rgb{214, 222, 230}, std::clamp((cloud - 0.55f) * 1.2f, 0.0f, 0.35f) * v);
+				// (the street's band, low in the glass: darker, greyer)
+				g = Mix(g, Mix(Scale(tint, 0.45f), Rgb{86, 88, 86}, 0.4f), std::clamp((0.32f - v) / 0.25f, 0.0f, 1.0f) * 0.7f);
+				g = Scale(g, k);
+				if (inside < 0.25f)
+				{
+					const float yh = v * h;
+					const Rgb room = yh > h - 0.3f ? Rgb{176, 178, 172} : yh < 0.8f ? Rgb{40, 40, 42} : Rgb{58, 60, 64};
+					g = Mix(g, room, 0.28f);
+				}
+				else if (blinds < 0.17f && v > 1 - drop)
+					g = Mix(g, Scale(Rgb{208, 204, 192}, std::fmod(v * h / 0.06f, 1.0f) < 0.5f ? 0.93f : 1.0f), 0.7f);
+				if (shine < 0.15f)
+					if (const float d = std::fabs(u * 0.5f + v - sheen); d < 0.12f)
+						g = Mix(g, Rgb{226, 232, 238}, 0.12f * (1 - d / 0.12f));
+				c.albedo[i] = g;
+				c.height[i] = 0.42f;
+				c.spec[i] = 0.95f;
+			});
+		}
+
 		// a jalousie window (mid-century Florida's): glass slats 10 cm apart in a white aluminium frame - each slat's upper part
 		// the sky's reflection, its overlap with the next darker -, cranked open on some (the room dark between the slats), a
 		// mullion down a wide one's middle, a sill and its shadow
@@ -455,20 +492,14 @@ namespace worldgen::facades
 				{
 					const float y = f * 3.4f;
 					const float r = Rand(++seed);
-					c.Rect(0, y, c.mw, y + 0.9f, [&](size_t i, float, float) {
-						c.albedo[i] = Scale(tint, 0.55f + 0.1f * r);
+					// (the spandrel: dark glass, the reflection faint in it)
+					c.Rect(0, y, c.mw, y + 0.9f, [&](size_t i, float u, float v) {
+						c.albedo[i] = Mix(Scale(tint, 0.5f + 0.1f * r), Glass(tint, v, r), 0.18f + 0.08f * Noise(u * 6, v, 32, seed));
 						c.height[i] = 0.45f;
 						c.spec[i] = 0.7f;
 					});
 					for (int b = 0; b < 6; ++b)
-					{
-						const float pr = Rand(seed, b);
-						c.Rect(b * 1.5f, y + 0.9f, b * 1.5f + 1.5f, y + 3.4f, [&](size_t i, float, float v) {
-							c.albedo[i] = Glass(tint, v, pr);
-							c.height[i] = 0.42f;
-							c.spec[i] = 0.95f;
-						});
-					}
+						Pane(c, b * 1.5f, y + 0.9f, b * 1.5f + 1.5f, y + 3.4f, tint, seed * 59 + static_cast<uint32_t>(f * 6 + b));
 					c.Fill(0, y + 0.88f, c.mw, y + 0.96f, {190, 195, 200}, 0.55f, 0.5f);
 				}
 				for (int b = 0; b < 6; ++b)
