@@ -89,7 +89,9 @@ namespace worldgen::props
 				if (g > 0.5f)
 					addPalm(p.position[0], p.position[1], g);
 			}
-		const uint32_t light = loader::convert::Joaat("prop_streetlight_01"), signal = loader::convert::Joaat("prop_traffic_01a");
+		// (the plain galvanised steel pole on a concrete footing with its cobra head - Florida's, round 25's reviewers' "tall
+		// galvanised steel street lights"; _01 is Los Angeles' fluted concrete pole with an ornate base: "an ornamental tapered pole")
+		const uint32_t light = loader::convert::Joaat("prop_streetlight_03"), signal = loader::convert::Joaat("prop_traffic_01a");
 		for (const auto& e : n.edges)
 		{
 			// (a kerbed road's too where its sidewalks are walks of their own, set back past a verge)

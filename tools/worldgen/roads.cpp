@@ -107,7 +107,7 @@ namespace worldgen::roads
 		bool Alike(const Edge& x, const Edge& y)
 		{
 			return x.forward == y.forward && x.backward == y.backward && x.laneWidth == y.laneWidth && x.sidewalks == y.sidewalks && x.bridge == y.bridge &&
-			       x.walkWidth == y.walkWidth && x.parking == y.parking && x.bike == y.bike && x.curb == y.curb && x.centreLine == y.centreLine && x.walkLeft == y.walkLeft &&
+			       x.walkWidth == y.walkWidth && x.parking == y.parking && x.bike == y.bike && x.curb == y.curb && x.centreLine == y.centreLine && x.collector == y.collector && x.walkLeft == y.walkLeft &&
 			       x.walkRight == y.walkRight &&
 			       x.layer == y.layer &&
 			       x.kind == y.kind && paving::Of(x.surface) == paving::Of(y.surface);
@@ -1008,6 +1008,7 @@ namespace worldgen::roads
 			e.bike = r.bikeLanes ? 1.5f : 0.0f;
 			e.curb = r.curb && !r.sidewalks;
 			e.centreLine = r.centreLine;
+			e.collector = r.collector;
 			e.walkLeft = r.sidewalkLeft, e.walkRight = r.sidewalkRight;
 			e.centre = r.centreLanes;
 			e.forward = r.forward, e.backward = r.backward, e.laneWidth = r.laneWidth, e.sidewalks = r.sidewalks, e.bridge = r.bridge, e.layer = r.layer, e.kind = r.kind,
@@ -1890,9 +1891,11 @@ namespace worldgen::roads
 			const float clearA = crossA ? 4.6f : 0, clearB = crossB ? 4.6f : 0;
 			// (as in the US: a double yellow line between the directions of the through roads - residential streets,
 			// service roads and alleys have none; one-way roads a yellow line on their left edge, white on the right)
-			const bool through = !(e.kind == "residential" || e.kind == "service" || e.kind == "living_street" || e.kind == "unclassified" || e.kind == "road" ||
-			                       e.kind == "track");
+			const bool through = e.collector || !(e.kind == "residential" || e.kind == "service" || e.kind == "living_street" || e.kind == "unclassified" ||
+			                                      e.kind == "road" || e.kind == "track");
 			const bool major = e.kind.starts_with("motorway") || e.kind.starts_with("trunk") || e.kind.starts_with("primary") || e.kind.starts_with("secondary");
+			// (and white edge lines on a collector or a tertiary road with neither kerb nor sidewalk: the flush edge's line)
+			const bool edged = major || ((e.collector || e.kind.starts_with("tertiary")) && !e.curb && !e.sidewalks);
 			{
 				std::vector<float> lines;
 				const float c0 = centreOf(half, e.forward, w, e.Side()), t0 = e.centre * w;
@@ -1906,7 +1909,7 @@ namespace worldgen::roads
 					lines.push_back(c0 - j * w);
 				for (int j = 1; j < e.backward; ++j)
 					lines.push_back(c0 + t0 + j * w);
-				if (major || e.bike > 0)
+				if (edged || e.bike > 0)
 					lines.insert(lines.end(), {-half + 0.45f + e.Side(), half - 0.45f - e.Side()});
 				const uint32_t seed = seeds::Place(p.front()[0], p.front()[1], 10, static_cast<uint32_t>(e.id));
 				const float f0 = sStart + std::max({clearA + 1.0f, tapA, 1.5f}), f1 = sEnd - std::max({clearB + 1.0f, tapB, 1.5f});
@@ -2272,7 +2275,7 @@ namespace worldgen::roads
 				const float to = sEnd - std::max(clearB, nb.any && j >= nb.lanesB ? tapB : 0.0f);
 				line(offsets([&](size_t i) { return centreAt[i] + turnAt[i] + j * w; }), 0.2f, kDashU0, kDashU1, 4.0f, from, to, 3.0f, 12.0f, 0.15f, 0.85f);
 			}
-			if (major || e.bike > 0)
+			if (edged || e.bike > 0)
 			{
 				// (the right edge of the lanes going along: white; the left edge of a one-way road: yellow; inside the parking
 				// and bike lanes - a bike lane's line on any road)

@@ -31,6 +31,8 @@ namespace worldgen::world
 		bool curb = false;           // (a kerb and gutter without a sidewalk: a town's street - the build's, not saved)
 		bool centreLine = false;     // (a dashed yellow line between the directions of a street its kind gives none: Miami-Dade's
 		                             // residential streets - the build's, not saved)
+		bool collector = false;      // (a residential street that is a collector - its name runs a kilometre: a double yellow line,
+		                             // without kerb white edge lines - the build's, not saved)
 		bool sidewalkLeft = true, sidewalkRight = true; // (with sidewalks: which sides have one, left and right of the points' way;
 		                                                // the other a kerb and gutter - the build's, not saved)
 		bool bridge = false, tunnel = false;

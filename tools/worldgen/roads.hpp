@@ -42,6 +42,7 @@ namespace worldgen::roads
 		float bike = 0;         // a painted bike lane each side (m; 0: none), between the parking and the traffic lanes
 		bool curb = false;      // without sidewalks, a kerb and gutter still (a town's street): a kerb top of kCurbTop
 		bool centreLine = false; // a dashed yellow line between the directions where its kind has none (world::Road's)
+		bool collector = false;  // a residential collector: a double yellow line, without kerb white edge lines (world::Road's)
 		// with sidewalks: which sides (left and right of a -> b) have one; the other a kerb and gutter (kCurbTop)
 		bool walkLeft = true, walkRight = true;
 		float HalfWidth() const { return (forward + backward + centre) * laneWidth / 2 + 0.3f + parking + bike; }

@@ -3185,6 +3185,22 @@ namespace worldgen::build
 				length += std::hypot(r.points[k][0] - r.points[k - 1][0], r.points[k][1] - r.points[k - 1][1]);
 			r.centreLine = length >= 120;
 		}
+		// north of Miami-Dade a residential street whose name runs 900 m and more in the land is a collector - a double yellow
+		// line, white edge lines where it has no kerb: round 25's reviewers on Orlando's Boice Street and Rockwood Avenue, "the
+		// photo has a double yellow centre line and white edge lines; the render's road is bare"
+		{
+			std::map<std::string, float> named;
+			for (const auto& r : near.roads)
+				if ((r.kind == "residential" || r.kind == "unclassified") && r.forward && r.backward && !r.name.empty() && r.points.size() >= 2)
+					for (size_t k = 1; k < r.points.size(); ++k)
+						named[r.name] += std::hypot(r.points[k][0] - r.points[k - 1][0], r.points[k][1] - r.points[k - 1][1]);
+			size_t collectors = 0;
+			for (auto& r : near.roads)
+				if ((r.kind == "residential" || r.kind == "unclassified") && r.forward && r.backward && !r.name.empty() && r.points.size() >= 2 &&
+				    latAt(r.points[r.points.size() / 2][1]) >= 26.0 && named[r.name] >= 900)
+					r.collector = true, ++collectors;
+			std::printf("roads: %zu residential pieces of collectors (a name 900 m long): a double yellow line\n", collectors);
+		}
 		// sidewalks where the map says; where it says nothing, by how built up the land along the road is (NLCD): the street
 		// pictures' suburbs and country roads mostly have none - a verge of grass to the ditch -, the towns' middles and their
 		// bigger streets have them (developed medium and high intensity for any street, low intensity too for tertiary and up).
@@ -3391,6 +3407,22 @@ namespace worldgen::build
 						++n;
 					}
 					return n > 0 && green * 2 > n;
+				};
+			// (else photo.py's classes, a metre's each: planted where most of them round the point are not paving - the statewide
+			// lands have no aerial.py pictures, and every median under 7 m had been paved: round 25's reviewers on Orlando's Holden
+			// Avenue, "a raised grass median about 10 m wide ... reduced to two painted yellow lines")
+			else if (!photoClass.v.empty())
+				planted = [&](float x, float y) {
+					int open = 0, n = 0;
+					for (int k = 0; k < 5; ++k)
+					{
+						const auto c = photoClass.Cell({x + (k == 1 ? 1.0f : k == 2 ? -1.0f : 0.0f), y + (k == 3 ? 1.0f : k == 4 ? -1.0f : 0.0f)});
+						if (!photoClass.In(c[0], c[1]) || !photoClass.At(c[0], c[1]))
+							continue;
+						open += photoClass.At(c[0], c[1]) != 6;
+						++n;
+					}
+					return n > 0 && open * 2 > n;
 				};
 			// (the pictures' paving's redness round a point: the median of the 3 x 3 metres' that are paving, NaN under two)
 			std::function<float(float, float)> pavingRed;
@@ -4011,7 +4043,7 @@ namespace worldgen::build
 			// point; a lamp - the steel pole with its arm over the nearest street within 15 m - where none of ours stands within
 			// 10 m
 			{
-				const uint32_t hydrant = loader::convert::Joaat("prop_fire_hydrant_1"), lamp = loader::convert::Joaat("prop_streetlight_01");
+				const uint32_t hydrant = loader::convert::Joaat("prop_fire_hydrant_1"), lamp = loader::convert::Joaat("prop_streetlight_03"); // (plain galvanised steel)
 				std::vector<P2> lights;
 				for (const auto& f : furniture)
 					if (f.archetype == lamp)
@@ -4185,6 +4217,28 @@ namespace worldgen::build
 					kept.push_back(t);
 				}
 				std::printf("trees from the aerial pictures: %zu moved off roads and roofs, %zu kept off big buildings' walls\n", moved, trimmed);
+				// (the tropics' trees along the streets and walks mostly palms: an evergreen crown within 8 m of a road's edge or
+				// of a path - not a street's sidewalk -, seven in ten; the pictures see a row of palms as wide crowns together -
+				// South Pointe Park's promenade's cabbage palms had stood as broadleaf trees)
+				{
+					raster::Grid<uint8_t> byWalk;
+					byWalk.Init(gx0, gy0, gx1, gy1, 2.0f, 0);
+					for (const auto& wk : w.walks)
+						if (wk.kind != "sidewalk" && wk.kind != "crossing" && wk.kind != "driveway" && wk.points.size() >= 2)
+							raster::DrawLine(byWalk, wk.points, 8.0f, uint8_t{1});
+					size_t palmed = 0;
+					for (auto& t : kept)
+					{
+						if (t.kind != 0 || latAt(t.y) >= 26.8)
+							continue;
+						const auto wc = byWalk.Cell({t.x, t.y});
+						const bool alongWay = roomAt(t.x, t.y) <= 8 || (byWalk.In(wc[0], wc[1]) && byWalk.At(wc[0], wc[1]));
+						if (alongWay && seeds::Place(t.x, t.y, 4, 31) % 10 < 7)
+							t.kind = 2, ++palmed;
+					}
+					if (palmed)
+						std::printf("trees: %zu evergreen crowns by the tropics' streets and walks taken for palms\n", palmed);
+				}
 				trees::Stats ts;
 				trees::Photo(kept, landCoverAt, latAt, open, ground, {bx0, by0, bx1, by1}, furniture, ts,
 				    std::all_of(ownTrees.begin(), ownTrees.end(), [](const auto& v) { return v.empty(); }) ? nullptr : &ownTrees);
@@ -4322,7 +4376,7 @@ namespace worldgen::build
 						return std::hypot(c.first[0] - x, c.first[1] - y) < c.second;
 					});
 				};
-				const uint32_t posts[] = {loader::convert::Joaat("prop_streetlight_01"), loader::convert::Joaat("prop_traffic_01a"),
+				const uint32_t posts[] = {loader::convert::Joaat("prop_streetlight_01"), loader::convert::Joaat("prop_streetlight_03"), loader::convert::Joaat("prop_traffic_01a"),
 				    loader::convert::Joaat("prop_traffic_01b"), loader::convert::Joaat("prop_sign_road_01a")};
 				size_t trees = 0, postsOut = 0;
 				std::erase_if(furniture, [&](const props::Prop& p) {
