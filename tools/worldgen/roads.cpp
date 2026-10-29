@@ -2800,8 +2800,9 @@ namespace worldgen::roads
 		{
 			const world::Walk& wk = walks[wi];
 			// (the crossings are the roads'; footbridges and the like left out - a strip on the ground under one is wrong;
-			// a "grass" path is the lawn)
-			if (wk.kind == "crossing" || wk.bridge || wk.tunnel || wk.layer != 0 || wk.points.size() < 2 || wk.surface == "grass")
+			// a "grass" path is the lawn, a "sand" one the beach - drawn as a dirt road's picture it had been "a stretched plank
+			// strip running down the beach" in round 26's views)
+			if (wk.kind == "crossing" || wk.bridge || wk.tunnel || wk.layer != 0 || wk.points.size() < 2 || wk.surface == "grass" || wk.surface == "sand")
 				continue;
 			// (untagged or just "paved": a sidewalk's, a footway's, a driveway's concrete - Tallahassee's map has 6700 sidewalks
 			// "paved", drawn as asphalt they were the reviewers' "dark asphalt sidewalks" -, a cycleway's or a path's asphalt)

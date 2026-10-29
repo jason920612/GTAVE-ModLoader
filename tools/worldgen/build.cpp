@@ -2002,6 +2002,16 @@ namespace worldgen::build
 					if (kind == 0 || kind == 1)
 						for (int k = 0; k < 3; ++k)
 							out[k] *= kLawnShade;
+					// (south Florida's beaches - 27.5 N and south - near white: their sand brighter and greyer, most of the way -
+					// round 26's reviewers: "sand is near-white in the photo and tan/yellow in the render")
+					if ((kind == 2 || kind == -1) && latAt(y) < 27.5) // (the beaches' colour is asked for as any ground's)
+						if (const auto lc = land.Cell({x, y}); land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) == kBeach)
+						{
+							const float l = (out[0] + out[1] + out[2]) / 3;
+							const std::array<float, 3> white{l * 1.13f, l * 1.11f, l * 1.05f};
+							for (int k = 0; k < 3; ++k)
+								out[k] = std::clamp(out[k] + (white[k] - out[k]) * 0.6f, 0.0f, 255.0f);
+						}
 					return true;
 				}
 			}
@@ -4302,6 +4312,7 @@ namespace worldgen::build
 					{
 						const auto toSand = raster::DistanceTo(notSand, 1);
 						trees::Stats ds;
+						const size_t beforeDunes = furniture.size();
 						trees::Undergrowth(
 						    [&](float x, float y) {
 							    const auto c = land.Cell({x, y});
@@ -4315,6 +4326,16 @@ namespace worldgen::build
 							    return (cl == 2 || cl == 3) && !inCemetery(x, y);
 						    },
 						    open, ground, {bx0, by0, bx1, by1}, furniture, ds, 3.5f, 9, 0.45f, 0.75f); // (dense and low: sea grape mounds 2.7-4.5 m across)
+						// (our own shrubs in place of the game's bushes - one of those bears oranges, "a citrus shrub on a beach dune" in round
+						// 26's views -: dense mounds of glossy round leaves, as sea grape is)
+						if (!ownShrubs.empty())
+							for (size_t k = beforeDunes; k < furniture.size(); ++k)
+							{
+								auto& p = furniture[k];
+								const uint32_t pick = seeds::Place(p.position[0], p.position[1], 5, 41);
+								p.archetype = loader::convert::Joaat(ownShrubs[pick % ownShrubs.size()].name);
+								p.scale = 0.9f + 0.5f * static_cast<float>((pick >> 8) % 16) / 15.0f;
+							}
 						std::printf("dunes: %zu shrubs behind the beaches\n", ds.bushes);
 					}
 				}
@@ -5816,7 +5837,10 @@ namespace worldgen::build
 				// (5: aged concrete - 0.8 as bright, a little greyer: the sidewalks)
 				// (6: red concrete - the aged concrete tinted a dull brick red)
 				// (7: made seamless - a normal map -, 8: flattened and made seamless)
-				const char* suffix = treat == 8   ? "_flat_seamless"
+				// (9: a cut-out's leaves for our cards: the cut-out's mips - as much over half at every level -, the outline a pixel
+				// fuller, a little less blue - the game's own mips had thinned a far crown to "a blue-tinted dot cloud")
+				const char* suffix = treat == 9   ? "_foliage"
+				                     : treat == 8 ? "_flat_seamless"
 				                     : treat == 7 ? "_seamless"
 				                     : treat == 6 ? "_red"
 				                     : treat == 5 ? "_aged"
@@ -5865,13 +5889,40 @@ namespace worldgen::build
 								p[c] = static_cast<uint8_t>(std::clamp(0.58f * warm[c] * (0.75f * p[c] + 0.25f * l), 0.0f, 255.0f));
 						}
 					}
+					else if (treat == 9)
+					{
+						// (the outline a pixel fuller: a clear texel next to a leaf's takes the leaf's colour and alpha)
+						const texture::Image before = image;
+						for (int y = 0; y < image.height; ++y)
+							for (int x = 0; x < image.width; ++x)
+							{
+								auto& px = image.At(x, y);
+								if (px[3] >= 128)
+								{
+									px[2] = static_cast<uint8_t>(px[2] * 0.88f);
+									continue;
+								}
+								for (int k = 0; k < 4; ++k)
+								{
+									const int nx = x + (k == 0 ? 1 : k == 1 ? -1 : 0), ny = y + (k == 2 ? 1 : k == 3 ? -1 : 0);
+									if (nx < 0 || ny < 0 || nx >= image.width || ny >= image.height)
+										continue;
+									if (const auto& q = before.At(nx, ny); q[3] >= 160)
+									{
+										px = {q[0], q[1], static_cast<uint8_t>(q[2] * 0.88f), 200};
+										break;
+									}
+								}
+							}
+					}
 					else if (treat != 7)
 						Flatten(image);
 					if (treat == 7 || treat == 8)
 						Seamless(image);
 					if (treat == 2)
 						Neutral(image, kNeutralMean);
-					t = texture::Make(name, image, t.format.dxgi == 77 ? texture::Format::Bc3 : texture::Format::Bc1);
+					t = treat == 9 ? texture::Make(name, image, texture::Format::Bc3, true)
+					               : texture::Make(name, image, t.format.dxgi == 77 ? texture::Format::Bc3 : texture::Format::Bc1);
 				}
 				shared.push_back(std::move(t));
 				copied[key] = name;
@@ -6275,7 +6326,7 @@ namespace worldgen::build
 					if (const flora::GamePicture* g = flora::FromGame(static_cast<flora::Texture>(t)))
 					{
 						floraNormals[static_cast<size_t>(t)] = o.name + "_flat_n";
-						if (!use(g->dictionary, g->diffuse, floraPictures[static_cast<size_t>(t)]) ||
+						if (!use(g->dictionary, g->diffuse, floraPictures[static_cast<size_t>(t)], flora::Cutout(static_cast<flora::Texture>(t)) ? 9 : 0) ||
 						    (g->normal && !use(g->normalDictionary, g->normal, floraNormals[static_cast<size_t>(t)])))
 							return false;
 					}
