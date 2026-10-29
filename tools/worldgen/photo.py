@@ -6,7 +6,7 @@ in EPSG:3857) for how tall the trees are.
 
 usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
   photo.py --world <world.json> --out <dir> [--area x0,y0,x1,y1] [--chm D:\\GTAV-UE5\\chm] [--keep <dir>] [--fetch 4]
-           [--cache <dir>] [--landcover <landcover.bin>]
+           [--cache <dir>] [--landcover <landcover.bin>] [--workers 2]
   <dir>/trees.bin  'WBTR' version 1, count (u32); each tree: x, y, height, crown radius (f32), kind (u8: 0 evergreen, 1 bare
                    - leafless in the pictures' winter, 2 palm-like: small round crown), pad (3 bytes)
   <dir>/cover.bin  'WBPC' version 1, x0, y0, cell (f32), nx, ny (u32); each 4 m cell (rows south to north): its class (u8:
@@ -19,6 +19,7 @@ usage (the venv in D:\\GTAV-UE5\\venv: numpy, scipy, tifffile, zarr, Pillow):
           lands' corners are whole metres of it, 8 and 10 km apart -, so a neighbour asks for the same blocks of the band
           between them in the same words: half a land's blocks are its neighbours'); a file's time is its last use
   --landcover: nlcd.py's classes - a block all open water there is not asked for (the picture all 0: no trees, no cover)
+  --workers: the blocks analysed at a time (processes; 12 s a block)
 The pictures are asked for in blocks of 2 km (4 bands, JPEG); a tree is a peak of the canopy's brightness in the near
 infrared (its sunlit crown) - the canopy where the canopy heights say 3 m and more or the near infrared is high and
 uneven (crowns and their shadows, not a lawn's even green) - at least a crown's reach from a taller one.
@@ -148,7 +149,8 @@ class Canopy:
         tx = np.floor((mx + world / 2) / world * 512).astype(np.int64)
         ty = np.floor((world / 2 - my) / world * 512).astype(np.int64)
         out = np.zeros(lat.shape, np.uint8)
-        for key_xy in set(zip(tx.ravel().tolist(), ty.ravel().tolist())):
+        for key in np.unique(tx * 1024 + ty).tolist():
+            key_xy = divmod(key, 1024)
             sel = (tx == key_xy[0]) & (ty == key_xy[1])
             z, ox, oy, px = self.tile(self.quadkey(*key_xy))
             col = np.floor((mx[sel] - ox) / px).astype(np.int64)
@@ -158,6 +160,34 @@ class Canopy:
             rr, cc = np.clip(row - max(r0, 0), 0, window.shape[0] - 1), np.clip(col - max(c0, 0), 0, window.shape[1] - 1)
             out[sel] = window[rr, cc]
         return out
+
+
+_canopy = None
+
+
+def block_work(rgbn, projection, x0, y0, nx, ny, footprints, chm_folder):
+    """One block's analysis (a worker's): its canopy heights, the buildings round it, analyse() - None for a block with no
+    picture."""
+    global _canopy
+    if not rgbn.any():
+        return None
+    if _canopy is None:
+        _canopy = Canopy(chm_folder)
+    pr = Projection(projection)
+    # pixel centres (rows north to south)
+    xs = x0 + (np.arange(nx) + 0.5) * CELL
+    ys = y0 + ny * CELL - (np.arange(ny) + 0.5) * CELL
+    lat, lon = pr.latlon(xs[None, :], ys[:, None])
+    lat, lon = np.broadcast_to(lat, (ny, nx)), np.broadcast_to(lon, (ny, nx))
+    heights = _canopy.heights(np.ascontiguousarray(lat), np.ascontiguousarray(lon))
+    # (the buildings round the block: their footprints drawn at its pixels, 6 m round them)
+    built = Image.new('L', (nx, ny), 0)
+    draw = ImageDraw.Draw(built)
+    top = y0 + ny * CELL
+    for fp in footprints:
+        draw.polygon([((px - x0) / CELL, (top - py) / CELL) for px, py in fp], fill=1)
+    near_built = ndimage.binary_dilation(np.asarray(built, bool), iterations=6)
+    return analyse(rgbn, heights, near_built)
 
 
 def analyse(rgbn, chm, near_built=None):
@@ -309,7 +339,6 @@ def main():
         ax0, ay0, ax1, ay1 = w['min'][0], w['min'][1], w['max'][0], w['max'][1]
     out = o['out']
     os.makedirs(out, exist_ok=True)
-    chm = Canopy(o['chm'])
     # the buildings' footprints by 500 m cell (the map's and the footprints merged into the world)
     by_cell = {}
     for b in w.get('buildings', []):
@@ -381,30 +410,38 @@ def main():
             np.savez_compressed(cached, rgbn=rgbn)
         return rgbn
 
-    # (the pictures asked for four at a time, ahead of the blocks' analysis: the service takes about half a minute a block)
+    # (the pictures asked for four at a time, ahead of the blocks' analysis: the service takes about half a minute a block;
+    # the blocks analysed by --workers processes, taken in order)
     import concurrent.futures
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=int(o.get('fetch', 4)))
     pending = [pool.submit(picture, bx, by) for bx, by in blocks]
-    for k, (bx, by) in enumerate(blocks):
+    workers = max(1, int(o.get('workers', 2)))
+    procs = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+    analyses = {}
+
+    def submit(k):
+        bx, by = blocks[k]
         x0, y0, nx, ny = window(bx, by)
         rgbn = pending[k].result()
         pending[k] = None
+        near = list(footprints_near(x0, y0, x0 + nx * CELL, y0 + ny * CELL))
+        analyses[k] = (rgbn, procs.submit(block_work, rgbn, w['projection'], x0, y0, nx, ny, near, o['chm']))
+
+    ahead = 2 * workers
+    for k in range(min(ahead, len(blocks))):
+        submit(k)
+    for k, (bx, by) in enumerate(blocks):
+        if k + ahead < len(blocks):
+            submit(k + ahead)
+        rgbn, analysed = analyses.pop(k)
+        result = analysed.result()
+        if result is None:
+            continue
+        x0, y0, nx, ny = window(bx, by)
         # pixel centres (rows north to south)
         xs = x0 + (np.arange(nx) + 0.5) * CELL
         ys = y0 + ny * CELL - (np.arange(ny) + 0.5) * CELL
-        lat, lon = pr.latlon(xs[None, :], ys[:, None])
-        lat, lon = np.broadcast_to(lat, (ny, nx)), np.broadcast_to(lon, (ny, nx))
-        heights = chm.heights(np.ascontiguousarray(lat), np.ascontiguousarray(lon))
-        if not rgbn.any():
-            continue
-        # (the buildings round the block: their footprints drawn at its pixels, 6 m round them)
-        built = Image.new('L', (nx, ny), 0)
-        draw = ImageDraw.Draw(built)
-        top = y0 + ny * CELL
-        for fp in footprints_near(x0, y0, x0 + nx * CELL, top):
-            draw.polygon([((px - x0) / CELL, (top - py) / CELL) for px, py in fp], fill=1)
-        near_built = ndimage.binary_dilation(np.asarray(built, bool), iterations=6)
-        canopy, block_trees, cls, shade = analyse(rgbn, heights, near_built)
+        canopy, block_trees, cls, shade = result
         for px, py, h, crown, kind in block_trees:
             x, y = float(xs[px]), float(ys[py])
             if bx <= x < bx + BLOCK and by <= y < by + BLOCK and x < ax1 and y < ay1:
@@ -429,6 +466,7 @@ def main():
         fine[FJ[put], FI[put]] = cls[put]
         print(f'block {k + 1}/{len(blocks)} at {bx:.0f},{by:.0f}: {len(block_trees)} trees, canopy {canopy.mean():.0%} '
               f'({time.time() - started:.0f} s)', flush=True)
+    procs.shutdown()
     # trees.bin
     with open(os.path.join(out, 'trees.bin'), 'wb') as f:
         f.write(b'WBTR' + struct.pack('<II', 1, len(trees)))

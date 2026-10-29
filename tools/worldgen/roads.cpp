@@ -1533,6 +1533,58 @@ namespace worldgen::roads
 				x.lanesF = otherPointsHere ? o.backward : o.forward, x.lanesB = otherPointsHere ? o.forward : o.backward;
 			return x;
 		};
+		// the roads' surfaces, for what lies beside an edge: a parapet or a retaining wall only where no other road's surface
+		// at about its height goes on past it - two decks or embankments side by side (a ramp leaving the road, the two
+		// carriageways of a divided road on one structure) are one surface, a barrier only once they part (it had been two
+		// walls side by side, crossing over each other's lanes where the ramp leaves). Not the road's own continuation at a
+		// change of road.
+		struct Piece
+		{
+			size_t edge, at; // (its segment: points at, at + 1)
+			float half;
+		};
+		constexpr float kPieceCell = 16;
+		std::unordered_map<int64_t, std::vector<Piece>> pieces;
+		const auto pieceKey = [](float x, float y) {
+			return (static_cast<int64_t>(std::floor(x / kPieceCell)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / kPieceCell)));
+		};
+		for (size_t ei = 0; ei < ne; ++ei)
+		{
+			const Edge& e = n.edges[ei];
+			if (hidden[ei] || e.points.size() < 2 || e.z.size() != e.points.size())
+				continue;
+			const float half = e.HalfWidth() + e.Walk();
+			for (size_t k = 0; k + 1 < e.points.size(); ++k)
+			{
+				const P2 &a = e.points[k], &c = e.points[k + 1];
+				for (float y = std::floor((std::min(a[1], c[1]) - half - 1) / kPieceCell) * kPieceCell; y <= std::max(a[1], c[1]) + half + 1; y += kPieceCell)
+					for (float x = std::floor((std::min(a[0], c[0]) - half - 1) / kPieceCell) * kPieceCell; x <= std::max(a[0], c[0]) + half + 1; x += kPieceCell)
+						pieces[pieceKey(x + kPieceCell / 2, y + kPieceCell / 2)].push_back({ei, k, half});
+			}
+		}
+		// (whether another road's surface - not edge `self`'s, nor the road it changes into - takes in (x, y) at about height zz)
+		const auto surfaced = [&](size_t self, float x, float y, float zz) {
+			const auto it = pieces.find(pieceKey(x, y));
+			if (it == pieces.end())
+				return false;
+			const Edge& me = n.edges[self];
+			for (const Piece& q : it->second)
+			{
+				if (q.edge == self)
+					continue;
+				const Edge& o = n.edges[q.edge];
+				const bool next = (kind[me.a] == Kind::Change && (o.a == me.a || o.b == me.a)) || (kind[me.b] == Kind::Change && (o.a == me.b || o.b == me.b));
+				if (next)
+					continue;
+				const P2 &a = o.points[q.at], &c = o.points[q.at + 1];
+				const float dx = c[0] - a[0], dy = c[1] - a[1], l2 = dx * dx + dy * dy;
+				const float t = l2 > 0 ? std::clamp(((x - a[0]) * dx + (y - a[1]) * dy) / l2, 0.0f, 1.0f) : 0.0f;
+				const float oz = o.z[q.at] + (o.z[q.at + 1] - o.z[q.at]) * t;
+				if (std::hypot(x - a[0] - dx * t, y - a[1] - dy * t) <= q.half && std::fabs(oz - zz) < 1.2f)
+					return true;
+			}
+			return false;
+		};
 		// edge ends at junctions: the cross-section where the edge stops (outward: away from the junction)
 		struct End
 		{
@@ -1829,26 +1881,55 @@ namespace worldgen::roads
 						q[2] += dz;
 					return v;
 				};
-				const auto across = [](const std::vector<P3>& v, float dx) { return v; };
-				(void)across;
-				// parapets: the inner face (collision), the top, the outer face down to the deck's underside
-				b.Wall(out.structure, innerL, kParapet, false, kConcrete);
-				b.Wall(out.structure, innerR, kParapet, true, kConcrete);
-				std::vector<P3> topL, topR, topLo, topRo;
+				// (each side's parapet only where no other road's surface goes on past it; a stretch either way runs a point
+				// into the next, so the two meet)
+				std::vector<bool> openL(p.size()), openR(p.size());
 				for (size_t i = 0; i < p.size(); ++i)
 				{
-					topL.push_back({innerL[i][0], innerL[i][1], innerL[i][2] + kParapet});
-					topR.push_back({innerR[i][0], innerR[i][1], innerR[i][2] + kParapet});
-					topLo.push_back({outerL[i][0], outerL[i][1], innerL[i][2] + kParapet});
-					topRo.push_back({outerR[i][0], outerR[i][1], innerR[i][2] + kParapet});
+					const float k = scale[i], past = halfAt[i] + walkAt[i] + 0.6f;
+					openL[i] = surfaced(ei, p[i][0] + nrm[i][0] * past * k, p[i][1] + nrm[i][1] * past * k, z[i]);
+					openR[i] = surfaced(ei, p[i][0] - nrm[i][0] * past * k, p[i][1] - nrm[i][1] * past * k, z[i]);
 				}
+				const auto runs = [&](const std::vector<bool>& open, bool want, auto&& f) {
+					for (size_t i = 0; i < p.size();)
+					{
+						if (open[i] != want)
+						{
+							++i;
+							continue;
+						}
+						size_t j = i;
+						while (j + 1 < p.size() && open[j + 1] == want)
+							++j;
+						f(i == 0 ? size_t{0} : i - 1, std::min(p.size() - 1, j + 1));
+						i = j + 1;
+					}
+				};
+				const auto part = [](const std::vector<P3>& v, size_t i0, size_t i1) { return std::vector<P3>(v.begin() + i0, v.begin() + i1 + 1); };
 				std::vector<std::array<float, 2>> uv0(p.size()), uv1(p.size());
 				for (size_t i = 0; i < p.size(); ++i)
 					uv0[i] = {0, s[i] / 7.4f}, uv1[i] = {0.05f, s[i] / 7.4f};
-				b.Strip(out.structure, topL, topLo, uv0, uv1, kConcrete, false);
-				b.Strip(out.structure, topRo, topR, uv1, uv0, kConcrete, false);
-				b.Wall(out.structure, outerL, kDeck + kParapet + (walkAt[0] > 0 ? kKerb : 0.0f), true, 0);
-				b.Wall(out.structure, outerR, kDeck + kParapet + (walkAt[0] > 0 ? kKerb : 0.0f), false, 0);
+				const float kerbed = walkAt[0] > 0 ? kKerb : 0.0f;
+				for (const bool leftSide : {true, false})
+				{
+					const std::vector<P3>& inner = leftSide ? innerL : innerR;
+					const std::vector<P3>& outer = leftSide ? outerL : outerR;
+					// parapets: the inner face (collision), the top, the outer face down to the deck's underside
+					runs(leftSide ? openL : openR, false, [&](size_t i0, size_t i1) {
+						b.Wall(out.structure, part(inner, i0, i1), kParapet, !leftSide, kConcrete);
+						std::vector<P3> top, topOut;
+						for (size_t i = i0; i <= i1; ++i)
+							top.push_back({inner[i][0], inner[i][1], inner[i][2] + kParapet}), topOut.push_back({outer[i][0], outer[i][1], inner[i][2] + kParapet});
+						const std::vector<std::array<float, 2>> a(uv0.begin() + i0, uv0.begin() + i1 + 1), c(uv1.begin() + i0, uv1.begin() + i1 + 1);
+						if (leftSide)
+							b.Strip(out.structure, top, topOut, a, c, kConcrete, false);
+						else
+							b.Strip(out.structure, topOut, top, c, a, kConcrete, false);
+						b.Wall(out.structure, part(outer, i0, i1), kDeck + kParapet + kerbed, leftSide, 0);
+					});
+					// (beside another deck: the deck's side alone, up to its surface)
+					runs(leftSide ? openL : openR, true, [&](size_t i0, size_t i1) { b.Wall(out.structure, part(outer, i0, i1), kDeck + kerbed, leftSide, 0); });
+				}
 				// the underside (facing down: the strip from the left edge to the right)
 				{
 					std::vector<std::array<float, 2>> uvL(p.size()), uvR(p.size());
@@ -1926,6 +2007,12 @@ namespace worldgen::roads
 					edgeL.push_back(at(lo, lz)), edgeR.push_back(at(-ro, rz));
 					innerL.push_back(at(lo - kThick, lz)), innerR.push_back(at(-ro + kThick, rz));
 					riseL[i] = edgeL[i][2] - ground(edgeL[i][0], edgeL[i][1]), riseR[i] = edgeR[i][2] - ground(edgeR[i][0], edgeR[i][1]);
+					// (no wall where another road's surface goes on past the edge: one embankment)
+					const float past = 0.6f * k;
+					if (surfaced(ei, edgeL[i][0] + nrm[i][0] * past, edgeL[i][1] + nrm[i][1] * past, z[i]))
+						riseL[i] = 0;
+					if (surfaced(ei, edgeR[i][0] - nrm[i][0] * past, edgeR[i][1] - nrm[i][1] * past, z[i]))
+						riseR[i] = 0;
 				}
 				// (each stretch of a side over `over`, a point of the edge either side of it in)
 				const auto stretchesOver = [&](const std::vector<float>& rise, float over, auto&& f) {
