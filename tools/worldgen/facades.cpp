@@ -204,12 +204,13 @@ namespace worldgen::facades
 					g = Mix(Rgb{38, 42, 48}, Scale(tint, 0.5f), 0.3f * v); // (a dark room, little reflected)
 				else
 				{
-					// (the sky up, the street's dark band under the line - soft -, a slanting sheen)
+					// (the sky up, the street's dark band under the line - soft -, a broad faint sheen: a slanting white stripe across
+					// every pane had been "painted-on glare stripes" to round 28's reviewers)
 					const float t = std::clamp((v - horizon) / 0.12f, 0.0f, 1.0f);
 					g = Mix(Scale(street, 0.8f + 0.45f * Noise(u * 5 + r * 7, v * 2, 64, seed)), Glass(tint, v, r), t); // (the trees and walls across, uneven)
 					const float d = std::fabs(u * 0.6f + v - sheen);
-					if (d < 0.08f)
-						g = Mix(g, Rgb{226, 232, 238}, 0.35f * (1 - d / 0.08f));
+					if (d < 0.35f)
+						g = Mix(g, Rgb{226, 232, 238}, 0.08f * (1 - d / 0.35f));
 				}
 				// (behind the glass: blinds or curtains down from the top, part way)
 				if (behind >= 0.12f && behind < 0.42f && v > 1 - drop)

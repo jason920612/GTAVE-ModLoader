@@ -274,6 +274,10 @@ namespace worldgen::texture
 				break;
 			if (level.width == 1 && level.height == 1)
 				break;
+			// (a cut-out's smaller levels keep a sixth more of it over half each, to 0.92: kept as it was, a far crown's cards
+			// had thinned to "grainy dithered leaf speckle, see-through clumps" - the reviewers want "soft continuous masses")
+			if (cutout)
+				coverage = std::min(0.92f, coverage * (1 + 1.0f / 6));
 			level = cutout ? HalfCutout(level, coverage) : Half(level);
 		}
 		t.mips = mips;

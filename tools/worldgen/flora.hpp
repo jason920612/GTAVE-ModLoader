@@ -29,8 +29,10 @@ namespace worldgen::flora
 		ArecaPalm,   // a clump of thin ringed yellow-green stems, each with a few arching feather fronds (yards, hedges)
 		Hedge,       // a clipped hedge's piece: a box of small leaves 2.6 m long (along y), 0.9 m deep, 2 m tall, end to end in a line
 		Boulder,     // not a plant: a riprap revetment's limestone boulder, an angular block about 1.2 m across, its foot flat
+		BareTree,    // a deciduous tree in its winter (sweetgum, maple, hickory, a water oak): an oak's skeleton, bare twigs
+		ConcretePole, // not a plant: a square prestressed concrete utility pole, 15 m, its crossarm where the game pole's is
 	};
-	constexpr int kSpecies = 13;
+	constexpr int kSpecies = 15;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.
@@ -43,6 +45,7 @@ namespace worldgen::flora
 		kMagnoliaLeaves,
 		kGumLeaves,
 		kHedgeLeaves, // (a clipped hedge's small leaves)
+		kTwigs,       // (a bare tree's: sprays of branching twigs, grey-brown)
 		kPalmFrond, // (a feather frond along each cell: its base at the cell's foot)
 		kFanFrond,  // (a cabbage palm's fan: its hub at the cell's foot)
 		kBarkOak,
@@ -54,6 +57,7 @@ namespace worldgen::flora
 		kBarkSabal,   // (the boots' criss-cross)
 		kCrownshaft,  // (a royal palm's glossy green crownshaft)
 		kRock,        // (a boulder's: pale limestone)
+		kConcretePole, // (a utility pole's: weathered concrete)
 		kTextures,
 	};
 	texture::Image Picture(Texture t);
