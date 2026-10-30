@@ -24,6 +24,8 @@ namespace worldgen::bounds
 		std::vector<std::array<float, 3>> vertices;
 		std::vector<std::array<uint32_t, 3>> triangles;
 		std::vector<uint8_t> materials; // per triangle: the material's type (the game's material list index)
+		std::vector<uint8_t> procedural; // per triangle: its material's procedural tag (the plants grown on it; 0 none)
+		std::vector<std::array<uint8_t, 4>> vertexColours; // per vertex: its colour (a material bound's; else 0)
 		std::array<size_t, 6> counts{}; // triangles, boxes, spheres, capsules, cylinders, bounds read as a box
 	};
 

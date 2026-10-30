@@ -47,14 +47,15 @@ namespace worldgen::trees
 	// pictures): the evergreens as pines of every age or, with a crown wide for their height, live oaks; south of 27.5 N
 	// some of them cabbage palms; the leafless as maples and oaks by their size. `cover`: the NLCD class.
 	// Trees of our own (flora.hpp) to use instead of the game's: per kind - 0 live oak, 1 pine, 2 oak, 3 crape myrtle, 4
-	// magnolia, 5 sweetgum, 6 royal palm, 7 coconut palm, 8 cabbage palm - the models (their archetypes' names, heights and
-	// widths as made); a kind the land has none of: the game's.
+	// magnolia, 5 sweetgum, 6 royal palm, 7 coconut palm, 8 cabbage palm, 9 areca palm, 10 a big shrub (a town's low evergreen
+	// crowns: its yards' hedge masses) - the models (their archetypes' names, heights and widths as made); a kind the land has
+	// none of: the game's.
 	struct Own
 	{
 		std::string name;
 		float height = 0, width = 0;
 	};
-	using OwnTrees = std::array<std::vector<Own>, 10>;
+	using OwnTrees = std::array<std::vector<Own>, 11>;
 
 	// (`own`: north Florida's trees of our own in place of the game's California pines and English oaks, where given)
 	void Photo(const std::vector<Seen>& seen, const std::function<uint8_t(float, float)>& cover, const std::function<double(float)>& latitudeAt,

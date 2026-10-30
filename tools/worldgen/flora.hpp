@@ -28,8 +28,9 @@ namespace worldgen::flora
 		SabalPalm,   // the cabbage palm: a trunk in criss-cross boots, a round head of fan leaves on long stalks
 		ArecaPalm,   // a clump of thin ringed yellow-green stems, each with a few arching feather fronds (yards, hedges)
 		Hedge,       // a clipped hedge's piece: a box of small leaves 2.6 m long (along y), 0.9 m deep, 2 m tall, end to end in a line
+		Boulder,     // not a plant: a riprap revetment's limestone boulder, an angular block about 1.2 m across, its foot flat
 	};
-	constexpr int kSpecies = 12;
+	constexpr int kSpecies = 13;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.
@@ -52,6 +53,7 @@ namespace worldgen::flora
 		kBarkCoconut, // (grey-brown, ringed)
 		kBarkSabal,   // (the boots' criss-cross)
 		kCrownshaft,  // (a royal palm's glossy green crownshaft)
+		kRock,        // (a boulder's: pale limestone)
 		kTextures,
 	};
 	texture::Image Picture(Texture t);
@@ -69,6 +71,7 @@ namespace worldgen::flora
 		int across = 1, down = 1;
 		bool upright = false;
 		float round = 1.6f, along = 3.2f;
+		bool rightHalf = false; // (only the picture's right half, made seamless: an atlas's bark beside its foot's)
 	};
 	const GamePicture* FromGame(Texture t);
 

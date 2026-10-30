@@ -606,7 +606,12 @@ namespace worldgen::trees
 				// height across)
 				const bool pine = !tropicalTown && (h >= 21 || (h >= 14 && width < 0.4f * h));
 				const bool magnolia = town && h >= 7 && h <= 16 && width < 0.8f * h && seed % 10 == 0;
-				const int kind = town && h < 8 ? (t.kind == 1 && seed % 2 == 0 && !tropicalTown ? 3 : 2)
+				// (a town's low evergreen crowns - under 6 m, as wide as high or more - a yard's big shrubs and hedge masses, not
+				// trees: as small oaks they had stood in rows on the lawns, "about ten trees in a grid" where the street pictures
+				// have hedges, palms and one oak - round 27's reviewers)
+				const bool shrubMass = town && t.kind == 0 && h < 6 && width >= h && !(*own)[10].empty();
+				const int kind = shrubMass ? 10
+				                 : town && h < 8 ? (t.kind == 1 && seed % 2 == 0 && !tropicalTown ? 3 : 2)
 				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : width >= 1.1f * h ? 0 : 2)
 				                               : (town && h <= 9 && seed % 5 == 0 && !tropicalTown ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
 				if (const Own* o = ownOf(kind, h, seed))

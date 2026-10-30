@@ -578,8 +578,25 @@ namespace worldgen::build
 		constexpr float kNeutralMean = 200, kPhotoGain = 0.5f;
 		// (paving where the pictures see none round it: their usual concrete, a little warm)
 		constexpr std::array<float, 3> kPavingSeen{168, 164, 154};
-		// (the lawns' tint: their brightness beside the paving as the street pictures see it - groundColour)
-		constexpr float kLawnShade = 0.65f;
+		// (the lawns' tint: their brightness beside the paving as the street pictures see it - groundColour; south Florida's
+		// irrigated lawns brighter: Miami Beach's May pictures' turf 0.85 as bright as their paving, ours had been 0.45; the
+		// north's town lawns dormant, straw - brighter than a green lawn: Orlando's January pictures' 0.9 of their paving)
+		constexpr float kLawnShade = 0.65f, kLawnShadeSouth = 0.95f, kLawnShadeDormant = 0.8f;
+
+		// A town's lawn's colour in the street pictures' season, from the aerial pictures' (NAIP's, flown in winter): north and
+		// central Florida's - 27 N and north - dormant then, as most of their street pictures see them (Orlando's all January's:
+		// round 27's reviewers on every sheet, "dormant tan/olive grass ... rendered as uniform lush green"), so the pictures'
+		// colour, a little warmer - their haze bluish -; south Florida's green the year round, irrigated (Miami Beach's May
+		// pictures' "vivid yellow-green turf" where ours was "dull olive, darker and bluer"): `share` of the way to a lawn's
+		// yellow-green of its brightness.
+		void LawnSeason(std::array<float, 3>& c, double lat, float share)
+		{
+			const float l = (c[0] + c[1] + c[2]) / 3;
+			const bool south = lat < 27.0;
+			const std::array<float, 3> to = south ? std::array<float, 3>{l * 0.84f, l * 1.16f, l * 0.42f} : std::array<float, 3>{l * 1.1f, l * 1.0f, l * 0.72f};
+			for (int k = 0; k < 3; ++k)
+				c[static_cast<size_t>(k)] = std::clamp(c[static_cast<size_t>(k)] + (to[static_cast<size_t>(k)] - c[static_cast<size_t>(k)]) * share, 0.0f, 255.0f);
+		}
 		// Pitched roofs' coverings (the game's textures: dictionary, texture, metres one covers): clay tiles, mid grey
 		// shingles, light grey, dark (the mid grey's darker kin), brown; and standing-seam metal of our own drawing (no
 		// dictionary: its colour) - green and red, north Florida's metal roofs (the street pictures': a green one where the
@@ -1979,31 +1996,27 @@ namespace worldgen::build
 				{
 					for (int k = 0; k < 3; ++k)
 						out[k] = std::clamp(sum[k] / n * kPhotoGain / kNeutralMean * 255.0f, 0.0f, 255.0f);
-					// (a town's lawns in their growing season: NAIP flies Florida in winter, north Florida's lawns then dormant
-					// and brown; the game's is always summer, as the street pictures of most of the year show them - a brownish
-					// colour in developed land turned most of the way to a lawn's green of its brightness, as far as the pictures see
-					// grass there: a gravel lot, a sandy one, bare earth keep theirs)
-					// (and south Florida's grey-green or teal winter lawns as well: the reviewers of Miami's views saw "desaturated
-					// grey-green", "teal" lawns on 8 of 36 - any colour not already a healthy lawn's green)
+					// (a town's lawns in the street pictures' season - LawnSeason: north and central Florida's dormant, as far as the
+					// pictures see grass there - a gravel lot, a sandy one, bare earth keep theirs -; south Florida's grey-green or
+					// teal winter lawns green - any colour not already a healthy lawn's green -, not quite all of it: patches keep
+					// the pictures' colour, by the real world's place, the same patches in every land that shows them)
 					const bool healthy = out[1] > out[0] + 12 && out[1] > out[2] + 25;
-					if (landCoverAt && grassy > 0 && !healthy)
-						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24 && ((out[0] > out[2] + 10 && out[0] >= out[1] - 5) || latAt(y) < 27.0))
+					bool townLawn = false;
+					if (landCoverAt && grassy > 0)
+						if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
 						{
-							// (the street pictures' summer lawns - St. Augustine grass - green, not quite all of it: patches keep the
-							// pictures' brown - the reviewers had seen "pale olive", then "uniform, oversaturated turf")
-							// (by the real world's place: the same patches in every land that shows them)
+							townLawn = true;
 							const double gx = seeds::GX(x), gy = seeds::GY(y);
 							const float patch = static_cast<float>(0.6 + 0.4 * std::sin(gx * 0.11 + std::sin(gy * 0.07) * 2.3) * std::sin(gy * 0.13 + std::sin(gx * 0.05) * 1.7));
-							const float l = (out[0] + out[1] + out[2]) / 3, share = 0.8f * grassy / n * patch;
-							const std::array<float, 3> lawn{l * 0.76f, l * 1.13f, l * 0.55f};
-							for (int k = 0; k < 3; ++k)
-								out[k] = std::clamp(out[k] + (lawn[k] - out[k]) * share, 0.0f, 255.0f);
+							if (!healthy)
+								LawnSeason(out, latAt(y), (latAt(y) < 27.0 ? 0.8f : 0.6f) * grassy / n * patch);
 						}
 					// (grass 0.65 as bright: the street pictures' lawns are 0.75 as bright as their paving - a mown lawn's
-					// blades shade each other -, ours had come out 1.14-1.29 as bright, the reviewers' "bright green carpet")
+					// blades shade each other -, ours had come out 1.14-1.29 as bright, the reviewers' "bright green carpet";
+					// south Florida's town lawns 0.95)
 					if (kind == 0 || kind == 1)
 						for (int k = 0; k < 3; ++k)
-							out[k] *= kLawnShade;
+							out[k] *= !townLawn ? kLawnShade : latAt(y) < 27.0 ? kLawnShadeSouth : kLawnShadeDormant;
 					// (south Florida's beaches - 27.5 N and south - near white: their sand brighter and greyer, most of the way -
 					// round 26's reviewers: "sand is near-white in the photo and tan/yellow in the render")
 					if ((kind == 2 || kind == -1) && latAt(y) < 27.5) // (the beaches' colour is asked for as any ground's)
@@ -2663,9 +2676,12 @@ namespace worldgen::build
 						}
 					}
 			}
-			// (and the dunes behind the beaches: land within 30 m of one, in none of the map's lots - homes, shops, works, car
-			// parks...; a park's is -, most of it plants in photo.py's classes, trees or green or dry grass: Miami Beach's dune is
-			// a strip the map leaves blank between the beach and the hotels, its grey-green scrub "dry grass" in the pictures)
+			// (and the dunes behind the beaches: land within 30 m of one - a park's or open land's within 80 m: South Pointe
+			// Park's dune, 45 m in, had been "a flat bare sand plain" where the street pictures have "a mound densely covered in
+			// dune vegetation" -, in none of the map's lots - homes, shops, works, car parks...; a park's is -, most of it a
+			// dune's ground in photo.py's classes, trees, dry grass or sand, and few green lawns - Lummus Park's lawn by the beach
+			// stays a lawn: Miami Beach's dune is a strip the map leaves blank between the beach and the hotels, its grey-green
+			// scrub "dry grass" in the pictures)
 			size_t behind = 0;
 			if (!photoClass.v.empty())
 			{
@@ -2685,19 +2701,20 @@ namespace worldgen::build
 						for (int i = 0; i < land.nx; ++i)
 						{
 							const uint8_t k = land.At(i, j);
-							if (k == kBeach || k == kWater || dune.At(i, j) || toBeach.At(i, j) > 30 || lots.At(i, j))
+							if (k == kBeach || k == kWater || dune.At(i, j) || toBeach.At(i, j) > (k == kPark || k == kLand ? 80 : 30) || lots.At(i, j))
 								continue;
 							const P2 c = land.Centre(i, j);
-							int plants = 0, seen = 0;
+							int plants = 0, lawn = 0, seen = 0;
 							for (float y = c[1] - land.cell / 2 + 1; y < c[1] + land.cell / 2; y += 2)
 								for (float x = c[0] - land.cell / 2 + 1; x < c[0] + land.cell / 2; x += 2)
 									if (const auto pc = photoClass.Cell({x, y}); photoClass.In(pc[0], pc[1]))
 									{
 										const uint8_t cl = photoClass.At(pc[0], pc[1]);
 										++seen;
-										plants += cl == 2 || cl == 3 || cl == 4;
+										plants += cl == 2 || cl == 4 || cl == 5;
+										lawn += cl == 3;
 									}
-							if (seen && plants * 2 > seen)
+							if (seen && plants * 2 > seen && lawn * 4 < seen)
 								dune.At(i, j) = 1, ++behind;
 						}
 				}
@@ -2706,6 +2723,14 @@ namespace worldgen::build
 			            "water (4 m cells)%s\n",
 			    counts[0], counts[1], counts[2], counts[3], duneCells, behind, counts[4], photographed ? "" : " (no aerial pictures: built-up land as lawn)");
 			duneCells += behind;
+		}
+		// (how far the sea is: the riprap's shores)
+		raster::Grid<float> toSeaWater;
+		{
+			raster::Grid<uint8_t> notSea = land;
+			for (size_t k = 0; k < land.v.size(); ++k)
+				notSea.v[k] = seaBody[k] ? 0 : 1;
+			toSeaWater = raster::DistanceTo(notSea, 1);
 		}
 		// (how far into a lawn: from its edge)
 		const auto lawnDepth = raster::DistanceTo(lawnCapable, 1);
@@ -3565,7 +3590,7 @@ namespace worldgen::build
 		trees::OwnTrees ownTrees;
 		std::vector<std::pair<std::string, flora::Model>> floraModels;
 		std::unordered_map<uint32_t, std::pair<float, float>> floraTrunk; // (by archetype: the trunk's radius, its collision's height)
-		std::vector<trees::Own> ownShrubs, ownHedges;
+		std::vector<trees::Own> ownShrubs, ownHedges, ownBoulders;
 		// (as far south as 27 N - central Florida's live oaks and pines; the south's figs and mahoganies stay the game's -; and
 		// palms of our own where they grow: cabbage palms everywhere, royal and coconut palms south of 27.5 N - the game's are
 		// California's fan and date palms, the reviewers of Miami's views wanted royal, coconut and cabbage palms on nearly all)
@@ -3576,8 +3601,8 @@ namespace worldgen::build
 					const auto species = static_cast<flora::Species>(s);
 					const bool palm = species == flora::Species::RoyalPalm || species == flora::Species::CoconutPalm || species == flora::Species::SabalPalm ||
 					                  species == flora::Species::ArecaPalm;
-					// (shrubs and clipped hedges everywhere)
-					const bool everywhere = species == flora::Species::Shrub || species == flora::Species::Hedge;
+					// (shrubs, clipped hedges and the riprap's boulders everywhere)
+					const bool everywhere = species == flora::Species::Shrub || species == flora::Species::Hedge || species == flora::Species::Boulder;
 					if (!everywhere && (palm ? species != flora::Species::SabalPalm && latAt(w.min[1]) >= 27.5 : latAt(w.max[1]) < 27.0))
 						continue;
 					const std::string name = std::format("{}_tree_{}_{}", o.name, s, k);
@@ -3591,13 +3616,16 @@ namespace worldgen::build
 					                 : species == flora::Species::SabalPalm   ? 8
 					                 : species == flora::Species::ArecaPalm   ? 9
 					                 : species == flora::Species::Hedge       ? -2
+					                 : species == flora::Species::Boulder     ? -3
 					                                                          : s;
 					if (kind >= 0)
 						ownTrees[static_cast<size_t>(kind)].push_back({name, m.height, m.width});
 					else if (kind == -2)
 						ownHedges.push_back({name, m.height, m.width});
+					else if (kind == -3)
+						ownBoulders.push_back({name, m.height, m.width});
 					else
-						ownShrubs.push_back({name, m.height, m.width});
+						ownShrubs.push_back({name, m.height, m.width}), ownTrees[10].push_back({name, m.height, m.width});
 					// (the trunk up to the first limbs: a live oak's 3 m, a pine's 6, an oak's 4, a sweetgum's 4, a magnolia's 2, a
 					// crape myrtle's stems 2; a shrub none)
 					const float trunkHeight = kind >= 6 ? m.height * 0.6f : kind == 0 ? 3.0f : kind == 1 ? 6.0f : kind == 2 || kind == 5 ? 4.0f : 2.0f;
@@ -4258,9 +4286,21 @@ namespace worldgen::build
 				// (the woods' undergrowth where the streets see it: within 25 m of one, its bushes' middles 6.5 m clear of its
 				// edge - the mown verge and the sidewalk before the brush; 1.5 m off, the game's 5-6 m bushes had stood over the
 				// verge, "a huge dense bush right against the curb" in round 25's reviewers' views)
+				// (dense: a wall of brush to 35 m in - a shrub every 4 m, nine in ten, our own, 3.7-5.9 m across: a game bush every 6
+				// m, seven in ten, had left "an open grove with clear sightlines between trunks" where the street pictures have "a
+				// dense wild wall of scrub and woodland" - round 27, 5 sheets -, and one of those bears oranges)
 				trees::Stats us;
-				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 6.5f && r < 25 && thicketAt(x, y) && !inCemetery(x, y); }, open, ground,
-				    {bx0, by0, bx1, by1}, furniture, us);
+				const size_t beforeWoods = furniture.size();
+				trees::Undergrowth([&](float x, float y) { const float r = roomAt(x, y); return r >= 6.5f && r < 35 && thicketAt(x, y) && !inCemetery(x, y); }, open, ground,
+				    {bx0, by0, bx1, by1}, furniture, us, 4.0f, 9);
+				if (!ownShrubs.empty())
+					for (size_t k = beforeWoods; k < furniture.size(); ++k)
+					{
+						auto& p = furniture[k];
+						const uint32_t pick = seeds::Place(p.position[0], p.position[1], 5, 43);
+						p.archetype = loader::convert::Joaat(ownShrubs[pick % ownShrubs.size()].name);
+						p.scale = 1.0f + 0.6f * static_cast<float>((pick >> 8) % 16) / 15.0f;
+					}
 				std::printf("undergrowth: %zu shrubs in the woods by the streets\n", us.bushes);
 				// (the beaches' lifeguard towers: ours, one of six paints by the tower's place, at the footprint's middle, its
 				// front to the nearest sea within 300 m - the first water met going out every 11.25 degrees, 2 m a step)
@@ -4340,6 +4380,47 @@ namespace worldgen::build
 							}
 						std::printf("dunes: %zu shrubs behind the beaches\n", ds.bushes);
 					}
+				}
+				// riprap: the bays' and inlets' shores where the pictures see bare rock - a park's or open land's ground 5 m and less
+				// from the sea, its aerial class bright bare ground or paving, not the map's beach: South Pointe Park's limestone
+				// revetment had been "a smooth sand slope into the water" (round 27, 3 of Miami Beach's 6 views) - three of our
+				// boulders to a 4 m cell, 0.8-1.5 of their size, a quarter sunk, any way round
+				if (!ownBoulders.empty() && !photoClass.v.empty())
+				{
+					size_t boulders = 0;
+					const auto c0 = land.Cell({bx0, by0}), c1 = land.Cell({bx1, by1});
+					for (int j = std::max(0, c0[1]); j <= std::min(land.ny - 1, c1[1]); ++j)
+						for (int i = std::max(0, c0[0]); i <= std::min(land.nx - 1, c1[0]); ++i)
+						{
+							const uint8_t k = land.At(i, j);
+							if ((k != kPark && k != kLand) || toSeaWater.At(i, j) > 5)
+								continue;
+							const P2 c = land.Centre(i, j);
+							if (c[0] < bx0 || c[1] < by0 || c[0] >= bx1 || c[1] >= by1)
+								continue;
+							const auto pc = photoClass.Cell(c);
+							const uint8_t cl = photoClass.In(pc[0], pc[1]) ? photoClass.At(pc[0], pc[1]) : 0;
+							if (cl != 5 && cl != 6)
+								continue;
+							for (uint32_t b = 0; b < 3; ++b)
+							{
+								const uint32_t r = seeds::Place(c[0], c[1], 4, 61 + b);
+								const float x = c[0] + (static_cast<float>(r & 255) / 255.0f - 0.5f) * land.cell * 0.9f,
+								            y = c[1] + (static_cast<float>((r >> 8) & 255) / 255.0f - 0.5f) * land.cell * 0.9f;
+								const auto& o = ownBoulders[(r >> 16) % ownBoulders.size()];
+								const float size = 0.8f + 0.7f * static_cast<float>((r >> 20) & 15) / 15.0f;
+								props::Prop p;
+								p.archetype = loader::convert::Joaat(o.name);
+								p.position = {x, y, ground(x, y) - 0.25f * o.height * size};
+								p.heading = static_cast<float>((r >> 24) & 255) / 255.0f * 6.2831853f;
+								p.lodDist = 150;
+								p.scale = size;
+								furniture.push_back(p);
+								++boulders;
+							}
+						}
+					if (boulders)
+						std::printf("riprap: %zu boulders on the shores\n", boulders);
 				}
 				if (scanned)
 				{
@@ -4700,7 +4781,7 @@ namespace worldgen::build
 						}
 					}
 				}
-				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0, mappedDrives = 0, condensers = 0;
+				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0, mappedDrives = 0, condensers = 0, bins = 0;
 				// (the map's own driveways by 50 m cell of their points)
 				std::unordered_map<int64_t, std::vector<size_t>> drivewayCells;
 				for (size_t wi = 0; wi < w.walks.size(); ++wi)
@@ -5294,6 +5375,25 @@ namespace worldgen::build
 							++mailboxes;
 						}
 					}
+					// (the bins out at the kerb for collection on one house in four - one, or two side by side -, on the driveway's
+					// other side from the mailbox, 0.9 m in from the asphalt, facing the street: the game's black and brown wheelie
+					// bins. Round 27's reviewers on the street pictures: "a green-lidded wheelie bin on the lawn", "blue/black trash
+					// bins at the curb" - our streets "sterile and empty, no bins or everyday clutter")
+					if ((seed >> 17) % 4 == 0)
+					{
+						static const char* kBins[] = {"prop_bin_08a", "prop_bin_08a", "prop_bin_08a", "prop_cs_bin_01", "prop_cs_bin_03"};
+						const int count = (seed >> 19) % 5 < 2 ? 2 : 1;
+						for (int k = 0; k < count; ++k)
+						{
+							const float o = side + (side > 0 ? -1.9f - 0.8f * k : 1.9f + 0.8f * k);
+							const float bx = nearest[0] + u[0] * (half + 0.9f) + along[0] * o, by = nearest[1] + u[1] * (half + 0.9f) + along[1] * o;
+							if (bx < bx0 || by < by0 || bx >= bx1 || by >= by1 || !open(bx, by))
+								continue;
+							furniture.push_back({loader::convert::Joaat(kBins[(seed >> (21 + 3 * k)) % std::size(kBins)]), {bx, by, ground(bx, by)},
+							    std::atan2(u[1], u[0]) + 3.14159265f / 2 + static_cast<float>((seed >> (27 + k)) % 5) * 0.08f - 0.16f, 100});
+							++bins;
+						}
+					}
 					if (car && place(x, y, dir))
 					{
 						++driveways;
@@ -5451,8 +5551,8 @@ namespace worldgen::build
 					fenceYard(lotIt->second, b.footprint, c, P2{0, 0}, ys, 0, SIZE_MAX, [](float, float) { return false; }, false, true);
 					worksYards += yards.size() > before;
 				}
-				std::printf("yards: %zu apartment blocks' lots fenced, %zu works' street sides in chain-link; %zu houses' AC condensers\n", blockYards, worksYards,
-				    condensers);
+				std::printf("yards: %zu apartment blocks' lots fenced, %zu works' street sides in chain-link; %zu houses' AC condensers, %zu bins at the kerb\n",
+				    blockYards, worksYards, condensers, bins);
 				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved (%zu houses on the map's own), %zu shrubs "
 				            "by houses, %zu mailboxes; %zu front yards fenced (%zu lines; of %zu houses %zu on a lot of the rolls, %zu chosen, %zu with no street "
 				            "edge)\n",
@@ -5845,7 +5945,7 @@ namespace worldgen::build
 		ydr::Material chainLinkMaterial, steelMaterial, guardRailMaterial, boardsMaterial, blockMaterial, ironMaterial, aluminiumMaterial; // (the barriers')
 		ydr::Material signBladeMaterial, signLetterMaterial; // (the street name signs')
 		ydr::Material wornMaterial = asphalt; // (worn asphalt: the game's cracked road picture and its relief)
-		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal, dripDecal, gutterDecal;
+		ydr::Material patchDecal, potholeDecal, breakupDecal, legendDecal, bikeDecal, dripDecal, gutterDecal, grimeDecal;
 		// (our trees' pictures copied from the game's - flora::FromGame's -, and their normal maps: our names; empty, our own)
 		std::array<std::string, flora::kTextures> floraPictures, floraNormals;
 		{
@@ -5856,10 +5956,12 @@ namespace worldgen::build
 				// white beside the street pictures; 4: weathered concrete - 0.58 as bright, greyer, a little warm)
 				// (5: aged concrete - 0.8 as bright, a little greyer: the sidewalks)
 				// (6: red concrete - the aged concrete tinted a dull brick red)
-				// (7: made seamless - a normal map -, 8: flattened and made seamless)
+				// (7: made seamless - a normal map -, 8: flattened and made seamless; 10: its right half, made seamless - a
+				// palm's bark beside its foot's in the game's atlas)
 				// (9: a cut-out's leaves for our cards: the cut-out's mips - as much over half at every level -, the outline a pixel
 				// fuller, a little less blue - the game's own mips had thinned a far crown to "a blue-tinted dot cloud")
-				const char* suffix = treat == 9   ? "_foliage"
+				const char* suffix = treat == 10  ? "_right"
+				                     : treat == 9 ? "_foliage"
 				                     : treat == 8 ? "_flat_seamless"
 				                     : treat == 7 ? "_seamless"
 				                     : treat == 6 ? "_red"
@@ -5935,9 +6037,17 @@ namespace worldgen::build
 								}
 							}
 					}
+					else if (treat == 10)
+					{
+						texture::Image right(image.width / 2, image.height);
+						for (int y = 0; y < right.height; ++y)
+							for (int x = 0; x < right.width; ++x)
+								right.At(x, y) = image.At(image.width / 2 + x, y);
+						image = std::move(right);
+					}
 					else if (treat != 7)
 						Flatten(image);
-					if (treat == 7 || treat == 8)
+					if (treat == 7 || treat == 8 || treat == 10)
 						Seamless(image);
 					if (treat == 2)
 						Neutral(image, kNeutralMean);
@@ -6267,7 +6377,8 @@ namespace worldgen::build
 				structureMaterial.Texture(kSpecularTex, o.name + "_asphalt_s");
 			}
 			if (!surfaces.patches.indices.empty() || !surfaces.potholes.indices.empty() || !surfaces.breakups.indices.empty() ||
-			    !surfaces.legends.indices.empty() || !surfaces.bikeSymbols.indices.empty() || !surfaces.drips.indices.empty() || !surfaces.gutters.indices.empty())
+			    !surfaces.legends.indices.empty() || !surfaces.bikeSymbols.indices.empty() || !surfaces.drips.indices.empty() || !surfaces.gutters.indices.empty() ||
+			    !surfaces.grime.indices.empty())
 			{
 				ydr::Material decal;
 				if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, decal, error))
@@ -6340,13 +6451,22 @@ namespace worldgen::build
 				}
 				if (!surfaces.gutters.indices.empty() && !make(gutterDecal, "ch2_roads_rd+hi.ytd", "dh_gutterleavesdh_gutterleaves_a", nullptr, nullptr))
 					return false;
+				// (the sidewalks' and paths' grime: our picture, its alpha soft - box-filtered levels)
+				if (!surfaces.grime.indices.empty())
+				{
+					shared.push_back(texture::Make(o.name + "_grime", roads::GrimePicture(), texture::Format::Bc3));
+					grimeDecal = decal;
+					grimeDecal.Texture(kDiffuseTex, o.name + "_grime");
+					grimeDecal.Texture(kBumpTex, o.name + "_flat_n");
+					grimeDecal.Texture(kSpecularTex, o.name + "_asphalt_s");
+				}
 			}
 			if (!floraModels.empty())
 				for (int t = 0; t < flora::kTextures; ++t)
 					if (const flora::GamePicture* g = flora::FromGame(static_cast<flora::Texture>(t)))
 					{
 						floraNormals[static_cast<size_t>(t)] = o.name + "_flat_n";
-						if (!use(g->dictionary, g->diffuse, floraPictures[static_cast<size_t>(t)], flora::Cutout(static_cast<flora::Texture>(t)) ? 9 : 0) ||
+						if (!use(g->dictionary, g->diffuse, floraPictures[static_cast<size_t>(t)], flora::Cutout(static_cast<flora::Texture>(t)) ? 9 : g->rightHalf ? 10 : 0) ||
 						    (g->normal && !use(g->normalDictionary, g->normal, floraNormals[static_cast<size_t>(t)])))
 							return false;
 					}
@@ -6590,9 +6710,12 @@ namespace worldgen::build
 		for (const auto& e : network.edges)
 			raster::DrawLine(roadCells, e.points, e.HalfWidth() + e.Walk() + 0.5f, uint8_t{1});
 		// (and the walks drawn on their own: the game's plants grew up through the sidewalks beside the streets)
-		for (const auto& wk : w.walks)
-			if (wk.kind != "crossing" && !wk.bridge && !wk.tunnel && wk.layer == 0 && wk.surface != "grass" && wk.points.size() >= 2)
-				raster::DrawLine(roadCells, wk.points, (wk.width > 0 ? std::clamp(wk.width, 0.8f, 6.0f) : 2.4f) / 2 + 0.3f, uint8_t{1});
+		// (the sidewalks set back past a verge too, the aerial pictures' - their grass had come up through them, "weed decals on the
+		// sidewalk" to round 27's reviewers)
+		for (const std::vector<world::Walk>* walks : {&w.walks, static_cast<const std::vector<world::Walk>*>(&aerialWalks)})
+			for (const auto& wk : *walks)
+				if (wk.kind != "crossing" && !wk.bridge && !wk.tunnel && wk.layer == 0 && wk.surface != "grass" && wk.points.size() >= 2)
+					raster::DrawLine(roadCells, wk.points, roads::WalkWidth(wk) / 2 + 0.3f, uint8_t{1});
 		// (how far each point is from a road or a walk: our own trees' trunks have collision only within 40 m - where cars and
 		// people go; every one of the woods' was 13 million triangles)
 		raster::Grid<float> toWays;
@@ -6603,7 +6726,7 @@ namespace worldgen::build
 			toWays = raster::DistanceTo(off, 1);
 		}
 		std::map<const roads::Mesh*, TileIndex> meshTiles;
-		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.sidewalkRed, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.drips, &surfaces.gutters, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
+		for (const roads::Mesh* m : {&surfaces.worn, &surfaces.sidewalk, &surfaces.sidewalkRed, &surfaces.kerb, &surfaces.patches, &surfaces.potholes, &surfaces.breakups, &surfaces.drips, &surfaces.grime, &surfaces.gutters, &surfaces.legends, &surfaces.bikeSymbols, &surfaces.markings,
 		         &surfaces.structure, &surfaces.railTrack, &surfaces.railBed, &surfaces.railSteel, &wires, &fences.mesh, &fences.steel, &fences.rail,
 		         &fences.boards, &fences.block, &fences.concrete, &fences.iron, &fences.ironWhite, &nameSigns.blades, &nameSigns.letters, &nameSigns.posts, &lampArms})
 			meshTiles.emplace(m, MeshTiles(*m, w.min[0], w.min[1], o.tile, ti0, tj0, ti1, tj1));
@@ -6709,15 +6832,18 @@ namespace worldgen::build
 						// with wildflowers where the street pictures have turf)
 						const float mx = cx0 + 0.5f * o.cell, my = cy0 + 0.5f * o.cell;
 						const uint8_t lcHere = landCoverAt ? landCoverAt(mx, my) : 0;
-						const bool mown = lcHere >= 21 && lcHere <= 24 && !thicketAt(mx, my);
+						const bool developed = lcHere >= 21 && lcHere <= 24;
+						const bool mown = developed && !thicketAt(mx, my);
 						// (a town's mown lawn its short grass - City_GreenScrub_Grass_SPARSE: no flowers, the lawns had been "a flat
 						// uniform carpet" to round 26's reviewers -, a dune its grasses)
 						const auto dc = dune.Cell({mx, my});
 						const bool onDune = dune.In(dc[0], dc[1]) && dune.At(dc[0], dc[1]);
-						const bool lawnGrass = mown && (top == 2 || top == 3 || top == 4 || top == 5);
+						// (and a town's green grass its short grass in a thicket too: MED_AM_Grass_Lush_SHORT's pink and white flowers
+						// had come up at a park's edge)
+						const bool lawnGrass = (mown && (top == 2 || top == 3 || top == 4 || top == 5)) || (developed && top == 3);
 						const uint16_t plants = onRoad                  ? 0
 						                        : onDune                ? kDuneGrass
-						                        : mown                  ? (lawnGrass ? kTownLawn : 0)
+						                        : mown || lawnGrass     ? (lawnGrass ? kTownLawn : 0)
 						                        : top == 2              ? kForestOvergrown
 						                        : top == 3              ? kLushShort
 						                        : top == 4              ? kMeadowBrown
@@ -6735,19 +6861,20 @@ namespace worldgen::build
 						if (seen > 0)
 							for (int k = 0; k < 3; ++k)
 								colour[k] = static_cast<uint8_t>(std::clamp(sum[k] / seen, 0.0f, 255.0f));
-						// (a town's lawn's grass the lawn's green the ground has - the winter's pictures see it dormant -: most of
-						// the way to a lawn's green of its brightness)
+						// (a town's lawn's grass in the season its ground has - LawnSeason)
 						if (plants == kTownLawn)
 						{
-							const float l = (colour[0] + colour[1] + colour[2]) / 3.0f;
-							const float lawn[3] = {l * 0.76f, l * 1.13f, l * 0.55f};
+							std::array<float, 3> c{static_cast<float>(colour[0]), static_cast<float>(colour[1]), static_cast<float>(colour[2])};
+							LawnSeason(c, latAt(my), latAt(my) < 27.0 ? 0.8f : 0.6f);
 							for (int k = 0; k < 3; ++k)
-								colour[static_cast<size_t>(k)] = static_cast<uint8_t>(std::clamp(colour[static_cast<size_t>(k)] + (lawn[k] - colour[static_cast<size_t>(k)]) * 0.8f, 0.0f, 255.0f));
+								colour[static_cast<size_t>(k)] = static_cast<uint8_t>(c[static_cast<size_t>(k)]);
 						}
 						// (as the game's material bounds have it: about 0.45 of the pictures' - a dry field (165, 151, 121) there,
-						// (71, 60, 46) in the game's countryside)
+						// (71, 60, 46) in the game's countryside; a town lawn's grass as bright as its ground, kLawnShadeSouth's or
+						// kLawnShadeDormant's: darker, it had stood out as "dark clover-like dots")
+						const float shade = plants != kTownLawn ? 0.45f : 0.45f * (latAt(my) < 27.0 ? kLawnShadeSouth : kLawnShadeDormant) / kLawnShade;
 						for (uint8_t& k : colour)
-							k = static_cast<uint8_t>(k * 0.45f);
+							k = static_cast<uint8_t>(std::min(255.0f, k * shade));
 						f.colour.push_back(colour);
 						continue;
 					}
@@ -6840,13 +6967,16 @@ namespace worldgen::build
 					const auto lc = land.Cell({x, y});
 					return land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) == kBeach;
 				};
-				const auto kindAt = [&](float x, float y) {
+				// (a town's lawn's layer in the street pictures' season - LawnSeason -: north and central Florida's the dry grass's,
+				// dormant, south Florida's the green grass's)
+				const auto townLawn = [&](float y) { return latAt(y) < 27.0 ? 0 : 1; };
+				const auto kindOf = [&](float x, float y) {
 					const auto dc = dune.Cell({x, y});
 					const bool onDune = dune.In(dc[0], dc[1]) && dune.At(dc[0], dc[1]);
-					if (beachAt(x, y))
-						return onDune ? 1 : 2; // (a dune's plants: dry grass)
-					if (onDune)
-						return 1;
+					// (a dune's ground sand, on the beach and behind it, its plants our shrubs and the dune grasses: as dry grass it
+					// had drawn "a hard, straight diagonal boundary between the yellow sand and a grey coarse sand")
+					if (beachAt(x, y) || onDune)
+						return 2;
 					const auto c = photoClass.Cell({x, y});
 					switch (photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : 0)
 					{
@@ -6854,14 +6984,14 @@ namespace worldgen::build
 						// (a wooded lot - the canopy closed over 28 m - has its leaf litter)
 						if (landCoverAt && !thicketAt(x, y))
 							if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
-								return 0;
+								return townLawn(y);
 						return 4;
 					case 1: return 4;
 					case 4:
-						// (dry grass - but a town's lawns are green: the winter's pictures see them dormant, the game is summer)
+						// (dry grass - a town's lawn's in its season)
 						if (landCoverAt)
 							if (const uint8_t lc = landCoverAt(x, y); lc >= 21 && lc <= 24)
-								return 0;
+								return townLawn(y);
 						return 1;
 					case 5:
 					{
@@ -6879,7 +7009,7 @@ namespace worldgen::build
 										bare += photoClass.In(n[0], n[1]) && photoClass.At(n[0], n[1]) == 5;
 									}
 								if (bare < 7)
-									return 0;
+									return townLawn(y);
 							}
 						return 2;
 					}
@@ -6900,12 +7030,23 @@ namespace worldgen::build
 										paved += photoClass.In(n[0], n[1]) && photoClass.At(n[0], n[1]) == 6;
 									}
 								if (paved < 15)
-									return 0;
+									return townLawn(y);
 							}
 						return 3;
 					}
 					default: return 0;
 					}
+				};
+				// (and a town's lawn patchy: a quarter of it, in blobs 1.5-5 m by the real world's place, the other grass layer -
+				// round 27's reviewers on every sheet, "a flat uniform carpet ... no colour variation, bare patches")
+				const auto kindAt = [&](float x, float y) {
+					const int k = kindOf(x, y);
+					if (k > 1 || !landCoverAt)
+						return k;
+					if (const uint8_t lc = landCoverAt(x, y); lc < 21 || lc > 24)
+						return k;
+					const float n = 0.6f * PlaceLattice(x, y, 4.5f, 401) + 0.4f * PlaceLattice(x, y, 1.6f, 402);
+					return n > 0.3f ? 1 - k : k;
 				};
 				// (each vertex's tint from the pictures' cells of its own kind of ground round it)
 				f.tint.resize(f.height.size());
@@ -7534,9 +7675,12 @@ namespace worldgen::build
 				}
 				mapfiles::Entity pe;
 				pe.archetype = prop.archetype;
-				// (and the houses' AC condensers - one by each house, tens of thousands a town: no physics instance of their own)
-				static const uint32_t kCondenserA = loader::convert::Joaat("prop_aircon_s_07a"), kCondenserB = loader::convert::Joaat("prop_aircon_s_07b");
-				if (gameFlora || prop.archetype == kCondenserA || prop.archetype == kCondenserB)
+				// (and the houses' AC condensers - one by each house, tens of thousands a town -, their bins at the kerb and the
+				// streets' fire hydrants: no physics instance of their own)
+				static const std::array<uint32_t, 6> kNoInstance{loader::convert::Joaat("prop_aircon_s_07a"), loader::convert::Joaat("prop_aircon_s_07b"),
+				    loader::convert::Joaat("prop_bin_08a"), loader::convert::Joaat("prop_cs_bin_01"), loader::convert::Joaat("prop_cs_bin_03"),
+				    loader::convert::Joaat("prop_fire_hydrant_1")};
+				if (gameFlora || std::find(kNoInstance.begin(), kNoInstance.end(), prop.archetype) != kNoInstance.end())
 					pe.flags |= kDontInstanceCollision;
 				pe.position = prop.position;
 				pe.rotation = {0, 0, std::sin(prop.heading / 2), std::cos(prop.heading / 2)};
@@ -7633,6 +7777,7 @@ namespace worldgen::build
 			add(potholeDecal, surfaces.potholes);
 			add(breakupDecal, surfaces.breakups);
 			add(dripDecal, surfaces.drips);
+			add(grimeDecal, surfaces.grime);
 			add(gutterDecal, surfaces.gutters);
 			add(legendDecal, surfaces.legends);
 			add(bikeDecal, surfaces.bikeSymbols);

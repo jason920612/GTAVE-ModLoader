@@ -92,6 +92,35 @@ namespace worldgen::props
 		// (the plain galvanised steel pole on a concrete footing with its cobra head - Florida's, round 25's reviewers' "tall
 		// galvanised steel street lights"; _01 is Los Angeles' fluted concrete pole with an ornate base: "an ornamental tapered pole")
 		const uint32_t light = loader::convert::Joaat("prop_streetlight_03"), signal = loader::convert::Joaat("prop_traffic_01a");
+		// (fire hydrants where the map has next to none - Tallahassee's map has 600, most lands' none: a town street's every
+		// 150 m, the first a few metres past its first corner, on one side by the street - the reviewers missed "a fire hydrant
+		// at the base of the pole", "a fire hydrant in a gravel ring" on the street pictures)
+		const uint32_t hydrant = loader::convert::Joaat("prop_fire_hydrant_1");
+		const bool ruleHydrants = std::count_if(w.points.begin(), w.points.end(), [](const world::Point& p) { return p.kind == "fire_hydrant"; }) < 50;
+		if (ruleHydrants)
+			for (const auto& e : n.edges)
+			{
+				const bool street = e.kind == "residential" || e.kind == "unclassified" || e.kind == "living_street" || e.kind.starts_with("tertiary") ||
+				                    e.kind.starts_with("secondary") || e.kind.starts_with("primary");
+				if (!street || e.bridge || (!e.sidewalks && !e.curb && e.kind != "residential"))
+					continue;
+				const float total = Length(e);
+				const float fromA = roads::CornerReach(n, e.a) + 4, fromB = roads::CornerReach(n, e.b) + 4;
+				const uint32_t h = static_cast<uint32_t>(e.id) * 2654435761u;
+				const float sign = (h >> 7) % 2 ? 1.0f : -1.0f;
+				const float aside = e.HalfWidth() + (e.sidewalks ? 0.5f : 1.0f);
+				for (float s = fromA + static_cast<float>((h >> 9) % 20); s < total - fromB; s += 150)
+				{
+					P2 p, d;
+					float z;
+					if (!At(e, s, p, d, z))
+						break;
+					const P2 right{d[1], -d[0]};
+					const P2 q{p[0] + right[0] * aside * sign, p[1] + right[1] * aside * sign};
+					if (In(box, q[0], q[1]) && open(q[0], q[1]))
+						out.push_back({hydrant, {q[0], q[1], ground(q[0], q[1])}, std::atan2(right[1] * sign, right[0] * sign), 120});
+				}
+			}
 		for (const auto& e : n.edges)
 		{
 			// (a kerbed road's too where its sidewalks are walks of their own, set back past a verge)

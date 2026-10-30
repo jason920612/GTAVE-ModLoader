@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 
 namespace worldgen::flora
 {
@@ -35,11 +36,13 @@ namespace worldgen::flora
 			return l > 1e-6f ? Mul(a, 1 / l) : P3{0, 0, 1};
 		}
 
-		// a limb: points along it and its radius at each
+		// a limb: points along it and its radius at each; where along its bark picture starts (m: a trunk's way on up into the
+		// crown going on from the trunk's - started anew it had drawn "a seam ring where two trunk segments meet")
 		struct Limb
 		{
 			std::vector<P3> p;
 			std::vector<float> r;
+			float along0 = 0;
 		};
 
 		// A tube of bark along a limb: `sides` round, its texture once round every `round` m of girth and along every `along`.
@@ -48,7 +51,7 @@ namespace worldgen::flora
 			if (l.p.size() < 2)
 				return;
 			const uint32_t base = static_cast<uint32_t>(m.vertices.size());
-			float along = 0;
+			float along = l.along0;
 			P3 prevSide{1, 0, 0};
 			for (size_t i = 0; i < l.p.size(); ++i)
 			{
@@ -211,6 +214,47 @@ namespace worldgen::flora
 			return l;
 		}
 
+		// a limb's length
+		float Length(const Limb& l)
+		{
+			float sum = 0;
+			for (size_t i = 1; i < l.p.size(); ++i)
+				sum += std::sqrt(Dot(Sub(l.p[i], l.p[i - 1]), Sub(l.p[i], l.p[i - 1])));
+			return sum;
+		}
+
+		// A trunk's foot flared out - `k` more round at the ground (z 0), easing off over the next metre - its first stretch
+		// in rings every 0.3 m to the metre: a straight tube had read as "a tube placed on the lawn, no root flare".
+		void Flare(Limb& trunk, float k)
+		{
+			if (trunk.p.size() < 2)
+				return;
+			Limb out;
+			const P3 a = trunk.p[0], b = trunk.p[1];
+			const float ra = trunk.r[0], rb = trunk.r[1], dz = b[2] - a[2];
+			out.p.push_back(a), out.r.push_back(ra);
+			for (float z = a[2] + 0.3f; z < std::min(b[2], a[2] + 1.6f) - 0.1f; z += 0.3f)
+			{
+				const float t = (z - a[2]) / dz;
+				out.p.push_back(Add(a, Mul(Sub(b, a), t))), out.r.push_back(ra + (rb - ra) * t);
+			}
+			for (size_t i = 1; i < trunk.p.size(); ++i)
+				out.p.push_back(trunk.p[i]), out.r.push_back(trunk.r[i]);
+			for (size_t i = 0; i < out.p.size(); ++i)
+				out.r[i] *= 1 + k * std::exp(-std::max(0.0f, out.p[i][2]) / 0.35f);
+			out.along0 = trunk.along0;
+			trunk = std::move(out);
+		}
+
+		// a trunk's radius a metre up, over its foot's flare (its collision's)
+		float BreastRadius(const Limb& trunk)
+		{
+			for (size_t i = 0; i < trunk.p.size(); ++i)
+				if (trunk.p[i][2] >= 1.0f)
+					return trunk.r[i];
+			return trunk.r.back();
+		}
+
 		// the point at share t along a limb
 		P3 At(const Limb& l, float t)
 		{
@@ -281,6 +325,23 @@ namespace worldgen::flora
 					    g ? g->across : 2, g ? g->down : 2);
 		}
 
+		// Twigs off a branch, `count` of them from its outer half: 0.7-1.5 m, out at 30-60 degrees to it and a little up, crooked,
+		// a few centimetres thick - the nearest level of detail only (Finish leaves limbs under 4 cm out further off): the
+		// branches bare sticks between their leaves had been "straight smooth branches fanned out radially".
+		void Twigs(std::vector<std::pair<Limb, Texture>>& limbs, const Limb& br, int count, Texture bark, Random& rnd)
+		{
+			for (int k = 0; k < count; ++k)
+			{
+				const float t = rnd.Range(0.4f, 0.92f);
+				const P3 at = At(br, t), along = Unit3(Sub(At(br, std::min(1.0f, t + 0.05f)), At(br, std::max(0.0f, t - 0.05f))));
+				const P3 side = Unit3(Cross(along, std::fabs(along[2]) < 0.9f ? P3{0, 0, 1} : P3{1, 0, 0}));
+				const float turn = rnd.Range(0.5f, 1.0f) * (k % 2 ? 1.0f : -1.0f), lift = rnd.Range(0.1f, 0.5f);
+				const P3 dir = Add(Add(Mul(along, std::cos(turn)), Mul(side, std::sin(turn))), P3{0, 0, lift});
+				const float r0 = std::min(0.035f, RadiusAt(br, t) * 0.6f);
+				limbs.push_back({Grow(at, dir, {dir[0], dir[1], 0.2f}, 0.15f, rnd.Range(0.7f, 1.5f), 3, r0, 0.006f, rnd, 0.28f), bark});
+			}
+		}
+
 		// cards round a point on a limb: their faces any way, lit out from the crown's middle
 		void Cluster(std::vector<Leaf>& leaves, const P3& at, const P3& middle, int count, float spread, float size, Texture tex, Random& rnd, float upward = 0.3f)
 		{
@@ -312,10 +373,13 @@ namespace worldgen::flora
 			std::vector<Leaf> leaves;
 			const P3 lean{rnd.Range(-0.12f, 0.12f), rnd.Range(-0.12f, 0.12f), 1};
 			Limb trunk = Grow({0, 0, -0.3f}, lean, {0, 0, 1}, 0.05f, fork + 0.3f, 3, rnd.Range(0.55f, 0.75f), 0.48f, rnd, 0.05f);
+			Flare(trunk, 0.55f);
 			limbs.push_back({trunk, kBarkOak});
 			const P3 top = trunk.p.back(), middle{top[0], top[1], H * 0.6f};
 			// (the trunk going on up into the fork, thinning: its top no flat cut between the limbs)
-			limbs.push_back({Grow(top, lean, {0, 0, 1}, 0.05f, 1.4f, 2, 0.46f, 0.16f, rnd, 0.05f), kBarkOak});
+			Limb onUp = Grow(top, lean, {0, 0, 1}, 0.05f, 1.4f, 2, trunk.r.back(), 0.16f, rnd, 0.05f);
+			onUp.along0 = Length(trunk);
+			limbs.push_back({onUp, kBarkOak});
 			const int n = 4 + static_cast<int>(rnd.Next() % 3);
 			const float az0 = rnd.Range(0, 2 * kPi);
 			for (int i = 0; i < n; ++i)
@@ -325,8 +389,8 @@ namespace worldgen::flora
 				const float len = W * 0.5f * rnd.Range(0.85f, 1.1f);
 				// (out and up steeply, then bending over to level and down at the end)
 				// (up at 40-55 degrees, levelling off over its length: a hammock's swoop where it bent down past level)
-				Limb limb = Grow(Add(top, Mul(out2, 0.25f)), Add(Mul(out2, 0.75f), P3{0, 0, rnd.Range(0.65f, 0.9f)}), Add(out2, P3{0, 0, -0.06f}), 0.11f, len, 8,
-				    0.36f, 0.07f, rnd, 0.06f);
+				Limb limb = Grow(Add(top, Mul(out2, 0.25f)), Add(Mul(out2, 0.75f), P3{0, 0, rnd.Range(0.65f, 0.9f)}), Add(out2, P3{0, 0, -0.06f}), 0.11f, len, 10,
+				    0.36f, 0.07f, rnd, 0.09f);
 				// (its height kept under the crown's top and, 2 m out from the trunk on, 1.8 m over the fork: the street
 				// pictures' live oaks' limbs sweep out level, they do not come down to the ground - and they grow out of the
 				// trunk's top: a floor under them nearer had lifted them off it, the crown floating over a cut stump)
@@ -362,11 +426,12 @@ namespace worldgen::flora
 					const float t = rnd.Range(0.3f, 0.75f);
 					const float turn = (k % 2 ? 1.0f : -1.0f) * rnd.Range(0.5f, 0.9f);
 					const P3 sideDir{std::cos(az + turn), std::sin(az + turn), rnd.Range(0.1f, 0.35f)};
-					Limb br = Grow(At(limb, t), sideDir, {sideDir[0], sideDir[1], -0.05f}, 0.1f, len * rnd.Range(0.35f, 0.5f), 4, RadiusAt(limb, t) * 0.55f, 0.04f,
-					    rnd, 0.12f);
+					Limb br = Grow(At(limb, t), sideDir, {sideDir[0], sideDir[1], -0.05f}, 0.1f, len * rnd.Range(0.35f, 0.5f), 5, RadiusAt(limb, t) * 0.55f, 0.04f,
+					    rnd, 0.18f);
 					for (size_t q = 1; q < br.p.size(); ++q) // (not where it leaves the limb)
 						br.p[q][2] = std::clamp(br.p[q][2], fork + 1.6f, H - 1.2f);
 					limbs.push_back({br, kBarkOak});
+					Twigs(limbs, br, 3, kBarkOak, rnd);
 					for (float s = 0.25f; s < 1.0f; s += 0.12f)
 					{
 						const P3 at = At(br, s);
@@ -407,7 +472,7 @@ namespace worldgen::flora
 				Cluster(leaves, c, middle, 2, 0.3f, rnd.Range(0.66f, 0.92f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
-			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			out.height = H, out.width = W, out.trunk = BreastRadius(trunk);
 			return out;
 		}
 
@@ -423,6 +488,7 @@ namespace worldgen::flora
 			std::vector<Leaf> leaves;
 			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.03f, 0.03f), rnd.Range(-0.03f, 0.03f), 1}, {0, 0, 1}, 0.02f, H + 0.3f, 10, rnd.Range(0.28f, 0.36f), 0.04f,
 			    rnd, 0.025f);
+			Flare(trunk, 0.25f);
 			limbs.push_back({trunk, kBarkPine});
 			const P3 middle{trunk.p.back()[0] * 0.8f, trunk.p.back()[1] * 0.8f, crownBase + (H - crownBase) * 0.45f};
 			// dead stubs below the crown
@@ -453,7 +519,7 @@ namespace worldgen::flora
 			// (its top tuft)
 			Cluster(leaves, trunk.p.back(), middle, 4, 0.5f, 1.6f, kPineNeedles, rnd, 0.0f);
 			Finish(out, limbs, leaves);
-			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			out.height = H, out.width = W, out.trunk = BreastRadius(trunk);
 			return out;
 		}
 
@@ -469,10 +535,12 @@ namespace worldgen::flora
 			std::vector<Leaf> leaves;
 			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.06f, 0.06f), rnd.Range(-0.06f, 0.06f), 1}, {0, 0, 1}, 0.05f, fork + 0.3f, 3, rnd.Range(0.35f, 0.45f), 0.3f,
 			    rnd, 0.05f);
+			Flare(trunk, 0.45f);
 			limbs.push_back({trunk, kBarkOak});
 			const P3 top = trunk.p.back(), middle{top[0], top[1], fork + (H - fork) * 0.5f};
-			// (the leader: on up through the crown, thinning)
-			const Limb leader = Grow(top, {rnd.Range(-0.08f, 0.08f), rnd.Range(-0.08f, 0.08f), 1}, {0, 0, 1}, 0.06f, (H - fork) * 0.7f, 5, 0.3f, 0.06f, rnd, 0.08f);
+			// (the leader: on up through the crown, thinning, its bark going on from the trunk's)
+			Limb leader = Grow(top, {rnd.Range(-0.08f, 0.08f), rnd.Range(-0.08f, 0.08f), 1}, {0, 0, 1}, 0.06f, (H - fork) * 0.7f, 6, trunk.r.back(), 0.06f, rnd, 0.11f);
+			leader.along0 = Length(trunk);
 			limbs.push_back({leader, kBarkOak});
 			for (float t = 0.5f; t <= 1.0f; t += 0.1f)
 				Cluster(leaves, At(leader, t), middle, 9, 1.2f, rnd.Range(0.7f, 1.0f), kOakLeaves, rnd, 0.3f);
@@ -486,14 +554,15 @@ namespace worldgen::flora
 				const float len = std::hypot(W * 0.42f, H - fork) * rnd.Range(0.7f, 0.9f);
 				// (each out of the leader at its own height: no fork of them all at one point)
 				const P3 from = At(leader, rnd.Range(0.0f, 0.35f));
-				Limb limb = Grow(from, dir, {std::cos(az), std::sin(az), 0.2f}, 0.1f, len, 6, 0.22f, 0.05f, rnd, 0.1f);
+				Limb limb = Grow(from, dir, {std::cos(az), std::sin(az), 0.2f}, 0.1f, len, 8, 0.22f, 0.05f, rnd, 0.24f);
 				limbs.push_back({limb, kBarkOak});
 				for (int k = 0; k < 3; ++k)
 				{
 					const float t = rnd.Range(0.35f, 0.8f), turn = rnd.Range(-1.0f, 1.0f);
 					const P3 d2{std::cos(az + turn), std::sin(az + turn), rnd.Range(0.3f, 0.9f)};
-					Limb br = Grow(At(limb, t), d2, {d2[0], d2[1], 0}, 0.15f, len * rnd.Range(0.35f, 0.55f), 4, RadiusAt(limb, t) * 0.55f, 0.03f, rnd);
+					Limb br = Grow(At(limb, t), d2, {d2[0], d2[1], 0}, 0.15f, len * rnd.Range(0.35f, 0.55f), 5, RadiusAt(limb, t) * 0.55f, 0.03f, rnd, 0.26f);
 					limbs.push_back({br, kBarkOak});
+					Twigs(limbs, br, 2, kBarkOak, rnd);
 					for (float s = 0.3f; s <= 1.0f; s += 0.14f)
 						Cluster(leaves, At(br, s), middle, 9, 1.1f, rnd.Range(0.7f, 1.0f), kOakLeaves, rnd, 0.3f);
 				}
@@ -510,7 +579,7 @@ namespace worldgen::flora
 				Cluster(leaves, c, middle, 2, 0.3f, rnd.Range(0.7f, 0.95f), kOakLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
-			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			out.height = H, out.width = W, out.trunk = BreastRadius(trunk);
 			return out;
 		}
 
@@ -578,6 +647,7 @@ namespace worldgen::flora
 			const float tall = H * 0.78f + 0.3f;
 			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.04f, 0.04f), rnd.Range(-0.04f, 0.04f), 1}, {0, 0, 1}, 0.03f, tall, 6, rnd.Range(0.24f, 0.34f), 0.07f,
 			    rnd, 0.03f);
+			Flare(trunk, 0.3f);
 			limbs.push_back({trunk, kBarkSmooth});
 			const P3 middle{0, 0, base + (H - base) * 0.4f};
 			// (the crown's reach at a share v of its height: an egg)
@@ -601,7 +671,7 @@ namespace worldgen::flora
 				Cluster(leaves, {std::cos(a) * r, std::sin(a) * r, base + 0.3f + (H - base - 0.3f) * v}, middle, 1, 0.25f, rnd.Range(1.0f, 1.3f), kMagnoliaLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
-			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			out.height = H, out.width = W, out.trunk = BreastRadius(trunk);
 			return out;
 		}
 
@@ -618,6 +688,7 @@ namespace worldgen::flora
 			const float tall = H * 0.93f + 0.3f;
 			Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.03f, 0.03f), rnd.Range(-0.03f, 0.03f), 1}, {0, 0, 1}, 0.02f, tall, 8, rnd.Range(0.3f, 0.42f), 0.05f,
 			    rnd, 0.03f);
+			Flare(trunk, 0.35f);
 			limbs.push_back({trunk, kBarkOak});
 			const P3 middle{0, 0, base + (H - base) * 0.45f};
 			for (float z = base; z < H - 1.2f; z += rnd.Range(0.8f, 1.3f))
@@ -645,7 +716,7 @@ namespace worldgen::flora
 				Cluster(leaves, {std::cos(a) * r, std::sin(a) * r, base + 0.5f + (H - base - 0.5f) * v}, middle, 1, 0.3f, rnd.Range(1.0f, 1.35f), kGumLeaves, rnd, 0.0f);
 			}
 			Finish(out, limbs, leaves);
-			out.height = H, out.width = W, out.trunk = trunk.r[0];
+			out.height = H, out.width = W, out.trunk = BreastRadius(trunk);
 			return out;
 		}
 
@@ -854,7 +925,9 @@ namespace worldgen::flora
 		// magnolia's: a fig's bigger glossy ones on a twig; the sweetgum's: the English oak's lobed ones on a twig; the pines':
 		// the game pine's tufts of long needles, a 2 x 2 atlas; the hedges': a clipped hedge's small leaves; the cabbage palm's
 		// fan: the game's fan palm leaf, its hub at the foot; the barks: an olive's grey furrows for the oaks and the
-		// sweetgum - 0.8 m square -, the game pine's red-brown plates - all round its 1.2 m girth, 0.6 m along)
+		// sweetgum - 0.8 m square -, the game pine's red-brown plates - all round its 1.2 m girth, 0.6 m along -, the game
+		// fan palm's boots for the cabbage palm's and its other palm's grey-brown rings for the coconut's - their atlases'
+		// right halves, a metre round: ours, drawn, had been "a regular polka-dot texture")
 		static const GamePicture oak{"z_prop_tree_ficus_3b.ytd", "nxg_im_branches_29", "z_prop_tree_ficus_3b.ytd", "nxg_im_branches_29_n"};
 		static const GamePicture magnolia{"z_prop_tree_ficus_3a.ytd", "nxg_im_branches_36e", nullptr, nullptr, 1, 1, true};
 		static const GamePicture gum{"prop_tree_eng_oak_cr2.ytd", "nxg_im_branches_27c", nullptr, nullptr, 1, 1, true};
@@ -864,6 +937,10 @@ namespace worldgen::flora
 		static const GamePicture oakBark{"prop_bush_lrg_02+hidr.ytd", "prop_olive_bark_01", nullptr, nullptr, 1, 1, false, 0.8f, 0.8f};
 		static const GamePicture pineBark{"z_prop_tree_pine.ytd", "nxg_prop_tree_pine_02_trunk_dm", "z_prop_tree_pine.ytd", "nxg_prop_tree_pine_02_trunk_nm", 1, 1, false, 1.2f,
 		    0.6f};
+		// (the riprap's boulders: the game's pale rock of the airport's shore, 1.2 m a picture)
+		static const GamePicture rock{"ap1_01_c_beach.ytd", "ap_rock_type1", "ap1_01_c_beach.ytd", "ap_rock_type1_norm", 1, 1, false, 1.2f, 1.2f};
+		static const GamePicture sabalBark{"prop_veg_palmfan_3.ytd", "nxg_prop_tree_palm_dm_l", nullptr, nullptr, 1, 1, false, 1.0f, 2.0f, true};
+		static const GamePicture coconutBark{"prop_veg_palm.ytd", "nxg_prop_tree_palm2_dm_l", nullptr, nullptr, 1, 1, false, 1.0f, 1.0f, true};
 		switch (t)
 		{
 		case kOakLeaves: return &oak;
@@ -874,6 +951,9 @@ namespace worldgen::flora
 		case kFanFrond: return &fan;
 		case kBarkOak: return &oakBark;
 		case kBarkPine: return &pineBark;
+		case kBarkSabal: return &sabalBark;
+		case kRock: return &rock;
+		case kBarkCoconut: return &coconutBark;
 		default: return nullptr;
 		}
 	}
@@ -946,6 +1026,12 @@ namespace worldgen::flora
 						// (a cabbage palm's boots: the old leaf bases split into a criss-cross lattice, dark between them)
 						const float d1 = std::fabs(std::sin((x + y * 0.8f) * 2 * kPi / 46)), d2 = std::fabs(std::sin((x - y * 0.8f) * 2 * kPi / 46));
 						p = Shade({116, 100, 80}, (std::max(d1, d2) > 0.55f ? 0.95f : 0.5f) * (0.85f + 0.25f * Noise(x, y, 8, 26)));
+					}
+					else if (t == kRock)
+					{
+						// (pale limestone, pitted: the game's picture is used where it has one)
+						const float pit = Noise(x, y, 6, 33) > 0.72f ? 0.8f : 1.0f;
+						p = Shade({176, 170, 156}, (0.82f + 0.24f * Noise(x, y, 40, 34)) * pit);
 					}
 					else if (t == kCrownshaft)
 					{
@@ -1266,6 +1352,108 @@ namespace worldgen::flora
 		// A clipped hedge's piece (ficus, viburnum: the yards' and the apartments' hedges): a box of small leaf cards 2.6 m long
 		// along y, 0.9 m deep, 2 m tall - over its flat top and its faces, a few inside -, the clipping's surface a little
 		// uneven, its edges a little rounded; the pieces end to end along a line make one green wall, scaled to its height
+		// A riprap boulder: an icosphere (2, 1, 1, 0 subdivisions by level of detail), lumpy, cut by five to eight planes 0.5-0.78
+		// of the way out - an angular block, as quarried limestone is -, squashed to 1.0-1.3 by 0.8-1.1 by 0.75-1.05 of 1.2 m, its
+		// foot cut flat; the picture laid along the axis it faces most, 1.2 m a picture.
+		Model Boulder(uint32_t seed)
+		{
+			Random rnd(seed);
+			Model out;
+			const P3 axes{rnd.Range(1.0f, 1.3f) * 0.6f, rnd.Range(0.8f, 1.1f) * 0.6f, rnd.Range(0.75f, 1.05f) * 0.6f};
+			std::vector<std::pair<P3, float>> planes;
+			const int cuts = 5 + static_cast<int>(rnd.Next() % 4);
+			for (int k = 0; k < cuts; ++k)
+				planes.push_back({Unit3({rnd.Range(-1, 1), rnd.Range(-1, 1), rnd.Range(-0.4f, 1)}), rnd.Range(0.5f, 0.78f)});
+			planes.push_back({P3{0, 0, -1}, 0.55f}); // (its foot)
+			const uint32_t lump = rnd.Next();
+			const auto lumpAt = [&](const P3& d) {
+				// (value noise over the direction, on a 3 lattice)
+				const auto h = [&](int i, int j, int k) {
+					uint32_t v = static_cast<uint32_t>(i) * 73856093u ^ static_cast<uint32_t>(j) * 19349663u ^ static_cast<uint32_t>(k) * 83492791u ^ lump;
+					v ^= v >> 16, v *= 0x7feb352du, v ^= v >> 15;
+					return static_cast<float>(v >> 8) / 16777216.0f;
+				};
+				const float fx = d[0] * 1.5f + 2, fy = d[1] * 1.5f + 2, fz = d[2] * 1.5f + 2;
+				const int i = static_cast<int>(fx), j = static_cast<int>(fy), k = static_cast<int>(fz);
+				const float tx = fx - i, ty = fy - j, tz = fz - k;
+				float sum = 0;
+				for (int c = 0; c < 8; ++c)
+					sum += h(i + (c & 1), j + ((c >> 1) & 1), k + (c >> 2)) * ((c & 1) ? tx : 1 - tx) * ((c & 2) ? ty : 1 - ty) * ((c & 4) ? tz : 1 - tz);
+				return sum;
+			};
+			// (the icosahedron, then its faces split in four `levels` times, the new points out on the sphere)
+			const auto sphere = [&](int levels, std::vector<P3>& v, std::vector<std::array<uint32_t, 3>>& f) {
+				const float g = (1 + std::sqrt(5.0f)) / 2;
+				v = {Unit3({-1, g, 0}), Unit3({1, g, 0}), Unit3({-1, -g, 0}), Unit3({1, -g, 0}), Unit3({0, -1, g}), Unit3({0, 1, g}), Unit3({0, -1, -g}), Unit3({0, 1, -g}),
+				    Unit3({g, 0, -1}), Unit3({g, 0, 1}), Unit3({-g, 0, -1}), Unit3({-g, 0, 1})};
+				f = {{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8}, {3, 9, 4}, {3, 4, 2}, {3, 2, 6},
+				    {3, 6, 8}, {3, 8, 9}, {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}};
+				for (int l = 0; l < levels; ++l)
+				{
+					std::map<std::pair<uint32_t, uint32_t>, uint32_t> mid;
+					const auto middle = [&](uint32_t a, uint32_t b) {
+						const auto key = std::minmax(a, b);
+						if (const auto it = mid.find(key); it != mid.end())
+							return it->second;
+						v.push_back(Unit3(Add(v[a], v[b])));
+						return mid[key] = static_cast<uint32_t>(v.size() - 1);
+					};
+					std::vector<std::array<uint32_t, 3>> next;
+					for (const auto& t : f)
+					{
+						const uint32_t ab = middle(t[0], t[1]), bc = middle(t[1], t[2]), ca = middle(t[2], t[0]);
+						next.push_back({t[0], ab, ca}), next.push_back({t[1], bc, ab}), next.push_back({t[2], ca, bc}), next.push_back({ab, bc, ca});
+					}
+					f = std::move(next);
+				}
+			};
+			const int levels[4] = {2, 1, 1, 0};
+			for (int lod = 0; lod < 4; ++lod)
+			{
+				std::vector<P3> v;
+				std::vector<std::array<uint32_t, 3>> f;
+				sphere(levels[lod], v, f);
+				// (each point: lumpy, cut back to every plane it is past - in the unit sphere's space -, then squashed)
+				std::vector<P3> at(v.size());
+				for (size_t i = 0; i < v.size(); ++i)
+				{
+					P3 q = Mul(v[i], 0.85f + 0.3f * lumpAt(v[i]));
+					for (const auto& [n, d] : planes)
+						if (const float over = Dot(q, n) - d; over > 0)
+							q = Sub(q, Mul(n, over));
+					at[i] = {q[0] * axes[0], q[1] * axes[1], (q[2] + 0.55f) * axes[2]};
+				}
+				// (smooth normals: the faces' round each point)
+				std::vector<P3> normal(v.size(), P3{0, 0, 0});
+				for (const auto& t : f)
+				{
+					const P3 n = Cross(Sub(at[t[1]], at[t[0]]), Sub(at[t[2]], at[t[0]]));
+					for (const uint32_t i : t)
+						normal[i] = Add(normal[i], n);
+				}
+				roads::Mesh& m = out.lods[static_cast<size_t>(lod)][kRock];
+				for (size_t i = 0; i < v.size(); ++i)
+				{
+					const P3 n = Unit3(normal[i]);
+					ydr::Vertex x;
+					x.position = at[i];
+					x.normal = n;
+					const int major = std::fabs(n[0]) >= std::fabs(n[1]) && std::fabs(n[0]) >= std::fabs(n[2]) ? 0 : std::fabs(n[1]) >= std::fabs(n[2]) ? 1 : 2;
+					const P3 tangent = major == 0 ? P3{0, 1, 0} : P3{1, 0, 0};
+					x.tangent = {tangent[0], tangent[1], tangent[2], 1};
+					x.colour0 = {255, 255, 255, 255};
+					x.uv[0] = major == 0 ? std::array<float, 2>{at[i][1] / 1.2f, -at[i][2] / 1.2f}
+					          : major == 1 ? std::array<float, 2>{at[i][0] / 1.2f, -at[i][2] / 1.2f}
+					                       : std::array<float, 2>{at[i][0] / 1.2f, at[i][1] / 1.2f};
+					m.vertices.push_back(x);
+				}
+				for (const auto& t : f)
+					m.indices.insert(m.indices.end(), {t[0], t[1], t[2]});
+			}
+			out.height = axes[2] * 1.4f, out.width = 2 * std::max(axes[0], axes[1]);
+			return out;
+		}
+
 		Model Hedge(uint32_t seed)
 		{
 			Random rnd(seed);
@@ -1322,6 +1510,7 @@ namespace worldgen::flora
 		case Species::SabalPalm: return SabalPalm(seed);
 		case Species::ArecaPalm: return ArecaPalm(seed);
 		case Species::Hedge: return Hedge(seed);
+		case Species::Boulder: return Boulder(seed);
 		default: return Shrub(seed);
 		}
 	}

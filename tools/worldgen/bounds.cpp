@@ -35,6 +35,7 @@ namespace worldgen::bounds
 			const uint32_t base = static_cast<uint32_t>(out.vertices.size());
 			for (int i = 0; i < 8; ++i)
 				out.vertices.push_back(Apply(toWorld, Add(Add(Add(o, i & 1 ? a : Vec{}), i & 2 ? b : Vec{}), i & 4 ? c : Vec{})));
+			out.vertexColours.resize(out.vertices.size());
 			// the faces by corner (bit 0 a, bit 1 b, bit 2 c), counter-clockwise seen from outside when a, b, c are
 			// right-handed (a left-handed set turns every face round): -a +a -b +b -c +c
 			static constexpr uint32_t kFaces[6][4] = {{0, 4, 6, 2}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 2, 3, 1}, {4, 5, 7, 6}};
@@ -52,6 +53,8 @@ namespace worldgen::bounds
 				out.triangles.push_back(t2);
 				out.materials.push_back(material);
 				out.materials.push_back(material);
+				out.procedural.push_back(0);
+				out.procedural.push_back(0);
 			}
 		}
 
@@ -86,6 +89,11 @@ namespace worldgen::bounds
 			const uint32_t base = static_cast<uint32_t>(out.vertices.size());
 			for (uint32_t i = 0; i < vertexCount; ++i)
 				out.vertices.push_back(Apply(toWorld, vertex(i)));
+			// (a material bound's vertices' colours: +0x82 bit 0, +0xB8 4 bytes a vertex)
+			out.vertexColours.resize(out.vertices.size());
+			if (const uint64_t colours = view.Get<uint64_t>(at + 0xB8); (view.Get<uint8_t>(at + 0x82) & 1) && colours && view.At(colours, vertexCount * 4ull))
+				for (uint32_t i = 0; i < vertexCount; ++i)
+					std::memcpy(out.vertexColours[base + i].data(), view.At(colours + 4ull * i, 4), 4);
 			for (uint32_t i = 0; i < polyCount; ++i)
 			{
 				const uint8_t* p = view.At(polys + 16ull * i, 16);
@@ -95,6 +103,7 @@ namespace worldgen::bounds
 				std::memcpy(&radius, p + 4, 4);
 				const uint8_t index = polyMaterials ? view.Get<uint8_t>(polyMaterials + i) : 0;
 				const uint8_t material = materials && index < materialCount ? view.Get<uint8_t>(materials + 8ull * index) : 0;
+				const uint8_t procedural = materials && index < materialCount ? view.Get<uint8_t>(materials + 8ull * index + 1) : 0;
 				const auto valid = [&](uint32_t v) { return v < vertexCount; };
 				switch (p[0] & 7)
 				{
@@ -105,6 +114,7 @@ namespace worldgen::bounds
 					{
 						out.triangles.push_back({base + a, base + b, base + c});
 						out.materials.push_back(material);
+						out.procedural.push_back(procedural);
 						++out.counts[0];
 					}
 					break;

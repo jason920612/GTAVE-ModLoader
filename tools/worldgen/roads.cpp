@@ -224,6 +224,32 @@ namespace worldgen::roads
 					}
 				}
 			}
+			// A grime decal over a strip (its right and left lines, as Strip's): the same shape 6 mm over it, GrimePicture laid in
+			// world space (3 m a picture), its strength in patches along it - over 7 m from a fifth to all of it, by `salt`.
+			void Grime(Mesh& dm, const std::vector<P3>& right, const std::vector<P3>& left, uint32_t salt)
+			{
+				if (right.size() < 2 || left.size() != right.size())
+					return;
+				const float u0 = std::floor(right[0][0] / 3), v0 = std::floor(right[0][1] / 3);
+				const auto at = [&](float k) { return static_cast<float>(seeds::Mix(salt ^ static_cast<uint32_t>(static_cast<int32_t>(k)) * 0x9E3779B9u) >> 8) / 16777216.0f; };
+				float s = 0;
+				std::vector<uint32_t> r, l;
+				for (size_t i = 0; i < right.size(); ++i)
+				{
+					if (i)
+						s += Dist({right[i][0], right[i][1]}, {right[i - 1][0], right[i - 1][1]});
+					const float f = s / 7, fl = std::floor(f), t = f - fl, e = t * t * (3 - 2 * t);
+					std::array<uint8_t, 4> colour{255, 253, 0, 255}; // (as the other decals')
+					colour[3] = static_cast<uint8_t>(std::lround(255 * std::clamp(0.2f + 0.9f * (at(fl) + (at(fl + 1) - at(fl)) * e), 0.2f, 1.0f)));
+					r.push_back(Add(dm, {right[i][0], right[i][1], right[i][2] + 0.006f}, {0, 0, 1}, {right[i][0] / 3 - u0, v0 - right[i][1] / 3}, colour));
+					l.push_back(Add(dm, {left[i][0], left[i][1], left[i][2] + 0.006f}, {0, 0, 1}, {left[i][0] / 3 - u0, v0 - left[i][1] / 3}, colour));
+				}
+				for (size_t i = 0; i + 1 < r.size(); ++i)
+				{
+					Tri(dm, r[i], r[i + 1], l[i + 1]);
+					Tri(dm, r[i], l[i + 1], l[i]);
+				}
+			}
 			// A vertical face from `bottom` up `height`, facing to the left of the line's direction when `faceLeft`.
 			// `row`: where in the picture its strip starts (a kerb's: kKerbRow), `band` how far down it the strip reaches at most
 			void Wall(Mesh& m, const std::vector<P3>& bottom, float height, bool faceLeft, uint8_t material, float row = 0.81f, float band = 0.185f)
@@ -1483,6 +1509,54 @@ namespace worldgen::roads
 		return im;
 	}
 
+	texture::Image GrimePicture()
+	{
+		// (512 x 512 for 3 m square - a texel 5.9 mm -, tiling)
+		constexpr int kSide = 512;
+		texture::Image im(kSide, kSide, {34, 33, 30, 0});
+		const auto hash = [](uint32_t i) { return static_cast<float>(seeds::Mix(i * 0x9E3779B9u + 0x2545F491u) >> 8) / 16777216.0f; };
+		// (value noise over `cell` texels, wrapping with the picture)
+		const auto noise = [&](int x, int y, int cell, uint32_t salt) {
+			const int n = kSide / cell;
+			const float fx = static_cast<float>(x) / cell, fy = static_cast<float>(y) / cell;
+			const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+			const float tx = fx - x0, ty = fy - y0, ex = tx * tx * (3 - 2 * tx), ey = ty * ty * (3 - 2 * ty);
+			const auto at = [&](int i, int j) {
+				return hash(salt * 7919u + static_cast<uint32_t>(((i % n) + n) % n) * 131u + static_cast<uint32_t>(((j % n) + n) % n) * 8191u);
+			};
+			const float a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * ex, b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * ex;
+			return a + (b - a) * ey;
+		};
+		std::vector<float> alpha(static_cast<size_t>(kSide) * kSide);
+		// (a faint mottling: the weather's over 0.4-1.5 m)
+		for (int y = 0; y < kSide; ++y)
+			for (int x = 0; x < kSide; ++x)
+				alpha[static_cast<size_t>(y) * kSide + x] = std::max(0.0f, (0.6f * noise(x, y, 256, 1) + 0.4f * noise(x, y, 64, 2) - 0.45f) * 0.35f);
+		// (a blotch: a disc, its edge `soft` of its radius ragged with fine noise)
+		const auto blot = [&](float cx, float cy, float r, float a, float soft) {
+			const int reach = static_cast<int>(r) + 1;
+			for (int dy = -reach; dy <= reach; ++dy)
+				for (int dx = -reach; dx <= reach; ++dx)
+				{
+					const float d = std::hypot(static_cast<float>(dx), static_cast<float>(dy)) / r;
+					if (d >= 1)
+						continue;
+					const int x = ((static_cast<int>(cx) + dx) % kSide + kSide) % kSide, y = ((static_cast<int>(cy) + dy) % kSide + kSide) % kSide;
+					const float edge = std::clamp((1 - d) / soft, 0.0f, 1.0f) * (0.55f + 0.45f * noise(x, y, 8, 3));
+					float& q = alpha[static_cast<size_t>(y) * kSide + x];
+					q = std::max(q, a * edge);
+				}
+		};
+		// (dirt and mildew, 5-40 cm; chewing gum's black spots, 1-2 cm)
+		for (uint32_t k = 0; k < 70; ++k)
+			blot(hash(k * 7 + 1) * kSide, hash(k * 7 + 2) * kSide, 8 + 60 * hash(k * 7 + 3) * hash(k * 7 + 4), 0.12f + 0.2f * hash(k * 7 + 5), 0.7f);
+		for (uint32_t k = 0; k < 40; ++k)
+			blot(hash(k * 5 + 900) * kSide, hash(k * 5 + 901) * kSide, 1.3f + 1.6f * hash(k * 5 + 902), 0.45f + 0.25f * hash(k * 5 + 903), 0.3f);
+		for (size_t i = 0; i < alpha.size(); ++i)
+			im.pixels[i][3] = static_cast<uint8_t>(std::lround(255 * std::clamp(alpha[i], 0.0f, 0.8f)));
+		return im;
+	}
+
 	texture::Image StopPicture()
 	{
 		// (512 across, 512 along: four cells across with gaps, the letters filling their height; white everywhere, so that
@@ -2011,6 +2085,7 @@ namespace worldgen::roads
 					b.Strip(sidewalkOf(slice(walkLi, i0, i1), slice(walkLo, i0, i1)), slice(walkLi, i0, i1), slice(walkLo, i0, i1), slice(uvWi, i0, i1),
 					    slice(uvWoL, i0, i1), kPavement, !e.bridge,
 					    2);                       // (left: inner on the right of its direction)
+					b.Grime(out.grime, slice(walkLi, i0, i1), slice(walkLo, i0, i1), static_cast<uint32_t>(e.id) * 0x9E3779B9u ^ 0x6A1u);
 					kerb(left, i0, i1, false); // facing the road (to the right of the left kerb's direction)
 					// the sidewalk's outer edge down to the ground below it
 					auto lo = slice(walkLo, i0, i1);
@@ -2021,6 +2096,7 @@ namespace worldgen::roads
 				stretches(fillR, [&](size_t i0, size_t i1) {
 					b.Strip(sidewalkOf(slice(walkRo, i0, i1), slice(walkRi, i0, i1)), slice(walkRo, i0, i1), slice(walkRi, i0, i1), slice(uvWoR, i0, i1),
 					    slice(uvWi, i0, i1), kPavement, !e.bridge, 2);
+					b.Grime(out.grime, slice(walkRo, i0, i1), slice(walkRi, i0, i1), static_cast<uint32_t>(e.id) * 0x9E3779B9u ^ 0x6A2u);
 					kerb(right, i0, i1, true);
 					auto ro = slice(walkRo, i0, i1);
 					for (P3& q : ro)
@@ -2587,6 +2663,8 @@ namespace worldgen::roads
 				}
 				// (the kerb runs anticlockwise round the junction: the junction on its left, the sidewalk on its right)
 				b.Strip(sidewalkOf(outer, inner), outer, inner, uvO, uvI, kPavement, true, 2);
+				if (!outer.empty())
+					b.Grime(out.grime, outer, inner, static_cast<uint32_t>(std::lround(outer[0][0] * 7 + outer[0][1] * 13)));
 				std::vector<P3> foot;
 				for (size_t q = 0; q < cr.kerb.size(); ++q)
 					foot.push_back({cr.kerb[q][0], cr.kerb[q][1], inner[q][2] - kKerb});
@@ -2791,6 +2869,27 @@ namespace worldgen::roads
 		}
 	}
 
+	float WalkWidth(const world::Walk& wk)
+	{
+		// (its paving as Walkways takes it: an untagged path earth)
+		const bool unpavedPath = (wk.kind == "path" || wk.kind == "bridleway") && wk.surface.empty();
+		const bool plain = wk.surface.empty() || wk.surface == "paved";
+		const paving::Paving pv = unpavedPath ? paving::Paving::Dirt
+		                        : plain       ? (wk.kind == "cycleway" || wk.kind == "path" ? paving::Paving::Asphalt : paving::Paving::Concrete)
+		                                      : paving::Of(wk.surface);
+		const bool unpaved = pv == paving::Paving::Gravel || pv == paving::Paving::Dirt || pv == paving::Paving::Sand;
+		// (a pedestrian way a promenade's 5 m: South Pointe Park's is 5-6 m in the street pictures, at 3 m it had been "a narrow
+		// grey concrete sidewalk" to round 27's reviewers)
+		return wk.width > 0 ? std::clamp(wk.width, 0.8f, 6.0f)
+		       : wk.kind == "driveway"                       ? 3.0f
+		       : wk.kind == "sidewalk" || wk.kind == "steps" ? 1.5f
+		       : wk.kind == "cycleway"                       ? 2.4f
+		       : wk.kind == "pedestrian"                     ? 5.0f
+		       : unpaved                                     ? 1.1f
+		       : wk.kind == "path"                           ? 2.0f
+		                                                     : 1.8f;
+	}
+
 	size_t Walkways(const std::vector<world::Walk>& walks, const std::vector<std::vector<bool>>& skip, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& onRoad, Surfaces& out)
 	{
@@ -2820,14 +2919,7 @@ namespace worldgen::roads
 			                        : plain       ? (wk.kind == "cycleway" || wk.kind == "path" ? paving::Paving::Asphalt : paving::Paving::Concrete)
 			                                      : paving::Of(wk.surface);
 			const bool unpaved = pv == paving::Paving::Gravel || pv == paving::Paving::Dirt || pv == paving::Paving::Sand;
-			const float width = wk.width > 0 ? std::clamp(wk.width, 0.8f, 6.0f)
-			                    : wk.kind == "driveway"                       ? 3.0f
-			                    : wk.kind == "sidewalk" || wk.kind == "steps" ? 1.5f
-			                    : wk.kind == "cycleway"                       ? 2.4f
-			                    : wk.kind == "pedestrian"                     ? 3.0f
-			                    : unpaved                                     ? 1.1f
-			                    : wk.kind == "path"                           ? 2.0f
-			                                                                  : 1.8f;
+			const float width = WalkWidth(wk);
 			Mesh& mesh = pv == paving::Paving::Concrete ? out.sidewalk : out.paved[static_cast<size_t>(pv)];
 			const uint8_t material = pv == paving::Paving::Concrete ? kPavement : paving::Material(pv);
 			const float tm = pv == paving::Paving::Concrete ? kTexture : paving::TextureMetres(pv);
@@ -2893,8 +2985,10 @@ namespace worldgen::roads
 			{
 				const float o = width / 2 * scale[i];
 				const P2 l{p[i][0] + nrm[i][0] * o, p[i][1] + nrm[i][1] * o}, r{p[i][0] - nrm[i][0] * o, p[i][1] - nrm[i][1] * o};
-				left[i] = {l[0], l[1], ground(l[0], l[1]) + 0.05f};
-				right[i] = {r[0], r[1], ground(r[0], r[1]) + 0.05f};
+				// (2.5 cm over the ground: at 5 cm their sides, the kerb's darker concrete, had been "dark outline lines along the
+				// path edges")
+				left[i] = {l[0], l[1], ground(l[0], l[1]) + 0.025f};
+				right[i] = {r[0], r[1], ground(r[0], r[1]) + 0.025f};
 				// (on a road - its asphalt or its own sidewalk - the road's surface is there)
 				if (onRoad(p[i][0], p[i][1]) || onRoad(l[0], l[1]) || onRoad(r[0], r[1]))
 					keep[i] = false;
@@ -2917,6 +3011,9 @@ namespace worldgen::roads
 				for (size_t k = i; k <= j; ++k)
 					uvR.push_back({width / tm, s[k] / tm}), uvL.push_back({0, s[k] / tm});
 				b.Strip(mesh, rs, ls, uvR, uvL, material, false, 2);
+				// (grime on the paved ones)
+				if (!unpaved)
+					b.Grime(out.grime, rs, ls, static_cast<uint32_t>(wk.id) * 0x9E3779B9u + static_cast<uint32_t>(i));
 				auto lo = ls, ro = rs;
 				for (P3& q : lo)
 					q[2] -= 0.12f;

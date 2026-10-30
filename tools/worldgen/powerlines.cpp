@@ -35,14 +35,15 @@ namespace worldgen::powerlines
 		constexpr float kTransformerRise = 0.3f;
 
 		// the wires: x along the crossarm (m), height over the base, half width; three on the crossarm's insulators (the
-		// models' at -1.05, -0.3, 0.3 and 1.05 m), the communications cable on the pole's side, thicker and sagging more
+		// models' at -1.05, -0.3, 0.3 and 1.05 m), the communications cable on the pole's side, thicker and sagging more (4 and
+		// 6 cm across: at 6 and 9 they had been "one very thick, pure-black cable" to round 27's reviewers)
 		struct Wire
 		{
 			float x, z, halfWidth, sag; // (sag: of the span's length)
 			bool onArm;
 		};
-		constexpr Wire kWires[] = {{-1.05f, 14.2f, 0.03f, 0.022f, true}, {0.3f, 14.2f, 0.03f, 0.022f, true}, {1.05f, 14.2f, 0.03f, 0.022f, true},
-		    {0.2f, 8.6f, 0.045f, 0.03f, false}};
+		constexpr Wire kWires[] = {{-1.05f, 14.2f, 0.02f, 0.022f, true}, {0.3f, 14.2f, 0.02f, 0.022f, true}, {1.05f, 14.2f, 0.02f, 0.022f, true},
+		    {0.2f, 8.6f, 0.03f, 0.03f, false}};
 
 		constexpr float kSpacing = 40; // (m between poles)
 		constexpr float kLongest = 72; // (the longest span, m: a pole left out past that breaks the line)
@@ -226,8 +227,15 @@ namespace worldgen::powerlines
 			if (s1 - s0 >= 20)
 			{
 				const int spans = std::max(1, static_cast<int>(std::lround((s1 - s0) / kSpacing)));
+				// (the ones between the ends up to 18 % of a span off even, by the road - the same in every land that has it: an
+				// even 40 m had read as "identical clones in a perfectly even straight line")
 				for (int k = 0; k <= spans; ++k)
-					at.push_back(s0 + (s1 - s0) * static_cast<float>(k) / static_cast<float>(spans));
+				{
+					const float jitter = k == 0 || k == spans ? 0.0f
+					                                          : (static_cast<float>(seeds::Mix(static_cast<uint32_t>(e.id) * 2654435761u + static_cast<uint32_t>(k)) >> 8) / 16777216.0f -
+					                                                0.5f) * 0.36f;
+					at.push_back(s0 + (s1 - s0) * (static_cast<float>(k) + jitter) / static_cast<float>(spans));
+				}
 			}
 			else if (total >= 20)
 				at.push_back(std::clamp((s0 + s1) / 2, 4.0f, total - 4));

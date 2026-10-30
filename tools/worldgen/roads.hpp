@@ -150,6 +150,7 @@ namespace worldgen::roads
 		Mesh railTrack, railBed, railSteel;       // railways: the track (sleepers on ballast), the bed's shoulders, the rails
 		Mesh potholes, patches, breakups;         // wear's decals over them (paving::Feature)
 		Mesh drips;                               // the lanes' oil drips down their middles (a decal: DripPicture)
+		Mesh grime;                               // the sidewalks', paths' and driveways' dirt and stains (a decal: GrimePicture)
 		Mesh gutters;                             // leaves and grit in the kerbs' gutters (a decal: the game's gutter picture)
 		Mesh legends;                             // STOP painted before a stop sign's stop line (StopPicture, a decal)
 		Mesh bikeSymbols;                         // a bicycle and an arrow in the bike lanes (BikePicture, a decal)
@@ -173,6 +174,9 @@ namespace worldgen::roads
 	// The lanes' oil drips: a band down a lane's middle (u across its 1.1 m, v along 8 m), dark brown-black; alpha a faint
 	// smear thickest in the middle and the drips' blotches on it.
 	texture::Image DripPicture();
+	// The sidewalks' grime: dirt and mildew blotches 5-40 cm, soft and ragged, chewing gum's black spots, a faint mottling -
+	// dark grey-brown, its alpha the strength; 512 x 512 for 3 m square, tiling (laid in world space).
+	texture::Image GrimePicture();
 
 	// `planted(x, y)`: whether the ground there is planted - a divided road's median that is (a landscaped one) is left as
 	// it is; one that is not (or without the function) is paved when it is narrow (research/phase0.md §61.27).
@@ -199,6 +203,9 @@ namespace worldgen::roads
 	// (per walk, per piece between its points: a street's sidewalk the street draws itself). Returns how many were drawn.
 	size_t Walkways(const std::vector<world::Walk>& walks, const std::vector<std::vector<bool>>& skip, const std::function<float(float, float)>& ground,
 	    const std::function<bool(float, float)>& onRoad, Surfaces& out);
+
+	// A walk's width as Walkways draws it: the map's (0.8-6 m), else by its kind and paving.
+	float WalkWidth(const world::Walk& wk);
 
 	// The traffic graph: nodes (junction nodes where three roads or more meet) and links with their lanes.
 	struct PathNode

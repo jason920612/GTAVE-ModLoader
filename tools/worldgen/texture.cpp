@@ -151,6 +151,40 @@ namespace worldgen::texture
 
 	namespace
 	{
+		// A cut-out's clear texels (alpha under 8) the colour of the nearest ones not clear, outwards a texel at a time: the
+		// game's bilinear filtering had pulled their dark colour into the leaves' edges ("leaf cards with dark speckled
+		// edges").
+		void Bleed(Image& im)
+		{
+			std::vector<uint8_t> done(im.pixels.size());
+			std::vector<size_t> front;
+			for (size_t i = 0; i < im.pixels.size(); ++i)
+				if (im.pixels[i][3] >= 8)
+					done[i] = 1, front.push_back(i);
+			while (!front.empty())
+			{
+				std::vector<size_t> next;
+				for (const size_t i : front)
+				{
+					const int x = static_cast<int>(i % im.width), y = static_cast<int>(i / im.width);
+					for (int k = 0; k < 4; ++k)
+					{
+						const int nx = x + (k == 0 ? 1 : k == 1 ? -1 : 0), ny = y + (k == 2 ? 1 : k == 3 ? -1 : 0);
+						if (nx < 0 || ny < 0 || nx >= im.width || ny >= im.height)
+							continue;
+						const size_t j = static_cast<size_t>(ny) * im.width + nx;
+						if (done[j])
+							continue;
+						done[j] = 1;
+						for (int c = 0; c < 3; ++c)
+							im.pixels[j][c] = im.pixels[i][c];
+						next.push_back(j);
+					}
+				}
+				front = std::move(next);
+			}
+		}
+
 		// A cut-out's next level: colour by alpha, alpha scaled to keep `coverage` (the share over half)
 		Image HalfCutout(const Image& in, float coverage)
 		{
@@ -210,6 +244,8 @@ namespace worldgen::texture
 		while (true)
 		{
 			++mips;
+			if (cutout)
+				Bleed(level);
 			if (format == Format::Bgra)
 				for (const auto& p : level.pixels)
 					t.pixels.insert(t.pixels.end(), {p[2], p[1], p[0], p[3]});

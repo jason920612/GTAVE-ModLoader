@@ -1928,6 +1928,70 @@ int main(int argc, char** argv)
 		}
 		return 0;
 	}
+	if (command == "plants-dump")
+	{
+		// the plants a built land's material bounds (its ma@ files) ask the game to grow, by procedural tag: triangles and
+		// area; with --tags a,b --out <file.tsv> every 20th triangle of those tags as "tag x y": --dir <build folder>
+		if (!g_options.contains("dir"))
+			return Fail("--dir <build folder> [--tags a,b --out <file.tsv>] are needed");
+		std::set<int> wanted;
+		if (g_options.contains("tags"))
+		{
+			std::istringstream list(g_options["tags"]);
+			for (std::string t; std::getline(list, t, ',');)
+				wanted.insert(std::stoi(t));
+		}
+		std::ofstream tsv;
+		if (g_options.contains("out"))
+			tsv.open(g_options["out"]);
+		std::map<int, std::pair<size_t, double>> tags;
+		std::map<int, std::map<int, size_t>> alphas; // (--alphas: by tag, its triangles' corners' alphas)
+		size_t files = 0, seen = 0;
+		for (const auto& entry : fs::directory_iterator(g_options["dir"]))
+		{
+			const std::string name = entry.path().filename().string();
+			if (!name.starts_with("ma@") || !name.ends_with(".ybn") || name.ends_with(".virtual") || name.ends_with(".physical"))
+				continue;
+			std::ifstream in(entry.path(), std::ios::binary);
+			Bytes bytes((std::istreambuf_iterator<char>(in)), {});
+			loader::convert::Resource res;
+			worldgen::bounds::Mesh mesh;
+			if (!loader::convert::Read(bytes, res, error) ||
+			    !worldgen::bounds::Collect(ue5export::drawable::View(res), ue5export::drawable::View::kRoot, worldgen::bounds::kIdentity, mesh, error))
+				return Fail(name + ": " + error);
+			++files;
+			for (size_t t = 0; t < mesh.triangles.size() && t < mesh.procedural.size(); ++t)
+			{
+				const auto &a = mesh.vertices[mesh.triangles[t][0]], &b = mesh.vertices[mesh.triangles[t][1]], &c = mesh.vertices[mesh.triangles[t][2]];
+				const int tag = mesh.procedural[t];
+				auto& k = tags[tag];
+				++k.first;
+				k.second += std::fabs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
+				if (g_options.contains("alphas") && mesh.vertexColours.size() == mesh.vertices.size())
+					for (int k = 0; k < 3; ++k)
+						++alphas[tag][mesh.vertexColours[mesh.triangles[t][k]][3]];
+				if (tsv && wanted.contains(tag) && seen++ % 20 == 0)
+					tsv << tag << '\t' << (a[0] + b[0] + c[0]) / 3 << '\t' << (a[1] + b[1] + c[1]) / 3 << '\n';
+			}
+		}
+		std::printf("%zu material bound files\n", files);
+		for (const auto& [tag, k] : tags)
+		{
+			std::printf("  tag %3d: %zu triangles, %.0f m2", tag, k.first, k.second);
+			if (alphas.contains(tag))
+			{
+				std::vector<std::pair<size_t, int>> most;
+				for (const auto& [a, n] : alphas[tag])
+					most.push_back({n, a});
+				std::sort(most.rbegin(), most.rend());
+				std::printf(" - alphas");
+				for (size_t m = 0; m < most.size() && m < 6; ++m)
+					std::printf(" %02x:%zu", most[m].second, most[m].first);
+			}
+			std::printf("\n");
+		}
+		return 0;
+	}
 	if (command == "ydr-stats")
 	{
 		// a model file on disk (ours, for checking): each section's vertices, heights and vertex colours: --file <file.ydr>

@@ -380,10 +380,22 @@ namespace worldgen::terrain
 						if (procedural)
 						{
 							// (the vertex's cell's colour, blue green red as the game stores it, and in the alpha how the plants
-							// grow there: 56, density 7 of 7 in bits 3-5, as most of the game's countryside has it)
+							// grow there - where any of the cells round it the triangles take their tags from is tagged: a
+							// vertex's 0 thinned its triangles' plants, the lawns' between untagged cells to none. The plant
+							// manager reads the alpha's bits 0-3 as the plants' size within their range, 4-5 their height's
+							// (0 or 3: all of it); as the game's own material bounds have it, 0x3F in the countryside, 0x0F on
+							// a town's short grass, City_GreenScrub_Grass_SPARSE - our 56 had grown them half-sized, "tiled
+							// clover decals" to round 27's reviewers)
 							const size_t cell = static_cast<size_t>(std::min(gj, f.ny - 1)) * f.nx + std::min(gi, f.nx - 1);
 							const auto& c = f.colour[cell];
-							part.vertexColours.push_back({c[2], c[1], c[0], static_cast<uint8_t>((f.material[cell] >> 8) ? 56 : 0)});
+							uint8_t tag = 0;
+							for (int dj = -1; dj <= 1 && !tag; dj += 2)
+								for (int di = -1; di <= 1 && !tag; di += 2)
+								{
+									const int ci = std::clamp(gi + di * step / 2, 0, f.nx - 1), cj = std::clamp(gj + dj * step / 2, 0, f.ny - 1);
+									tag = static_cast<uint8_t>(f.material[static_cast<size_t>(cj) * f.nx + ci] >> 8);
+								}
+							part.vertexColours.push_back({c[2], c[1], c[0], static_cast<uint8_t>(!tag ? 0 : tag == 86 ? 0x0F : 0x3F)});
 						}
 					}
 				for (int j = 0; j < h; ++j)
