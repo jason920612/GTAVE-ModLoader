@@ -2796,6 +2796,14 @@ namespace worldgen::roads
 	{
 		Builder b{out};
 		size_t made = 0;
+		// (each drawn path's ends and line, its width and paving: their joins filled below)
+		struct Drawn
+		{
+			std::vector<P2> line;
+			float width;
+			paving::Paving pv;
+		};
+		std::vector<Drawn> drawn;
 		for (size_t wi = 0; wi < walks.size(); ++wi)
 		{
 			const world::Walk& wk = walks[wi];
@@ -2920,6 +2928,81 @@ namespace worldgen::roads
 				i = j;
 			}
 			made += any;
+			if (any && wk.kind != "sidewalk" && wk.kind != "driveway" && wk.kind != "steps")
+				drawn.push_back({line, width, pv});
+		}
+		// where paths meet - two or more drawn paths' ends within a metre, or a path's end on another's line -: a disc of the
+		// wider one's paving, half its width and 0.2 m more across, a centimetre under the strips (each path a strip of its
+		// own, the meeting had left "a triangular grass-filled notch cut into the path" - round 26's reviewers)
+		{
+			struct End
+			{
+				P2 at;
+				size_t path;
+			};
+			std::vector<End> ends;
+			for (size_t k = 0; k < drawn.size(); ++k)
+				if (drawn[k].line.size() >= 2)
+					ends.push_back({drawn[k].line.front(), k}), ends.push_back({drawn[k].line.back(), k});
+			std::vector<bool> used(ends.size(), false);
+			for (size_t e = 0; e < ends.size(); ++e)
+			{
+				if (used[e])
+					continue;
+				// (the ends near this one, and another path's line it ends on)
+				size_t widest = ends[e].path;
+				int meeting = 1;
+				for (size_t f = e + 1; f < ends.size(); ++f)
+					if (!used[f] && ends[f].path != ends[e].path && Dist(ends[f].at, ends[e].at) < 1.0f)
+					{
+						used[f] = true, ++meeting;
+						if (drawn[ends[f].path].width > drawn[widest].width)
+							widest = ends[f].path;
+					}
+				if (meeting < 2)
+					for (size_t k = 0; k < drawn.size() && meeting < 2; ++k)
+					{
+						if (k == ends[e].path)
+							continue;
+						const auto& l = drawn[k].line;
+						for (size_t i = 0; i + 1 < l.size(); ++i)
+						{
+							const P2 &a = l[i], &c = l[i + 1];
+							const float len = Dist(a, c);
+							if (len < 0.05f)
+								continue;
+							const float t = std::clamp(((ends[e].at[0] - a[0]) * (c[0] - a[0]) + (ends[e].at[1] - a[1]) * (c[1] - a[1])) / (len * len), 0.0f, 1.0f);
+							const P2 foot{a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t};
+							if (Dist(foot, ends[e].at) < drawn[k].width / 2 + 0.3f)
+							{
+								++meeting;
+								if (drawn[k].width > drawn[widest].width)
+									widest = k;
+								break;
+							}
+						}
+					}
+				used[e] = true;
+				if (meeting < 2)
+					continue;
+				const Drawn& d = drawn[widest];
+				Mesh& mesh = d.pv == paving::Paving::Concrete ? out.sidewalk : out.paved[static_cast<size_t>(d.pv)];
+				const float tm = d.pv == paving::Paving::Concrete ? kTexture : paving::TextureMetres(d.pv);
+				const float radius = d.width / 2 + 0.2f;
+				const P2 c = ends[e].at;
+				const float z = ground(c[0], c[1]) + 0.04f;
+				std::vector<P3> ring, middle;
+				std::vector<std::array<float, 2>> uvRing, uvMiddle;
+				for (int k = 0; k <= 16; ++k)
+				{
+					const float a = 6.2831853f * k / 16;
+					const P2 q{c[0] + std::cos(a) * radius, c[1] + std::sin(a) * radius};
+					ring.push_back({q[0], q[1], std::max(z, ground(q[0], q[1]) + 0.04f)});
+					middle.push_back({c[0], c[1], z});
+					uvRing.push_back({q[0] / tm, q[1] / tm}), uvMiddle.push_back({c[0] / tm, c[1] / tm});
+				}
+				b.Strip(mesh, ring, middle, uvRing, uvMiddle, 0, false); // (the ring as the right edge: its triangles face up)
+			}
 		}
 		return made;
 	}
