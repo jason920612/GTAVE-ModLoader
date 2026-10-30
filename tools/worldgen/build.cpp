@@ -4700,7 +4700,7 @@ namespace worldgen::build
 						}
 					}
 				}
-				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0, mappedDrives = 0;
+				size_t driveways = 0, stalls = 0, shrubs = 0, mailboxes = 0, paved = 0, mappedDrives = 0, condensers = 0;
 				// (the map's own driveways by 50 m cell of their points)
 				std::unordered_map<int64_t, std::vector<size_t>> drivewayCells;
 				for (size_t wi = 0; wi < w.walks.size(); ++wi)
@@ -5255,6 +5255,23 @@ namespace worldgen::build
 								    static_cast<float>((r >> 8) % 360) * 3.14159265f / 180, 120, 0.8f + static_cast<float>((r >> 20) % 30) / 100});
 								++shrubs;
 							}
+							// (the air conditioner's condenser on the ground by a side wall - the edge after the front one -, two
+							// thirds of the way back, 0.75 m out, nine houses in ten: round 26's reviewers, "spotless boxes, no AC
+							// units or yard clutter")
+							const size_t sk = (front + 1) % f.size();
+							const P2 &sa = f[sk], &sq = f[(sk + 1) % f.size()];
+							const float sl = Dist(sa, sq);
+							if (sl >= 4 && (seed >> 22) % 10 != 0)
+							{
+								const P2 st{(sq[0] - sa[0]) / sl, (sq[1] - sa[1]) / sl}, sn{st[1], -st[0]};
+								const float cx = sa[0] + st[0] * sl * 0.66f + sn[0] * 0.75f, cy = sa[1] + st[1] * sl * 0.66f + sn[1] * 0.75f;
+								if (cx >= bx0 && cy >= by0 && cx < bx1 && cy < by1 && open(cx, cy) && !onLane(cx, cy))
+								{
+									furniture.push_back({loader::convert::Joaat((seed >> 9) % 2 ? "prop_aircon_s_07a" : "prop_aircon_s_07b"), {cx, cy, ground(cx, cy)},
+									    std::atan2(sn[1], sn[0]) + 3.14159265f / 2, 80});
+									++condensers;
+								}
+							}
 						}
 					}
 					// the front yard's fence (south Florida's - the reviewers of Miami's street panoramas missed fences on 22 of
@@ -5434,7 +5451,8 @@ namespace worldgen::build
 					fenceYard(lotIt->second, b.footprint, c, P2{0, 0}, ys, 0, SIZE_MAX, [](float, float) { return false; }, false, true);
 					worksYards += yards.size() > before;
 				}
-				std::printf("yards: %zu apartment blocks' lots fenced, %zu works' street sides in chain-link\n", blockYards, worksYards);
+				std::printf("yards: %zu apartment blocks' lots fenced, %zu works' street sides in chain-link; %zu houses' AC condensers\n", blockYards, worksYards,
+				    condensers);
 				std::printf("parked cars: %zu on driveways, %zu in car parks, %zu by the kerb; %zu driveways paved (%zu houses on the map's own), %zu shrubs "
 				            "by houses, %zu mailboxes; %zu front yards fenced (%zu lines; of %zu houses %zu on a lot of the rolls, %zu chosen, %zu with no street "
 				            "edge)\n",
@@ -7516,7 +7534,9 @@ namespace worldgen::build
 				}
 				mapfiles::Entity pe;
 				pe.archetype = prop.archetype;
-				if (gameFlora)
+				// (and the houses' AC condensers - one by each house, tens of thousands a town: no physics instance of their own)
+				static const uint32_t kCondenserA = loader::convert::Joaat("prop_aircon_s_07a"), kCondenserB = loader::convert::Joaat("prop_aircon_s_07b");
+				if (gameFlora || prop.archetype == kCondenserA || prop.archetype == kCondenserB)
 					pe.flags |= kDontInstanceCollision;
 				pe.position = prop.position;
 				pe.rotation = {0, 0, std::sin(prop.heading / 2), std::cos(prop.heading / 2)};

@@ -199,9 +199,11 @@ namespace loader::game::sectors
 		// gives 0 past them, whoever asks; objects and the game's own traffic are not counted): a car park's 450 stalls round
 		// the camera took them all, and the game's missions, the mods and the trainer got no vehicle. So no more than
 		// kParkMax at once, the nearest first (one farther off and out of sight taken away for one 30 m nearer), and when
-		// the game says no (the others hold the rest), the farthest 8 let go and none made for 10 s.
+		// the game says no (the others hold the rest), the farthest 8 let go and none made for 10 s. (90: 60 had left the
+		// car parks the street pictures show full half empty - round 26's reviewers, "parking lots and parked vehicles
+		// missing" on 7-10 of 18 views -; 38 stay for the missions, the mods and the trainer)
 		constexpr float kParkNear = 120, kParkFar = 180, kParkSwap = 30;
-		constexpr size_t kParkMax = 60;
+		constexpr size_t kParkMax = 90;
 		constexpr uint64_t kDeleteVehicle = 0xEA386986E786A54F, kSetEntityAsMissionEntity = 0xAD738C3085FE7E11, kDoesEntityExist = 0x7239B21A38F536BA,
 		                   kIsPedInVehicle = 0xA3EE4A07279BB9DB, kSetEntityAsNoLongerNeeded = 0xB736A491E64A32CF, kIsEntityAVehicle = 0x6AC7003FA6E5575E,
 		                   kGetEntityUprightValue = 0x95EED5A694951F9F, kIsEntityOnScreen = 0xE659E47AF827484B,
