@@ -676,6 +676,33 @@ namespace worldgen::build
 			return im;
 		}
 
+		// A shop's or an office's entrance, 1.8 m across by 2.75 m: a pair of glass doors 2.2 m high in an aluminium frame
+		// (5 cm, the stiles 8 cm), a push bar across each, a glass transom over them - the glass dark, a little lighter up it
+		// where it mirrors the sky.
+		texture::Image GlassDoorImage()
+		{
+			texture::Image im(128, 256);
+			for (int y = 0; y < im.height; ++y)
+				for (int x = 0; x < im.width; ++x)
+				{
+					const float u = (x + 0.5f) / im.width, v = (y + 0.5f) / im.height; // (v down from the top)
+					const float mx = u * 1.8f, my = (1 - v) * 2.75f;                     // (metres across and up)
+					auto& p = im.pixels[static_cast<size_t>(y) * im.width + x];
+					const bool frame = mx < 0.05f || mx > 1.75f || my > 2.7f || my < 0.05f || std::fabs(mx - 0.9f) < 0.04f || std::fabs(my - 2.2f) < 0.04f ||
+					                   (my < 2.2f && (std::fabs(mx - 0.13f) < 0.04f || std::fabs(mx - 1.67f) < 0.04f));
+					const bool bar = my > 0.98f && my < 1.04f && ((mx > 0.2f && mx < 0.8f) || (mx > 1.0f && mx < 1.6f));
+					if (frame || bar)
+					{
+						const uint8_t g = static_cast<uint8_t>(bar ? 190 : 158);
+						p = {g, g, static_cast<uint8_t>(g + 4), 255};
+						continue;
+					}
+					const float sky = std::clamp(my / 2.75f, 0.0f, 1.0f);
+					p = {static_cast<uint8_t>(36 + 30 * sky), static_cast<uint8_t>(44 + 34 * sky), static_cast<uint8_t>(52 + 40 * sky), 255};
+				}
+			return im;
+		}
+
 		// A sectional garage door, 2.45 m across by 2.2 m (repeated across a wider one): four sections, each of four recessed
 		// panels, painted white.
 		texture::Image GarageImage()
@@ -700,7 +727,7 @@ namespace worldgen::build
 
 		// A door on a house's wall (the street pictures': a front door, a garage door where the driveway runs up to it): its
 		// bottom edge from a to b as seen from outside, 3 cm out from the wall, `height` tall, its kind (0 a front door, 1
-		// a garage's) and the front door's colour.
+		// a garage's, 2 a shop's glass entrance) and the front door's colour.
 		struct Door
 		{
 			P2 a{}, b{};
@@ -794,7 +821,9 @@ namespace worldgen::build
 				if (len < 0.5f)
 					continue;
 				const P3 t{(d.b[0] - d.a[0]) / len, (d.b[1] - d.a[1]) / len, 0}, n{t[1], -t[0], 0};
-				roads::Mesh& m = meshes[doorBase + (d.kind == 1 ? static_cast<uint32_t>(kDoorColours.size()) : d.colour)];
+				roads::Mesh& m = meshes[doorBase + (d.kind == 2   ? static_cast<uint32_t>(kDoorColours.size()) + 1
+				                                    : d.kind == 1 ? static_cast<uint32_t>(kDoorColours.size())
+				                                                  : d.colour)];
 				const float u1 = d.kind == 1 ? len / 2.45f : 1.0f;
 				const auto vertex = [&](const P2& q, float z, float u, float v) {
 					ydr::Vertex x;
@@ -1613,6 +1642,47 @@ namespace worldgen::build
 					}
 				}
 			}
+			// a flat-roofed building's downspouts (the HD model's): at three in five of its outline's outer corners - a turn of
+			// over 45 degrees -, a pipe 10 cm square 12 cm out from both walls, from the ground to 15 cm under the roof's edge, in
+			// the trim's plain white (round 29's reviewers on every building: "no doors, gutters, downpipes, fixtures")
+			if (coveringKey < 0 && trimKey >= 0 && inset == 0 && s.top >= 2.5f && s.top <= 20)
+			{
+				roads::Mesh& tm = meshes[static_cast<uint32_t>(trimKey)];
+				const auto plain = [](int k) { return std::array<float, 2>{k == 1 || k == 2 ? 0.14f : 0.03f, k >= 2 ? -0.6f : -0.45f}; };
+				std::map<uint32_t, uint32_t> prev;
+				for (const auto& [a, b] : next)
+					prev[b] = a;
+				for (const auto& [a, b] : next)
+				{
+					const auto pit = prev.find(a);
+					if (pit == prev.end())
+						continue;
+					const P3 pp = at(pit->second), pa = at(a), pb = at(b);
+					const float ix = pa[0] - pp[0], iy = pa[1] - pp[1], ox = pb[0] - pa[0], oy = pb[1] - pa[1];
+					const float li = std::hypot(ix, iy), lo = std::hypot(ox, oy);
+					if (li < 1.0f || lo < 1.0f)
+						continue;
+					// (an outer corner: the outline anticlockwise, a left turn of over 45 degrees)
+					const float cross = (ix * oy - iy * ox) / (li * lo), dot = (ix * ox + iy * oy) / (li * lo);
+					if (cross <= 0 || dot > 0.707f || (seeds::Mix(seed ^ a * 0x9E3779B9u) % 5) >= 3)
+						continue;
+					// (out of both walls: their outward normals - right of each edge's way - added)
+					const P2 n1{iy / li, -ix / li}, n2{oy / lo, -ox / lo};
+					const P2 c{pa[0] + (n1[0] + n2[0]) * 0.12f, pa[1] + (n1[1] + n2[1]) * 0.12f};
+					const float z0 = sink, z1 = pa[2] - 0.15f, h = 0.05f;
+					if (z1 - z0 < 1.5f)
+						continue;
+					const P3 corners[4] = {{c[0] - h, c[1] - h, 0}, {c[0] + h, c[1] - h, 0}, {c[0] + h, c[1] + h, 0}, {c[0] - h, c[1] + h, 0}};
+					for (int k = 0; k < 4; ++k)
+					{
+						const P3 &q0 = corners[k], &q1 = corners[(k + 1) % 4];
+						const P3 fn{(q1[1] - q0[1]) / (2 * h), -(q1[0] - q0[0]) / (2 * h), 0}, ft{(q1[0] - q0[0]) / (2 * h), (q1[1] - q0[1]) / (2 * h), 0};
+						const uint32_t j0 = add(tm, {q0[0], q0[1], z0}, fn, ft, plain(0)[0], plain(0)[1]), j1 = add(tm, {q1[0], q1[1], z0}, fn, ft, plain(1)[0], plain(1)[1]),
+						               j2 = add(tm, {q1[0], q1[1], z1}, fn, ft, plain(2)[0], plain(2)[1]), j3 = add(tm, {q0[0], q0[1], z1}, fn, ft, plain(3)[0], plain(3)[1]);
+						tm.indices.insert(tm.indices.end(), {j0, j1, j2, j0, j2, j3});
+					}
+				}
+			}
 		}
 
 		// A house's front porch (the street pictures' older streets: north Florida's frame houses most of all): along the wall
@@ -2036,7 +2106,7 @@ namespace worldgen::build
 							const double gx = seeds::GX(x), gy = seeds::GY(y);
 							const float patch = static_cast<float>(0.6 + 0.4 * std::sin(gx * 0.11 + std::sin(gy * 0.07) * 2.3) * std::sin(gy * 0.13 + std::sin(gx * 0.05) * 1.7));
 							if (!healthy)
-								LawnSeason(out, latAt(y), (latAt(y) < 27.0 ? 0.8f : 0.55f) * grassy / n * patch);
+								LawnSeason(out, latAt(y), (latAt(y) < 27.0 ? 0.8f : 0.35f) * grassy / n * patch);
 						}
 					// (grass 0.65 as bright: the street pictures' lawns are 0.75 as bright as their paving - a mown lawn's
 					// blades shade each other -, ours had come out 1.14-1.29 as bright, the reviewers' "bright green carpet";
@@ -2051,10 +2121,10 @@ namespace worldgen::build
 						{
 							const float l = (out[0] + out[1] + out[2]) / 3;
 							// (and neutral: at 0.6 of the way to a warm white the sand had stayed "too yellow" - the pictures' about
-							// (190, 187, 183), ours (205, 194, 166))
-							const std::array<float, 3> white{l * 1.08f, l * 1.07f, l * 1.05f};
+							// (190, 187, 183), ours (205, 194, 166) -, at 0.85 "yellow-tan" still: all the way, 1.1 as bright)
+							const std::array<float, 3> white{l * 1.11f, l * 1.1f, l * 1.08f};
 							for (int k = 0; k < 3; ++k)
-								out[k] = std::clamp(out[k] + (white[k] - out[k]) * 0.85f, 0.0f, 255.0f);
+								out[k] = std::clamp(white[k], 0.0f, 255.0f);
 						}
 					return true;
 				}
@@ -4132,6 +4202,60 @@ namespace worldgen::build
 					}
 				}
 				shapePorch.push_back(porch);
+				// (a shop's, an office's, a school's entrance: on the wall facing the nearest street within 50 m - its outward side
+				// within 45 degrees of the street, 4 m long or more -, near its middle, a pair of glass doors and their transom,
+				// 1.8 by 2.75 m: "no doors, gutters, downspouts, fixtures or signage", "no entrances" - round 29)
+				if (listed)
+				{
+					const facades::Kind sk = facadeSet.styles[static_cast<size_t>(shapeStyle.back())].kind;
+					const bool entrance = sk == facades::Kind::Concrete || sk == facades::Kind::Shop || sk == facades::Kind::BrickCity || sk == facades::Kind::Deco ||
+					                      sk == facades::Kind::MiMo || sk == facades::Kind::Glass || sk == facades::Kind::Balcony;
+					P2 street{};
+					float best = 50;
+					if (entrance && area >= 100)
+						for (int dj = -1; dj <= 1; ++dj)
+							for (int di = -1; di <= 1; ++di)
+								if (const auto it = streetCells.find(StreetKey(c[0] + di * 50.0f, c[1] + dj * 50.0f)); it != streetCells.end())
+									for (const auto& [a, q] : it->second)
+									{
+										const P2 d{q[0] - a[0], q[1] - a[1]};
+										const float l2 = d[0] * d[0] + d[1] * d[1];
+										const float tt = l2 > 0 ? std::clamp(((c[0] - a[0]) * d[0] + (c[1] - a[1]) * d[1]) / l2, 0.0f, 1.0f) : 0.0f;
+										const P2 pt{a[0] + d[0] * tt, a[1] + d[1] * tt};
+										if (const float dist = std::hypot(pt[0] - c[0], pt[1] - c[1]); dist < best)
+											best = dist, street = pt;
+									}
+					if (entrance && area >= 100 && best < 50)
+					{
+						const P2 toStreet{(street[0] - c[0]) / std::max(best, 0.01f), (street[1] - c[1]) / std::max(best, 0.01f)};
+						const auto& f = b.footprint;
+						float facing = 0.707f;
+						size_t pick = f.size();
+						for (size_t e = 0; e < f.size(); ++e)
+						{
+							const P2 &fa = f[e], &fb = f[(e + 1) % f.size()];
+							const float l = std::hypot(fb[0] - fa[0], fb[1] - fa[1]);
+							if (l < 4)
+								continue;
+							const P2 nrm{(fb[1] - fa[1]) / l, -(fb[0] - fa[0]) / l};
+							if (const float dot = nrm[0] * toStreet[0] + nrm[1] * toStreet[1]; dot > facing)
+								facing = dot, pick = e;
+						}
+						if (pick < f.size())
+						{
+							const P2 &fa = f[pick], &fb = f[(pick + 1) % f.size()];
+							const float l = std::hypot(fb[0] - fa[0], fb[1] - fa[1]);
+							const P2 wd{(fb[0] - fa[0]) / l, (fb[1] - fa[1]) / l};
+							const uint32_t ds = seeds::PlaceAt(seeds::Middle(b.footprint), 5, 2);
+							const float mid = l / 2 + (static_cast<float>(ds % 1000) / 1000.0f - 0.5f) * 0.5f * std::max(0.0f, l - 3.0f);
+							Door g;
+							g.kind = 2;
+							g.a = {fa[0] + wd[0] * (mid - 0.9f), fa[1] + wd[1] * (mid - 0.9f)}, g.b = {fa[0] + wd[0] * (mid + 0.9f), fa[1] + wd[1] * (mid + 0.9f)};
+							g.z = ground(fa[0] + wd[0] * mid, fa[1] + wd[1] * mid) + 0.02f, g.height = 2.75f;
+							doorsOf[static_cast<size_t>(all[i] - w.buildings.data())].push_back(g);
+						}
+					}
+				}
 				shapeCentre.push_back(c);
 				shapeBuilding.push_back(listed ? static_cast<size_t>(all[i] - w.buildings.data()) : SIZE_MAX);
 				shapes.push_back(std::move(made[i].s));
@@ -5903,6 +6027,93 @@ namespace worldgen::build
 			};
 			std::vector<world::Barrier> list = w.barriers;
 			list.insert(list.end(), yards.begin(), yards.end());
+			// (a works' or a shopping centre's stormwater pond fenced: a water area under 3 ha whose middle lies in the map's
+			// commercial, retail or industrial land, a chain-link fence 1.8 m high round it 4 m out from its edge - broken where
+			// roads cross, as every fence is -, unless one of the map's fences runs within 8 m of it: round 29's reviewers on
+			// Orlando's retention pond by a retail strip, "chain-link fence ... across the lot is missing", "a large, open,
+			// unfenced bright water" where the photos have fenced basins)
+			size_t pondFences = 0;
+			{
+				const auto inside = [](const std::vector<P2>& ring, const P2& c) {
+					bool in = false;
+					for (size_t i = 0, k = ring.size() - 1; i < ring.size(); k = i++)
+						if ((ring[i][1] > c[1]) != (ring[k][1] > c[1]) && c[0] < (ring[k][0] - ring[i][0]) * (c[1] - ring[i][1]) / (ring[k][1] - ring[i][1]) + ring[i][0])
+							in = !in;
+					return in;
+				};
+				std::vector<const world::Area*> works;
+				for (const auto& a : w.areas)
+					if (a.kind == "commercial" || a.kind == "retail" || a.kind == "industrial")
+						works.push_back(&a);
+				std::unordered_map<int64_t, std::vector<P2>> fencePoints; // (the map's fences' points, every 4 m, by 20 m cell)
+				const auto key20 = [](float x, float y) {
+					return static_cast<int64_t>(std::floor(x / 20)) << 32 | static_cast<uint32_t>(static_cast<int32_t>(std::floor(y / 20)));
+				};
+				for (const auto& b : w.barriers)
+					for (size_t k = 0; k + 1 < b.points.size(); ++k)
+					{
+						const P2 &p = b.points[k], &q = b.points[k + 1];
+						const int steps = std::max(1, static_cast<int>(Dist(p, q) / 4));
+						for (int st = 0; st <= steps; ++st)
+						{
+							const P2 m{p[0] + (q[0] - p[0]) * st / steps, p[1] + (q[1] - p[1]) * st / steps};
+							fencePoints[key20(m[0], m[1])].push_back(m);
+						}
+					}
+				for (const auto& a : w.areas)
+				{
+					if (a.kind != "water" || a.outer.size() != 1 || a.outer[0].size() < 4)
+						continue;
+					const auto& ring = a.outer[0];
+					const double area2 = polygon::Area(ring);
+					if (std::fabs(area2) > 30000 || std::fabs(area2) < 200)
+						continue;
+					P2 c{0, 0};
+					for (const P2& p : ring)
+						c[0] += p[0] / ring.size(), c[1] += p[1] / ring.size();
+					if (c[0] < bx0 || c[0] >= bx1 || c[1] < by0 || c[1] >= by1)
+						continue;
+					if (!std::any_of(works.begin(), works.end(), [&](const world::Area* wa) {
+						    return std::any_of(wa->outer.begin(), wa->outer.end(), [&](const auto& r) { return inside(r, c); });
+					    }))
+						continue;
+					// (the ring 4 m out: each point along its corner's bisector, the ring's own way round)
+					const float sign = area2 > 0 ? 1.0f : -1.0f; // (anticlockwise: outward is right of each edge's way)
+					world::Barrier fence;
+					fence.kind = "fence", fence.material = "chain_link", fence.height = 1.8f;
+					bool fenced = false;
+					for (size_t k = 0; k < ring.size() && !fenced; ++k)
+					{
+						const P2 &pp = ring[(k + ring.size() - 1) % ring.size()], &p = ring[k], &pn = ring[(k + 1) % ring.size()];
+						const float l1 = std::max(1e-3f, Dist(pp, p)), l2 = std::max(1e-3f, Dist(p, pn));
+						const P2 n1{(p[1] - pp[1]) / l1 * sign, -(p[0] - pp[0]) / l1 * sign}, n2{(pn[1] - p[1]) / l2 * sign, -(pn[0] - p[0]) / l2 * sign};
+						P2 b{n1[0] + n2[0], n1[1] + n2[1]};
+						const float lb = std::hypot(b[0], b[1]);
+						if (lb < 1e-3f)
+							continue;
+						b = {b[0] / lb, b[1] / lb};
+						const float reach = 4.0f / std::max(0.5f, b[0] * n1[0] + b[1] * n1[1]);
+						const P2 q{p[0] + b[0] * reach, p[1] + b[1] * reach};
+						for (int dj = -1; dj <= 1 && !fenced; ++dj)
+							for (int di = -1; di <= 1 && !fenced; ++di)
+								if (const auto it = fencePoints.find(key20(q[0] + di * 20.0f, q[1] + dj * 20.0f)); it != fencePoints.end())
+									for (const P2& f : it->second)
+										if (Dist(f, q) < 8)
+										{
+											fenced = true;
+											break;
+										}
+						fence.points.push_back(q);
+					}
+					if (fenced || fence.points.size() < 4)
+						continue;
+					fence.points.push_back(fence.points.front());
+					list.push_back(std::move(fence));
+					++pondFences;
+				}
+			}
+			if (pondFences)
+				std::printf("fences: %zu stormwater ponds of the works and shopping centres fenced\n", pondFences);
 			// (the dunes' rope fences: along their seaward foot - each side between a dune's cell, the map's beach's plants,
 			// and a bare sand one nearer the water -, the sides joined into lines, smoothed, broken at the beach paths, 10 m
 			// long at least; Florida's beaches keep people off their dunes so - round 25's photo of Miami Beach: "a
@@ -6180,8 +6391,11 @@ namespace worldgen::build
 				// (9: a cut-out's leaves for our cards: the cut-out's mips - as much over half at every level -, the outline a pixel
 				// fuller, a little less blue - the game's own mips had thinned a far crown to "a blue-tinted dot cloud"; 11: those
 				// in a winter's colours, two thirds of the way to a dull olive-brown of their brightness and 0.88 as bright - the
-				// laurel and water oaks' in January: three quarters of the way to a yellower brown had been autumn's orange)
-				const char* suffix = treat == 11  ? "_winter"
+				// laurel and water oaks' in January: three quarters of the way to a yellower brown had been autumn's orange; 12: a
+				// decal's leaves the oaks' brown-grey - two thirds of the way to it of their brightness, 0.85 as bright -: the
+				// game's gutter leaves are a Los Santos autumn's orange, "flat orange decal strips", round 29)
+				const char* suffix = treat == 12  ? "_oakleaves"
+				                     : treat == 11 ? "_winter"
 				                     : treat == 10 ? "_right"
 				                     : treat == 9 ? "_foliage"
 				                     : treat == 8 ? "_flat_seamless"
@@ -6205,7 +6419,17 @@ namespace worldgen::build
 					texture::Image image;
 					if (!GameImage(files, dictionary, texture, image, error))
 						return false;
-					if (treat == 3)
+					if (treat == 12)
+					{
+						for (auto& p : image.pixels)
+						{
+							const float l = (p[0] + p[1] + p[2]) / 3.0f;
+							const float target[3] = {l * 1.08f, l * 0.98f, l * 0.86f};
+							for (int c = 0; c < 3; ++c)
+								p[c] = static_cast<uint8_t>(std::clamp(0.85f * (p[c] + (target[c] - p[c]) * 0.67f), 0.0f, 255.0f));
+						}
+					}
+					else if (treat == 3)
 					{
 						for (auto& p : image.pixels)
 							for (int c = 0; c < 3; ++c)
@@ -6258,14 +6482,21 @@ namespace worldgen::build
 									}
 								}
 							}
+						// (the winter's tint in patches - a quarter of the way to most of it, a few across the picture: alike all
+						// over it had been "a blotchy olive-gold tint", "trees randomly tinted orange-brown", round 30)
 						if (treat == 11)
-							for (auto& p : image.pixels)
-							{
-								const float l = (p[0] + p[1] + p[2]) / 3.0f;
-								const float target[3] = {l * 1.3f, l * 1.04f, l * 0.58f};
-								for (int c = 0; c < 3; ++c)
-									p[c] = static_cast<uint8_t>(std::clamp(0.88f * (p[c] + (target[c] - p[c]) * 0.65f), 0.0f, 255.0f));
-							}
+							for (int y = 0; y < image.height; ++y)
+								for (int x = 0; x < image.width; ++x)
+								{
+									auto& p = image.At(x, y);
+									const float fx = static_cast<float>(x) * 512.0f / image.width, fy = static_cast<float>(y) * 512.0f / image.height;
+									const float n = 0.5f + 0.5f * std::sin(fx * 0.045f + std::sin(fy * 0.031f) * 2.1f) * std::sin(fy * 0.052f + std::sin(fx * 0.027f) * 1.7f);
+									const float share = 0.25f + 0.6f * n;
+									const float l = (p[0] + p[1] + p[2]) / 3.0f;
+									const float target[3] = {l * 1.3f, l * 1.04f, l * 0.58f};
+									for (int c = 0; c < 3; ++c)
+										p[c] = static_cast<uint8_t>(std::clamp((0.94f - 0.08f * n) * (p[c] + (target[c] - p[c]) * share), 0.0f, 255.0f));
+								}
 					}
 					else if (treat == 10)
 					{
@@ -6613,9 +6844,9 @@ namespace worldgen::build
 				ydr::Material decal;
 				if (!GameMaterial(files, "ap1_01_b_sidebit1b001.ydr", 2, decal, error))
 					return false;
-				const auto make = [&](ydr::Material& m, const char* dictionary, const char* diffuse, const char* normal, const char* specular) {
+				const auto make = [&](ydr::Material& m, const char* dictionary, const char* diffuse, const char* normal, const char* specular, int treat = 0) {
 					std::string d, n = o.name + "_flat_n", s = o.name + "_asphalt_s";
-					if (!use(dictionary, diffuse, d) || (normal && !use(dictionary, normal, n)) || (specular && !use(dictionary, specular, s)))
+					if (!use(dictionary, diffuse, d, treat) || (normal && !use(dictionary, normal, n)) || (specular && !use(dictionary, specular, s)))
 						return false;
 					m = decal;
 					m.Texture(kDiffuseTex, d);
@@ -6679,7 +6910,7 @@ namespace worldgen::build
 					dripDecal.Texture(kBumpTex, o.name + "_flat_n");
 					dripDecal.Texture(kSpecularTex, o.name + "_asphalt_s");
 				}
-				if (!surfaces.gutters.indices.empty() && !make(gutterDecal, "ch2_roads_rd+hi.ytd", "dh_gutterleavesdh_gutterleaves_a", nullptr, nullptr))
+				if (!surfaces.gutters.indices.empty() && !make(gutterDecal, "ch2_roads_rd+hi.ytd", "dh_gutterleavesdh_gutterleaves_a", nullptr, nullptr, 12))
 					return false;
 				// (the sidewalks' and paths' grime: our picture, its alpha soft - box-filtered levels)
 				if (!surfaces.grime.indices.empty())
@@ -6735,10 +6966,11 @@ namespace worldgen::build
 			// and the garage doors')
 			wallMaterials.push_back(wallTemplate);
 			doorBase = static_cast<uint32_t>(wallMaterials.size());
-			for (size_t k = 0; k <= kDoorColours.size(); ++k)
+			for (size_t k = 0; k <= kDoorColours.size() + 1; ++k)
 			{
-				const std::string name = k < kDoorColours.size() ? std::format("{}_door_{}", o.name, k) : o.name + "_garage";
-				shared.push_back(texture::Make(name, k < kDoorColours.size() ? DoorImage(kDoorColours[k]) : GarageImage(), texture::Format::Bc1));
+				const std::string name = k < kDoorColours.size() ? std::format("{}_door_{}", o.name, k) : k == kDoorColours.size() ? o.name + "_garage" : o.name + "_glassdoor";
+				shared.push_back(texture::Make(name, k < kDoorColours.size() ? DoorImage(kDoorColours[k]) : k == kDoorColours.size() ? GarageImage() : GlassDoorImage(),
+				    texture::Format::Bc1));
 				ydr::Material m = wallTemplate;
 				m.Texture(kDiffuseTex, name);
 				m.Texture(kBumpTex, o.name + "_flat_n");
@@ -7070,7 +7302,12 @@ namespace worldgen::build
 						// MED_AM_Grass_Lush_SHORT's "pink wildflower sprites" - round 28)
 						const auto lk = land.Cell({mx, my});
 						const bool developed = (lcHere >= 21 && lcHere <= 24) || (land.In(lk[0], lk[1]) && land.At(lk[0], lk[1]) == kPark);
-						const bool mown = developed && !thicketAt(mx, my);
+						// (and a road's verge, as its ground - mowed grass 12 m from a road or a walk, its first 6.5 m in a thicket
+						// too, the woods' brush past it: the countryside's meadow and flowers had been "weed/flower clumps ...
+						// sprite-like islands evenly sprinkled" on the verges of a road through the woods, round 29)
+						const auto wc = toWays.Cell({mx, my});
+						const float toWay = toWays.In(wc[0], wc[1]) ? toWays.At(wc[0], wc[1]) : 1e9f;
+						const bool mown = (developed && !thicketAt(mx, my)) || toWay < 6.5f || (toWay < 12 && !thicketAt(mx, my));
 						// (a town's mown lawn its short grass - City_GreenScrub_Grass_SPARSE: no flowers, the lawns had been "a flat
 						// uniform carpet" to round 26's reviewers -, a dune its grasses)
 						const auto dc = dune.Cell({mx, my});
@@ -7102,7 +7339,7 @@ namespace worldgen::build
 						if (plants == kTownLawn)
 						{
 							std::array<float, 3> c{static_cast<float>(colour[0]), static_cast<float>(colour[1]), static_cast<float>(colour[2])};
-							LawnSeason(c, latAt(my), latAt(my) < 27.0 ? 0.8f : 0.55f);
+							LawnSeason(c, latAt(my), latAt(my) < 27.0 ? 0.8f : 0.35f);
 							for (int k = 0; k < 3; ++k)
 								colour[static_cast<size_t>(k)] = static_cast<uint8_t>(c[static_cast<size_t>(k)]);
 						}
@@ -7204,9 +7441,11 @@ namespace worldgen::build
 					const auto lc = land.Cell({x, y});
 					return land.In(lc[0], lc[1]) && land.At(lc[0], lc[1]) == kBeach;
 				};
-				// (a town's lawn's layer in the street pictures' season - LawnSeason -: north and central Florida's the dry grass's,
-				// dormant, south Florida's the green grass's)
-				const auto townLawn = [&](float y) { return latAt(y) < 27.0 ? 0 : 1; };
+				// (a town's lawn's layer: the green grass's - im_grass10b, a mown lawn's blades -, its colour in the street pictures'
+				// season either way (LawnSeason: the two grass layers take the same colours); north and central Florida's on the dry
+				// grass's - cs_tf_rsn_redgrass1, its tufts and bare patches - had been "bare beige sandy soil" where the January
+				// photos have "mown brownish-green turf" (round 29); two in five patches the other layer, as before)
+				const auto townLawn = [&](float) { return 0; };
 				// (a road's verges and medians - 12 m from a road or a walk - mowed grass, whatever the land cover map calls the
 				// land: a 10 m median through Orlando's woods, not "developed" land, had stayed bare sand - "beige sand between
 				// tall kerbs", round 29)
@@ -7220,12 +7459,13 @@ namespace worldgen::build
 					// (a dune's ground sand, on the beach and behind it, its plants our shrubs and the dune grasses: as dry grass it
 					// had drawn "a hard, straight diagonal boundary between the yellow sand and a grey coarse sand")
 					const auto c = photoClass.Cell({x, y});
-					// (a dune's ground where the pictures see plants on it the dry grass's - its sea oats, railroad vine and sea
+					// (a dune's ground where the pictures see plants on it the green grass's - its sea oats, railroad vine and sea
 					// grape's floor: "photo ground is continuous dense coastal vegetation ... rendering is flat bare sand with
-					// isolated shrubs", round 29 -, bare sand where they see sand: their edges, not the dune mask's straight one)
+					// isolated shrubs", round 29; as the dry grass's "a flat grey gravelly strip", round 30 -, bare sand where they
+					// see sand: their edges, not the dune mask's straight one)
 					if (onDune && photoClass.In(c[0], c[1]))
 						if (const uint8_t cl = photoClass.At(c[0], c[1]); cl >= 2 && cl <= 4)
-							return 1;
+							return 0;
 					if (beachAt(x, y) || onDune)
 						return 2;
 					switch (photoClass.In(c[0], c[1]) ? photoClass.At(c[0], c[1]) : 0)

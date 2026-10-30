@@ -552,9 +552,10 @@ namespace worldgen::trees
 			// crown not squeezed - a palm's spread is its fronds')
 			// (a wide crown the pictures take for a palm's, in the tropics: a row or a grove of them seen together - South
 			// Pointe Park's promenade's, "a dense row of ~15 cabbage palms ... reduced to 5 sparse palms", "palm grove (10+
-			// tall palms) reduced to one or two", round 29 -: one palm to every 4 m² of its radius squared, up to six, spread
-			// over half its radius, each its own height within 15 %)
-			const int group = tropical && t.kind == 2 && t.crown > 3.5f ? std::min(6, static_cast<int>(t.crown * t.crown / 4)) : 1;
+			// tall palms) reduced to one or two", round 29 -: one palm to every 4 m² of its radius squared, up to three - six had
+			// made Miami Beach's palms four times as many, a street's every wide crown a clump -, spread over half its radius, each
+			// its own height within 15 %)
+			const int group = tropical && t.kind == 2 && t.crown > 3.5f ? std::min(3, static_cast<int>(t.crown * t.crown / 4)) : 1;
 			const auto ownPalm = [&](int kind) {
 				const Own* o = ownOf(kind, h, seed);
 				if (!o)
@@ -591,7 +592,9 @@ namespace worldgen::trees
 				const uint32_t which = (seed >> 11) % 100;
 				if (h < 7 && which % 2 == 0 && ownPalm(9))
 					continue;
-				if (ownPalm(which < 45 ? 6 : which < 75 ? 7 : 8))
+				// (a grove's upright ones, royal or cabbage palms: coconut palms' leaning trunks had crossed in it - "leaning,
+				// intersecting palm trunks", round 30)
+				if (ownPalm(group > 1 ? (which < 50 ? 6 : 8) : which < 45 ? 6 : which < 75 ? 7 : 8))
 					continue;
 				m = &Choose(kPalms, h, width, 0.0f, seed), palm = true;
 			}

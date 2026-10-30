@@ -294,8 +294,10 @@ namespace worldgen::flora
 						Tube(out.lods[lod][tex], l, l.r[0] > 0.25f ? sides[lod] + (lod == 0 ? 2 : 0) : std::max(3, sides[lod] - 2), g ? g->round : 1.6f,
 						    g ? g->along : 3.2f);
 					}
+				// (the further levels' fewer cards bigger - their cover 0.95, 0.9, 0.85 of the nearest's: at 0.87, 0.72, 0.55 a far
+				// crown had thinned to "a translucent pale-blue tree crown", "a nearby tree hazed into a mountain" - round 29)
 				const int every[4] = {1, 2, 4, 8};
-				const float grow[4] = {1.0f, 1.32f, 1.7f, 2.1f};
+				const float grow[4] = {1.0f, 1.38f, 1.9f, 2.6f};
 				for (size_t k = 0; k < leaves.size(); k += every[lod])
 				{
 					const Leaf& f = leaves[k];
@@ -307,6 +309,14 @@ namespace worldgen::flora
 					const float spin = g && g->upright ? (f.spin / (2 * kPi) - 0.5f) * 1.4f : f.spin;
 					Card(out.lods[lod][f.tex], f.c, f.facing, spin, f.w * grow[lod], f.h * (f.hanging ? std::sqrt(grow[lod]) : grow[lod]), f.light, f.cell,
 					    f.hanging, g ? g->across : 2, g ? g->down : 2);
+					// (a hanging card - Spanish moss - crossed by a second, a quarter turned about the same top edge's middle and
+					// narrower: one alone, edge-on or flat, had been "pale flat ribbon strips ... like paper or tape", rounds 28-29)
+					if (f.hanging && lod < 2)
+					{
+						const P3 across{-f.facing[1], f.facing[0], f.facing[2]};
+						Card(out.lods[lod][f.tex], f.c, across, spin, f.w * 0.7f * grow[lod], f.h * std::sqrt(grow[lod]), f.light, f.cell, true, g ? g->across : 2,
+						    g ? g->down : 2);
+					}
 				}
 			}
 		}
@@ -799,7 +809,10 @@ namespace worldgen::flora
 			std::vector<Leaf> fans;
 			const Limb trunk = Grow({0, 0, -0.3f}, {rnd.Range(-0.05f, 0.05f), rnd.Range(-0.05f, 0.05f), 1}, {0, 0, 1}, 0.02f, H - head + 0.3f, 8, rnd.Range(0.22f, 0.28f),
 			    0.22f, rnd, 0.015f);
-			limbs.push_back({trunk, kBarkSabal});
+			// (two in three smooth and ringed - an old one's, its boots fallen -, one in three booted: every one booted had been
+			// "a woven basket-texture trunk", round 30)
+			const Texture bark = rnd.Next() % 3 ? kBarkCoconut : kBarkSabal;
+			limbs.push_back({trunk, bark});
 			const P3 crown = trunk.p.back(), middle{crown[0], crown[1], crown[2] + 0.4f};
 			// (the head's core: the leaf bases' mass the stalks come out of, narrowing up - the trunk's top had been a cut
 			// stump in the head further off, where the stalks are not drawn)
@@ -1158,20 +1171,23 @@ namespace worldgen::flora
 			}
 			else if (t == kTwigs)
 			{
-				// a spray of bare twigs from the cell's foot: two or three stems, each forking in two or three, 0.6-0.8 as long,
-				// 0.68 as thick, seven times, one in six stopping short - an uneven tangle filling the cell (one stem's fan had
-				// been a little tree's, "fern-like", "lacy" - round 29) -; dark grey-brown (paler, the tips lighter, the crowns
-				// had been a light lilac haze in the sun - round 29's "pink blossom": median (153, 143, 148) where the photo's
-				// winter woods are (62, 55, 47))
+				// bare twigs all over the cell: some twenty small sprays from points anywhere in it, each off any way - mostly up and
+				// out -, forking in two or three, 0.6-0.8 as long, 0.68 as thick, four or five times, one in six stopping short -
+				// an even tangle (a fan from the cell's foot had stood on every card as a feather at each branch's end: "fern-like",
+				// "lacy" - rounds 29-30) -; dark grey-brown (paler, the crowns had been a light lilac haze in the sun - round 29's
+				// "pink blossom": median (153, 143, 148) where the photo's winter woods are (62, 55, 47))
 				struct Tip
 				{
 					float x, y, a, len, w;
 					int depth;
 				};
 				std::vector<Tip> todo;
-				const int stems = 2 + static_cast<int>(rnd.Next() % 2);
-				for (int s = 0; s < stems; ++s)
-					todo.push_back({cx + rnd.Range(-14, 14), static_cast<float>(y1) - 6, -kPi / 2 + rnd.Range(-0.45f, 0.45f), rnd.Range(52, 68), 3.0f, 0});
+				const int sprays = 18 + static_cast<int>(rnd.Next() % 6);
+				for (int s = 0; s < sprays; ++s)
+				{
+					const float sx = rnd.Range(static_cast<float>(x0) + 16, static_cast<float>(x1) - 16), sy = rnd.Range(static_cast<float>(y0) + 24, static_cast<float>(y1) - 8);
+					todo.push_back({sx, sy, -kPi / 2 + rnd.Range(-1.3f, 1.3f), rnd.Range(30, 46), 2.1f, 2 + static_cast<int>(rnd.Next() % 2)});
+				}
 				while (!todo.empty())
 				{
 					const Tip q = todo.back();
@@ -1414,7 +1430,8 @@ namespace worldgen::flora
 			const auto twigs = [&](const P3& at, int count, float size) {
 				for (int k = 0; k < count; ++k)
 				{
-					const P3 off{rnd.Range(-0.6f, 0.6f), rnd.Range(-0.6f, 0.6f), rnd.Range(0.0f, 0.8f)};
+					// (near the branch: 0.6 m off had been "leaf-card clusters floating detached from the branches", round 30)
+					const P3 off{rnd.Range(-0.25f, 0.25f), rnd.Range(-0.25f, 0.25f), rnd.Range(0.0f, 0.4f)};
 					const P3 c = Add(at, off);
 					P3 light = Sub(c, middle);
 					light[2] = light[2] * 0.7f + 0.2f * std::sqrt(Dot(light, light));

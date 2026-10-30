@@ -45,7 +45,9 @@ namespace worldgen::build
 		                                 // trees and fences baked in, blurred, on boxes where the footprints are wrong)
 		std::string climate;             // land.json's climate (the loader's weather), over the world's (edits.json)
 		float datum = 0.2f;             // added to the scan's heights (NAVD88, about the mean sea level in Miami; the game's sea is at 0)
-		float waves = 0.2f;             // the swell of the sea round the land (land.json: the loader's game/sea.cpp), the open ocean's 1
+		float waves = 0.32f;            // the swell of the sea round the land (land.json: the loader's game/sea.cpp), the open ocean's 1
+		                                // (0.2 had been "a flat uniform sea ... no foam, whitecaps or breakers; looks like a lake"
+		                                // beside Miami Beach's May photos' small breaking waves - round 29)
 		int roofTexture = 1024;         // a tile's roof picture (pixels a side)
 		std::filesystem::path roadsObj; // the roads' surfaces in the work box as an OBJ file (for checking)
 		bool lods = true;               // the buildings' LOD models (and the LOD maps they hang under)
