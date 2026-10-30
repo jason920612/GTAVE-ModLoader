@@ -31,8 +31,9 @@ namespace worldgen::flora
 		Boulder,     // not a plant: a riprap revetment's limestone boulder, an angular block about 1.2 m across, its foot flat
 		BareTree,    // a deciduous tree in its winter (sweetgum, maple, hickory, a water oak): an oak's skeleton, bare twigs
 		ConcretePole, // not a plant: a square prestressed concrete utility pole, 15 m, its crossarm where the game pole's is
+		WinterOak,    // a laurel or water oak in its winter: the oak's model, its leaves yellowed olive and brown (kWinterLeaves)
 	};
-	constexpr int kSpecies = 15;
+	constexpr int kSpecies = 16;
 
 	// The pictures (drawn here; leaves and flowers four clusters in a 2 x 2 atlas, alpha their outline): what each part of
 	// a model is drawn with.
@@ -46,6 +47,7 @@ namespace worldgen::flora
 		kGumLeaves,
 		kHedgeLeaves, // (a clipped hedge's small leaves)
 		kTwigs,       // (a bare tree's: sprays of branching twigs, grey-brown)
+		kWinterLeaves, // (the oaks' leaves in a winter's yellowed olive and brown: the laurel and water oaks' in January)
 		kPalmFrond, // (a feather frond along each cell: its base at the cell's foot)
 		kFanFrond,  // (a cabbage palm's fan: its hub at the cell's foot)
 		kBarkOak,

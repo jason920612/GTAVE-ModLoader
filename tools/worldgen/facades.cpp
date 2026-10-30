@@ -706,6 +706,23 @@ namespace worldgen::facades
 					}
 				}
 			}, k == 0, 6, 2.43f, 1.2f);
+		// (each style's floor and the plain row near a floor's top a building's walls show over its own floors: the floor
+		// line's band, the wall over a ribbon of windows, an Art Deco floor's trim, a glass floor's spandrel, a shop's fascia)
+		for (Style& s : set.styles)
+		{
+			const std::string n = s.diffuse.substr(prefix.size());
+			s.floor = n.starts_with("deco_")       ? 3.2f
+			          : n.starts_with("mimo_")     ? 3.0f
+			          : n.starts_with("concrete_") ? 3.1f
+			          : n.starts_with("punched_")  ? 3.4f
+			          : n.starts_with("glass_")    ? 3.4f
+			          : n.starts_with("balcony_")  ? 3.1f
+			          : n == "garage_grey"         ? 3.0f
+			          : n == "shop"                ? 4.5f
+			          : n.starts_with("brickcity_") ? 3.075f
+			                                       : 0.0f;
+			s.parapet = n == "shop" ? 3.9f : n.starts_with("deco_") ? 3.1f : n.starts_with("punched_") ? 3.3f : s.floor - 0.03f;
+		}
 		// the palette for the LOD models' walls
 		set.palette = prefix + "lod";
 		texture::Image pal(128, 8 * static_cast<int>((set.styles.size() + 15) / 16));

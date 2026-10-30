@@ -65,6 +65,21 @@ namespace loader::debug::remote
 		                   kClearWeatherTypePersist = 0xCCC39339BEF76CF5, kSetClockDate = 0xB096419DF0D06CE7, kSetRain = 0x643E26EA6E024D92;
 		constexpr uint64_t kPlayerPedId = 0xD80958FC74E988A6, kSetEntityCoords = 0x06843DA7060A026B;
 		constexpr uint64_t kGetGameplayCamRelativeHeading = 0x743607648ADD4587, kSetGameplayCamRelativeHeading = 0xB4EC2312F4E5B1F1;
+		// The game's wet ground (0 dry - 1 soaked), next to its rain level - GET_RAIN_LEVEL's code, past the obfuscation's jumps,
+		// is movss xmm0, [rip + x]; the wetness is 0x24 after that (graphics/bridge.cpp's FindWetness). Null when the code is
+		// not as known.
+		float* GroundWetness()
+		{
+			static float* const wetness = []() -> float* {
+				const auto* p = reinterpret_cast<const uint8_t*>(game::natives::FindHandler(0x96695E368AD855F3));
+				for (int hops = 0; p && hops < 4 && p[0] == 0xE9; ++hops)
+					p += 5 + *reinterpret_cast<const int32_t*>(p + 1);
+				if (!p || p[0] != 0xF3 || p[1] != 0x0F || p[2] != 0x10 || p[3] != 0x05)
+					return nullptr;
+				return const_cast<float*>(reinterpret_cast<const float*>(p + 8 + *reinterpret_cast<const int32_t*>(p + 4))) + 9;
+			}();
+			return wetness;
+		}
 		struct CamRequest
 		{
 			bool pending = false, on = false, keep = false; // (keep: the clock and weather as they are)
@@ -1575,6 +1590,10 @@ namespace loader::debug::remote
 					natives::Invoke<void>(kPauseClock, 1);
 					natives::Invoke<void>(kSetWeatherTypeNowPersist, "EXTRASUNNY");
 					natives::Invoke<void>(kSetRain, 0.0f); // (no rain's puddles: a wet road mirrored the sky in the comparisons)
+					// (and the ground dry: with the clock stopped it never dries - a shower before the camera came on had left
+					// "shiny, sky-reflecting puddle patches" on the roads, round 29)
+					if (float* wet = GroundWetness(); wet && *wet > 0.0f && *wet <= 1.0f)
+						*wet = 0.0f;
 				}
 				log::Info("remote: camera at {:.1f} {:.1f} {:.1f} heading {:.1f} pitch {:.1f} fov {:.1f}", g_cam.x, g_cam.y, g_cam.z, g_cam.heading, g_cam.pitch,
 				    g_cam.fov);

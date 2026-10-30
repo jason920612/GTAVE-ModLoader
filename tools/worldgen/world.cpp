@@ -892,6 +892,75 @@ namespace worldgen::world
 		return changed;
 	}
 
+	size_t TracedOverlaps(World& w)
+	{
+		const auto inside = [](const std::vector<P2>& ring, const P2& c) {
+			bool in = false;
+			for (size_t i = 0, k = ring.size() - 1; i < ring.size(); k = i++)
+				if ((ring[i][1] > c[1]) != (ring[k][1] > c[1]) && c[0] < (ring[k][0] - ring[i][0]) * (c[1] - ring[i][1]) / (ring[k][1] - ring[i][1]) + ring[i][0])
+					in = !in;
+			return in;
+		};
+		const auto box = [](const std::vector<P2>& ring) {
+			std::array<float, 4> b{1e30f, 1e30f, -1e30f, -1e30f};
+			for (const P2& p : ring)
+				b = {std::min(b[0], p[0]), std::min(b[1], p[1]), std::max(b[2], p[0]), std::max(b[3], p[1])};
+			return b;
+		};
+		// (a footprint's share inside the others: points on a lattice over its box, some 200 inside it)
+		const auto share = [&](const std::vector<P2>& ring, const std::array<float, 4>& b, const std::vector<const std::vector<P2>*>& others) {
+			const float step = std::max(0.4f, std::sqrt(std::max(1.0f, (b[2] - b[0]) * (b[3] - b[1]))) / 14);
+			size_t in = 0, over = 0;
+			for (float y = b[1] + step / 2; y < b[3]; y += step)
+				for (float x = b[0] + step / 2; x < b[2]; x += step)
+					if (inside(ring, {x, y}))
+					{
+						++in;
+						if (std::any_of(others.begin(), others.end(), [&](const std::vector<P2>* o) { return inside(*o, {x, y}); }))
+							++over;
+					}
+			return in > 0 ? static_cast<float>(over) / in : 0.0f;
+		};
+		// (the map's buildings by 20 m cell of their boxes)
+		std::map<std::pair<int, int>, std::vector<size_t>> cells;
+		std::vector<std::array<float, 4>> boxes(w.buildings.size());
+		for (size_t i = 0; i < w.buildings.size(); ++i)
+		{
+			const Building& b = w.buildings[i];
+			if (b.traced || b.footprint.size() < 3)
+				continue;
+			boxes[i] = box(b.footprint);
+			for (int gj = static_cast<int>(std::floor(boxes[i][1] / 20)); gj <= static_cast<int>(std::floor(boxes[i][3] / 20)); ++gj)
+				for (int gi = static_cast<int>(std::floor(boxes[i][0] / 20)); gi <= static_cast<int>(std::floor(boxes[i][2] / 20)); ++gi)
+					cells[{gi, gj}].push_back(i);
+		}
+		size_t emptied = 0;
+		for (Building& t : w.buildings)
+		{
+			if (!t.traced || t.footprint.size() < 3)
+				continue;
+			const auto tb = box(t.footprint);
+			std::set<size_t> near;
+			for (int gj = static_cast<int>(std::floor(tb[1] / 20)); gj <= static_cast<int>(std::floor(tb[3] / 20)); ++gj)
+				for (int gi = static_cast<int>(std::floor(tb[0] / 20)); gi <= static_cast<int>(std::floor(tb[2] / 20)); ++gi)
+					if (const auto it = cells.find({gi, gj}); it != cells.end())
+						for (const size_t i : it->second)
+							if (boxes[i][0] < tb[2] && boxes[i][2] > tb[0] && boxes[i][1] < tb[3] && boxes[i][3] > tb[1])
+								near.insert(i);
+			if (near.empty())
+				continue;
+			std::vector<const std::vector<P2>*> others;
+			for (const size_t i : near)
+				others.push_back(&w.buildings[i].footprint);
+			bool twin = share(t.footprint, tb, others) >= 0.33f;
+			for (auto it = near.begin(); !twin && it != near.end(); ++it)
+				twin = share(w.buildings[*it].footprint, boxes[*it], {&t.footprint}) >= 0.5f;
+			if (twin)
+				t.footprint.clear(), ++emptied;
+		}
+		return emptied;
+	}
+
 	bool Demolished(const World& w, const std::vector<P2>& footprint)
 	{
 		if (footprint.empty() || w.demolish.empty())

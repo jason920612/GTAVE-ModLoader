@@ -7,7 +7,8 @@ usage: python -I tools/worldgen/msbuildings.py split --zip <Florida.geojson.zip>
   split: each footprint (its outer ring) into the sectors' grid (tools/worldgen/sectors.py: 0.121 x 0.117 degrees from
          25.745 N, -80.232 E) by its middle: <cells dir>/<column>_<row>.jsonl, a ring of [lon, lat] a line
   merge: the cell's footprints (by the world's box, its neighbours' too where they reach in) in game coordinates, those
-         that overlap none of the world's buildings, as buildings of kind "yes" (a house's height under 350 m², else 7 m) with
+         that overlap none of the world's buildings (a third of its area in one, or half of one's in it), as buildings of kind
+         "yes" (a house's height under 350 m², else 7 m) with
          "source": "ms" (worldgen: traced, not the map's);
          world.json written again (its "attribution" told)
 """
@@ -79,6 +80,23 @@ def inside(ring, x, y):
     return hit
 
 
+def share(ring, others):
+    """How much of the ring lies in the others: points on a lattice over its box, some 200 inside it."""
+    xs, ys = [q[0] for q in ring], [q[1] for q in ring]
+    step = max(0.4, math.sqrt(max(1.0, (max(xs) - min(xs)) * (max(ys) - min(ys)))) / 14)
+    n = over = 0
+    y = min(ys) + step / 2
+    while y < max(ys):
+        x = min(xs) + step / 2
+        while x < max(xs):
+            if inside(ring, x, y):
+                n += 1
+                over += any(inside(o, x, y) for o in others)
+            x += step
+        y += step
+    return over / n if n else 0.0
+
+
 def area(ring):
     return abs(sum(ring[i][0] * ring[i - 1][1] - ring[i - 1][0] * ring[i][1] for i in range(len(ring)))) / 2
 
@@ -121,10 +139,14 @@ def merge(o):
                 cx, cy = sum(q[0] for q in ring) / len(ring), sum(q[1] for q in ring) / len(ring)
                 if not (x0 <= cx < x1 and y0 <= cy < y1):
                     continue
-                # (over one of the map's footprints: its middle in one, or one's middle in it)
-                near = grid.get((int(cx // 50), int(cy // 50)), [])
-                if any(inside(other, cx, cy) or inside(ring, sum(q[0] for q in other) / len(other), sum(q[1] for q in other) / len(other))
-                       for other in near):
+                # (over one of the map's footprints: a third of it in them, or half of one in it - by area: a U-shaped
+                # building's middle is in its courtyard, outside both, and the same office had come twice)
+                xs, ys = [q[0] for q in ring], [q[1] for q in ring]
+                near = []
+                for gi in range(int(min(xs) // 50), int(max(xs) // 50) + 1):
+                    for gj in range(int(min(ys) // 50), int(max(ys) // 50) + 1):
+                        near.extend(o for o in grid.get((gi, gj), []) if not any(o is k for k in near))
+                if near and (share(ring, near) >= 0.33 or any(share(other, [ring]) >= 0.5 for other in near)):
                     continue
                 a = area(ring)
                 if a < 25:

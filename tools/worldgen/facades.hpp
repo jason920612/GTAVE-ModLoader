@@ -41,6 +41,8 @@ namespace worldgen::facades
 		float bay = 0, clear = 0;              // its windows' bay (m, from a bay's edge: the wall between two windows at the
 		                                       // edges; 0 none) and the plain wall's width round a bay's edge (0: none)
 		std::array<uint8_t, 3> average{};      // the texture's mean colour (the LOD models' walls)
+		float floor = 0, parapet = 0;          // a floor's height in it (0: none - sheds, tilt-up walls) and the height in a
+		                                       // floor of its plain row a building's walls show over its own floors
 	};
 
 	struct Set

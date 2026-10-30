@@ -45,6 +45,7 @@ namespace worldgen::roads
 		bool collector = false;  // a residential collector: a double yellow line, without kerb white edge lines (world::Road's)
 		// with sidewalks: which sides (left and right of a -> b) have one; the other a kerb and gutter (kCurbTop)
 		bool walkLeft = true, walkRight = true;
+		bool rolled = false; // (its kerb rolled - a suburban street's "Miami curb": world::Road's)
 		float HalfWidth() const { return (forward + backward + centre) * laneWidth / 2 + 0.3f + parking + bike; }
 		float Side() const { return parking + bike; }             // (what lies between a kerb and the traffic lanes)
 		float LanesHalf() const { return HalfWidth() - Side(); } // (the traffic lanes' half)
@@ -200,9 +201,10 @@ namespace worldgen::roads
 	// (navmesh kind 2): sidewalks and footways concrete as the streets' sidewalks, the others of their surface (an
 	// untagged path earth, a cycleway asphalt), their width by the map or their kind. Left out: crossings (the road's),
 	// footbridges, where a point is on a road (`onRoad`: its asphalt or its own sidewalk) and the pieces `skip` names
-	// (per walk, per piece between its points: a street's sidewalk the street draws itself). Returns how many were drawn.
+	// (per walk, per piece between its points: a street's sidewalk the street draws itself). A concrete one red where the
+	// aerial pictures see it red (`pavingRed`, as Geometry's sidewalks). Returns how many were drawn.
 	size_t Walkways(const std::vector<world::Walk>& walks, const std::vector<std::vector<bool>>& skip, const std::function<float(float, float)>& ground,
-	    const std::function<bool(float, float)>& onRoad, Surfaces& out);
+	    const std::function<bool(float, float)>& onRoad, Surfaces& out, const std::function<float(float, float)>& pavingRed = {});
 
 	// A walk's width as Walkways draws it: the map's (0.8-6 m), else by its kind and paving.
 	float WalkWidth(const world::Walk& wk);

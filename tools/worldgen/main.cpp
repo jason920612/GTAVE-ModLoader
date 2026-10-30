@@ -2580,6 +2580,7 @@ int main(int argc, char** argv)
 			    ps.retyped, ps.raised);
 		}
 		std::printf("buildings: %zu of the map's \"yes\" in commercial or industrial land taken as such\n", worldgen::world::KindsByLandUse(w));
+		std::printf("buildings: %zu of Microsoft's traced footprints over the map's own left out\n", worldgen::world::TracedOverlaps(w));
 		worldgen::build::Options o;
 		o.out = g_options["out"];
 		o.name = g_options.contains("name") ? g_options["name"] : w.name;

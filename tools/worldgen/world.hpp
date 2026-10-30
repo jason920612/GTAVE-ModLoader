@@ -35,6 +35,7 @@ namespace worldgen::world
 		                             // without kerb white edge lines - the build's, not saved)
 		bool sidewalkLeft = true, sidewalkRight = true; // (with sidewalks: which sides have one, left and right of the points' way;
 		                                                // the other a kerb and gutter - the build's, not saved)
+		bool rolledKerb = false;     // (its kerb rolled - a suburban street's "Miami curb" - the build's, not saved)
 		bool bridge = false, tunnel = false;
 		int layer = 0;
 		float speed = 0; // m/s (0: by kind)
@@ -184,6 +185,13 @@ namespace worldgen::world
 	// hip roofs and siding (the street pictures' block garage on a commercial street had become a sided house). For a
 	// build: not saved. Returns how many.
 	size_t KindsByLandUse(World& w);
+
+	// Microsoft's traced footprints over the map's own buildings - a third of the traced one's area in the map's, or half
+	// of a map building's in it - emptied (kept in the list, which the street pictures' walls and the rolls are keyed by):
+	// the same building twice. worlds merged before msbuildings.py tested by area: it had tested the middles, and a U-shaped
+	// building's middle is in its courtyard, outside both - two sets of walls on one office, "a uniform grime gradient" and
+	// a third row of windows cut off at the roof (round 28). For a build: not saved. Returns how many.
+	size_t TracedOverlaps(World& w);
 
 	// A footprint whose middle lies in one of the editor's demolished areas.
 	bool Demolished(const World& w, const std::vector<P2>& footprint);

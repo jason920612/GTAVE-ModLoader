@@ -550,19 +550,35 @@ namespace worldgen::trees
 			const bool frondy = tropical && t.kind == 1 && (seed >> 3) % 7 != 0;
 			// (a palm of our own of a kind, where the land has them: its foot at the ground, scaled to the tree's height, its
 			// crown not squeezed - a palm's spread is its fronds')
+			// (a wide crown the pictures take for a palm's, in the tropics: a row or a grove of them seen together - South
+			// Pointe Park's promenade's, "a dense row of ~15 cabbage palms ... reduced to 5 sparse palms", "palm grove (10+
+			// tall palms) reduced to one or two", round 29 -: one palm to every 4 m² of its radius squared, up to six, spread
+			// over half its radius, each its own height within 15 %)
+			const int group = tropical && t.kind == 2 && t.crown > 3.5f ? std::min(6, static_cast<int>(t.crown * t.crown / 4)) : 1;
 			const auto ownPalm = [&](int kind) {
 				const Own* o = ownOf(kind, h, seed);
 				if (!o)
 					return false;
-				props::Prop p;
-				p.archetype = loader::convert::Joaat(o->name);
-				p.position = {t.x, t.y, ground(t.x, t.y) - 0.2f};
-				p.heading = static_cast<float>((seed >> 8) % 360) * kPi / 180;
-				p.lodDist = 600;
-				p.scaleZ = std::clamp(h / o->height, 0.5f, 1.5f);
-				p.scale = std::clamp(width / o->width, p.scaleZ * 0.8f, p.scaleZ * 1.25f);
-				out.push_back(p);
-				++stats.palms;
+				for (int k = 0; k < group; ++k)
+				{
+					const uint32_t ks = k ? seeds::Place(t.x, t.y, 4, 90 + static_cast<uint32_t>(k)) : seed;
+					const float a = static_cast<float>(ks % 360) * kPi / 180, d = k ? t.crown * 0.5f * std::sqrt((k + 0.5f) / group) : 0.0f;
+					const float x = t.x + std::cos(a) * d, y = t.y + std::sin(a) * d;
+					if (k && !open(x, y))
+						continue;
+					const float hk = k ? h * (0.85f + 0.3f * static_cast<float>((ks >> 9) % 16) / 15.0f) : h;
+					const Own* ok = k ? ownOf(kind, hk, ks) : o;
+					props::Prop p;
+					p.archetype = loader::convert::Joaat(ok->name);
+					p.position = {x, y, ground(x, y) - 0.2f};
+					p.heading = static_cast<float>(((k ? ks : seed) >> 8) % 360) * kPi / 180;
+					p.lodDist = 600;
+					p.scaleZ = std::clamp(hk / ok->height, 0.5f, 1.5f);
+					// (a group's palms each its own fronds' spread, not the group's crown)
+					p.scale = group > 1 ? p.scaleZ : std::clamp(width / ok->width, p.scaleZ * 0.8f, p.scaleZ * 1.25f);
+					out.push_back(p);
+					++stats.palms;
+				}
 				return true;
 			};
 			// (the south's towns' low crowns - under 7 m -: one in three a clump of areca palms, the yards' and hedges' palm)
@@ -610,11 +626,17 @@ namespace worldgen::trees
 				// trees: as small oaks they had stood in rows on the lawns, "about ten trees in a grid" where the street pictures
 				// have hedges, palms and one oak - round 27's reviewers)
 				const bool shrubMass = town && t.kind == 0 && h < 6 && width >= h && !(*own)[10].empty();
-				// (and north of 27 N a crown the winter's pictures see leafless bare, as the street pictures there - winter's -
-				// show it: "the photo mixes bare deciduous trees, scrubby oaks and pines", "crape myrtles, thin, nearly bare")
-				const bool bare = t.kind == 1 && latitudeAt(t.y) >= 27.0 && !(*own)[11].empty();
+				// (and north of 27 N a crown the winter's pictures see leafless as the street pictures there - winter's - show it:
+				// two in five bare - "the photo mixes bare deciduous trees, scrubby oaks and pines", "crape myrtles, thin, nearly
+				// bare" -, the rest a laurel or water oak in its yellowed olive and brown winter leaves - the January photos' "brown
+				// winter-leaved hardwoods", "a big broad tree with brownish foliage": every one bare had been "one pinkish-white
+				// leafless tree model ... cloned at even spacing" on 12 of 18 sheets, round 29 -; a small one in town bare)
+				const bool winter = t.kind == 1 && latitudeAt(t.y) >= 27.0;
+				const bool bare = winter && !(*own)[11].empty() && ((town && h < 8) || (seed >> 11) % 5 < 2 || (*own)[12].empty());
+				const bool browned = winter && !bare && !(*own)[12].empty();
 				const int kind = shrubMass ? 10
 				                 : bare    ? 11
+				                 : browned ? 12
 				                 : town && h < 8 ? (t.kind == 1 && seed % 2 == 0 && !tropicalTown ? 3 : 2)
 				                 : t.kind == 0 ? (pine ? 1 : magnolia ? 4 : width >= 1.1f * h ? 0 : 2)
 				                               : (town && h <= 9 && seed % 5 == 0 && !tropicalTown ? 3 : (seed >> 5) % 3 == 0 ? 5 : 2);
